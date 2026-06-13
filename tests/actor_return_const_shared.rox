@@ -1,0 +1,13 @@
+// Case 4: const return + not sole-owner → frozen snapshot via createFrozenSnapshot
+// The actor keeps an alias, so not sole-owned. Still frozen via snapshot.
+
+type Worker actor:
+    func make_list() -> const list:
+        var l = [1, 2, 3]
+        var alias = l
+        return l
+
+var w = Worker()
+var result = w.make_list()
+print(result)
+result[0] = 99

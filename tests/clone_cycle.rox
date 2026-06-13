@@ -1,0 +1,17 @@
+// Test clone() preserves cycles without infinite recursion
+type Node object:
+    var next
+    var value :int = 0
+
+var a = Node()
+var b = Node()
+a.value = 1
+b.value = 2
+a.next = b
+b.next = a  // Cycle: a -> b -> a
+
+var a2 = clone(a)
+print(a2.value)           // 1
+print(a2.next.value)      // 2
+print(a2.next.next.value) // 1 (should be a2, not infinite loop)
+print(a2.next.next is a2) // true (cycle preserved)

@@ -1,0 +1,4 @@
+// Test that moving a const variable is a compile error
+const x = [1,2,3]
+var y = move(x)
+print(y)

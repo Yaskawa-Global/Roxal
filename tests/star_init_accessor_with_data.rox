@@ -1,0 +1,33 @@
+// Plain data var and accessor-equipped var interleaved in the type body.
+// init(*) synthesizes params in source-declaration order, regardless of
+// whether each property is implemented as a plain `var` or via accessors —
+// the implementation detail isn't visible to callers.
+
+type Mixed object:
+  var d :int = 0
+  var a :int = 0:           // accessor BEFORE the next data var
+    get:
+      return _a
+    set:
+      _a = value * 10       // setter inflates; init(*) bypasses
+  var e :int = 0
+
+  proc init(*):
+    print("init ran")
+
+// Named call: order-independent
+var m1 = Mixed(a=3, d=1, e=2)
+print(m1.d)
+print(m1.e)
+print(m1.a)        // 3 — setter bypassed
+
+// Positional call: follows source order (d, a, e) — accessor `a` sits
+// between the two data props.
+var m2 = Mixed(10, 20, 30)
+print(m2.d)        // 10
+print(m2.a)        // 20 — setter bypassed
+print(m2.e)        // 30
+
+// External write still goes through setter
+m2.a = 5
+print(m2.a)        // 50 — setter ran

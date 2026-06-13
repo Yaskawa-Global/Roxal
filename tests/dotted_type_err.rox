@@ -1,0 +1,5 @@
+# error: nonexistent dotted type
+type Foo object:
+    var x: int
+
+var bad: Foo.Nonexistent = 1

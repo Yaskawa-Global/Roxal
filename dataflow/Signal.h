@@ -135,6 +135,7 @@ protected:
     std::vector<std::function<void(TimePoint, ptr<Signal>, const Value&)>> valueChangedCallbacks;
 
     friend class DataflowEngine;
+    friend class FuncNode;
     friend class Func;
 
 private:
@@ -149,8 +150,15 @@ private:
 
     bool m_internal = false;
 
+    // When true, the first setValueAt() call will set the value but skip
+    // invoking valueChangedCallbacks.  This ensures the initial value of a
+    // FuncNode output signal is treated as initialization rather than a change
+    // — regardless of whether the producing FuncNode completes synchronously
+    // or asynchronously (via a future).
+    bool m_suppressInitialChange = false;
 
 };
+
 
 
 typedef std::vector<ptr<Signal>> Signals;

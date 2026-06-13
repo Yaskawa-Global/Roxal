@@ -1,0 +1,12 @@
+// Overloads + named arguments: when both overloads have a parameter with
+// the same name, the named-arg form should still resolve unambiguously
+// based on the type of the value.
+
+func process(x :int, label :string):
+    print("int:{x},{label}")
+
+func process(x :string, label :string):
+    print("str:{x},{label}")
+
+process(x=5, label="five")
+process(label="greet", x="hi")

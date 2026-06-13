@@ -1,0 +1,24 @@
+// Covariant return: interface declares `make() -> Animal` (abstract);
+// implementer's concrete `make()` returns Dog (a subtype of Animal) —
+// conformance should accept this.
+
+type Animal object:
+    var name :string = ""
+
+type Dog object extends Animal:
+    var breed :string = ""
+
+type Factory interface:
+    func make() -> Animal
+
+type DogFactory object implements Factory:
+    func make() -> Dog:
+        var d = Dog()
+        d.name = "Rex"
+        d.breed = "Lab"
+        return d
+
+var f = DogFactory()
+var a = f.make()
+print(a.name)
+print(DogFactory is Factory)

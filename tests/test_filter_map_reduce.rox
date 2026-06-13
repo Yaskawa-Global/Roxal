@@ -7,7 +7,7 @@ func assert(cond, msg=''):
 
 // Test filter - basic
 var nums = [1, 2, 3, 4, 5]
-var evens = filter(nums, func(x): x % 2 == 0)
+var evens = filter(nums, func(x): x rem 2 == 0)
 print("filter evens: " + evens)
 assert(evens == [2, 4], "filter evens")
 
@@ -82,7 +82,7 @@ print("\nTesting method-style calls...")
 var nums2 = [1, 2, 3, 4, 5]
 
 // Method-style filter
-var evens2 = nums2.filter(func(x): x % 2 == 0)
+var evens2 = nums2.filter(func(x): x rem 2 == 0)
 print("method filter evens: " + evens2)
 assert(evens2 == [2, 4], "method filter evens")
 
@@ -102,7 +102,7 @@ print("method chained filter+map+reduce: " + chained)
 assert(chained == 24, "method chained filter+map+reduce")
 
 // Chained style on single line
-var chained2 = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].filter(func(x): x % 2 == 0).map(func(x): x * x).reduce(func(a, b): a + b, 0)
+var chained2 = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].filter(func(x): x rem 2 == 0).map(func(x): x * x).reduce(func(a, b): a + b, 0)
 print("chained evens squared sum: " + chained2)
 assert(chained2 == 220, "chained evens squared sum")  // 4+16+36+64+100 = 220
 

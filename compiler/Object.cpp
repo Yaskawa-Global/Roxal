@@ -13,11 +13,18 @@
 #include <utility>
 #include <core/AST.h>
 
+#ifdef ROXAL_ENABLE_ONNX
+#include "CudaRuntime.h"
+#endif
+
 #include <core/types.h>
 #include "VM.h"
 #include "FFI.h"
 #include "Value.h"
 #include "Thread.h"
+#ifdef ROXAL_COMPUTE_SERVER
+#include "ComputeConnection.h"
+#endif
 #include "dataflow/Signal.h"
 #include "dataflow/DataflowEngine.h"
 #include "Object.h"
@@ -78,6 +85,8 @@ icu::UnicodeString readString(std::istream& in) {
 void writeTypeInfo(std::ostream& out, const type::Type& t) {
     uint8_t b = static_cast<uint8_t>(t.builtin);
     out.write(reinterpret_cast<char*>(&b),1);
+    uint8_t ic = t.isConst ? 1 : 0;
+    out.write(reinterpret_cast<char*>(&ic),1);
     if (t.builtin == type::BuiltinType::Func && t.func.has_value()) {
         uint8_t hasFunc = 1; out.write(reinterpret_cast<char*>(&hasFunc),1);
         const auto& ft = t.func.value();
@@ -101,11 +110,21 @@ void writeTypeInfo(std::ostream& out, const type::Type& t) {
     } else if (t.builtin == type::BuiltinType::Func) {
         uint8_t hasFunc = 0; out.write(reinterpret_cast<char*>(&hasFunc),1);
     }
+    // Serialize obj.name for Object/Actor types (used by runtime param conversion)
+    if ((t.builtin == type::BuiltinType::Object || t.builtin == type::BuiltinType::Actor)
+        && t.obj.has_value()) {
+        uint8_t hasObj = 1; out.write(reinterpret_cast<char*>(&hasObj),1);
+        writeString(out, t.obj.value().name);
+    } else if (t.builtin == type::BuiltinType::Object || t.builtin == type::BuiltinType::Actor) {
+        uint8_t hasObj = 0; out.write(reinterpret_cast<char*>(&hasObj),1);
+    }
 }
 
 ptr<type::Type> readTypeInfo(std::istream& in) {
     uint8_t b; in.read(reinterpret_cast<char*>(&b),1);
     auto t = make_ptr<type::Type>(static_cast<type::BuiltinType>(b));
+    uint8_t ic; in.read(reinterpret_cast<char*>(&ic),1);
+    t->isConst = ic != 0;
     if (t->builtin == type::BuiltinType::Func) {
         uint8_t hasFunc; in.read(reinterpret_cast<char*>(&hasFunc),1);
         if(hasFunc){
@@ -129,6 +148,14 @@ ptr<type::Type> readTypeInfo(std::istream& in) {
             uint32_t rc; in.read(reinterpret_cast<char*>(&rc),4);
             for(uint32_t i=0;i<rc;i++)
                 ft.returnTypes.push_back(readTypeInfo(in));
+        }
+    }
+    // Deserialize obj.name for Object/Actor types
+    if (t->builtin == type::BuiltinType::Object || t->builtin == type::BuiltinType::Actor) {
+        uint8_t hasObj; in.read(reinterpret_cast<char*>(&hasObj),1);
+        if (hasObj) {
+            t->obj = type::Type::ObjectType{};
+            t->obj->name = readString(in);
         }
     }
     return t;
@@ -247,12 +274,15 @@ ValueType Obj::valueType() const
         case ObjType::Dict: return ValueType::Dict;
         case ObjType::Vector: return ValueType::Vector;
         case ObjType::Matrix: return ValueType::Matrix;
+        case ObjType::Orient: return ValueType::Orient;
+        case ObjType::Tensor: return ValueType::Tensor;
         case ObjType::Signal: return ValueType::Signal;
         case ObjType::File: return ValueType::Object;
         case ObjType::EventType: return ValueType::Event;
         case ObjType::EventInstance: return ValueType::Object;
         case ObjType::Function: return ValueType::Function;
         case ObjType::Closure: return ValueType::Closure;
+        case ObjType::OverloadSet: return ValueType::Closure;
         case ObjType::Upvalue: return ValueType::Upvalue;
         case ObjType::Exception: return ValueType::Object;
         case ObjType::Instance: {
@@ -269,10 +299,405 @@ ValueType Obj::valueType() const
 
 void Obj::dropReferences()
 {
-    // Default implementation does nothing.
+    // Clean up MVCC version chain and snapshot token
+    cleanupMVCC();
+}
+
+unique_ptr<Obj, UnreleasedObj> Obj::shallowClone() const
+{
+    // Default: types that don't support shallow cloning return nullptr
+    return nullptr;
+}
+
+void Obj::saveVersion()
+{
+    // Version save deduplication: skip if no new snapshot was created since last save
+    if (control->lastSaveEpoch >= latestSnapshotCreationEpoch.load(std::memory_order_acquire))
+        return;
+
+    auto snap = shallowClone();
+    if (!snap)
+        return; // type doesn't support shallow cloning (e.g. immutable types)
+
+    // Transfer ownership of the shallow clone to the version node.
+    // The clone gets a strong ref to keep it alive.
+    Obj* snapObj = snap.release();
+    snapObj->incRef();
+
+    auto* ver = new ObjVersion();
+    ver->epoch = control->writeEpoch.load(std::memory_order_relaxed);
+    ver->snapshot = snapObj;
+
+    // CAS-prepend to the version chain (lock-free)
+    ObjVersion* head = control->versionChain.load(std::memory_order_relaxed);
+    do {
+        ver->prev = head;
+    } while (!control->versionChain.compare_exchange_weak(head, ver,
+             std::memory_order_release, std::memory_order_relaxed));
+
+    control->lastSaveEpoch = globalWriteEpoch.load(std::memory_order_relaxed);
 }
 
 
+void Obj::cleanupMVCC()
+{
+    // Free version chain
+    ObjVersion* ver = control->versionChain.load(std::memory_order_relaxed);
+    control->versionChain.store(nullptr, std::memory_order_relaxed);
+    while (ver) {
+        ObjVersion* prev = ver->prev;
+        if (ver->snapshot) {
+            ver->snapshot->decRef();
+            ver->snapshot = nullptr;
+        }
+        delete ver;
+        ver = prev;
+    }
+
+    // Release snapshot token (for frozen clones)
+    if (control->snapshotToken) {
+        if (control->snapshotToken->decRef()) {
+            // Last frozen clone for this snapshot — decrement global count
+            snapshotEpochTracker.remove(control->snapshotToken->epoch);
+            activeSnapshotCount.fetch_sub(1, std::memory_order_relaxed);
+            delete control->snapshotToken;
+        }
+        control->snapshotToken = nullptr;
+    }
+}
+
+
+void Obj::trimVersionChain(uint64_t minEpoch)
+{
+    ObjVersion* chain = control->versionChain.load(std::memory_order_relaxed);
+    if (!chain)
+        return;
+
+    // No active snapshots — discard entire chain
+    if (minEpoch == UINT64_MAX) {
+        control->versionChain.store(nullptr, std::memory_order_relaxed);
+        control->lastSaveEpoch = 0;
+        while (chain) {
+            ObjVersion* prev = chain->prev;
+            if (chain->snapshot) {
+                chain->snapshot->decRef();
+                chain->snapshot = nullptr;
+            }
+            delete chain;
+            chain = prev;
+        }
+        return;
+    }
+
+    // Find the newest version with epoch < minEpoch (the floor version).
+    // Keep it and everything newer; discard everything older.
+    ObjVersion* cur = chain;
+    ObjVersion* floor = nullptr;
+    while (cur) {
+        if (cur->epoch < minEpoch) {
+            floor = cur;
+            break;  // chain is newest-first, so first match is the newest floor
+        }
+        cur = cur->prev;
+    }
+
+    if (!floor)
+        return;  // all versions are >= minEpoch, nothing to trim
+
+    // Free everything after the floor version
+    ObjVersion* toFree = floor->prev;
+    floor->prev = nullptr;
+    while (toFree) {
+        ObjVersion* prev = toFree->prev;
+        if (toFree->snapshot) {
+            toFree->snapshot->decRef();
+            toFree->snapshot = nullptr;
+        }
+        delete toFree;
+        toFree = prev;
+    }
+}
+
+
+/// Check whether the object graph rooted at `root` is isolated: every mutable
+/// interior object is referenced only from within the graph (no external aliases).
+///
+/// Algorithm (two-pass):
+///   Phase 1: Traverse from root via trace(), collecting all reachable Obj*
+///            into a set.
+///   Phase 2: For each reachable object, trace again, counting how many
+///            references land on other reachable objects (internal refs).
+///            Then verify: for each mutable container (List, Dict, Instance),
+///            strong_count == internal_ref_count.
+///
+/// The root is excluded from the check — its sole-ownership is verified by the
+/// caller (strong <= 1 in createFrozenSnapshot, <= 2 in queueCall).
+///
+/// Immutable types (String, Function, ObjectType, etc.) are skipped: they cannot
+/// be mutated through an alias, so sharing is safe.
+///
+/// Performance: O(V + E) where V = reachable objects, E = reference edges.
+/// For the common case (list of primitives), V = 1 and returns true immediately.
+bool roxal::isIsolatedGraph(Obj* root)
+{
+    if (!root) return true;
+
+    // Phase 1: Collect all reachable objects via DFS
+    std::unordered_set<Obj*> reachable;
+    reachable.insert(root);
+
+    struct CollectVisitor : ValueVisitor {
+        std::unordered_set<Obj*>& reachable;
+        std::vector<Obj*> worklist;
+
+        explicit CollectVisitor(std::unordered_set<Obj*>& r) : reachable(r) {}
+
+        void visit(const Value& value) override {
+            if (!value.isObj() || value.isWeak()) return;
+            Obj* obj = value.asObj();
+            if (!obj || !obj->control) return;
+            if (reachable.count(obj)) return;
+            reachable.insert(obj);
+            worklist.push_back(obj);
+        }
+
+        void drain() {
+            while (!worklist.empty()) {
+                Obj* current = worklist.back();
+                worklist.pop_back();
+                current->trace(*this);
+            }
+        }
+    };
+
+    CollectVisitor collector(reachable);
+    root->trace(collector);
+    collector.drain();
+
+    // If only the root is reachable (e.g. list of primitives), trivially isolated.
+    if (reachable.size() <= 1) return true;
+
+    // Phase 2: Count internal references for each reachable object.
+    std::unordered_map<Obj*, int32_t> internalRefs;
+
+    struct CountVisitor : ValueVisitor {
+        const std::unordered_set<Obj*>& reachable;
+        std::unordered_map<Obj*, int32_t>& internalRefs;
+
+        CountVisitor(const std::unordered_set<Obj*>& r,
+                     std::unordered_map<Obj*, int32_t>& ir)
+            : reachable(r), internalRefs(ir) {}
+
+        void visit(const Value& value) override {
+            if (!value.isObj() || value.isWeak()) return;
+            Obj* obj = value.asObj();
+            if (!obj || !obj->control) return;
+            if (reachable.count(obj))
+                internalRefs[obj]++;
+        }
+    };
+
+    CountVisitor counter(reachable, internalRefs);
+    for (Obj* obj : reachable)
+        obj->trace(counter);
+
+    // Check isolation: every mutable interior object must have no external aliases.
+    for (Obj* obj : reachable) {
+        if (obj == root) continue;
+        if (!isMutableRefContainerType(obj->type)) continue;
+
+        int32_t strong = obj->control->strong.load(std::memory_order_acquire);
+        int32_t internal = 0;
+        auto it = internalRefs.find(obj);
+        if (it != internalRefs.end()) internal = it->second;
+
+        if (strong > internal)
+            return false; // has external alias
+    }
+
+    return true;
+}
+
+
+Value roxal::createFrozenSnapshot(const Value& v)
+{
+    // Const-to-const passthrough: already frozen, reuse as-is
+    if (v.isConst()) return v;
+
+    // Non-reference types are inherently immutable
+    if (!v.isObj()) return v;
+
+    Obj* obj = v.asObj();
+    if (!obj) return v;
+
+    // Sole-owner fast path: if no other live references exist AND the root has
+    // no object-type children, freeze in-place (zero-copy).
+    // When object-type children exist, we must fall through to the shallow-clone
+    // + MVCC path because interior objects may have external aliases that could
+    // mutate them, breaking the immutability guarantee of the frozen snapshot.
+    if (obj->control && obj->control->strong.load(std::memory_order_acquire) <= 1) {
+        struct HasObjChildVisitor : ValueVisitor {
+            bool found = false;
+            void visit(const Value& v) override {
+                if (!found && v.isObj() && !v.isWeak())
+                    found = true;
+            }
+        };
+        HasObjChildVisitor checker;
+        obj->trace(checker);
+        if (!checker.found)
+            return v.constRef();
+        // Fall through to shallow-clone + MVCC
+    }
+
+    // Shallow-clone the root object
+    auto snap = obj->shallowClone();
+    if (!snap) {
+        // Type doesn't support shallow cloning (e.g. immutable type like ObjString).
+        // Just return with const bit set.
+        return v.constRef();
+    }
+
+    // Allocate SnapshotToken
+    uint64_t epoch = globalWriteEpoch.load(std::memory_order_acquire);
+    auto* token = new SnapshotToken(epoch);
+
+    // Configure the frozen clone before transferring ownership
+    Obj* frozenObj = snap.get();
+    frozenObj->control->snapshotToken = token;
+    // The frozen clone's writeEpoch is irrelevant (it's never mutated),
+    // but set it to 0 so it's clearly distinguishable from live objects.
+    frozenObj->control->writeEpoch.store(0, std::memory_order_relaxed);
+
+    // Update global snapshot tracking
+    // latestSnapshotCreationEpoch must be updated BEFORE activeSnapshotCount
+    // (see proposal: memory ordering for version save deduplication)
+    latestSnapshotCreationEpoch.store(epoch, std::memory_order_release);
+    snapshotEpochTracker.add(epoch);
+    activeSnapshotCount.fetch_add(1, std::memory_order_release);
+
+    // Transfer ownership to Value (objVal does incRef via Value constructor)
+    Value result = Value::objVal(std::move(snap));
+    return result.constRef();
+}
+
+
+/// Find the correct version of an object for a given snapshot epoch.
+/// Returns the snapshot Obj* from the version chain, or nullptr if the
+/// object's current state is valid for this epoch.
+static Obj* findVersionForEpoch(Obj* obj, uint64_t snapshotEpoch)
+{
+    uint64_t objEpoch = obj->control->writeEpoch.load(std::memory_order_acquire);
+    if (objEpoch < snapshotEpoch) {
+        // Object was not mutated since the snapshot — current state is valid
+        return nullptr;
+    }
+
+    // Object was mutated at or after the snapshot epoch.
+    // Walk version chain to find newest version with epoch < snapshotEpoch.
+    ObjVersion* ver = obj->control->versionChain.load(std::memory_order_acquire);
+    ObjVersion* best = nullptr;
+    while (ver) {
+        if (ver->epoch < snapshotEpoch) {
+            if (!best || ver->epoch > best->epoch)
+                best = ver;
+            break;  // chain is newest-first, so first match with epoch < snapshotEpoch is best
+        }
+        ver = ver->prev;
+    }
+
+    // Invariant: a version must exist — the oldest version's epoch is the object's
+    // writeEpoch at its first-ever mutation (0 for newly created objects), which is
+    // ≤ any valid snapshot epoch ≥ 1.
+    debug_assert_msg(best != nullptr, "MVCC: no version found for epoch");
+    return best ? best->snapshot : nullptr;
+}
+
+
+Value roxal::resolveConstChild(const Value& child, SnapshotToken* token, Value* cacheSlot)
+{
+    // Primitives and non-objects: return directly (no cloning needed)
+    if (!child.isObj()) return child;
+
+    // Already resolved (cached from prior access): return as-is
+    if (child.isConst()) return child;
+
+    Obj* childObj = child.asObj();
+    if (!childObj) return child;
+
+    uint64_t epoch = token->epoch;
+
+    // Check the per-snapshot cloneMap for alias/cycle preservation.
+    // If we've already materialized a frozen clone for this object in this
+    // snapshot, reuse it to preserve 'is'-identity.
+    // The cloneMap stores weak refs — the parent container/object holds the
+    // strong ref (via cacheSlot or container element caching).
+    auto it = token->cloneMap.find(childObj);
+    if (it != token->cloneMap.end()) {
+        Value weak = it->second;
+        if (weak.isAlive()) {
+            // Promote weak ref to strong for return, preserving const bit
+            Value cached = weak.strongRef().constRef();
+            if (cacheSlot) *cacheSlot = cached;
+            return cached;
+        }
+        // Weak ref expired — remove stale entry and re-create below
+        token->cloneMap.erase(it);
+    }
+
+    // Determine the source state to clone from.
+    // Try version chain first (immutable snapshots — no lock needed).
+    Obj* versionObj = findVersionForEpoch(childObj, epoch);
+    unique_ptr<Obj, UnreleasedObj> snap;
+    if (versionObj) {
+        // Version chain has the correct pre-mutation state — clone from immutable version
+        snap = versionObj->shallowClone();
+    } else {
+        // Current state appears valid for this epoch. Lock and re-verify,
+        // because the owning thread may be mid-mutation (between ensureUnique
+        // and writeEpoch bump) — see CowGuard in mutation methods.
+        childObj->control->lockCow();
+        uint64_t currentEpoch = childObj->control->writeEpoch.load(std::memory_order_acquire);
+        if (currentEpoch < epoch) {
+            // Still valid under lock — clone current state
+            snap = childObj->shallowClone();
+            childObj->control->unlockCow();
+        } else {
+            // Race: mutation happened between our initial check and lock acquisition.
+            // The version chain now has the pre-mutation state we need.
+            childObj->control->unlockCow();
+            versionObj = findVersionForEpoch(childObj, epoch);
+            debug_assert_msg(versionObj != nullptr, "MVCC: no version found after race in resolveConstChild");
+            snap = versionObj->shallowClone();
+        }
+    }
+    if (!snap) {
+        // Immutable type (e.g. ObjString) — just return with const bit
+        Value result = child.constRef();
+        if (cacheSlot) *cacheSlot = result;
+        return result;
+    }
+
+    // Configure frozen child before transferring ownership
+    Obj* frozenChild = snap.get();
+
+    // Attach to the same snapshot token (increment refcount)
+    token->incRef();
+    frozenChild->control->snapshotToken = token;
+    frozenChild->control->writeEpoch.store(0, std::memory_order_relaxed);
+
+    // Transfer ownership to Value and set const bit
+    Value result = Value::objVal(std::move(snap)).constRef();
+
+    // Register weak ref in cloneMap for alias/identity preservation.
+    // The parent container holds the strong ref (via cacheSlot or element caching).
+    token->cloneMap[childObj] = result.weakRef();
+
+    // Cache in parent's slot
+    if (cacheSlot) *cacheSlot = result;
+
+    return result;
+}
 
 
 
@@ -435,8 +860,10 @@ static uint32_t fnv1a32(const UnicodeString& s)
 }
 
 
-unique_ptr<ObjString, UnreleasedObj> roxal::newObjString(const UnicodeString& s)
+unique_ptr<ObjString, UnreleasedObj> roxal::newObjString(const UnicodeString& s, bool* wasInterned)
 {
+    if (wasInterned) *wasInterned = false;
+
     uint32_t attempt = 0;
     while (true) {
         uint64_t key = computeInternKey(s, attempt);
@@ -444,22 +871,47 @@ unique_ptr<ObjString, UnreleasedObj> roxal::newObjString(const UnicodeString& s)
         if (existing.has_value()) {
             ObjString* objStr = existing.value();
             if (objStr && objStr->s == s) {
-                return unique_ptr<ObjString, UnreleasedObj>(objStr);
+                // Atomically try to take a strong reference to prevent
+                // the string from being freed by another thread before
+                // the caller's Value::incRef() runs.
+                if (objStr->tryIncRef()) {
+                    if (wasInterned) *wasInterned = true;
+                    return unique_ptr<ObjString, UnreleasedObj>(objStr);
+                }
+                // String is dying (strong == 0); remove stale entry and create new
+                strings.erase(key);
+                break;
             }
             ++attempt;
             continue;
         }
-
-        // create new
-        #ifdef DEBUG_BUILD
-        auto objStr = newObj<ObjString>(std::string(__func__)+" '" + toUTF8StdString(s) + "'",__FILE__,__LINE__,s);
-        #else
-        auto objStr = newObj<ObjString>(s);
-        #endif
-        objStr->internKey = key;
-        strings.store(key, objStr.get());
-        return objStr;
+        break;
     }
+
+    // create new
+    #ifdef DEBUG_BUILD
+    auto objStr = newObj<ObjString>(std::string(__func__)+" '" + toUTF8StdString(s) + "'",__FILE__,__LINE__,s);
+    #else
+    auto objStr = newObj<ObjString>(s);
+    #endif
+    uint64_t key = computeInternKey(s, 0);
+    // Check for collision with a different string at this key
+    uint32_t attempt2 = 0;
+    while (true) {
+        key = computeInternKey(s, attempt2);
+        auto existing = strings.lookup(key);
+        if (existing.has_value()) {
+            ObjString* other = existing.value();
+            if (other && other->s != s) {
+                ++attempt2;
+                continue;
+            }
+        }
+        break;
+    }
+    objStr->internKey = key;
+    strings.store(key, objStr.get());
+    return objStr;
 }
 
 void roxal::updateInternedString(ObjString* obj, const UnicodeString& newVal)
@@ -558,16 +1010,16 @@ void ObjRange::dropReferences()
 }
 
 ObjVector::ObjVector(const Eigen::VectorXd& values)
-    : vec(values)
+    : vec_(make_ptr<Eigen::VectorXd>(values))
 {
     type = ObjType::Vector;
 }
 
 ObjVector::ObjVector(int32_t size)
-    : vec(size)
+    : vec_(make_ptr<Eigen::VectorXd>(size))
 {
     type = ObjType::Vector;
-    vec.setZero();
+    vec_->setZero();
 }
 
 Value ObjVector::index(const Value& i) const
@@ -576,7 +1028,7 @@ Value ObjVector::index(const Value& i) const
         auto index = i.asInt();
         if (index < 0 || index >= length())
             throw std::invalid_argument("Vector index out-of-range.");
-        return Value::realVal(vec[index]);
+        return Value::realVal(vec()[index]);
     }
     else if (isRange(i)) {
         auto r = asRange(i);
@@ -587,7 +1039,7 @@ Value ObjVector::index(const Value& i) const
         for(int32_t j=0; j<rangeLen; ++j) {
             auto targetIndex = r->targetIndex(j, vecLen);
             if ((targetIndex >= 0) && (targetIndex < vecLen))
-                elts.push_back(vec[targetIndex]);
+                elts.push_back(vec()[targetIndex]);
         }
         Eigen::VectorXd vals(elts.size());
         for(size_t k=0; k<elts.size(); ++k)
@@ -599,14 +1051,26 @@ Value ObjVector::index(const Value& i) const
     return Value::nilVal();
 }
 
+Eigen::VectorXd& ObjVector::vecMut()
+{
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+    ensureUnique();
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+    return *vec_;
+}
+
 void ObjVector::setIndex(const Value& i, const Value& v)
 {
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+    ensureUnique();  // COW: copy before mutation
     if (i.isNumber()) {
         auto index = i.asInt();
         if (index < 0 || index >= length())
             throw std::invalid_argument("Vector index out-of-range.");
         Value rv = toType(ValueType::Real, v, /*strict=*/false);
-        vec[index] = rv.asReal();
+        (*vec_)[index] = rv.asReal();
     }
     else if (isRange(i)) {
         if (!isVector(v))
@@ -621,13 +1085,14 @@ void ObjVector::setIndex(const Value& i, const Value& v)
             auto targetIndex = r->targetIndex(j, vecLen);
             if ((targetIndex >= 0) && (targetIndex < vecLen)) {
                 if (j < rhsVec->length())
-                    vec[targetIndex] = rhsVec->vec[j];
+                    (*vec_)[targetIndex] = rhsVec->vec()[j];
             }
         }
     }
     else {
         throw std::invalid_argument("Vector indexing subscript must be a number or a range (not "+to_string(i.type())+").");
     }
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 
@@ -807,9 +1272,28 @@ std::string roxal::objRangeToString(const ObjRange* r)
     return oss.str();
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjRange::clone() const
+unique_ptr<Obj, UnreleasedObj> ObjRange::clone(roxal::ptr<CloneContext> ctx) const
 {
-    return newRangeObj(start.clone(), stop.clone(), step.clone(), closed);
+    if (ctx) {
+        auto it = ctx->originalToClone.find(this);
+        if (it != ctx->originalToClone.end()) {
+            it->second->incRef();
+            return unique_ptr<Obj, UnreleasedObj>(it->second);
+        }
+    }
+
+    auto newr = newRangeObj();
+
+    if (ctx) {
+        ctx->originalToClone[this] = newr.get();
+    }
+
+    newr->start = start.clone(ctx);
+    newr->stop = stop.clone(ctx);
+    newr->step = step.clone(ctx);
+    newr->closed = closed;
+
+    return newr;
 }
 
 
@@ -854,11 +1338,14 @@ std::string roxal::objStringToString(const ObjString* os)
 
 
 ObjList::ObjList(const ObjRange* r)
+    : elts_(make_ptr<std::vector<Value>>())
 {
     type = ObjType::List;
     int32_t rangeLen = r->length();
+    if (rangeLen > 0)
+        elts_->reserve(rangeLen);
     for(int32_t i=0; i<rangeLen; i++)
-        elts.push_back(Value::intVal(r->targetIndex(i,-1)));
+        elts_->push_back(Value::intVal(r->targetIndex(i,-1)));
 }
 
 
@@ -871,7 +1358,7 @@ Value ObjList::index(const Value& i) const
             index = len - (-index);
         if (index < 0 || index >= len)
             throw std::invalid_argument("List index out-of-range.");
-        return elts.at(index);
+        return (*elts_)[index];
     }
     else if (isRange(i)) {
         auto sublist = newListObj();
@@ -882,7 +1369,7 @@ Value ObjList::index(const Value& i) const
         for(auto i=0; i<rangeLen; i++) {
             auto targetIndex = r->targetIndex(i,listLen);
             if ((targetIndex >= 0) && (targetIndex < listLen))
-                sublist->elts.push_back(elts.at(targetIndex));
+                sublist->elts_->push_back((*elts_)[targetIndex]);
         }
 
         return Value::objVal(std::move(sublist));
@@ -893,8 +1380,32 @@ Value ObjList::index(const Value& i) const
 }
 
 
+void ObjList::setElement(size_t i, const Value& v)
+{
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    (*elts_)[i] = v;
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+}
+
+void ObjList::setElements(const std::vector<Value>& v)
+{
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    *elts_ = v;
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+}
+
 void ObjList::setIndex(const Value& i, const Value& v)
 {
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
     if (i.isNumber()) {
         auto index = i.asInt();
         auto len = length();
@@ -902,7 +1413,7 @@ void ObjList::setIndex(const Value& i, const Value& v)
             index = len - (-index);
         if (index < 0 || index >= len)
             throw std::invalid_argument("List index out-of-range.");
-        elts.store(index, v);
+        (*elts_)[index] = v;
     }
     else if (isRange(i)) {
 
@@ -923,61 +1434,127 @@ void ObjList::setIndex(const Value& i, const Value& v)
             auto targetIndex = r->targetIndex(i,listLen);
             if ((targetIndex >= 0) && (targetIndex < listLen)) {
                 if (i < rhsLen)
-                    elts.store(targetIndex,rhsList->elts.at(i));
+                    (*elts_)[targetIndex] = (*rhsList->elts_)[i];
             }
         }
     }
     else
         throw std::invalid_argument("List indexing subscript must be a number or a range (not "+to_string(i.type())+").");
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 void ObjList::concatenate(const ObjList* other)
 {
-    // Efficiently append all elements from other list in one lock
-    // (atomic_vector::append handles the reserve internally)
-    elts.append(other->elts);
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    const auto& otherElts = *other->elts_;
+    elts_->reserve(elts_->size() + otherElts.size());
+    elts_->insert(elts_->end(), otherElts.begin(), otherElts.end());
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 void ObjList::append(const Value& value)
 {
-    elts.push_back(value);
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    elts_->push_back(value);
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+}
+
+void ObjList::insertAt(int64_t index, const Value& value)
+{
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    int64_t n = static_cast<int64_t>(elts_->size());
+    // Python-style: negative counts from the end; out-of-range clamps to [0, n].
+    if (index < 0) { index += n; if (index < 0) index = 0; }
+    if (index > n) index = n;
+    elts_->insert(elts_->begin() + index, value);
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+}
+
+Value ObjList::removeAt(int64_t index)
+{
+    ensureMutable();
+    int64_t n = static_cast<int64_t>(elts_->size());
+    int64_t i = index < 0 ? index + n : index;  // negative counts from the end
+    if (i < 0 || i >= n)
+        throw std::out_of_range("list index out of range");
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    Value removed = (*elts_)[i];
+    elts_->erase(elts_->begin() + i);
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+    return removed;
+}
+
+bool ObjList::removeValue(const Value& value, bool strict)
+{
+    ensureMutable();
+    int64_t n = static_cast<int64_t>(elts_->size());
+    int64_t found = -1;
+    for (int64_t i = 0; i < n; i++)
+        if ((*elts_)[i].equals(value, strict)) { found = i; break; }
+    if (found < 0)
+        return false;
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    elts_->erase(elts_->begin() + found);
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+    return true;
 }
 
 void ObjList::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint32_t len = length();
     out.write(reinterpret_cast<char*>(&len), 4);
-    auto list = elts.get();
-    for(const auto& v : list)
+    for(const auto& v : *elts_)
         writeValue(out, v, ctx);
 }
 
 void ObjList::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
     uint32_t len;
     in.read(reinterpret_cast<char*>(&len), 4);
-    elts.clear();
+    elts_->clear();
     for(uint32_t i=0;i<len;i++)
-        elts.push_back(readValue(in, ctx));
+        elts_->push_back(readValue(in, ctx));
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 void ObjList::trace(ValueVisitor& visitor) const
 {
-    elts.unsafeApply([&visitor](const auto& values) {
-        for (const auto& value : values) {
-            visitor.visit(value);
-        }
-    });
+    for (const auto& value : *elts_) {
+        visitor.visit(value);
+    }
 }
 
 void ObjList::dropReferences()
 {
-    elts.clear();
+    cleanupMVCC();
+    elts_ = make_ptr<std::vector<Value>>();
 }
 
 void ObjList::set(const ObjList* other)
 {
-    elts = other->elts; // atomic_vector assignment performs copy
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    *elts_ = *other->elts_;
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 
@@ -1007,17 +1584,44 @@ unique_ptr<ObjList, UnreleasedObj> roxal::newListObj(const std::vector<Value>& e
     #else
     auto l = newObj<ObjList>();
     #endif
-    for(const auto& elt : elts)
-        l->elts.push_back(elt);
+    l->setElements(elts);
     return l;
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjList::clone() const
+unique_ptr<Obj, UnreleasedObj> ObjList::clone(roxal::ptr<CloneContext> ctx) const
+{
+    // Check if already cloned (preserves shared references and handles cycles)
+    if (ctx) {
+        auto it = ctx->originalToClone.find(this);
+        if (it != ctx->originalToClone.end()) {
+            it->second->incRef();
+            return unique_ptr<Obj, UnreleasedObj>(it->second);
+        }
+    }
+
+    // Create new clone
+    auto newl = newListObj();
+
+    // Register BEFORE recursing (critical for cycle handling)
+    if (ctx) {
+        ctx->originalToClone[this] = newl.get();
+    }
+
+    // Clone children with context
+    auto lsize = elts_->size();
+    newl->elts_->reserve(lsize);
+    for (size_t i = 0; i < lsize; i++)
+        newl->elts_->push_back((*elts_)[i].clone(ctx));
+
+    return newl;
+}
+
+unique_ptr<Obj, UnreleasedObj> ObjList::shallowClone() const
 {
     auto newl = newListObj();
-    auto lsize = elts.size();
-    for(auto i=0; i<lsize; i++)
-        newl->elts.push_back(elts.at(i).clone());
+    // COW: share the storage pointer (O(1) refcount bump).
+    // Mutations on either side will trigger ensureUnique() to copy-on-write.
+    newl->elts_ = elts_;
     return newl;
 }
 
@@ -1026,8 +1630,8 @@ bool ObjList::equals(const ObjList* other) const
     if (other == nullptr)
         return false;
 
-    auto lst1 = elts.get();
-    auto lst2 = other->elts.get();
+    const auto& lst1 = *elts_;
+    const auto& lst2 = *other->elts_;
 
     if (lst1.size() != lst2.size())
         return false;
@@ -1077,7 +1681,7 @@ std::string objListToStringInternal(const ObjList* ol,
 
     std::ostringstream os;
     os << "[";
-    auto list { ol->elts.get() };
+    auto list { ol->getElements() };
     for (auto it = list.begin(); it != list.end(); ++it) {
         os << valueToPrintableString(*it, context);
         if (it != list.end() - 1)
@@ -1148,21 +1752,76 @@ unique_ptr<ObjDict, UnreleasedObj> roxal::newDictObj(const std::vector<std::pair
     return d;
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjDict::clone() const
+unique_ptr<Obj, UnreleasedObj> ObjDict::clone(roxal::ptr<CloneContext> ctx) const
+{
+    // Check if already cloned (preserves shared references and handles cycles)
+    if (ctx) {
+        auto it = ctx->originalToClone.find(this);
+        if (it != ctx->originalToClone.end()) {
+            it->second->incRef();
+            return unique_ptr<Obj, UnreleasedObj>(it->second);
+        }
+    }
+
+    // Create new clone
+    auto newd = newDictObj();
+
+    // Register BEFORE recursing (critical for cycle handling)
+    if (ctx) {
+        ctx->originalToClone[this] = newd.get();
+    }
+
+    // Clone children with context
+    const auto dkeys = keys();
+    for (const auto& dkey : dkeys)
+        newd->store(dkey.clone(ctx), at(dkey).clone(ctx));
+
+    return newd;
+}
+
+unique_ptr<Obj, UnreleasedObj> ObjDict::shallowClone() const
 {
     auto newd = newDictObj();
-    const auto dkeys = keys();
-    for(const auto& dkey : dkeys)
-        newd->store(dkey.clone(), at(dkey).clone());
+    // COW: share the storage pointer (O(1) refcount bump).
+    // Mutations on either side will trigger ensureUnique() to copy-on-write.
+    newd->data_ = data_;
     return newd;
+}
+
+void ObjDict::store(const Value& key, const Value& val)
+{
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    if (data_->entries.find(key) == data_->entries.end())
+        data_->m_keys.push_back(key);
+    data_->entries[key] = val;
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+}
+
+void ObjDict::erase(const Value& key)
+{
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    auto it = data_->entries.find(key);
+    if (it != data_->entries.end()) {
+        data_->entries.erase(it);
+        data_->m_keys.erase(std::remove(data_->m_keys.begin(), data_->m_keys.end(), key), data_->m_keys.end());
+    }
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 void ObjDict::set(const ObjDict* other)
 {
-    std::lock_guard<std::mutex> lockThis(m);
-    std::lock_guard<std::mutex> lockOther(other->m);
-    m_keys = other->m_keys;
-    entries = other->entries;
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    *data_ = *other->data_;
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 bool ObjDict::equals(const ObjDict* other) const
@@ -1172,18 +1831,17 @@ bool ObjDict::equals(const ObjDict* other) const
     if (other == this)
         return true;
 
-    // lock both dictionaries while comparing
-    std::lock_guard<std::mutex> lockThis(m);
-    std::lock_guard<std::mutex> lockOther(other->m);
+    const auto& entries = data_->entries;
+    const auto& otherEntries = other->data_->entries;
 
-    if (entries.size() != other->entries.size())
+    if (entries.size() != otherEntries.size())
         return false;
 
     // entries is a std::map keyed by Value, which provides ordering
     // irrespective of insertion order.  Compare by keys and values
     for(const auto& [key, val] : entries) {
-        auto it = other->entries.find(key);
-        if (it == other->entries.end())
+        auto it = otherEntries.find(key);
+        if (it == otherEntries.end())
             return false;
         if (!val.equals(it->second, false))
             return false;
@@ -1212,21 +1870,26 @@ void ObjDict::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) con
 
 void ObjDict::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
     uint32_t len;
     in.read(reinterpret_cast<char*>(&len), 4);
-    m_keys.clear();
-    entries.clear();
+    data_->m_keys.clear();
+    data_->entries.clear();
     for(uint32_t i=0;i<len;i++) {
         Value k = readValue(in, ctx);
         Value v = readValue(in, ctx);
-        m_keys.push_back(k);
-        entries[k] = v;
+        data_->m_keys.push_back(k);
+        data_->entries[k] = v;
     }
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 void ObjDict::trace(ValueVisitor& visitor) const
 {
-    for (const auto& entry : entries) {
+    for (const auto& entry : data_->entries) {
         visitor.visit(entry.first);
         visitor.visit(entry.second);
     }
@@ -1234,9 +1897,8 @@ void ObjDict::trace(ValueVisitor& visitor) const
 
 void ObjDict::dropReferences()
 {
-    std::lock_guard<std::mutex> lock(m);
-    m_keys.clear();
-    entries.clear();
+    cleanupMVCC();
+    data_ = make_ptr<DictData>();
 }
 
 
@@ -1269,16 +1931,27 @@ unique_ptr<ObjVector, UnreleasedObj> roxal::newVectorObj(const Eigen::VectorXd& 
     return v;
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjVector::clone() const
+unique_ptr<Obj, UnreleasedObj> ObjVector::clone(roxal::ptr<CloneContext> ctx) const
 {
-    auto newv = newVectorObj(vec.size());
-    newv->vec = vec;
+    (void)ctx; // vector has value semantics, no object references to track
+    auto newv = newVectorObj(0);  // create minimal vector
+    newv->vec_ = vec_;  // COW: share the data ptr
+    return newv;
+}
+
+unique_ptr<Obj, UnreleasedObj> ObjVector::shallowClone() const
+{
+    auto newv = newVectorObj(0);
+    newv->vec_ = vec_;  // COW: share the data ptr
     return newv;
 }
 
 void ObjVector::set(const ObjVector* other)
 {
-    vec = other->vec;
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+    vec_ = other->vec_;  // COW: share the data ptr
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 
@@ -1286,9 +1959,9 @@ std::string roxal::objVectorToString(const ObjVector* ov)
 {
     std::ostringstream os;
     os << "[";
-    for(int i=0; i<ov->vec.size(); ++i) {
-        os << ov->vec[i];
-        if (i != ov->vec.size()-1)
+    for(int i=0; i<ov->vec().size(); ++i) {
+        os << ov->vec()[i];
+        if (i != ov->vec().size()-1)
             os << ' ';
     }
     os << "]";
@@ -1301,46 +1974,49 @@ bool ObjVector::equals(const ObjVector* other, double eps) const
         return false;
 
     // Check if dimensions match
-    if (vec.size() != other->vec.size())
+    if (vec().size() != other->vec().size())
         return false;
 
     // Use Eigen's isApprox for element-wise comparison with tolerance
-    return vec.isApprox(other->vec, eps);
+    return vec().isApprox(other->vec(), eps);
 }
 
 void ObjVector::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
-    uint32_t len = vec.size();
+    uint32_t len = vec().size();
     out.write(reinterpret_cast<char*>(&len), 4);
     for(uint32_t i=0;i<len;i++) {
-        double d = vec[i];
+        double d = vec()[i];
         out.write(reinterpret_cast<char*>(&d), 8);
     }
 }
 
 void ObjVector::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
     uint32_t len;
     in.read(reinterpret_cast<char*>(&len), 4);
-    vec.resize(len);
+    vec_ = make_ptr<Eigen::VectorXd>(len);  // create new storage for deserialization
     for(uint32_t i=0;i<len;i++) {
         double d; in.read(reinterpret_cast<char*>(&d), 8);
-        vec[i] = d;
+        (*vec_)[i] = d;
     }
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 
 ObjMatrix::ObjMatrix(const Eigen::MatrixXd& values)
-    : mat(values)
+    : mat_(make_ptr<Eigen::MatrixXd>(values))
 {
     type = ObjType::Matrix;
 }
 
 ObjMatrix::ObjMatrix(int32_t rows, int32_t cols)
-    : mat(rows, cols)
+    : mat_(make_ptr<Eigen::MatrixXd>(rows, cols))
 {
     type = ObjType::Matrix;
-    mat.setZero();
+    mat_->setZero();
 }
 
 unique_ptr<ObjMatrix, UnreleasedObj> roxal::newMatrixObj()
@@ -1390,19 +2066,41 @@ static ObjMatrix* valueToMatrix(const Value& v)
     return asMatrix(conv);
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjMatrix::clone() const
+unique_ptr<Obj, UnreleasedObj> ObjMatrix::clone(roxal::ptr<CloneContext> ctx) const
 {
-    auto newm = newMatrixObj(mat);
+    (void)ctx; // matrix has value semantics, no object references to track
+    auto newm = newMatrixObj(0, 0);  // create minimal matrix
+    newm->mat_ = mat_;  // COW: share the data ptr
     return newm;
+}
+
+unique_ptr<Obj, UnreleasedObj> ObjMatrix::shallowClone() const
+{
+    auto newm = newMatrixObj(0, 0);
+    newm->mat_ = mat_;  // COW: share the data ptr
+    return newm;
+}
+
+Eigen::MatrixXd& ObjMatrix::matMut()
+{
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+    ensureUnique();
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+    return *mat_;
 }
 
 void ObjMatrix::set(const ObjMatrix* other)
 {
-    mat = other->mat;
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+    mat_ = other->mat_;  // COW: share the data ptr
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjPrimitive::clone() const
+unique_ptr<Obj, UnreleasedObj> ObjPrimitive::clone(roxal::ptr<CloneContext> ctx) const
 {
+    (void)ctx; // primitives are value types, no object references to track
     if (type == ObjType::Bool)
         return newBoolObj(as.boolean);
     else if (type == ObjType::Int)
@@ -1478,7 +2176,8 @@ void ObjPrimitive::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 
 // Default serialization stubs for unsupported object types
 // Signals are shared state - cloning returns the same signal (like interned strings)
-unique_ptr<Obj, UnreleasedObj> ObjSignal::clone() const {
+unique_ptr<Obj, UnreleasedObj> ObjSignal::clone(roxal::ptr<CloneContext> ctx) const {
+    (void)ctx; // signals are shared, not cloned
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjSignal*>(this));
 }
 void ObjSignal::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
@@ -1516,8 +2215,8 @@ ObjEventType::ObjEventType(const icu::UnicodeString& typeName)
     type = ObjType::EventType;
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjEventType::clone() const {
-    // event type definitions are immutable once created; share reference
+unique_ptr<Obj, UnreleasedObj> ObjEventType::clone(roxal::ptr<CloneContext> ctx) const {
+    (void)ctx; // event type definitions are immutable once created; share reference
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjEventType*>(this));
 }
 
@@ -1664,15 +2363,16 @@ ObjEventInstance::ObjEventInstance(const Value& eventType)
                 if (isSignal(propInitialValue)) {
                     throw std::runtime_error("events cannot have signal members");
                 }
-                propInitialValue = propInitialValue.clone();
+                ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
+                propInitialValue = propInitialValue.clone(cloneCtx);
             }
             payload[prop.name.hashCode()] = propInitialValue;
         }
     }
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjEventInstance::clone() const {
-    // event instances are immutable snapshots; share reference
+unique_ptr<Obj, UnreleasedObj> ObjEventInstance::clone(roxal::ptr<CloneContext> ctx) const {
+    (void)ctx; // event instances are immutable snapshots; share reference
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjEventInstance*>(this));
 }
 
@@ -1723,8 +2423,8 @@ void ObjEventInstance::dropReferences()
     payload.clear();
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjLibrary::clone() const {
-    // dynamic libraries are represented by handles; share the handle
+unique_ptr<Obj, UnreleasedObj> ObjLibrary::clone(roxal::ptr<CloneContext> ctx) const {
+    (void)ctx; // dynamic libraries are represented by handles; share the handle
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjLibrary*>(this));
 }
 void ObjLibrary::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
@@ -1743,19 +2443,19 @@ void ObjLibrary::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     handle = nullptr;
     type = ObjType::Library;
 }
-unique_ptr<Obj, UnreleasedObj> ObjForeignPtr::clone() const {
-    // foreign pointers are opaque handles; cloning would be unsafe
+unique_ptr<Obj, UnreleasedObj> ObjForeignPtr::clone(roxal::ptr<CloneContext> ctx) const {
+    (void)ctx; // foreign pointers are opaque handles; cloning would be unsafe
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjForeignPtr*>(this));
 }
 void ObjForeignPtr::write(std::ostream&, roxal::ptr<SerializationContext>) const { throw std::runtime_error("Cannot serialize foreign pointers"); }
 void ObjForeignPtr::read(std::istream&, roxal::ptr<SerializationContext>) { throw std::runtime_error("Cannot deserialize foreign pointers"); }
-unique_ptr<Obj, UnreleasedObj> ObjFile::clone() const {
-    // files cannot be duplicated; share the underlying handle
+unique_ptr<Obj, UnreleasedObj> ObjFile::clone(roxal::ptr<CloneContext> ctx) const {
+    (void)ctx; // files cannot be duplicated; share the underlying handle
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjFile*>(this));
 }
 void ObjFile::write(std::ostream&, roxal::ptr<SerializationContext>) const { throw std::runtime_error("Cannot serialize file handles"); }
 void ObjFile::read(std::istream&, roxal::ptr<SerializationContext>) { throw std::runtime_error("Cannot deserialize file handles"); }
-unique_ptr<Obj, UnreleasedObj> ObjException::clone() const { throw std::runtime_error("cannot clone exceptions"); }
+unique_ptr<Obj, UnreleasedObj> ObjException::clone(roxal::ptr<CloneContext> ctx) const { (void)ctx; throw std::runtime_error("cannot clone exceptions"); }
 void ObjException::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
     uint8_t tag = static_cast<uint8_t>(ObjType::Exception);
@@ -1793,8 +2493,8 @@ void ObjException::dropReferences()
     stackTrace = Value::nilVal();
     detail = Value::nilVal();
 }
-unique_ptr<Obj, UnreleasedObj> ObjFunction::clone() const {
-    // function objects are immutable; share the reference
+unique_ptr<Obj, UnreleasedObj> ObjFunction::clone(roxal::ptr<CloneContext> ctx) const {
+    (void)ctx; // function objects are immutable; share the reference
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjFunction*>(this));
 }
 void ObjFunction::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
@@ -1836,6 +2536,7 @@ void ObjFunction::write(std::ostream& out, roxal::ptr<SerializationContext> ctx)
     writeValue(out, ownerType, ctx);
 
     uint8_t acc = static_cast<uint8_t>(access); out.write(reinterpret_cast<char*>(&acc),1);
+    uint8_t mods = static_cast<uint8_t>(methodModifiers); out.write(reinterpret_cast<char*>(&mods),1);
 
     uint32_t defCount = paramDefaultFunc.size();
     out.write(reinterpret_cast<char*>(&defCount),4);
@@ -1851,7 +2552,7 @@ void ObjFunction::write(std::ostream& out, roxal::ptr<SerializationContext> ctx)
 
     // Serialize whether this function has a native implementation
     // The pointer itself can't be serialized, but we need to know to re-link it
-    uint8_t hasNativeImpl = (nativeImpl != nullptr) ? 1 : 0;
+    uint8_t hasNativeImpl = (builtinInfo != nullptr) ? 1 : 0;
     out.write(reinterpret_cast<char*>(&hasNativeImpl), 1);
 }
 
@@ -1902,6 +2603,7 @@ void ObjFunction::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         ownerType = ownerType.weakRef();
 
     uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1); access = static_cast<ast::Access>(acc);
+    uint8_t mods; in.read(reinterpret_cast<char*>(&mods),1); methodModifiers = mods;
 
     uint32_t defCount; in.read(reinterpret_cast<char*>(&defCount),4);
     paramDefaultFunc.clear();
@@ -1930,14 +2632,15 @@ void ObjFunction::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
                 ObjClosure* liveClosure = asClosure(liveVarOpt.value());
                 if (isFunction(liveClosure->function)) {
                     ObjFunction* liveFunc = asFunction(liveClosure->function);
-                    if (liveFunc->nativeImpl) {
-                        nativeImpl = liveFunc->nativeImpl;
-                        nativeDefaults = liveFunc->nativeDefaults;
+                    if (liveFunc->builtinInfo) {
+                        const auto& srcInfo = *liveFunc->builtinInfo;
+                        builtinInfo = make_ptr<BuiltinFuncInfo>(
+                            srcInfo.function, srcInfo.defaultValues, srcInfo.resolveArgMask);
                     }
                 }
             }
         }
-        if (nativeImpl == nullptr) {
+        if (!builtinInfo) {
             throw std::runtime_error("Unable to relink native function '" +
                                      toUTF8StdString(name) + "' for module '" +
                                      toUTF8StdString(chunk->moduleName) + "'");
@@ -1949,8 +2652,10 @@ void ObjFunction::trace(ValueVisitor& visitor) const
 {
     visitor.visit(ownerType);
     visitor.visit(moduleType);
-    for (const auto& def : nativeDefaults) {
-        visitor.visit(def);
+    if (builtinInfo) {
+        for (const auto& def : builtinInfo->defaultValues) {
+            visitor.visit(def);
+        }
     }
     for (const auto& entry : paramDefaultFunc) {
         visitor.visit(entry.second);
@@ -1976,14 +2681,27 @@ void ObjFunction::dropReferences()
         chunk.reset();
     }
 
-    nativeDefaults.clear();
+    builtinInfo.reset();
     paramDefaultFunc.clear();
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjUpvalue::clone() const
+unique_ptr<Obj, UnreleasedObj> ObjUpvalue::clone(roxal::ptr<CloneContext> ctx) const
 {
+    if (ctx) {
+        auto it = ctx->originalToClone.find(this);
+        if (it != ctx->originalToClone.end()) {
+            it->second->incRef();
+            return unique_ptr<Obj, UnreleasedObj>(it->second);
+        }
+    }
+
     auto newup = newUpvalueObj(location);
-    newup->closed = newup->location->clone();
+
+    if (ctx) {
+        ctx->originalToClone[this] = newup.get();
+    }
+
+    newup->closed = newup->location->clone(ctx);
     newup->location = &newup->closed;
     return newup;
 }
@@ -2024,12 +2742,25 @@ void ObjUpvalue::dropReferences()
     location = &closed;
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjClosure::clone() const
+unique_ptr<Obj, UnreleasedObj> ObjClosure::clone(roxal::ptr<CloneContext> ctx) const
 {
+    if (ctx) {
+        auto it = ctx->originalToClone.find(this);
+        if (it != ctx->originalToClone.end()) {
+            it->second->incRef();
+            return unique_ptr<Obj, UnreleasedObj>(it->second);
+        }
+    }
+
     auto newc = newClosureObj(function);
+
+    if (ctx) {
+        ctx->originalToClone[this] = newc.get();
+    }
+
     newc->upvalues.resize(upvalues.size());
-    for(size_t i=0; i<upvalues.size(); i++)
-        newc->upvalues[i] = upvalues.at(i).clone();
+    for (size_t i = 0; i < upvalues.size(); i++)
+        newc->upvalues[i] = upvalues.at(i).clone(ctx);
     return newc;
 }
 
@@ -2090,8 +2821,9 @@ void ObjClosure::dropReferences()
     handlerThread.reset();
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjFuture::clone() const
+unique_ptr<Obj, UnreleasedObj> ObjFuture::clone(roxal::ptr<CloneContext> ctx) const
 {
+    (void)ctx; // future resolves to a boxed primitive
     Value value = const_cast<ObjFuture*>(this)->asValue();
     value.box();
     assert(value.isBoxed() && value.isObj() && isObjPrimitive(value));
@@ -2121,11 +2853,13 @@ void ObjFuture::trace(ValueVisitor& visitor) const
             visitor.visit(future.get());
         }
     }
+    visitor.visit(producer);
 }
 
 void ObjFuture::dropReferences()
 {
     future = std::shared_future<Value>();
+    producer = Value::nilVal();
     std::lock_guard<std::mutex> lk(waitMutex);
     waiters.clear();
 }
@@ -2133,37 +2867,193 @@ void ObjFuture::dropReferences()
 void ObjFuture::addWaiter(const ptr<Thread>& t)
 {
     std::lock_guard<std::mutex> lk(waitMutex);
-    for (auto it = waiters.begin(); it != waiters.end(); ++it) {
-        if (auto sp = it->lock()) {
-            if (sp == t)
-                return;
-        } else {
-            it = waiters.erase(it);
-            if (it == waiters.end()) break;
-        }
-    }
-    waiters.push_back(t);
-}
-
-void ObjFuture::wakeWaiters()
-{
-    std::vector<ptr<Thread>> toWake;
-    {
-        std::lock_guard<std::mutex> lk(waitMutex);
-        for (auto it = waiters.begin(); it != waiters.end(); ) {
-            if (auto sp = it->lock()) {
-                toWake.push_back(sp);
+    for (auto it = waiters.begin(); it != waiters.end(); ) {
+        if (it->kind == ObjFutureWaiter::Kind::Thread) {
+            if (auto sp = it->thread.lock()) {
+                if (sp == t)
+                    return;
                 ++it;
             } else {
                 it = waiters.erase(it);
             }
+        } else {
+            ++it;
+        }
+    }
+    ObjFutureWaiter w;
+    w.kind = ObjFutureWaiter::Kind::Thread;
+    w.thread = t;
+    waiters.push_back(std::move(w));
+}
+
+void ObjFuture::addCombinatorWaiter(const Value& cbWeak, uint32_t slotIndex)
+{
+    std::lock_guard<std::mutex> lk(waitMutex);
+    ObjFutureWaiter w;
+    w.kind = ObjFutureWaiter::Kind::Combinator;
+    w.combinator = cbWeak;
+    w.slotIndex = slotIndex;
+    waiters.push_back(std::move(w));
+}
+
+void ObjFuture::wakeWaiters()
+{
+    std::vector<ptr<Thread>> threadsToWake;
+    std::vector<std::pair<Value, uint32_t>> combinatorsToNotify;
+    Value resolvedValue = Value::nilVal();
+    bool haveResolved = false;
+    if (future.valid() && future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        try {
+            resolvedValue = future.get();
+            haveResolved = true;
+        } catch (...) {
+            haveResolved = false;
+        }
+    }
+    {
+        std::lock_guard<std::mutex> lk(waitMutex);
+        for (auto& w : waiters) {
+            if (w.kind == ObjFutureWaiter::Kind::Thread) {
+                if (auto sp = w.thread.lock())
+                    threadsToWake.push_back(sp);
+            } else {
+                Value strong = w.combinator.strongRef();
+                if (!strong.isNil() && isCombinator(strong))
+                    combinatorsToNotify.emplace_back(strong, w.slotIndex);
+            }
         }
         waiters.clear();
     }
-    for (auto& t : toWake) t->wake();
+    for (auto& t : threadsToWake) t->wake();
+    for (auto& [cbVal, slot] : combinatorsToNotify) {
+        ObjCombinator* cb = asCombinator(cbVal);
+        cb->notifySlotReady(slot, haveResolved ? resolvedValue : Value::nilVal());
+    }
 }
-unique_ptr<Obj, UnreleasedObj> ObjNative::clone() const {
-    // native functions are immutable; share the reference
+
+//
+// ObjCombinator
+//
+
+void ObjCombinator::notifySlotReady(uint32_t slotIndex, const Value& value)
+{
+    bool fireAllReady = false;
+    bool fireAnyReady = false;
+    bool propagateException = false;
+    Value resultValue = Value::nilVal();
+    std::vector<Value> valuesForList;
+
+    {
+        std::lock_guard<std::mutex> lk(mutex);
+        if (fulfilled)
+            return;
+        if (slotIndex >= slots.size())
+            return;
+        auto& slot = slots[slotIndex];
+        if (slot.resolved)
+            return;
+        slot.resolved = true;
+        slot.resolvedValue = value;
+
+        if (isException(value)) {
+            fulfilled = true;
+            propagateException = true;
+            resultValue = value;
+        } else if (mode == Mode::Any) {
+            fulfilled = true;
+            fireAnyReady = true;
+            std::vector<std::pair<Value, Value>> entries {
+                { Value::stringVal(toUnicodeString("index")), Value::intVal(static_cast<int32_t>(slotIndex)) },
+                { Value::stringVal(toUnicodeString("value")), value }
+            };
+            resultValue = Value::dictVal(entries);
+        } else { // All
+            if (pendingCount > 0)
+                pendingCount--;
+            if (pendingCount == 0) {
+                fulfilled = true;
+                fireAllReady = true;
+                valuesForList.reserve(slots.size());
+                for (auto& s : slots) valuesForList.push_back(s.resolvedValue);
+            }
+        }
+    }
+
+    auto wakeOutput = [&]() {
+        Value out = outputFuture.strongRef();
+        if (!out.isNil() && isFuture(out)) {
+            asFuture(out)->wakeWaiters();
+        }
+    };
+
+    if (propagateException) {
+        try { promise->set_value(resultValue); } catch (...) {}
+        wakeOutput();
+        cancel();
+    } else if (fireAnyReady) {
+        try { promise->set_value(resultValue); } catch (...) {}
+        wakeOutput();
+        cancel();
+    } else if (fireAllReady) {
+        Value listVal = Value::listVal(valuesForList);
+        try { promise->set_value(listVal); } catch (...) {}
+        wakeOutput();
+        cancel();
+    }
+}
+
+void ObjCombinator::cancel()
+{
+    // Drop strong references to inputs and relay closures so unfired
+    // event/signal subscriptions become eligible for cleanup:
+    //  - Future-slot waiters are pruned on next wakeWaiters().
+    //  - Event/signal slots: the HandlerRegistration on the registering
+    //    thread still holds the relay closure strongly. The
+    //    combinatorTarget weak ref is now released-from-our-side; on the
+    //    registering thread's next pruneEventRegistrations() pass, any
+    //    HandlerRegistration whose combinatorTarget points to a fulfilled
+    //    combinator is removed (which frees the closure).
+    std::lock_guard<std::mutex> lk(mutex);
+    for (auto& slot : slots) {
+        slot.input = Value::nilVal();
+        slot.relayClosure = Value::nilVal();
+    }
+}
+
+unique_ptr<Obj, UnreleasedObj> ObjCombinator::clone(roxal::ptr<CloneContext>) const
+{
+    throw std::runtime_error("combinator cannot be cloned");
+}
+
+void ObjCombinator::write(std::ostream&, roxal::ptr<SerializationContext>) const
+{
+    throw std::runtime_error("combinator cannot be serialized");
+}
+
+void ObjCombinator::read(std::istream&, roxal::ptr<SerializationContext>)
+{
+    throw std::runtime_error("combinator cannot be deserialized");
+}
+
+void ObjCombinator::trace(ValueVisitor& visitor) const
+{
+    std::lock_guard<std::mutex> lk(mutex);
+    for (const auto& slot : slots) {
+        visitor.visit(slot.input);
+        visitor.visit(slot.resolvedValue);
+        visitor.visit(slot.relayClosure);
+    }
+    // outputFuture is a weak ref; visit() handles weak refs correctly
+    // (strong-ref visitors don't keep weak entries alive).
+    visitor.visit(outputFuture);
+}
+
+void ObjCombinator::dropReferences()
+{
+    cancel();
+}
+unique_ptr<Obj, UnreleasedObj> ObjNative::clone(roxal::ptr<CloneContext> ctx) const {
+    (void)ctx; // native functions are immutable; share the reference
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjNative*>(this));
 }
 void ObjNative::write(std::ostream&, roxal::ptr<SerializationContext>) const { throw std::runtime_error("ObjNative serialization not implemented"); }
@@ -2180,8 +3070,8 @@ void ObjNative::dropReferences()
 {
     defaultValues.clear();
 }
-unique_ptr<Obj, UnreleasedObj> ObjTypeSpec::clone() const {
-    // type metadata is immutable; share the reference
+unique_ptr<Obj, UnreleasedObj> ObjTypeSpec::clone(roxal::ptr<CloneContext> ctx) const {
+    (void)ctx; // type metadata is immutable; share the reference
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjTypeSpec*>(this));
 }
 void ObjTypeSpec::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
@@ -2196,8 +3086,8 @@ void ObjTypeSpec::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     in.read(reinterpret_cast<char*>(&tv), 1);
     typeValue = static_cast<ValueType>(tv);
 }
-unique_ptr<Obj, UnreleasedObj> ObjObjectType::clone() const {
-    // object type definitions are immutable once created; share reference
+unique_ptr<Obj, UnreleasedObj> ObjObjectType::clone(roxal::ptr<CloneContext> ctx) const {
+    (void)ctx; // object type definitions are immutable once created; share reference
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjObjectType*>(this));
 }
 void ObjObjectType::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
@@ -2214,6 +3104,11 @@ void ObjObjectType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
     b = isEnumeration ? 1 : 0; out.write(reinterpret_cast<char*>(&b),1);
 
     writeValue(out, superType, ctx);
+
+    uint32_t icount = static_cast<uint32_t>(implementedInterfaces.size());
+    out.write(reinterpret_cast<char*>(&icount),4);
+    for (const Value& iv : implementedInterfaces)
+        writeValue(out, iv, ctx);
 
     b = isCStruct ? 1 : 0; out.write(reinterpret_cast<char*>(&b),1);
     out.write(reinterpret_cast<const char*>(&cstructArch),4);
@@ -2233,6 +3128,7 @@ void ObjObjectType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
         out.write(reinterpret_cast<char*>(&acc),1);
         uint8_t isConst = prop.isConst ? 1 : 0;
         out.write(reinterpret_cast<char*>(&isConst),1);
+        writeValue(out, prop.ownerType, ctx);
         uint8_t hasC = prop.ctype.has_value() ? 1 : 0;
         out.write(reinterpret_cast<char*>(&hasC),1);
         if(hasC) {
@@ -2243,17 +3139,26 @@ void ObjObjectType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
         }
     }
 
-    uint32_t mcount = methods.size();
+    // Method serialization: write the total number of overloads across all
+    // names, then one record per overload. The reader appends each into the
+    // appropriate name's overload set, so the on-disk format does not need
+    // to encode name grouping explicitly.
+    uint32_t mcount = 0;
+    for (const auto& kv : methods) mcount += kv.second.overloads.size();
     out.write(reinterpret_cast<char*>(&mcount),4);
     for(const auto& kv : methods) {
-        const auto& method = kv.second;
-        std::string mn; method.name.toUTF8String(mn);
-        uint32_t mlen = mn.size();
-        out.write(reinterpret_cast<char*>(&mlen),4);
-        out.write(mn.data(), mlen);
-        writeValue(out, method.closure, ctx);
-        uint8_t acc = static_cast<uint8_t>(method.access);
-        out.write(reinterpret_cast<char*>(&acc),1);
+        for (const auto& method : kv.second.overloads) {
+            std::string mn; method.name.toUTF8String(mn);
+            uint32_t mlen = mn.size();
+            out.write(reinterpret_cast<char*>(&mlen),4);
+            out.write(mn.data(), mlen);
+            writeValue(out, method.closure, ctx);
+            uint8_t acc = static_cast<uint8_t>(method.access);
+            out.write(reinterpret_cast<char*>(&acc),1);
+            uint8_t mods = static_cast<uint8_t>(method.methodModifiers);
+            out.write(reinterpret_cast<char*>(&mods),1);
+            writeValue(out, method.ownerType, ctx);
+        }
     }
 
     uint32_t lcount = enumLabelValues.size();
@@ -2265,6 +3170,19 @@ void ObjObjectType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
         out.write(reinterpret_cast<char*>(&llen),4);
         out.write(ln.data(), llen);
         writeValue(out, label.second, ctx);
+    }
+
+    uint32_t ntcount = nestedTypes.size();
+    out.write(reinterpret_cast<char*>(&ntcount),4);
+    for(const auto& kv : nestedTypes) {
+        const auto& nt = kv.second;
+        std::string nn; nt.name.toUTF8String(nn);
+        uint32_t nlen = nn.size();
+        out.write(reinterpret_cast<char*>(&nlen),4);
+        out.write(nn.data(), nlen);
+        writeValue(out, nt.type, ctx);
+        uint8_t acc = static_cast<uint8_t>(nt.access);
+        out.write(reinterpret_cast<char*>(&acc),1);
     }
 }
 
@@ -2284,6 +3202,12 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 
     superType = readValue(in, ctx);
 
+    uint32_t icount; in.read(reinterpret_cast<char*>(&icount),4);
+    implementedInterfaces.clear();
+    implementedInterfaces.reserve(icount);
+    for (uint32_t i=0; i<icount; i++)
+        implementedInterfaces.push_back(readValue(in, ctx));
+
     in.read(reinterpret_cast<char*>(&b),1); isCStruct = b!=0;
     in.read(reinterpret_cast<char*>(&cstructArch),4);
     in.read(reinterpret_cast<char*>(&enumTypeId),2);
@@ -2298,6 +3222,9 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         Value init  = readValue(in, ctx);
         uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1);
         uint8_t isConst; in.read(reinterpret_cast<char*>(&isConst),1);
+        Value ownerType = readValue(in, ctx);
+        if (!ownerType.isNil())
+            ownerType = ownerType.weakRef();
         uint8_t hasC; in.read(reinterpret_cast<char*>(&hasC),1);
         std::optional<icu::UnicodeString> ct;
         if(hasC) {
@@ -2306,7 +3233,13 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
             ct = icu::UnicodeString::fromUTF8(cts);
         }
         int32_t hash = uname.hashCode();
-        Property prop{uname, ptype, init, static_cast<ast::Access>(acc), isConst != 0, Value::nilVal(), ct};
+        if (ownerType.isNil())
+            ownerType = Value::objRef(this).weakRef();
+        Property prop{uname, ptype, init, static_cast<ast::Access>(acc), isConst != 0, ownerType, ct};
+        // Re-freeze initial value for const members with const type (const bit lost during serialization)
+        if (prop.isConst && (prop.type.isNil() || prop.type.isConst())
+            && prop.initialValue.isObj() && !prop.initialValue.isConst())
+            prop.initialValue = prop.initialValue.constRef();
         properties[hash] = prop;
         propertyOrder.push_back(hash);
     }
@@ -2319,9 +3252,18 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         icu::UnicodeString uname = icu::UnicodeString::fromUTF8(mn);
         Value clos = readValue(in, ctx);
         uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1);
+        uint8_t mods; in.read(reinterpret_cast<char*>(&mods),1);
+        Value ownerType = readValue(in, ctx);
+        if (!ownerType.isNil())
+            ownerType = ownerType.weakRef();
         int32_t hash = uname.hashCode();
-        Method m{uname, clos, static_cast<ast::Access>(acc), Value::nilVal()};
-        methods[hash] = m;
+        if (ownerType.isNil())
+            ownerType = Value::objRef(this).weakRef();
+        Method m{uname, clos, static_cast<ast::Access>(acc),
+                 static_cast<ast::MethodModifiers>(mods), ownerType};
+        methods[hash].overloads.push_back(m);
+        if (ast::hasModifier(m.methodModifiers, ast::MethodModifier::StatementAction))
+            statementActionMethodHash = hash;
     }
 
     uint32_t lcount; in.read(reinterpret_cast<char*>(&lcount),4);
@@ -2335,6 +3277,18 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         enumLabelValues[hash] = {uname, val};
     }
 
+    uint32_t ntcount; in.read(reinterpret_cast<char*>(&ntcount),4);
+    nestedTypes.clear();
+    for(uint32_t i=0;i<ntcount;i++) {
+        uint32_t nlen; in.read(reinterpret_cast<char*>(&nlen),4);
+        std::string nn(nlen,'\0'); if(nlen>0) in.read(nn.data(), nlen);
+        icu::UnicodeString uname = icu::UnicodeString::fromUTF8(nn);
+        Value val = readValue(in, ctx);
+        uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1);
+        int32_t hash = uname.hashCode();
+        nestedTypes[hash] = {uname, val, static_cast<ast::Access>(acc)};
+    }
+
     if(isEnumeration) {
         enumTypes[enumTypeId] = this;
     }
@@ -2343,6 +3297,8 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 void ObjObjectType::trace(ValueVisitor& visitor) const
 {
     visitor.visit(superType);
+    for (const Value& iv : implementedInterfaces)
+        visitor.visit(iv);
     for (const auto& entry : properties) {
         const auto& prop = entry.second;
         visitor.visit(prop.type);
@@ -2350,18 +3306,23 @@ void ObjObjectType::trace(ValueVisitor& visitor) const
         visitor.visit(prop.ownerType);
     }
     for (const auto& entry : methods) {
-        const auto& method = entry.second;
-        visitor.visit(method.closure);
-        visitor.visit(method.ownerType);
+        for (const auto& method : entry.second.overloads) {
+            visitor.visit(method.closure);
+            visitor.visit(method.ownerType);
+        }
     }
     for (const auto& entry : enumLabelValues) {
         visitor.visit(entry.second.second);
+    }
+    for (const auto& entry : nestedTypes) {
+        visitor.visit(entry.second.type);
     }
 }
 
 void ObjObjectType::dropReferences()
 {
     superType = Value::nilVal();
+    implementedInterfaces.clear();
 
     for (auto& entry : properties) {
         auto& prop = entry.second;
@@ -2371,13 +3332,17 @@ void ObjObjectType::dropReferences()
     }
 
     for (auto& entry : methods) {
-        auto& method = entry.second;
-        method.closure = Value::nilVal();
-        method.ownerType = Value::nilVal();
+        for (auto& method : entry.second.overloads) {
+            method.closure = Value::nilVal();
+            method.ownerType = Value::nilVal();
+        }
     }
 
     for (auto& entry : enumLabelValues) {
         entry.second.second = Value::nilVal();
+    }
+    for (auto& entry : nestedTypes) {
+        entry.second.type = Value::nilVal();
     }
 }
 
@@ -2425,8 +3390,8 @@ ObjObjectType::findPublicPropertyByHash15(uint16_t hash15, bool& ambiguous) cons
         return std::nullopt;
     return PublicPropertyView{key, match, static_cast<uint16_t>(key & 0x7fff)};
 }
-unique_ptr<Obj, UnreleasedObj> ObjPackageType::clone() const {
-    // package types contain no mutable state; share the reference
+unique_ptr<Obj, UnreleasedObj> ObjPackageType::clone(roxal::ptr<CloneContext> ctx) const {
+    (void)ctx; // package types contain no mutable state; share the reference
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjPackageType*>(this));
 }
 void ObjPackageType::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
@@ -2442,8 +3407,8 @@ void ObjPackageType::read(std::istream& in, roxal::ptr<SerializationContext> ctx
         throw std::runtime_error("ObjPackageType::read mismatched tag");
     typeValue = ValueType::Type;
 }
-unique_ptr<Obj, UnreleasedObj> ObjModuleType::clone() const {
-    // module types are immutable; share the reference
+unique_ptr<Obj, UnreleasedObj> ObjModuleType::clone(roxal::ptr<CloneContext> ctx) const {
+    (void)ctx; // module types are immutable; share the reference
     return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjModuleType*>(this));
 }
 void ObjModuleType::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
@@ -2715,9 +3680,9 @@ void ObjectInstance::write(std::ostream& out, roxal::ptr<SerializationContext> c
     // Only serialize the object contents here.  Reference tracking is handled
     // by the calling writeValue() helper.
     writeValue(out, instanceType, ctx);
-    uint32_t count = properties.size();
+    uint32_t count = properties_->size();
     out.write(reinterpret_cast<char*>(&count),4);
-    for(const auto& kv : properties) {
+    for(const auto& kv : *properties_) {
         int32_t h = kv.first;
         out.write(reinterpret_cast<char*>(&h),4);
         writeValue(out, kv.second.value, ctx);
@@ -2726,24 +3691,29 @@ void ObjectInstance::write(std::ostream& out, roxal::ptr<SerializationContext> c
 
 void ObjectInstance::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
     // Reference tracking is handled by readValue().  Just read the object
     // contents here.
     instanceType = readValue(in, ctx);
     uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
-    properties.clear();
+    properties_->clear();
     for(uint32_t i=0;i<count;i++) {
         int32_t h; in.read(reinterpret_cast<char*>(&h),4);
         Value v = readValue(in, ctx);
-        auto& slot = properties[h];
+        auto& slot = (*properties_)[h];
         slot.clearSignal();
         slot.value = v;
     }
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 void ObjectInstance::trace(ValueVisitor& visitor) const
 {
     visitor.visit(instanceType);
-    for (const auto& entry : properties) {
+    for (const auto& entry : *properties_) {
         visitor.visit(entry.second.value);
         visitor.visit(entry.second.signal);
     }
@@ -2751,18 +3721,28 @@ void ObjectInstance::trace(ValueVisitor& visitor) const
 
 void ObjectInstance::dropReferences()
 {
+    cleanupMVCC();
     instanceType = Value::nilVal();
-    for (auto& entry : properties) {
-        entry.second.value = Value::nilVal();
-        entry.second.signal = Value::nilVal();
-    }
-    properties.clear();
+    properties_ = make_ptr<PropertyMap>();
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjBoundMethod::clone() const
+unique_ptr<Obj, UnreleasedObj> ObjBoundMethod::clone(roxal::ptr<CloneContext> ctx) const
 {
+    if (ctx) {
+        auto it = ctx->originalToClone.find(this);
+        if (it != ctx->originalToClone.end()) {
+            it->second->incRef();
+            return unique_ptr<Obj, UnreleasedObj>(it->second);
+        }
+    }
+
     auto newmb = newBoundMethodObj(receiver, method);
-    newmb->receiver = newmb->receiver.clone();
+
+    if (ctx) {
+        ctx->originalToClone[this] = newmb.get();
+    }
+
+    newmb->receiver = newmb->receiver.clone(ctx);
     return newmb;
 }
 void ObjBoundMethod::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
@@ -2796,10 +3776,23 @@ void ObjBoundMethod::dropReferences()
     method = Value::nilVal();
 }
 
-unique_ptr<Obj, UnreleasedObj> ObjBoundNative::clone() const
+unique_ptr<Obj, UnreleasedObj> ObjBoundNative::clone(roxal::ptr<CloneContext> ctx) const
 {
+    if (ctx) {
+        auto it = ctx->originalToClone.find(this);
+        if (it != ctx->originalToClone.end()) {
+            it->second->incRef();
+            return unique_ptr<Obj, UnreleasedObj>(it->second);
+        }
+    }
+
     auto newbm = newBoundNativeObj(receiver, function, isProc, funcType, defaultValues, declFunction);
-    newbm->receiver = newbm->receiver.clone();
+
+    if (ctx) {
+        ctx->originalToClone[this] = newbm.get();
+    }
+
+    newbm->receiver = newbm->receiver.clone(ctx);
     return newbm;
 }
 void ObjBoundNative::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
@@ -2893,29 +3886,725 @@ Value ActorInstance::ensurePropertySignal(int32_t nameHash, const std::string& s
 
 void ObjMatrix::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
-    uint32_t rows = mat.rows();
-    uint32_t cols = mat.cols();
+    uint32_t rows = mat().rows();
+    uint32_t cols = mat().cols();
     out.write(reinterpret_cast<char*>(&rows), 4);
     out.write(reinterpret_cast<char*>(&cols), 4);
     for(uint32_t r=0;r<rows;r++)
         for(uint32_t c=0;c<cols;c++) {
-            double d = mat(r,c);
+            double d = mat()(r,c);
             out.write(reinterpret_cast<char*>(&d), 8);
         }
 }
 
 void ObjMatrix::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
     uint32_t rows, cols;
     in.read(reinterpret_cast<char*>(&rows), 4);
     in.read(reinterpret_cast<char*>(&cols), 4);
-    mat.resize(rows, cols);
+    mat_ = make_ptr<Eigen::MatrixXd>(rows, cols);  // create new storage for deserialization
     for(uint32_t r=0;r<rows;r++)
         for(uint32_t c=0;c<cols;c++) {
             double d; in.read(reinterpret_cast<char*>(&d), 8);
-            mat(r,c) = d;
+            (*mat_)(r,c) = d;
         }
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
+
+
+//
+// ObjTensor implementation
+//
+
+std::string roxal::to_string(TensorDType dtype)
+{
+    switch (dtype) {
+        case TensorDType::Float16: return "float16";
+        case TensorDType::Float32: return "float32";
+        case TensorDType::Float64: return "float64";
+        case TensorDType::Int8:    return "int8";
+        case TensorDType::Int16:   return "int16";
+        case TensorDType::Int32:   return "int32";
+        case TensorDType::Int64:   return "int64";
+        case TensorDType::UInt8:   return "uint8";
+        case TensorDType::Bool:    return "bool";
+        default: return "unknown";
+    }
+}
+
+TensorDType roxal::tensorDTypeFromString(const std::string& s)
+{
+    if (s == "float16" || s == "half") return TensorDType::Float16;
+    if (s == "float32" || s == "float") return TensorDType::Float32;
+    if (s == "float64" || s == "double") return TensorDType::Float64;
+    if (s == "int8") return TensorDType::Int8;
+    if (s == "int16") return TensorDType::Int16;
+    if (s == "int32" || s == "int") return TensorDType::Int32;
+    if (s == "int64" || s == "long") return TensorDType::Int64;
+    if (s == "uint8" || s == "byte") return TensorDType::UInt8;
+    if (s == "bool") return TensorDType::Bool;
+    throw std::runtime_error("Unknown tensor dtype: " + s);
+}
+
+#ifdef ROXAL_ENABLE_ONNX
+// Forward declarations of helpers (defined below)
+static ONNXTensorElementDataType tensorDTypeToOrt(TensorDType dtype);
+static TensorDType tensorDTypeFromOrt(ONNXTensorElementDataType ortType);
+static size_t tensorDTypeSize(TensorDType dtype);
+static double ortElementAsDouble(const Ort::Value& val, TensorDType dtype, int64_t idx);
+static void ortSetElementFromDouble(Ort::Value& val, TensorDType dtype, int64_t idx, double v);
+#endif
+
+ObjTensor::ObjTensor()
+#ifndef ROXAL_ENABLE_ONNX
+    : data_(make_ptr<std::vector<double>>())
+#endif
+{
+    type = ObjType::Tensor;
+}
+
+ObjTensor::ObjTensor(const std::vector<int64_t>& shape, TensorDType dtype)
+    : shape_(shape), dtype_(dtype)
+{
+    type = ObjType::Tensor;
+    computeStrides();
+    int64_t n = numel();
+
+#ifdef ROXAL_ENABLE_ONNX
+    // Allocate via ONNX Runtime (ORT-owned memory)
+    Ort::AllocatorWithDefaultOptions allocator;
+    auto ortDtype = tensorDTypeToOrt(dtype);
+    ort_value_ = std::make_shared<Ort::Value>(
+        Ort::Value::CreateTensor(allocator, shape_.data(), shape_.size(), ortDtype));
+    // Zero-initialize
+    auto elemSize = tensorDTypeSize(dtype);
+    std::memset(ort_value_->GetTensorMutableRawData(), 0, n * elemSize);
+#else
+    data_ = make_ptr<std::vector<double>>(n, 0.0);
+#endif
+}
+
+#ifdef ROXAL_ENABLE_ONNX
+
+// Mapping helpers between TensorDType and ONNXTensorElementDataType
+
+static ONNXTensorElementDataType tensorDTypeToOrt(TensorDType dtype)
+{
+    switch (dtype) {
+        case TensorDType::Float16: return ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16;
+        case TensorDType::Float32: return ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT;
+        case TensorDType::Float64: return ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE;
+        case TensorDType::Int8:    return ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8;
+        case TensorDType::Int16:   return ONNX_TENSOR_ELEMENT_DATA_TYPE_INT16;
+        case TensorDType::Int32:   return ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32;
+        case TensorDType::Int64:   return ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64;
+        case TensorDType::UInt8:   return ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8;
+        case TensorDType::Bool:    return ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL;
+        default: throw std::runtime_error("Unsupported TensorDType for ORT conversion");
+    }
+}
+
+static TensorDType tensorDTypeFromOrt(ONNXTensorElementDataType ortType)
+{
+    switch (ortType) {
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16: return TensorDType::Float16;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT:   return TensorDType::Float32;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_DOUBLE:  return TensorDType::Float64;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8:    return TensorDType::Int8;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT16:   return TensorDType::Int16;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:   return TensorDType::Int32;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:   return TensorDType::Int64;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8:   return TensorDType::UInt8;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL:    return TensorDType::Bool;
+        default: throw std::runtime_error("Unsupported ORT element type");
+    }
+}
+
+static size_t tensorDTypeSize(TensorDType dtype)
+{
+    switch (dtype) {
+        case TensorDType::Float16: return 2;
+        case TensorDType::Float32: return 4;
+        case TensorDType::Float64: return 8;
+        case TensorDType::Int8:    return 1;
+        case TensorDType::Int16:   return 2;
+        case TensorDType::Int32:   return 4;
+        case TensorDType::Int64:   return 8;
+        case TensorDType::UInt8:   return 1;
+        case TensorDType::Bool:    return 1;
+        default: return 0;
+    }
+}
+
+ObjTensor::ObjTensor(Ort::Value&& ortValue)
+    : ort_value_(std::make_shared<Ort::Value>(std::move(ortValue)))
+{
+    type = ObjType::Tensor;
+
+    // Read shape and dtype from the Ort::Value
+    auto info = ort_value_->GetTensorTypeAndShapeInfo();
+    shape_ = info.GetShape();
+    dtype_ = tensorDTypeFromOrt(info.GetElementType());
+    computeStrides();
+}
+
+const Ort::Value& ObjTensor::ortValue() const
+{
+    if (!ort_value_)
+        throw std::runtime_error("Tensor is not ORT-backed");
+    return *ort_value_;
+}
+
+Ort::Value& ObjTensor::ortValueMut()
+{
+    if (!ort_value_)
+        throw std::runtime_error("Tensor is not ORT-backed");
+    ensureOrtUnique();
+    return *ort_value_;
+}
+
+void ObjTensor::ensureOrtUnique()
+{
+    if (ort_value_ && ort_value_.use_count() > 1) {
+        // Callers must call ensureCpu() first — COW deep-copy is CPU-only
+        assert(!isOnGpu() && "ensureOrtUnique() called on GPU tensor; call ensureCpu() first");
+
+        // Deep-copy: allocate a new ORT tensor and copy the raw data
+        auto info = ort_value_->GetTensorTypeAndShapeInfo();
+        auto ortDtype = info.GetElementType();
+        auto shape = info.GetShape();
+        size_t byteCount = info.GetElementCount() * tensorDTypeSize(dtype_);
+
+        Ort::AllocatorWithDefaultOptions allocator;
+        auto newVal = Ort::Value::CreateTensor(allocator, shape.data(), shape.size(), ortDtype);
+        std::memcpy(newVal.GetTensorMutableRawData(),
+                     ort_value_->GetTensorData<void>(), byteCount);
+        ort_value_ = std::make_shared<Ort::Value>(std::move(newVal));
+    }
+}
+
+bool ObjTensor::isOnGpu() const
+{
+    if (!ort_value_) return false;
+    auto memInfo = ort_value_->GetTensorMemoryInfo();
+    return memInfo.GetDeviceType() == OrtMemoryInfoDeviceType_GPU;
+}
+
+void ObjTensor::ensureCpu() const
+{
+    if (!isOnGpu()) return;
+
+    auto& cuda = CudaRuntime::instance();
+    if (!cuda.available())
+        throw std::runtime_error("GPU tensor element access requires CUDA runtime "
+                                 "(libcudart.so not found)");
+
+    auto info = ort_value_->GetTensorTypeAndShapeInfo();
+    auto ortDtype = info.GetElementType();
+    auto shape = info.GetShape();
+    size_t byteCount = info.GetElementCount() * tensorDTypeSize(dtype_);
+
+    // Allocate a new CPU tensor and copy data from GPU
+    Ort::AllocatorWithDefaultOptions cpuAllocator;
+    auto cpuVal = Ort::Value::CreateTensor(cpuAllocator, shape.data(), shape.size(), ortDtype);
+    constexpr int cudaMemcpyDeviceToHost = 2;
+    int err = cuda.memcpy(cpuVal.GetTensorMutableRawData(),
+                          ort_value_->GetTensorData<void>(),
+                          byteCount, cudaMemcpyDeviceToHost);
+    if (err != 0)
+        throw std::runtime_error(std::string("cudaMemcpy D2H failed: ") + cuda.getErrorString(err));
+
+    ort_value_ = std::make_shared<Ort::Value>(std::move(cpuVal));
+}
+
+// Helper: read a single element from ORT buffer as double
+static double ortElementAsDouble(const Ort::Value& val, TensorDType dtype, int64_t idx)
+{
+    switch (dtype) {
+        case TensorDType::Float32: return static_cast<double>(val.GetTensorData<float>()[idx]);
+        case TensorDType::Float64: return val.GetTensorData<double>()[idx];
+        case TensorDType::Float16: return static_cast<double>(val.GetTensorData<Ort::Float16_t>()[idx].ToFloat());
+        case TensorDType::Int32:   return static_cast<double>(val.GetTensorData<int32_t>()[idx]);
+        case TensorDType::Int64:   return static_cast<double>(val.GetTensorData<int64_t>()[idx]);
+        case TensorDType::Int8:    return static_cast<double>(val.GetTensorData<int8_t>()[idx]);
+        case TensorDType::Int16:   return static_cast<double>(val.GetTensorData<int16_t>()[idx]);
+        case TensorDType::UInt8:   return static_cast<double>(val.GetTensorData<uint8_t>()[idx]);
+        case TensorDType::Bool:    return val.GetTensorData<bool>()[idx] ? 1.0 : 0.0;
+        default: throw std::runtime_error("Unsupported dtype for element access");
+    }
+}
+
+// Helper: write a single element to ORT buffer from double
+static void ortSetElementFromDouble(Ort::Value& val, TensorDType dtype, int64_t idx, double v)
+{
+    switch (dtype) {
+        case TensorDType::Float32: val.GetTensorMutableData<float>()[idx] = static_cast<float>(v); break;
+        case TensorDType::Float64: val.GetTensorMutableData<double>()[idx] = v; break;
+        case TensorDType::Float16: val.GetTensorMutableData<Ort::Float16_t>()[idx] = Ort::Float16_t(static_cast<float>(v)); break;
+        case TensorDType::Int32:   val.GetTensorMutableData<int32_t>()[idx] = static_cast<int32_t>(v); break;
+        case TensorDType::Int64:   val.GetTensorMutableData<int64_t>()[idx] = static_cast<int64_t>(v); break;
+        case TensorDType::Int8:    val.GetTensorMutableData<int8_t>()[idx] = static_cast<int8_t>(v); break;
+        case TensorDType::Int16:   val.GetTensorMutableData<int16_t>()[idx] = static_cast<int16_t>(v); break;
+        case TensorDType::UInt8:   val.GetTensorMutableData<uint8_t>()[idx] = static_cast<uint8_t>(v); break;
+        case TensorDType::Bool:    val.GetTensorMutableData<bool>()[idx] = (v != 0.0); break;
+        default: throw std::runtime_error("Unsupported dtype for element write");
+    }
+}
+
+#endif // ROXAL_ENABLE_ONNX
+
+double ObjTensor::at(int64_t flatIdx) const
+{
+#ifdef ROXAL_ENABLE_ONNX
+    ensureCpu();
+    return ortElementAsDouble(*ort_value_, dtype_, flatIdx);
+#else
+    return (*data_)[flatIdx];
+#endif
+}
+
+void ObjTensor::setAt(int64_t flatIdx, double v)
+{
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+#ifdef ROXAL_ENABLE_ONNX
+    ensureCpu();
+    ensureOrtUnique();
+    ortSetElementFromDouble(*ort_value_, dtype_, flatIdx, v);
+#else
+    ensureUnique();
+    (*data_)[flatIdx] = v;
+#endif
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+}
+
+const double* ObjTensor::data() const
+{
+#ifdef ROXAL_ENABLE_ONNX
+    if (dtype_ != TensorDType::Float64)
+        throw std::runtime_error("data() requires Float64 dtype; use at() for type-safe access");
+    ensureCpu();
+    return ort_value_->GetTensorData<double>();
+#else
+    return data_->data();
+#endif
+}
+
+double* ObjTensor::dataMut()
+{
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+#ifdef ROXAL_ENABLE_ONNX
+    if (dtype_ != TensorDType::Float64)
+        throw std::runtime_error("dataMut() requires Float64 dtype; use setAt() for type-safe access");
+    ensureCpu();
+    ensureOrtUnique();
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+    return ort_value_->GetTensorMutableData<double>();
+#else
+    ensureUnique();
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+    return data_->data();
+#endif
+}
+
+const void* ObjTensor::rawData() const
+{
+#ifdef ROXAL_ENABLE_ONNX
+    ensureCpu();
+    return ort_value_->GetTensorData<void>();
+#else
+    return data_->data();
+#endif
+}
+
+void* ObjTensor::rawDataMut()
+{
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+#ifdef ROXAL_ENABLE_ONNX
+    ensureCpu();
+    ensureOrtUnique();
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+    return ort_value_->GetTensorMutableRawData();
+#else
+    ensureUnique();
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+    return data_->data();
+#endif
+}
+
+void ObjTensor::computeStrides()
+{
+    strides_.resize(shape_.size());
+    if (shape_.empty()) return;
+
+    // Row-major strides (C-order)
+    int64_t stride = 1;
+    for (int64_t i = static_cast<int64_t>(shape_.size()) - 1; i >= 0; --i) {
+        strides_[i] = stride;
+        stride *= shape_[i];
+    }
+}
+
+int64_t ObjTensor::numel() const
+{
+    if (shape_.empty()) return 0;
+    int64_t n = 1;
+    for (auto s : shape_) n *= s;
+    return n;
+}
+
+int64_t ObjTensor::flatIndex(const std::vector<int64_t>& indices) const
+{
+    if (indices.size() != shape_.size())
+        throw std::runtime_error("Tensor index rank mismatch");
+
+    int64_t idx = 0;
+    for (size_t i = 0; i < indices.size(); ++i) {
+        int64_t ix = indices[i];
+        if (ix < 0 || ix >= shape_[i])
+            throw std::runtime_error("Tensor index out of bounds");
+        idx += ix * strides_[i];
+    }
+    return idx;
+}
+
+Value ObjTensor::index(const std::vector<Value>& indices) const
+{
+    if (indices.size() != shape_.size())
+        throw std::runtime_error("Tensor index rank mismatch: expected " +
+            std::to_string(shape_.size()) + " indices, got " + std::to_string(indices.size()));
+
+    // Check if any index is a range
+    bool hasRange = false;
+    for (const auto& v : indices) {
+        if (isRange(v)) {
+            hasRange = true;
+            break;
+        }
+    }
+
+    if (!hasRange) {
+        // All integer indices - return scalar
+        std::vector<int64_t> idxs;
+        idxs.reserve(indices.size());
+        for (const auto& v : indices) {
+            if (!v.isInt())
+                throw std::runtime_error("Tensor index must be integer or range");
+            idxs.push_back(v.asInt());
+        }
+        int64_t flatIdx = flatIndex(idxs);
+        return Value::realVal(at(flatIdx));
+    }
+
+    // Has ranges - build sub-tensor
+    // For each dimension, collect the list of indices to extract
+    std::vector<std::vector<int64_t>> dimIndices;
+    dimIndices.reserve(indices.size());
+    std::vector<int64_t> resultShape;
+
+    for (size_t d = 0; d < indices.size(); ++d) {
+        const Value& idx = indices[d];
+        int64_t dimSize = shape_[d];
+
+        if (idx.isInt()) {
+            int64_t i = idx.asInt();
+            if (i < 0 || i >= dimSize)
+                throw std::runtime_error("Tensor index out of bounds at dimension " + std::to_string(d));
+            dimIndices.push_back({i});
+            // Single index - dimension is squeezed out (not added to result shape)
+        } else if (isRange(idx)) {
+            ObjRange* r = asRange(idx);
+            int64_t rangeLen = r->length(dimSize);
+            std::vector<int64_t> dimIdx;
+            dimIdx.reserve(rangeLen);
+            for (int64_t j = 0; j < rangeLen; ++j) {
+                int64_t target = r->targetIndex(j, dimSize);
+                if (target >= 0 && target < dimSize)
+                    dimIdx.push_back(target);
+            }
+            dimIndices.push_back(dimIdx);
+            // Range - add dimension to result shape
+            resultShape.push_back(dimIdx.size());
+        } else {
+            throw std::runtime_error("Tensor index must be integer or range");
+        }
+    }
+
+    // If all ranges resulted in single elements, we still return a tensor (not scalar)
+    // This preserves type through indexing
+    if (resultShape.empty()) {
+        // All indices were single values - return 0D tensor? Or scalar?
+        // For consistency, return scalar since all indices were explicit
+        std::vector<int64_t> idxs;
+        for (const auto& di : dimIndices)
+            idxs.push_back(di[0]);
+        int64_t flatIdx = flatIndex(idxs);
+        return Value::realVal(at(flatIdx));
+    }
+
+    // Build result tensor
+    int64_t resultNumel = 1;
+    for (auto s : resultShape) resultNumel *= s;
+    std::vector<double> resultData;
+    resultData.reserve(resultNumel);
+
+    // Recursive helper to iterate through all combinations of indices
+    std::function<void(size_t, std::vector<int64_t>&)> collectData;
+    collectData = [&](size_t dim, std::vector<int64_t>& currentIdx) {
+        if (dim == dimIndices.size()) {
+            // Compute flat index in source tensor
+            int64_t srcIdx = 0;
+            for (size_t i = 0; i < currentIdx.size(); ++i)
+                srcIdx += currentIdx[i] * strides_[i];
+            resultData.push_back(at(srcIdx));
+            return;
+        }
+        for (int64_t i : dimIndices[dim]) {
+            currentIdx.push_back(i);
+            collectData(dim + 1, currentIdx);
+            currentIdx.pop_back();
+        }
+    };
+
+    std::vector<int64_t> currentIdx;
+    collectData(0, currentIdx);
+
+    return Value::tensorVal(resultShape, resultData, dtype_);
+}
+
+void ObjTensor::setIndex(const std::vector<Value>& indices, const Value& v)
+{
+    std::vector<int64_t> idxs;
+    idxs.reserve(indices.size());
+    for (const auto& idx : indices) {
+        if (!idx.isInt())
+            throw std::runtime_error("Tensor index must be integer");
+        idxs.push_back(idx.asInt());
+    }
+    int64_t flatIdx = flatIndex(idxs);
+
+    if (!v.isNumber())
+        throw std::runtime_error("Tensor element must be numeric");
+    double dv = v.isInt() ? static_cast<double>(v.asInt()) : v.asReal();
+    setAt(flatIdx, dv);
+}
+
+Value ObjTensor::reshape(const std::vector<int64_t>& newShape) const
+{
+    int64_t newNumel = 1;
+    for (auto s : newShape) newNumel *= s;
+    if (newNumel != numel())
+        throw std::runtime_error("Tensor reshape: total elements must match");
+
+    // Create result and copy data element-by-element (works with both backends)
+    auto result = newTensorObj(newShape, dtype_);
+    for (int64_t i = 0; i < newNumel; ++i)
+        result->setAt(i, at(i));
+    return Value::objVal(std::move(result));
+}
+
+bool ObjTensor::equals(const ObjTensor* other, double eps) const
+{
+    if (shape_ != other->shape_) return false;
+    if (dtype_ != other->dtype_) return false;
+
+#ifdef ROXAL_ENABLE_ONNX
+    // COW identity: if both tensors share the same underlying Ort::Value,
+    // their data is identical — no need for element comparison.
+    if (ort_value_ && other->ort_value_ && ort_value_.get() == other->ort_value_.get())
+        return true;
+
+    // For GPU-resident tensors, avoid expensive GPU→CPU copy for comparison.
+    // Use identity comparison only — different ORT values are conservatively
+    // considered unequal.  This is correct for signal change detection (each
+    // inference produces a new ORT value) and avoids PCIe transfer overhead.
+    if (isOnGpu() || other->isOnGpu())
+        return false;  // different pointers already checked above
+#else
+    // COW identity: shared data_ pointer means identical contents.
+    if (data_ && other->data_ && data_.get() == other->data_.get())
+        return true;
+#endif
+
+    int64_t n = numel();
+    for (int64_t i = 0; i < n; ++i) {
+        if (std::abs(at(i) - other->at(i)) > eps)
+            return false;
+    }
+    return true;
+}
+
+void ObjTensor::set(const ObjTensor* other)
+{
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+    shape_ = other->shape_;
+    strides_ = other->strides_;
+    dtype_ = other->dtype_;
+#ifdef ROXAL_ENABLE_ONNX
+    ort_value_ = other->ort_value_;  // COW: share the data
+#else
+    data_ = other->data_;  // COW: share the data
+#endif
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+}
+
+unique_ptr<Obj, UnreleasedObj> ObjTensor::clone(roxal::ptr<CloneContext> ctx) const
+{
+    (void)ctx; // tensor has value semantics, no object references to track
+    auto newt = newTensorObj();
+    newt->shape_ = shape_;
+    newt->strides_ = strides_;
+    newt->dtype_ = dtype_;
+#ifdef ROXAL_ENABLE_ONNX
+    newt->ort_value_ = ort_value_;  // COW: share the data
+#else
+    newt->data_ = data_;  // COW: share the data
+#endif
+    return newt;
+}
+
+unique_ptr<Obj, UnreleasedObj> ObjTensor::shallowClone() const
+{
+    auto newt = newTensorObj();
+    newt->shape_ = shape_;
+    newt->strides_ = strides_;
+    newt->dtype_ = dtype_;
+#ifdef ROXAL_ENABLE_ONNX
+    newt->ort_value_ = ort_value_;  // COW: share the data
+#else
+    newt->data_ = data_;  // COW: share the data
+#endif
+    return newt;
+}
+
+void ObjTensor::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
+{
+    // Write dtype
+    uint8_t dt = static_cast<uint8_t>(dtype_);
+    out.write(reinterpret_cast<char*>(&dt), 1);
+
+    // Write rank
+    uint32_t rank = static_cast<uint32_t>(shape_.size());
+    out.write(reinterpret_cast<char*>(&rank), 4);
+
+    // Write shape
+    for (auto s : shape_) {
+        int64_t dim = s;
+        out.write(reinterpret_cast<char*>(&dim), 8);
+    }
+
+    // Write data (always serialized as doubles for portability)
+    int64_t n = numel();
+    for (int64_t i = 0; i < n; ++i) {
+        double d = at(i);
+        out.write(reinterpret_cast<const char*>(&d), 8);
+    }
+}
+
+void ObjTensor::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
+{
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+    // Read dtype
+    uint8_t dt;
+    in.read(reinterpret_cast<char*>(&dt), 1);
+    dtype_ = static_cast<TensorDType>(dt);
+
+    // Read rank
+    uint32_t rank;
+    in.read(reinterpret_cast<char*>(&rank), 4);
+
+    // Read shape
+    shape_.resize(rank);
+    for (uint32_t i = 0; i < rank; ++i) {
+        int64_t dim;
+        in.read(reinterpret_cast<char*>(&dim), 8);
+        shape_[i] = dim;
+    }
+
+    computeStrides();
+
+    // Read data
+    int64_t n = numel();
+#ifdef ROXAL_ENABLE_ONNX
+    Ort::AllocatorWithDefaultOptions allocator;
+    auto ortDtype = tensorDTypeToOrt(dtype_);
+    ort_value_ = std::make_shared<Ort::Value>(
+        Ort::Value::CreateTensor(allocator, shape_.data(), shape_.size(), ortDtype));
+    for (int64_t i = 0; i < n; ++i) {
+        double d;
+        in.read(reinterpret_cast<char*>(&d), 8);
+        ortSetElementFromDouble(*ort_value_, dtype_, i, d);
+    }
+#else
+    data_ = make_ptr<std::vector<double>>(n);
+    for (int64_t i = 0; i < n; ++i) {
+        double d;
+        in.read(reinterpret_cast<char*>(&d), 8);
+        (*data_)[i] = d;
+    }
+#endif
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+}
+
+unique_ptr<ObjTensor, UnreleasedObj> roxal::newTensorObj()
+{
+    #ifdef DEBUG_BUILD
+    return newObj<ObjTensor>(__func__, __FILE__, __LINE__);
+    #else
+    return newObj<ObjTensor>();
+    #endif
+}
+
+unique_ptr<ObjTensor, UnreleasedObj> roxal::newTensorObj(const std::vector<int64_t>& shape, TensorDType dtype)
+{
+    #ifdef DEBUG_BUILD
+    return newObj<ObjTensor>(__func__, __FILE__, __LINE__, shape, dtype);
+    #else
+    return newObj<ObjTensor>(shape, dtype);
+    #endif
+}
+
+unique_ptr<ObjTensor, UnreleasedObj> roxal::newTensorObj(const std::vector<int64_t>& shape,
+                                                          const std::vector<double>& data,
+                                                          TensorDType dtype)
+{
+    auto t = newTensorObj(shape, dtype);
+    if (data.size() != static_cast<size_t>(t->numel()))
+        throw std::runtime_error("Tensor data size mismatch");
+    for (int64_t i = 0; i < static_cast<int64_t>(data.size()); ++i)
+        t->setAt(i, data[i]);
+    return t;
+}
+
+#ifdef ROXAL_ENABLE_ONNX
+unique_ptr<ObjTensor, UnreleasedObj> roxal::newTensorObj(Ort::Value&& ortValue)
+{
+    #ifdef DEBUG_BUILD
+    return newObj<ObjTensor>(__func__, __FILE__, __LINE__, std::move(ortValue));
+    #else
+    return newObj<ObjTensor>(std::move(ortValue));
+    #endif
+}
+#endif
+
+std::string roxal::objTensorToString(const ObjTensor* ot)
+{
+    std::ostringstream os;
+    os << "tensor(shape=[";
+    for (size_t i = 0; i < ot->shape().size(); ++i) {
+        if (i > 0) os << ", ";
+        os << ot->shape()[i];
+    }
+    os << "], dtype='" << to_string(ot->dtype()) << "')";
+    return os.str();
+}
+
 
 ObjSignal::ObjSignal(ptr<df::Signal> s)
     : signal(s), engine(nullptr), changeEventType(Value::nilVal())
@@ -3210,7 +4899,7 @@ std::string roxal::stackTraceToString(Value frames)
     if (frames.isNil() || !isList(frames)) return "";
     ObjList* listObj = asList(frames);
     std::ostringstream oss;
-    auto list = listObj->elts.get();
+    auto list = listObj->getElements();
     for(const auto& v : list) {
         if (!isDict(v)) continue;
         ObjDict* d = asDict(v);
@@ -3245,8 +4934,9 @@ Value ObjMatrix::index(const Value& row) const
         int r = row.asInt();
         if (r < 0 || r >= rows())
             throw std::invalid_argument("Matrix row index out-of-range.");
-        Eigen::VectorXd vals = mat.row(r);
-        return Value::vectorVal(vals);
+        // Return a 1-row matrix (preserves type - use vector(matrix[i]) to get a vector)
+        Eigen::MatrixXd rowMat = mat().row(r);
+        return Value::matrixVal(rowMat);
     } else if (isRange(row)) {
         ObjRange* rr = asRange(row);
         int rowCount = rr->length(rows());
@@ -3254,7 +4944,7 @@ Value ObjMatrix::index(const Value& row) const
         for(int i=0;i<rowCount;++i) {
             int target = rr->targetIndex(i, rows());
             if (target >=0 && target < rows())
-                m.row(i) = mat.row(target);
+                m.row(i) = mat().row(target);
         }
         return Value::matrixVal(m);
     }
@@ -3272,7 +4962,7 @@ Value ObjMatrix::index(const Value& row, const Value& col) const
         int c = col.asInt();
         if (r < 0 || r >= rows() || c < 0 || c >= cols())
             throw std::invalid_argument("Matrix index out-of-range.");
-        return Value::realVal(mat(r,c));
+        return Value::realVal(mat()(r,c));
     }
 
     std::vector<int> rowIdx;
@@ -3314,22 +5004,22 @@ Value ObjMatrix::index(const Value& row, const Value& col) const
     }
 
     if (rowIdx.size()==1 && colIdx.size()==1) {
-        return Value::realVal(mat(rowIdx[0], colIdx[0]));
+        return Value::realVal(mat()(rowIdx[0], colIdx[0]));
     } else if (rowIdx.size()==1 && colIdx.size()>1) {
         Eigen::VectorXd vals(colIdx.size());
         for(size_t j=0;j<colIdx.size();++j)
-            vals[j] = mat(rowIdx[0], colIdx[j]);
+            vals[j] = mat()(rowIdx[0], colIdx[j]);
         return Value::vectorVal(vals);
     } else if (rowIdx.size()>1 && colIdx.size()==1) {
         Eigen::VectorXd vals(rowIdx.size());
         for(size_t i=0;i<rowIdx.size();++i)
-            vals[i] = mat(rowIdx[i], colIdx[0]);
+            vals[i] = mat()(rowIdx[i], colIdx[0]);
         return Value::vectorVal(vals);
     } else {
         Eigen::MatrixXd sub(rowIdx.size(), colIdx.size());
         for(size_t i=0;i<rowIdx.size();++i)
             for(size_t j=0;j<colIdx.size();++j)
-                sub(i,j) = mat(rowIdx[i], colIdx[j]);
+                sub(i,j) = mat()(rowIdx[i], colIdx[j]);
         return Value::matrixVal(sub);
     }
     return Value::nilVal();
@@ -3337,6 +5027,9 @@ Value ObjMatrix::index(const Value& row, const Value& col) const
 
 void ObjMatrix::setIndex(const Value& row, const Value& value)
 {
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+    ensureUnique();  // COW: copy before mutation
     std::vector<int> rowIdx;
     if (row.isNumber()) {
         int r = row.asInt();
@@ -3361,7 +5054,7 @@ void ObjMatrix::setIndex(const Value& row, const Value& value)
         if (vec->length() != cols())
             throw std::invalid_argument("Assignment to matrix row requires vector length " + std::to_string(cols()));
         for(int c=0;c<cols();++c)
-            mat(rowIdx[0], c) = vec->vec[c];
+            (*mat_)(rowIdx[0], c) = vec->vec()[c];
         return;
     }
 
@@ -3370,11 +5063,15 @@ void ObjMatrix::setIndex(const Value& row, const Value& value)
         throw std::invalid_argument("Assignment to matrix rows requires a matrix of size ("+std::to_string(rowIdx.size())+","+std::to_string(cols())+")");
 
     for(size_t i=0;i<rowIdx.size();++i)
-        mat.row(rowIdx[i]) = rhs->mat.row(i);
+        mat_->row(rowIdx[i]) = rhs->mat().row(i);
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 void ObjMatrix::setIndex(const Value& row, const Value& col, const Value& value)
 {
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+    ensureUnique();
     bool rowRange = isRange(row);
     bool colRange = isRange(col);
 
@@ -3418,7 +5115,7 @@ void ObjMatrix::setIndex(const Value& row, const Value& col, const Value& value)
 
     if (rowIdx.size()==1 && colIdx.size()==1) {
         double scalar = toType(ValueType::Real, value, false).asReal();
-        mat(rowIdx[0], colIdx[0]) = scalar;
+        (*mat_)(rowIdx[0], colIdx[0]) = scalar;
         return;
     }
 
@@ -3427,14 +5124,14 @@ void ObjMatrix::setIndex(const Value& row, const Value& col, const Value& value)
         if (vec->length() != (int)colIdx.size())
             throw std::invalid_argument("Assignment to matrix subrow requires vector length " + std::to_string(colIdx.size()));
         for(size_t j=0;j<colIdx.size();++j)
-            mat(rowIdx[0], colIdx[j]) = vec->vec[j];
+            (*mat_)(rowIdx[0], colIdx[j]) = vec->vec()[j];
         return;
     } else if (colIdx.size()==1) {
         ObjVector* vec = valueToVector(value);
         if (vec->length() != (int)rowIdx.size())
             throw std::invalid_argument("Assignment to matrix subcolumn requires vector length " + std::to_string(rowIdx.size()));
         for(size_t i=0;i<rowIdx.size();++i)
-            mat(rowIdx[i], colIdx[0]) = vec->vec[i];
+            (*mat_)(rowIdx[i], colIdx[0]) = vec->vec()[i];
         return;
     } else {
         ObjMatrix* rhs = valueToMatrix(value);
@@ -3442,8 +5139,9 @@ void ObjMatrix::setIndex(const Value& row, const Value& col, const Value& value)
             throw std::invalid_argument("Assignment to matrix submatrix requires matrix of size ("+std::to_string(rowIdx.size())+","+std::to_string(colIdx.size())+")");
         for(size_t i=0;i<rowIdx.size();++i)
             for(size_t j=0;j<colIdx.size();++j)
-                mat(rowIdx[i], colIdx[j]) = rhs->mat(i,j);
+                (*mat_)(rowIdx[i], colIdx[j]) = rhs->mat()(i,j);
     }
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 bool ObjMatrix::equals(const ObjMatrix* other, double eps) const
@@ -3452,19 +5150,19 @@ bool ObjMatrix::equals(const ObjMatrix* other, double eps) const
         return false;
 
     // Check if dimensions match
-    if (mat.rows() != other->mat.rows() || mat.cols() != other->mat.cols())
+    if (mat().rows() != other->mat().rows() || mat().cols() != other->mat().cols())
         return false;
 
     // Use Eigen's isApprox for element-wise comparison with tolerance
-    return mat.isApprox(other->mat, eps);
+    return mat().isApprox(other->mat(), eps);
 }
 
 std::string roxal::objMatrixToString(const ObjMatrix* om)
 {
     using std::min;
 
-    const int rows = om->mat.rows();
-    const int cols = om->mat.cols();
+    const int rows = om->mat().rows();
+    const int cols = om->mat().cols();
 
     const int firstRows = min(rows, 16);
     const int lastRows  = rows > 32 ? 16 : (rows - firstRows);
@@ -3476,11 +5174,11 @@ std::string roxal::objMatrixToString(const ObjMatrix* om)
 
     auto updateWidths = [&](int r) {
         for(int c=0; c<firstCols; ++c) {
-            std::string s = format("%g", om->mat(r,c));
+            std::string s = format("%g", om->mat()(r,c));
             colWidthFirst[c] = std::max(colWidthFirst[c], s.size());
         }
         for(int c=0; c<lastCols; ++c) {
-            std::string s = format("%g", om->mat(r, cols-lastCols+c));
+            std::string s = format("%g", om->mat()(r, cols-lastCols+c));
             colWidthLast[c] = std::max(colWidthLast[c], s.size());
         }
     };
@@ -3495,7 +5193,7 @@ std::string roxal::objMatrixToString(const ObjMatrix* om)
         if(r > 0)
             os << "\n ";
         for(int c=0; c<firstCols; ++c) {
-            std::string s = format("%g", om->mat(r,c));
+            std::string s = format("%g", om->mat()(r,c));
             os << std::left << std::setw(colWidthFirst[c]) << s;
             if(c != firstCols-1 || cols > firstCols)
                 os << ' ';
@@ -3503,7 +5201,7 @@ std::string roxal::objMatrixToString(const ObjMatrix* om)
         if(cols > 32)
             os << "... ";
         for(int c=0; c<lastCols; ++c) {
-            std::string s = format("%g", om->mat(r, cols-lastCols+c));
+            std::string s = format("%g", om->mat()(r, cols-lastCols+c));
             os << std::left << std::setw(colWidthLast[c]) << s;
             if(c != lastCols-1)
                 os << ' ';
@@ -3524,6 +5222,110 @@ std::string roxal::objMatrixToString(const ObjMatrix* om)
 }
 
 
+// ObjOrient
+
+ObjOrient::ObjOrient(const Eigen::Quaterniond& q)
+    : quat_(make_ptr<Eigen::Quaterniond>(q.normalized()))
+{
+    type = ObjType::Orient;
+}
+
+Eigen::Quaterniond& ObjOrient::quatMut()
+{
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+    ensureUnique();
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+    return *quat_;
+}
+
+bool ObjOrient::equals(const ObjOrient* other, double eps) const
+{
+    if (!other) return false;
+    // q and -q represent the same rotation
+    double dot = quat().dot(other->quat());
+    return std::abs(std::abs(dot) - 1.0) < eps;
+}
+
+void ObjOrient::set(const ObjOrient* other)
+{
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+    quat_ = other->quat_;  // COW: share the data ptr
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+}
+
+unique_ptr<Obj, UnreleasedObj> ObjOrient::clone(roxal::ptr<CloneContext> ctx) const
+{
+    (void)ctx; // orient has value semantics, no object references to track
+    auto newo = newOrientObj();
+    newo->quat_ = quat_;  // COW: share the data ptr
+    return newo;
+}
+
+unique_ptr<Obj, UnreleasedObj> ObjOrient::shallowClone() const
+{
+    auto newo = newOrientObj();
+    newo->quat_ = quat_;  // COW: share the data ptr
+    return newo;
+}
+
+void ObjOrient::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
+{
+    (void)ctx;
+    double x = quat().x(), y = quat().y(), z = quat().z(), w = quat().w();
+    out.write(reinterpret_cast<const char*>(&x), 8);
+    out.write(reinterpret_cast<const char*>(&y), 8);
+    out.write(reinterpret_cast<const char*>(&z), 8);
+    out.write(reinterpret_cast<const char*>(&w), 8);
+}
+
+void ObjOrient::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
+{
+    (void)ctx;
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+    double x, y, z, w;
+    in.read(reinterpret_cast<char*>(&x), 8);
+    in.read(reinterpret_cast<char*>(&y), 8);
+    in.read(reinterpret_cast<char*>(&z), 8);
+    in.read(reinterpret_cast<char*>(&w), 8);
+    quat_ = make_ptr<Eigen::Quaterniond>(w, x, y, z);  // Eigen ctor order: w,x,y,z
+    quat_->normalize();
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+}
+
+unique_ptr<ObjOrient, UnreleasedObj> roxal::newOrientObj()
+{
+    #ifdef DEBUG_BUILD
+    return newObj<ObjOrient>(__func__, __FILE__, __LINE__);
+    #else
+    return newObj<ObjOrient>();
+    #endif
+}
+
+unique_ptr<ObjOrient, UnreleasedObj> roxal::newOrientObj(const Eigen::Quaterniond& q)
+{
+    #ifdef DEBUG_BUILD
+    return newObj<ObjOrient>(__func__, __FILE__, __LINE__, q);
+    #else
+    return newObj<ObjOrient>(q);
+    #endif
+}
+
+std::string roxal::objOrientToString(const ObjOrient* oo)
+{
+    // Display as RPY in degrees for readability
+    Eigen::Matrix3d m = oo->quat().toRotationMatrix();
+    // eulerAngles(2,1,0) returns [yaw, pitch, roll] for ZYX (extrinsic XYZ = RPY)
+    Eigen::Vector3d ea = m.canonicalEulerAngles(2, 1, 0);
+    double roll  = ea[2] * 180.0 / M_PI;  if (roll == -0.0)  roll = 0.0;
+    double pitch = ea[1] * 180.0 / M_PI; if (pitch == -0.0) pitch = 0.0;
+    double yaw   = ea[0] * 180.0 / M_PI; if (yaw == -0.0)   yaw = 0.0;
+    std::ostringstream os;
+    os << "orient(r=" << roll << "\u00B0, p=" << pitch << "\u00B0, y=" << yaw << "\u00B0)";
+    return os.str();
+}
 
 
 
@@ -3571,6 +5373,12 @@ std::string roxal::objToString(const Value& v)
         case ObjType::Matrix: {
             return objMatrixToString(asMatrix(v));
         }
+        case ObjType::Orient: {
+            return objOrientToString(asOrient(v));
+        }
+        case ObjType::Tensor: {
+            return objTensorToString(asTensor(v));
+        }
         case ObjType::Signal: {
             return objSignalToString(asSignal(v));
         }
@@ -3593,16 +5401,17 @@ std::string roxal::objToString(const Value& v)
             return objExceptionToString(asException(v));
         }
         case ObjType::Type: {
+            std::string constPrefix = v.isConst() ? "const " : "";
             if (isObjPrimitive(v))
                 return to_string(asObjPrimitive(v)->as.btype);
 
             ObjTypeSpec* ts = asTypeSpec(v);
             if ((ts->typeValue != ValueType::Object) && (ts->typeValue != ValueType::Actor)) {
-                return "<type "+to_string(ts->typeValue)+">";
+                return "<type "+constPrefix+to_string(ts->typeValue)+">";
             }
             else {
                 ObjObjectType* obj = asObjectType(v);
-                return std::string("<type ")+(obj->isActor ? "actor" :(obj->isInterface ? "interface" : (obj->isEnumeration ? "enum" : "object")))+" "+toUTF8StdString(obj->name)+">";
+                return std::string("<type ")+constPrefix+(obj->isActor ? "actor" :(obj->isInterface ? "interface" : (obj->isEnumeration ? "enum" : "object")))+" "+toUTF8StdString(obj->name)+">";
             }
         }
         case ObjType::Instance: {
@@ -3616,6 +5425,10 @@ std::string roxal::objToString(const Value& v)
                 if (type == spanType)
                     return sysTimeSpanDefaultString(inst);
             }
+            if (ObjObjectType* quantityType = sysQuantityType()) {
+                if (type == quantityType)
+                    return sysQuantityDefaultString(inst);
+            }
             return std::string("object "+toUTF8StdString(type->name));
         }
         case ObjType::Actor: {
@@ -3623,7 +5436,12 @@ std::string roxal::objToString(const Value& v)
             return std::string("actor "+toUTF8StdString(asObjectType(inst->instanceType)->name));
         }
         case ObjType::BoundMethod: {
-            return objFunctionToString(asFunction(asClosure(asBoundMethod(v)->method)->function));
+            const Value& m = asBoundMethod(v)->method;
+            if (isOverloadSet(m)) {
+                std::string name; asOverloadSet(m)->name.toUTF8String(name);
+                return "<overloaded function " + name + ">";
+            }
+            return objFunctionToString(asFunction(asClosure(m)->function));
         }
         case ObjType::BoundNative: {
             return std::string("<native method>");
@@ -3632,6 +5450,9 @@ std::string roxal::objToString(const Value& v)
             Value fv = v;
             fv.resolveFuture();
             return toString(fv);
+        }
+        case ObjType::Combinator: {
+            return "<combinator>";
         }
         default: ;
     }
@@ -3681,7 +5502,7 @@ void ObjFunction::clear()
         delete static_cast<FFIWrapper*>(nativeSpec);
         nativeSpec = nullptr;
     }
-    nativeDefaults.clear();
+    builtinInfo.reset();
 }
 
 ObjFunction::~ObjFunction()
@@ -3776,6 +5597,7 @@ ObjModuleType::~ObjModuleType() {}
 
 
 ObjectInstance::ObjectInstance(const Value& objectType)
+    : properties_(make_ptr<PropertyMap>())
 {
     type = ObjType::Instance;
     debug_assert_msg(isObjectType(objectType),
@@ -3786,9 +5608,11 @@ ObjectInstance::ObjectInstance(const Value& objectType)
     for(const auto& property : ot->properties) {
         const auto& prop { property.second };
         auto propInitialvalue { prop.initialValue };
-        // Clone reference types to avoid sharing between instances
-        if (!propInitialvalue.isPrimitive()) {
-            // Special handling for signals - only clone clocks and source signals
+        // Const members with const (or untyped) type are frozen and can be shared
+        // across instances without cloning
+        bool isConstType = prop.isConst && (prop.type.isNil() || prop.type.isConst());
+        if (!isConstType && !propInitialvalue.isPrimitive()) {
+            // Clone reference types to avoid sharing between instances
             if (isSignal(propInitialvalue)) {
                 auto sig = asSignal(propInitialvalue)->signal;
                 if (!sig) {
@@ -3807,11 +5631,12 @@ ObjectInstance::ObjectInstance(const Value& objectType)
                     throw std::runtime_error("cannot use derived signals as member defaults");
                 }
             } else {
-                propInitialvalue = propInitialvalue.clone();
+                ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
+                propInitialvalue = propInitialvalue.clone(cloneCtx);
             }
         }
         auto hash = prop.name.hashCode();
-        auto& slot = properties[hash];
+        auto& slot = (*properties_)[hash];
         slot.clearSignal();
         slot.value = propInitialvalue;
     }
@@ -3821,43 +5646,136 @@ ObjectInstance::~ObjectInstance() {}
 
 Value ObjectInstance::getProperty(const icu::UnicodeString& name) const
 {
-    auto it = properties.find(name.hashCode());
-    if (it != properties.end())
+    auto it = properties_->find(name.hashCode());
+    if (it != properties_->end())
         return it->second.value;
 
     // If property not found and name doesn't start with '_', check for backing field
     // (accessor properties store their data in _<name>)
     if (!name.startsWith("_")) {
         icu::UnicodeString backingName = UnicodeString("_") + name;
-        it = properties.find(backingName.hashCode());
-        if (it != properties.end())
+        it = properties_->find(backingName.hashCode());
+        if (it != properties_->end())
             return it->second.value;
     }
     return Value::nilVal();
 }
 
+VariablesMap::MonitoredValue& ObjectInstance::propertySlot(int32_t hash)
+{
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+    return (*properties_)[hash];
+}
+
+void ObjectInstance::assignProperty(int32_t hash, const Value& value)
+{
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    (*properties_)[hash].assign(value);
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+}
+
+void ObjectInstance::emplaceProperty(int32_t hash, VariablesMap::MonitoredValue mv)
+{
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
+    properties_->emplace(hash, std::move(mv));
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+}
+
 void ObjectInstance::setProperty(const icu::UnicodeString& name, Value value)
 {
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    ensureUnique();
     // Check if this property has a backing field (accessor property)
     // If so, set the backing field instead of creating a separate property
     if (!name.startsWith("_")) {
         icu::UnicodeString backingName = UnicodeString("_") + name;
-        auto it = properties.find(backingName.hashCode());
-        if (it != properties.end()) {
+        auto it = properties_->find(backingName.hashCode());
+        if (it != properties_->end()) {
             // Use backing field instead
             it->second.assign(value);
+            if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
             return;
         }
     }
-    properties[name.hashCode()].assign(value);
+    (*properties_)[name.hashCode()].assign(value);
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 Value ObjectInstance::ensurePropertySignal(int32_t nameHash, const std::string& signalName)
 {
-    auto it = properties.find(nameHash);
-    if (it == properties.end())
+    ensureUnique();
+    auto it = properties_->find(nameHash);
+    if (it == properties_->end())
         return Value::nilVal();
     return it->second.ensureSignal(signalName);
+}
+
+
+bool roxal::tryExtractQuantity(const Value& v, double& siValue, std::array<int32_t,4>& dims, bool& isDimensioned, bool requireMatchingDims)
+{
+    // Bare zero (int or real) is compatible with any dimension
+    if (v.isNumber()) {
+        double val = v.isReal() ? v.asReal() : static_cast<double>(v.asInt());
+        if (val == 0.0) {
+            siValue = 0.0;
+            // isDimensioned left unchanged — zero is compatible with any dimension
+            return true;
+        }
+        return false; // non-zero bare number is not a quantity
+    }
+
+    // Check if it's a quantity object (duck-typed: has _v real and _d list of 4 ints)
+    if (!isObjectInstance(v))
+        return false;
+
+    ObjectInstance* inst = asObjectInstance(v);
+    Value vVal = inst->getProperty("_v");
+    Value dVal = inst->getProperty("_d");
+
+    if (vVal.isNil() || dVal.isNil())
+        return false;
+    if (!vVal.isNumber() || !isList(dVal))
+        return false;
+
+    ObjList* dList = asList(dVal);
+    if (dList->length() != 4)
+        return false;
+
+    siValue = vVal.isReal() ? vVal.asReal() : static_cast<double>(vVal.asInt());
+
+    std::array<int32_t,4> thisDims;
+    for (int i = 0; i < 4; ++i) {
+        Value elem = dList->getElement(i);
+        if (!elem.isInt())
+            return false;
+        thisDims[i] = static_cast<int32_t>(elem.asInt());
+    }
+
+    if (!isDimensioned) {
+        // First dimensioned element sets the reference dims
+        dims = thisDims;
+        isDimensioned = true;
+    } else if (dims != thisDims) {
+        // Subsequent element has different dims
+        if (requireMatchingDims)
+            throw std::runtime_error("vector elements have mismatched quantity dimensions");
+        // Otherwise track the latest dims (callers that don't care will ignore this)
+        dims = thisDims;
+    }
+
+    return true;
 }
 
 
@@ -3873,28 +5791,54 @@ unique_ptr<ObjectInstance, UnreleasedObj> roxal::newObjectInstance(const Value& 
 }
 
 
-unique_ptr<Obj, UnreleasedObj> ObjectInstance::clone() const
+unique_ptr<Obj, UnreleasedObj> ObjectInstance::clone(roxal::ptr<CloneContext> ctx) const
 {
+    // Check if already cloned (preserves shared references and handles cycles)
+    if (ctx) {
+        auto it = ctx->originalToClone.find(this);
+        if (it != ctx->originalToClone.end()) {
+            it->second->incRef();
+            return unique_ptr<Obj, UnreleasedObj>(it->second);
+        }
+    }
+
+    // Create new clone
     auto newobj = newObjectInstance(instanceType);
 
-    for(const auto& index_value : properties) {
+    // Register BEFORE recursing (critical for cycle handling)
+    if (ctx) {
+        ctx->originalToClone[this] = newobj.get();
+    }
+
+    // Clone properties with context
+    for (const auto& index_value : *properties_) {
         const auto index { index_value.first };
         const auto& slot { index_value.second };
         const Value& value { slot.value };
 
-        auto& targetSlot = newobj->properties[index];
+        auto& targetSlot = newobj->propertySlot(index);
         targetSlot.clearSignal();
 
         if (isActorInstance(value))
             throw std::runtime_error("clone of type actor unsupported");
 
-        targetSlot.value = value.clone();
-
+        targetSlot.value = value.clone(ctx);
     }
 
     return newobj;
 }
 
+unique_ptr<Obj, UnreleasedObj> ObjectInstance::shallowClone() const
+{
+    auto newobj = newObjectInstance(instanceType);
+    // COW: share the properties pointer (O(1) refcount bump).
+    // Mutations on either side will trigger ensureUnique() to copy-on-write.
+    // Signals are intentionally NOT copied — they are per-instance change
+    // notification handles tied to the dataflow engine and would be meaningless
+    // on a clone (same convention as deep clone(), which calls clearSignal()).
+    newobj->properties_ = properties_;
+    return newobj;
+}
 
 
 ActorInstance::ActorInstance(ActorInstance::UninitializedTag)
@@ -3907,6 +5851,30 @@ ActorInstance::ActorInstance(const Value& objectType)
     : ActorInstance(UninitializedTag{})
 {
     initialize(objectType);
+}
+
+VariablesMap::MonitoredValue& ActorInstance::propertySlot(int32_t hash)
+{
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+    return properties[hash];
+}
+
+void ActorInstance::assignProperty(int32_t hash, const Value& value)
+{
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+    properties[hash].assign(value);
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+}
+
+void ActorInstance::emplaceProperty(int32_t hash, VariablesMap::MonitoredValue mv)
+{
+    ensureMutable();
+    if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
+    properties.emplace(hash, std::move(mv));
+    control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 void ActorInstance::initialize(const Value& objectType)
@@ -3942,7 +5910,8 @@ void ActorInstance::initialize(const Value& objectType)
                     throw std::runtime_error("cannot use derived signals as member defaults");
                 }
             } else {
-                propInitialvalue = propInitialvalue.clone();
+                ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
+                propInitialvalue = propInitialvalue.clone(cloneCtx);
             }
         }
         auto hash = prop.name.hashCode();
@@ -3957,6 +5926,16 @@ ActorInstance::~ActorInstance()
     // The VM ensures the worker thread has already been joined (or detached in
     // the self-join case) before destroying the actor instance, so clearing the
     // weak thread reference here is just bookkeeping.
+#ifdef ROXAL_COMPUTE_SERVER
+    if (isRemote && remoteActorId != 0 && remoteConnHold != nullptr) {
+        try {
+            remoteConnHold->sendActorDropped(remoteActorId);
+        } catch (...) {
+        }
+    }
+    remoteConn.reset();
+    remoteConnHold.reset();
+#endif
     thread.reset();
 }
 
@@ -3992,7 +5971,8 @@ void ActorInstance::dropReferences()
     }
 }
 
-Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Value* argsStackTop)
+Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Value* argsStackTop,
+                               bool forceCompletionFuture)
 {
     // queue producer for consumer Thread::act()
     #ifdef DEBUG_BUILD
@@ -4003,40 +5983,109 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
 
     std::lock_guard<std::mutex> lock { queueMutex };
 
-    // TODO: arrange for push to move to queue to avoid copy
+    // If the actor's thread has already exited, no one will service this call.
+    // Return nil immediately so callers (resolveFuture etc.) don't block forever.
+    if (!alive.load(std::memory_order_acquire)) {
+        return Value::nilVal();
+    }
+
     MethodCallInfo callInfo {};
     callInfo.callee = callee;
     callInfo.callSpec = callSpec;
-    for(auto i=0; i<callSpec.argCount; i++) {
-        Value arg = *(argsStackTop - i - 1);
-        if (!arg.isPrimitive())
-            arg = arg.clone();
-        callInfo.args.push_back(arg);
-    }
-    callInfo.returnPromise = nullptr;
-    callInfo.returnFuture = Value::nilVal();
+#ifdef ROXAL_COMPUTE_SERVER
+    callInfo.printTarget = VM::currentPrintTarget();
+#endif
 
+    // Extract function type info early so we can check param constness in the arg loop
+    const std::vector<std::optional<type::Type::FuncType::ParamType>>* paramTypes = nullptr;
     if (isBoundMethod(callee)) {
         auto funcObj = asFunction(asClosure(asBoundMethod(callee)->method)->function);
+        ptr<type::Type> retType;
+        bool needsReturnFuture = forceCompletionFuture;
         if (funcObj->funcType.has_value()) {
             ptr<roxal::type::Type> funcType { funcObj->funcType.value() };
             assert(funcType->func.has_value());
-            if (!funcType->func.value().isProc) {
-                callInfo.returnPromise = make_ptr<std::promise<Value>>();
-                std::shared_future<Value> sf = callInfo.returnPromise->get_future().share();
-                callInfo.returnFuture = Value::objVal(newFutureObj(sf));
+            paramTypes = &funcType->func.value().params;
+            needsReturnFuture = forceCompletionFuture || !funcType->func.value().isProc;
+            if (needsReturnFuture) {
+                // Extract return type for the future's promisedType
+                if (!funcType->func.value().returnTypes.empty())
+                    retType = funcType->func.value().returnTypes[0];
             }
         }
+        if (needsReturnFuture) {
+            callInfo.returnPromise = make_ptr<std::promise<Value>>();
+            std::shared_future<Value> sf = callInfo.returnPromise->get_future().share();
+            callInfo.returnFuture = Value::objVal(newFutureObj(sf, retType));
+        }
     }
-    else if (isBoundNative(callee)) {
+
+    // Marshal arguments: clone non-primitive args for actor isolation,
+    // skip clone for sole-owner values, error for aliased mutable params.
+    for(auto i=0; i<callSpec.argCount; i++) {
+        Value arg = *(argsStackTop - i - 1);
+        if (!arg.isPrimitive()) {
+            Obj* obj = arg.asObj();
+            bool soleOwner = obj && obj->control && obj->control->strong.load() <= 2;
+
+            // Check if this is an explicitly mutable param (not implicitly const).
+            // Actor params are implicitly const unless the param type exists and !isConst.
+            // Args are pushed in reverse order, so arg i corresponds to param (argCount-1-i).
+            bool isMutableParam = false;
+            if (paramTypes) {
+                size_t paramIdx = callSpec.argCount - 1 - i;
+                if (paramIdx < paramTypes->size()) {
+                    const auto& paramOpt = (*paramTypes)[paramIdx];
+                    if (paramOpt.has_value() && paramOpt->type.has_value()) {
+                        isMutableParam = !paramOpt->type.value()->isConst;
+                    }
+                }
+            }
+
+            if (isActorInstance(arg)) {
+                // Actor instances are live shared references with their own concurrency
+                // isolation — sole-owner and graph-isolation checks do not apply since
+                // all actor state is protected by the actor's own isolation.
+                // Apply const/mutable semantics directly: implicitly-const params carry
+                // the const bit; explicitly-mutable params are passed as-is.
+                if (!isMutableParam)
+                    arg = arg.constRef();
+            } else {
+                if (isMutableParam && !soleOwner) {
+                    throw std::runtime_error("Cannot pass aliased value as mutable actor parameter (use move() to transfer sole ownership)");
+                }
+
+                if (isMutableParam && soleOwner && !isIsolatedGraph(obj)) {
+                    throw std::runtime_error("Cannot pass value with aliased interior objects as mutable actor parameter");
+                }
+
+                if (!isMutableParam) {
+                    // Const value param: frozen snapshot for MVCC-based isolation.
+                    // Sole-owner: createFrozenSnapshot just sets const bit (zero-copy).
+                    // Shared: createFrozenSnapshot shallow-clones the root; children are
+                    // lazily resolved via resolveConstChild on the actor thread, protected
+                    // by the per-object cowLock_ spinlock against concurrent mutations.
+                    arg = createFrozenSnapshot(arg);
+                }
+                // else: mutable sole-owner value passes through as-is (caller moved it).
+            }
+        }
+        callInfo.args.push_back(arg);
+    }
+
+    if (isBoundNative(callee)) {
         // For builtin methods, check if it's a proc or func
         auto bound = asBoundNative(callee);
 
         // Only create a return promise if it's NOT a proc (i.e., it's a func)
-        if (!bound->isProc) {
+        if (forceCompletionFuture || !bound->isProc) {
+            ptr<type::Type> retType;
+            if (bound->funcType && bound->funcType->func.has_value()
+                && !bound->funcType->func.value().returnTypes.empty())
+                retType = bound->funcType->func.value().returnTypes[0];
             callInfo.returnPromise = make_ptr<std::promise<Value>>();
             std::shared_future<Value> sf = callInfo.returnPromise->get_future().share();
-            callInfo.returnFuture = Value::objVal(newFutureObj(sf));
+            callInfo.returnFuture = Value::objVal(newFutureObj(sf, retType));
         }
 
         // Convert arguments into parameter order so actor thread receives a complete list.
@@ -4061,8 +6110,9 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
                 }
                 if (arg.isNil() && pi < bound->defaultValues.size())
                     arg = bound->defaultValues[pi];
-                if (!arg.isPrimitive())
-                    arg = arg.clone();
+                if (!arg.isPrimitive()) {
+                    arg = createFrozenSnapshot(arg);
+                }
                 normalized.push_back(arg);
             }
 
@@ -4108,14 +6158,121 @@ unique_ptr<ActorInstance, UnreleasedObj> roxal::newActorInstance(const Value& ob
     return actor;
 }
 
-ObjBoundMethod::ObjBoundMethod(const Value& instance, const Value& closure)
-    : receiver(instance), method(closure.weakRef())
+#ifdef ROXAL_COMPUTE_SERVER
+Value roxal::makeRemoteActor(const Value& actorType, int64_t remoteId, ptr<ComputeConnection> conn)
 {
-    debug_assert_msg(isClosure(closure), "ObjBoundMethod constructed with non-closure");
+    Value actorVal = Value::objVal(newActorInstance(actorType));
+    auto* actor = asActorInstance(actorVal);
+    actor->isRemote = true;
+    actor->remoteActorId = remoteId;
+    actor->remoteConn = conn;
+    actor->remoteConnHold = conn;
+
+    ptr<Thread> newThread = make_ptr<Thread>();
+    VM::instance().registerThread(newThread);
+    actor->thread = newThread;
+    newThread->act(actorVal);
+    return actorVal;
+}
+#endif
+
+ObjBoundMethod::ObjBoundMethod(const Value& instance, const Value& closure)
+    : receiver(instance),
+      // Closures are weak-referenced because they're strong-rooted by the
+      // owning type's method map. OverloadSets bound here are freshly
+      // allocated by bindMethod and have no other strong root, so we keep
+      // a strong ref to prevent collection while the BoundMethod is alive.
+      method(isOverloadSet(closure) ? closure : closure.weakRef())
+{
+    debug_assert_msg(isClosure(closure) || isOverloadSet(closure),
+                     "ObjBoundMethod constructed with non-closure / non-overload-set");
     type = ObjType::BoundMethod;
 }
 
 ObjBoundMethod::~ObjBoundMethod() {}
+
+
+ObjOverloadSet::ObjOverloadSet(const icu::UnicodeString& n) : name(n)
+{
+    type = ObjType::OverloadSet;
+}
+
+ObjOverloadSet::~ObjOverloadSet() {}
+
+unique_ptr<Obj, UnreleasedObj> ObjOverloadSet::clone(roxal::ptr<CloneContext> ctx) const
+{
+    if (ctx) {
+        auto it = ctx->originalToClone.find(this);
+        if (it != ctx->originalToClone.end()) {
+            it->second->incRef();
+            return unique_ptr<Obj, UnreleasedObj>(it->second);
+        }
+    }
+
+    auto fresh = newOverloadSetObj(name);
+    fresh->importedFromModule = importedFromModule;
+    fresh->closures = closures;
+
+    if (ctx) {
+        ctx->originalToClone[this] = fresh.get();
+    }
+    return fresh;
+}
+
+void ObjOverloadSet::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
+{
+    // The first byte is the ObjType tag — same convention as ObjClosure.
+    // readValue's case ValueType::Closure peeks it to discriminate
+    // between a Closure and an OverloadSet (both report
+    // valueType() == Closure for first-class-ref transparency).
+    uint8_t tag = static_cast<uint8_t>(ObjType::OverloadSet);
+    out.write(reinterpret_cast<char*>(&tag),1);
+
+    std::string nm; name.toUTF8String(nm);
+    uint32_t nlen = nm.size();
+    out.write(reinterpret_cast<char*>(&nlen),4);
+    out.write(nm.data(), nlen);
+
+    uint8_t imported = importedFromModule ? 1 : 0;
+    out.write(reinterpret_cast<char*>(&imported),1);
+
+    uint32_t count = closures.size();
+    out.write(reinterpret_cast<char*>(&count),4);
+    for (const auto& c : closures)
+        writeValue(out, c, ctx);
+}
+
+void ObjOverloadSet::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
+{
+    uint8_t tag; in.read(reinterpret_cast<char*>(&tag),1);
+    if (tag != static_cast<uint8_t>(ObjType::OverloadSet))
+        throw std::runtime_error("ObjOverloadSet::read mismatched tag");
+    type = ObjType::OverloadSet;
+
+    uint32_t nlen; in.read(reinterpret_cast<char*>(&nlen),4);
+    std::string nm(nlen,'\0'); if (nlen > 0) in.read(nm.data(), nlen);
+    name = icu::UnicodeString::fromUTF8(nm);
+
+    uint8_t imported; in.read(reinterpret_cast<char*>(&imported),1);
+    importedFromModule = (imported != 0);
+
+    uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
+    closures.clear();
+    closures.reserve(count);
+    for (uint32_t i = 0; i < count; ++i)
+        closures.push_back(readValue(in, ctx));
+}
+
+void ObjOverloadSet::trace(ValueVisitor& visitor) const
+{
+    for (auto& c : closures)
+        visitor.visit(c);
+}
+
+void ObjOverloadSet::dropReferences()
+{
+    closures.clear();
+}
 
 
 
@@ -4174,6 +6331,8 @@ std::string roxal::objTypeName(Obj* obj)
     case ObjType::Dict: return "dict";
     case ObjType::Vector: return "vector";
     case ObjType::Matrix: return "matrix";
+    case ObjType::Orient: return "orient";
+    case ObjType::Tensor: return "tensor";
     case ObjType::Signal: return "signal";
     case ObjType::File: return "file";
     case ObjType::EventType: return "event";
@@ -4181,6 +6340,8 @@ std::string roxal::objTypeName(Obj* obj)
     case ObjType::Library: return "library";
     case ObjType::ForeignPtr: return "foreignptr";
     case ObjType::Exception: return "exception";
+    case ObjType::OverloadSet: return "function";
+    case ObjType::Combinator: return "future";
     }
     return "unknown";
 }
@@ -4199,7 +6360,7 @@ void roxal::testObjectValues()
     assert(isList(l1));
     assert(!l1.isNil());
     ObjList* lp = static_cast<ObjList*>(l1.asObj());
-    assert(lp->elts.size() == 3);
+    assert(lp->length() == 3);
 
     Value l2 = l1;
     assert(isList(l2));

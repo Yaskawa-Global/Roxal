@@ -1,10 +1,40 @@
 #include "Thread.h"
 #include "VM.h"
 #include "Object.h"
+#ifdef ROXAL_COMPUTE_SERVER
+#include "ComputeConnection.h"
+#endif
 #include <algorithm>
 #include <iostream>
+#ifdef __linux__
+#include <pthread.h>
+#include <sched.h>
+#endif
 
 using namespace roxal;
+
+#ifdef ROXAL_COMPUTE_SERVER
+namespace {
+icu::UnicodeString remoteMethodNameForCall(const ActorInstance::MethodCallInfo& callInfo)
+{
+    if (isBoundMethod(callInfo.callee)) {
+        auto* boundMethod = asBoundMethod(callInfo.callee);
+        auto* closure = asClosure(boundMethod->method);
+        auto* function = asFunction(closure->function);
+        return function->name;
+    }
+
+    if (isBoundNative(callInfo.callee)) {
+        auto* boundNative = asBoundNative(callInfo.callee);
+        if (isFunction(boundNative->declFunction))
+            return asFunction(boundNative->declFunction)->name;
+        throw std::runtime_error("remote actor call missing declared function metadata");
+    }
+
+    throw std::runtime_error("unsupported remote actor callee");
+}
+}
+#endif
 
 Thread::~Thread()
 {
@@ -65,9 +95,31 @@ void Thread::pruneEventRegistrations()
 
         auto& handlers = it->second;
         handlers.erase(std::remove_if(handlers.begin(), handlers.end(),
-                                      [](const HandlerRegistration& handler) {
-                                          return !handler.closure.isAlive() ||
-                                                 (handler.closure.isWeak() && !handler.closure.isAlive());
+                                      [&ev](const HandlerRegistration& handler) {
+                                          if (!handler.closure.isAlive() ||
+                                              (handler.closure.isWeak() && !handler.closure.isAlive()))
+                                              return true;
+                                          // Combinator relay registrations whose target combinator is
+                                          // dead or already fulfilled are dead weight — prune them
+                                          // (also drops the matching weak entry in ev->subscribers).
+                                          if (handler.combinatorTarget.isWeak() &&
+                                              handler.combinatorTarget.isNonNil()) {
+                                              Value cbStrong = handler.combinatorTarget.strongRef();
+                                              bool dead = cbStrong.isNil() || !isCombinator(cbStrong);
+                                              bool fulfilled = !dead && asCombinator(cbStrong)->fulfilled;
+                                              if (dead || fulfilled) {
+                                                  if (ev && handler.closure.isNonNil()) {
+                                                      Obj* relayObj = handler.closure.asObj();
+                                                      auto& subs = ev->subscribers;
+                                                      subs.erase(std::remove_if(subs.begin(), subs.end(),
+                                                          [&](const Value& sub) {
+                                                              return sub.isNonNil() && sub.asObj() == relayObj;
+                                                          }), subs.end());
+                                                  }
+                                                  return true;
+                                              }
+                                          }
+                                          return false;
                                       }),
                        handlers.end());
 
@@ -102,6 +154,28 @@ void Thread::spawn(Value closure)
 
     state = State::Spawned;
     osthread = make_ptr<std::thread>([this,closure]() {
+        // When running in an RT context, ensure actor threads don't run on the
+        // RT core and use normal (non-RT) scheduling policy.
+        #ifdef __linux__
+        {
+            int excludeCore = VM::instance().rtCoreExclusion();
+            if (excludeCore >= 0) {
+                cpu_set_t cpuset;
+                CPU_ZERO(&cpuset);
+                unsigned int numCpus = std::thread::hardware_concurrency();
+                for (unsigned int i = 0; i < numCpus; ++i) {
+                    if (static_cast<int>(i) != excludeCore)
+                        CPU_SET(i, &cpuset);
+                }
+                pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+
+                struct sched_param param {};
+                param.sched_priority = 0;
+                pthread_setschedparam(pthread_self(), SCHED_OTHER, &param);
+            }
+        }
+        #endif
+
         try {
             auto& vm { VM::instance() };
 
@@ -129,7 +203,7 @@ void Thread::spawn(Value closure)
                     entry.second->wake();
             });
 
-            result = InterpretResult::RuntimeError;
+            result = ExecutionStatus::RuntimeError;
             stack.clear();
             state = State::Completed;
             actor = false;
@@ -156,6 +230,17 @@ void Thread::join(ActorInstance* actorInstOverride)
             std::lock_guard<std::mutex> lock { inst->queueMutex };
             quit = true;
             inst->queueConditionVar.notify_one();
+#ifdef ROXAL_COMPUTE_SERVER
+            // Remote proxy workers can be blocked in ComputeConnection::future.get()
+            // rather than waiting on the actor queue. Abort the transport first so
+            // pending remote calls are rejected and the worker can unwind before the
+            // blocking std::thread::join() below.
+            if (inst->isRemote) {
+                auto conn = inst->remoteConn.lock();
+                if (conn)
+                    conn->abort();
+            }
+#endif
         } else {
             quit = true;
         }
@@ -190,6 +275,11 @@ void Thread::act(Value actorInstance)
 
     actor = true;
     state = State::Spawned;
+
+    // Mark actor as alive before spawning the OS thread so that any queueCall()
+    // arriving between now and the thread's first iteration doesn't see alive=false
+    // and silently drop the call.
+    asActorInstance(actorInstance)->alive.store(true, std::memory_order_release);
 
     osthread = make_ptr<std::thread>([this]() {
         try {
@@ -229,7 +319,11 @@ void Thread::act(Value actorInstance)
                     if (!actorInst->callQueue.empty()) {
                         callInfo = actorInst->callQueue.pop();
                     }
-                    if (quit)
+                    // Only break on quit if there is no call to process: if a call
+                    // was already popped from the queue we must execute it (and
+                    // fulfil its promise) before exiting, otherwise the caller
+                    // blocks forever on a future that is never resolved.
+                    if (quit && !callInfo.valid())
                         break;
                 }
 
@@ -256,19 +350,78 @@ void Thread::act(Value actorInstance)
                     // Ensure actor instance stays alive during call
                     this->stack[0] = strongActor;
 
+#ifdef ROXAL_COMPUTE_SERVER
+                    VM::ScopedPrintTarget printTargetScope(callInfo.printTarget);
+                    if (actorInst->isRemote) {
+                        remoteComputeCallState.active = true;
+                        remoteComputeCallState.args.assign(callInfo.args.rbegin(), callInfo.args.rend());
+                        remoteComputeCallState.completionFuture = callInfo.returnFuture;
+                        remoteComputeCallState.result = Value::nilVal();
+                        try {
+                            auto conn = actorInst->remoteConn.lock();
+                            if (!conn)
+                                throw std::runtime_error("remote actor connection has been released");
+
+                            Value ret = conn->callRemoteMethod(
+                                actorInst->remoteActorId,
+                                remoteMethodNameForCall(callInfo),
+                                remoteComputeCallState.args,
+                                callInfo.callSpec,
+                                &remoteComputeCallState.result);
+                            remoteComputeCallState.result = ret;
+
+                            if (callInfo.returnPromise != nullptr) {
+                                callInfo.returnPromise->set_value(remoteComputeCallState.result);
+                                if (!remoteComputeCallState.completionFuture.isNil()) {
+                                    asFuture(remoteComputeCallState.completionFuture)->wakeWaiters();
+                                    remoteComputeCallState.completionFuture = Value::nilVal();
+                                }
+                            }
+                        } catch (const std::exception& e) {
+                            std::cerr << "Remote actor call failed: " << e.what() << std::endl;
+                            if (callInfo.returnPromise != nullptr) {
+                                callInfo.returnPromise->set_value(Value::nilVal());
+                                if (!remoteComputeCallState.completionFuture.isNil()) {
+                                    asFuture(remoteComputeCallState.completionFuture)->wakeWaiters();
+                                    remoteComputeCallState.completionFuture = Value::nilVal();
+                                }
+                            }
+                            quit = true;
+                        }
+
+                        remoteComputeCallState.clear();
+                        this->stack[0] = this->actorInstance;
+                        currentActorCall = Value::nilVal();
+                        if (quit)
+                            break;
+                        continue;
+                    }
+#endif
+
                     if (isBoundMethod(callInfo.callee)) {
                         auto boundMethod = asBoundMethod(callInfo.callee);
                         auto closure = asClosure(boundMethod->method);
                         auto function = asFunction(closure->function);
 
+                        // Determine if return type is const-qualified (-> const T)
+                        bool returnIsConst = false;
+                        if (function->funcType.has_value()) {
+                            ptr<roxal::type::Type> ft { function->funcType.value() };
+                            if (ft->func.has_value() && !ft->func->returnTypes.empty()) {
+                                auto& rt = ft->func->returnTypes[0];
+                                if (rt && rt->isConst)
+                                    returnIsConst = true;
+                            }
+                        }
+
                         // Check if this is a native method wrapped in a BoundMethod
-                        if (function->nativeImpl) {
+                        if (function->builtinInfo) {
                             // For native methods, we need to pass receiver as first arg
                             push(boundMethod->receiver);
                             for(auto it = callInfo.args.rbegin(); it != callInfo.args.rend(); ++it)
                                 push(*it);
 
-                            NativeFn native = function->nativeImpl;
+                            NativeFn native = function->builtinInfo->function;
                             ArgsView view{&(*vm.thread->stackTop) - callInfo.callSpec.argCount - 1,
                                           static_cast<size_t>(callInfo.callSpec.argCount + 1)};
                             Value ret{};
@@ -282,9 +435,32 @@ void Thread::act(Value actorInstance)
                             popN(callInfo.callSpec.argCount + 1);
 
                             if (callInfo.returnPromise != nullptr) {
-                                if (!ret.isPrimitive() && !isException(ret))
-                                    ret = ret.clone();
-                                callInfo.returnPromise->set_value(ok ? ret : Value::nilVal());
+                                // Resolve any futures before returning across actor boundary
+                                if (isFuture(ret))
+                                    ret.resolveFuture();
+                                if (!ret.isPrimitive() && !isException(ret)) {
+                                    if (returnIsConst) {
+                                        ret = createFrozenSnapshot(ret);
+                                    } else {
+                                        Obj* obj = ret.asObj();
+                                        bool soleOwner = obj && obj->control &&
+                                            obj->control->strong.load(std::memory_order_acquire) <= 1;
+                                        if (!soleOwner || !isIsolatedGraph(obj)) {
+                                            ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
+                                            ret = ret.clone(cloneCtx);
+                                        }
+                                    }
+                                }
+                                Value forward;
+                                if (ok) {
+                                    forward = ret;
+                                } else {
+                                    forward = pendingUncaughtException;
+                                    pendingUncaughtException = Value::nilVal();
+                                    if (!isException(forward))
+                                        forward = Value::nilVal();
+                                }
+                                callInfo.returnPromise->set_value(forward);
                                 if (!callInfo.returnFuture.isNil()) {
                                     asFuture(callInfo.returnFuture)->wakeWaiters();
                                     callInfo.returnFuture = Value::nilVal();
@@ -306,11 +482,25 @@ void Thread::act(Value actorInstance)
                         auto resultPair = vm.execute();
                         result = resultPair.first;
 
-                    if (resultPair.first == InterpretResult::OK) {
+                    if (resultPair.first == ExecutionStatus::OK) {
                         if (callInfo.returnPromise != nullptr) {
                             Value ret = resultPair.second;
-                            if (!ret.isPrimitive() && !isException(ret))
-                                ret = ret.clone();
+                            // Resolve any futures before returning across actor boundary
+                            if (isFuture(ret))
+                                ret.resolveFuture();
+                            if (!ret.isPrimitive() && !isException(ret)) {
+                                if (returnIsConst) {
+                                    ret = createFrozenSnapshot(ret);
+                                } else {
+                                    Obj* obj = ret.asObj();
+                                    bool soleOwner = obj && obj->control &&
+                                        obj->control->strong.load(std::memory_order_acquire) <= 1;
+                                    if (!soleOwner || !isIsolatedGraph(obj)) {
+                                        ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
+                                        ret = ret.clone(cloneCtx);
+                                    }
+                                }
+                            }
                             callInfo.returnPromise->set_value(ret);
                             if (!callInfo.returnFuture.isNil()) {
                                 asFuture(callInfo.returnFuture)->wakeWaiters();
@@ -318,14 +508,28 @@ void Thread::act(Value actorInstance)
                             }
                         }
                     } else {
+                        // Forward an uncaught exception (if any) through the
+                        // return future so awaiting code can observe and
+                        // re-raise it; otherwise fall back to nilVal. When we
+                        // successfully forward a Roxal-level exception, the
+                        // actor itself is still healthy — just this method
+                        // invocation failed — so we keep serving subsequent
+                        // calls (don't quit) and reset the per-call result.
+                        bool forwardedException = false;
                         if (callInfo.returnPromise != nullptr) {
-                            callInfo.returnPromise->set_value(Value::nilVal());
+                            Value forward = pendingUncaughtException;
+                            pendingUncaughtException = Value::nilVal();
+                            if (isException(forward)) {
+                                forwardedException = true;
+                            } else {
+                                forward = Value::nilVal();
+                            }
+                            callInfo.returnPromise->set_value(forward);
                             if (!callInfo.returnFuture.isNil()) {
                                 asFuture(callInfo.returnFuture)->wakeWaiters();
                                 callInfo.returnFuture = Value::nilVal();
                             }
                         }
-                        quit = true;
                         // reset stack before breaking
                         {
                             auto diff = this->stackTop - (this->stack.begin()+1);
@@ -333,7 +537,13 @@ void Thread::act(Value actorInstance)
                             this->stack[0] = this->actorInstance;
                         }
                         currentActorCall = Value::nilVal();
-                        break;
+                        if (forwardedException) {
+                            result = ExecutionStatus::OK;
+                            // Continue serving subsequent calls.
+                        } else {
+                            quit = true;
+                            break;
+                        }
                     }
 
                         {
@@ -345,6 +555,15 @@ void Thread::act(Value actorInstance)
 
                     } else if (isBoundNative(callInfo.callee)) {
                         ObjBoundNative* bn = asBoundNative(callInfo.callee);
+
+                        bool bnReturnIsConst = false;
+                        if (bn->funcType) {
+                            if (bn->funcType->func.has_value() && !bn->funcType->func->returnTypes.empty()) {
+                                auto& rt = bn->funcType->func->returnTypes[0];
+                                if (rt && rt->isConst)
+                                    bnReturnIsConst = true;
+                            }
+                        }
 
                         for(auto it = callInfo.args.rbegin(); it != callInfo.args.rend(); ++it)
                             push(*it);
@@ -363,10 +582,34 @@ void Thread::act(Value actorInstance)
                         popN(callInfo.callSpec.argCount);
 
                         if (callInfo.returnPromise != nullptr) {
-                            if (!ret.isPrimitive() && !isException(ret))
-                                ret = ret.clone();
-                            // On failure, resolve to nil to avoid broken promises.
-                            callInfo.returnPromise->set_value(ok ? ret : Value::nilVal());
+                            // Resolve any futures before returning across actor boundary
+                            if (isFuture(ret))
+                                ret.resolveFuture();
+                            if (!ret.isPrimitive() && !isException(ret)) {
+                                if (bnReturnIsConst) {
+                                    ret = createFrozenSnapshot(ret);
+                                } else {
+                                    Obj* obj = ret.asObj();
+                                    bool soleOwner = obj && obj->control &&
+                                        obj->control->strong.load(std::memory_order_acquire) <= 1;
+                                    if (!soleOwner || !isIsolatedGraph(obj)) {
+                                        ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
+                                        ret = ret.clone(cloneCtx);
+                                    }
+                                }
+                            }
+                            // On failure, forward the pending exception (if any)
+                            // through the future so awaiters can re-raise.
+                            Value forward;
+                            if (ok) {
+                                forward = ret;
+                            } else {
+                                forward = pendingUncaughtException;
+                                pendingUncaughtException = Value::nilVal();
+                                if (!isException(forward))
+                                    forward = Value::nilVal();
+                            }
+                            callInfo.returnPromise->set_value(forward);
                             if (!callInfo.returnFuture.isNil()) {
                                 asFuture(callInfo.returnFuture)->wakeWaiters();
                                 callInfo.returnFuture = Value::nilVal();
@@ -384,7 +627,15 @@ void Thread::act(Value actorInstance)
 
             } while (true);
 
-            // resolve any queued calls with nil so waiting futures complete
+            // Set alive=false while holding queueMutex so any concurrent queueCall()
+            // that acquires the lock after this point will see alive=false and
+            // immediately resolve its promise, rather than pushing to an unserviced queue.
+            {
+                std::lock_guard<std::mutex> lock { actorInst->queueMutex };
+                actorInst->alive.store(false, std::memory_order_release);
+            }
+
+            // Drain items that arrived before alive was cleared (or were already queued).
             while(!actorInst->callQueue.empty()) {
                 auto pending = actorInst->callQueue.pop();
                 if (pending.returnPromise) {
@@ -411,7 +662,7 @@ void Thread::act(Value actorInstance)
                     entry.second->wake();
             });
 
-            result = InterpretResult::RuntimeError;
+            result = ExecutionStatus::RuntimeError;
             stack.clear();
             state = State::Completed;
             actorInstanceRaw.store(nullptr, std::memory_order_release);

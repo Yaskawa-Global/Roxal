@@ -83,7 +83,7 @@ assert(g == [101, 102, 103], "mixed literal/method")
 var h = (
     (
         [1, 2, 3, 4]
-        .filter(func(x): x % 2 == 0)
+        .filter(func(x): x rem 2 == 0)
     )
     .map(func(x): x * x)
 )

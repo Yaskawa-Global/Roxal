@@ -25,7 +25,7 @@ m.signed64 = -90000000000
 m.unsigned64 = 5000000000
 m.serial = 1234
 
-dds.write(w, m)
+wait(for=dds.write(w, m))
 var recv = dds.read(r)
 
 print("color {recv.color}")

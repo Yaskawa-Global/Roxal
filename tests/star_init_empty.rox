@@ -1,0 +1,14 @@
+// Type with no public properties — init(*) is equivalent to init() and
+// the synthesized signature has zero params.
+
+type Marker object:
+  private var n :int = 0
+
+  proc init(*):
+    print("marker init")
+
+  func count() -> int:
+    return n
+
+var m = Marker()
+print(m.count())

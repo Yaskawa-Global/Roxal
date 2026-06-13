@@ -1,0 +1,21 @@
+type ForwardPrintWorkerActor actor:
+  func report(msg: string) -> int:
+    print("downstream:" + msg)
+    return 7
+
+type ForwardPrintRelayActor actor:
+  private var nextHop: string
+
+  proc init(nextHop: string):
+    this.nextHop = nextHop
+
+  func relay(msg: string) -> int:
+    var worker = ForwardPrintWorkerActor() at this.nextHop
+    var result = worker.report(msg)
+    wait(for=result)
+    return result
+
+var forwarder = ForwardPrintRelayActor("__COMPUTE_TEST_ADDR_2__") at "__COMPUTE_TEST_ADDR__"
+var result = forwarder.relay("hello")
+wait(for=result)
+print(result)

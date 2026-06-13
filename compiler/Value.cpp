@@ -11,6 +11,9 @@
 #include "dataflow/DataflowEngine.h"
 #include "Thread.h"
 #include "VM.h"
+#ifdef ROXAL_COMPUTE_SERVER
+#include "ComputeConnection.h"
+#endif
 #include <core/types.h>
 #include <Eigen/Dense>
 #include <chrono>
@@ -38,6 +41,102 @@ namespace roxal {
 
 
 using namespace roxal;
+
+#ifdef ROXAL_COMPUTE_SERVER
+namespace {
+
+Value resolveCanonicalSerializedObjectType(const Value& typeVal)
+{
+    if (!isObjectType(typeVal))
+        return typeVal;
+
+    ObjObjectType* objectType = asObjectType(typeVal);
+    auto findPreferredModule = [&](const Value& moduleValue) -> Value {
+        if (!isModuleType(moduleValue))
+            return Value::nilVal();
+
+        ObjModuleType* module = asModuleType(moduleValue);
+        auto matchesModule = [&](const Value& candidate) -> Value {
+            if (!isModuleType(candidate) || candidate.asObj() == moduleValue.asObj())
+                return Value::nilVal();
+            ObjModuleType* candidateModule = asModuleType(candidate);
+            if (!module->fullName.isEmpty()) {
+                if (candidateModule->fullName == module->fullName)
+                    return candidate.strongRef();
+                return Value::nilVal();
+            }
+            if (candidateModule->name == module->name)
+                return candidate.strongRef();
+            return Value::nilVal();
+        };
+
+        Value builtin = VM::instance().getBuiltinModuleType(module->name);
+        Value matched = matchesModule(builtin);
+        if (matched.isNonNil())
+            return matched;
+
+        if (!module->fullName.isEmpty()) {
+            auto globalByFull = VM::instance().loadGlobal(module->fullName);
+            if (globalByFull.has_value()) {
+                matched = matchesModule(globalByFull.value());
+                if (matched.isNonNil())
+                    return matched;
+            }
+        }
+
+        auto globalByName = VM::instance().loadGlobal(module->name);
+        if (globalByName.has_value()) {
+            matched = matchesModule(globalByName.value());
+            if (matched.isNonNil())
+                return matched;
+        }
+
+        for (const Value& candidate : ObjModuleType::allModules.get()) {
+            matched = matchesModule(candidate);
+            if (matched.isNonNil())
+                return matched;
+        }
+
+        return moduleValue.strongRef();
+    };
+
+    auto tryModule = [&](const Value& moduleValue) -> Value {
+        Value preferredModule = findPreferredModule(moduleValue);
+        if (isModuleType(preferredModule)) {
+            auto found = asModuleType(preferredModule)->vars.load(objectType->name);
+            if (found.has_value() && isObjectType(found.value()))
+                return found.value().strongRef();
+        }
+
+        if (isModuleType(moduleValue)) {
+            auto found = asModuleType(moduleValue)->vars.load(objectType->name);
+            if (found.has_value() && isObjectType(found.value()))
+                return found.value().strongRef();
+        }
+        return Value::nilVal();
+    };
+
+    for (const auto& [_, methodSet] : objectType->methods) {
+        for (const auto& method : methodSet.overloads) {
+            if (!isClosure(method.closure))
+                continue;
+            Value resolved = tryModule(asFunction(asClosure(method.closure)->function)->moduleType.strongRef());
+            if (resolved.isNonNil())
+                return resolved;
+        }
+    }
+
+    for (const Value& modVal : ObjModuleType::allModules.get()) {
+        Value resolved = tryModule(modVal.strongRef());
+        if (resolved.isNonNil())
+            return resolved;
+    }
+
+    return typeVal;
+}
+
+} // namespace
+#endif
 
 
 VariablesMap::MonitoredValue::MonitoredValue()
@@ -154,7 +253,15 @@ std::string roxal::to_string(ValueType t)
 // Reference type constructors
 Value Value::stringVal(const icu::UnicodeString& s)
 {
-    return Value::objVal(newObjString(s));
+    bool wasInterned = false;
+    auto v = Value::objVal(newObjString(s, &wasInterned));
+    if (wasInterned) {
+        // newObjString called tryIncRef to protect the interned string from
+        // being freed before Value's constructor could call incRef.  Now that
+        // the Value holds its own strong ref, release the protective one.
+        v.asObj()->decRef();
+    }
+    return v;
 }
 
 Value Value::rangeVal()
@@ -225,6 +332,31 @@ Value Value::matrixVal(const Eigen::MatrixXd& values)
     return Value::objVal(newMatrixObj(values));
 }
 
+Value Value::orientVal()
+{
+    return Value::objVal(newOrientObj());
+}
+
+Value Value::orientVal(const Eigen::Quaterniond& q)
+{
+    return Value::objVal(newOrientObj(q));
+}
+
+Value Value::tensorVal()
+{
+    return Value::objVal(newTensorObj());
+}
+
+Value Value::tensorVal(const std::vector<int64_t>& shape, TensorDType dtype)
+{
+    return Value::objVal(newTensorObj(shape, dtype));
+}
+
+Value Value::tensorVal(const std::vector<int64_t>& shape, const std::vector<double>& data, TensorDType dtype)
+{
+    return Value::objVal(newTensorObj(shape, data, dtype));
+}
+
 Value Value::signalVal(roxal::ptr<df::Signal> s)
 {
     return Value::objVal(newSignalObj(s));
@@ -280,9 +412,9 @@ Value Value::closureVal(const Value& function)
     return Value::objVal(newClosureObj(function));
 }
 
-Value Value::futureVal(const std::shared_future<Value>& fv)
+Value Value::futureVal(const std::shared_future<Value>& fv, ptr<type::Type> promisedType)
 {
-    return Value::objVal(newFutureObj(fv));
+    return Value::objVal(newFutureObj(fv, std::move(promisedType)));
 }
 
 Value Value::nativeVal(NativeFn function, void* data,
@@ -322,7 +454,8 @@ Value Value::actorInstanceVal(const Value& objectType)
 Value Value::boundMethodVal(const Value& instance, const Value& closure)
 {
     debug_assert_msg(isObjectInstance(instance) || isActorInstance(instance), "Value is an ObjObject");
-    debug_assert_msg(isClosure(closure), "Value is an ObjClosure");
+    debug_assert_msg(isClosure(closure) || isOverloadSet(closure),
+                     "Value is an ObjClosure or ObjOverloadSet");
     return Value::objVal(newBoundMethodObj(instance, closure));
 }
 
@@ -364,18 +497,21 @@ void Value::unbox() {
     Obj* obj = asObj();
     ObjPrimitive* pobj = isObjPrimitive(*this) ? asObjPrimitive(*this) : nullptr;
 
-    if (isBool())
+    if (!pobj)
+        throw std::runtime_error("Unsupported type for auto-unboxing "+typeName());
+
+    if (pobj->isBool())
         *this = Value(pobj->as.boolean);
-    else if (isInt()) {
+    else if (pobj->isInt()) {
         int64_t v = pobj->as.integer;
         if (fitsInInt32(v))
             *this = Value(static_cast<int32_t>(v));
         else
             return; // keep boxed for out-of-range values
     }
-    else if (isReal())
+    else if (pobj->isReal())
         *this = Value(pobj->as.real);
-    else if (isType())
+    else if (pobj->isType())
         *this = Value(pobj->as.btype);
     else
         throw std::runtime_error("Unsupported type for auto-unboxing "+typeName());
@@ -483,6 +619,9 @@ bool Value::asBool(bool strict) const
         else if (v->asObj()->type == ObjType::Bool) {
             return asObjPrimitive(*v)->as.boolean;
         }
+        else if (isObjectInstance(*v) || isActorInstance(*v)) {
+            throw std::invalid_argument("unable to convert object to bool");
+        }
     }
     return false;
 }
@@ -548,6 +687,9 @@ uint8_t Value::asByte(bool strict) const
                 return std::stoi(str,nullptr,10);
             } catch(...) { return 0; }
         }
+        else if (isObjectInstance(*v) || isActorInstance(*v)) {
+            throw std::invalid_argument("unable to convert object to byte");
+        }
     }
     if (strict)
         throw std::invalid_argument("unable to convert " + to_string(v->type()) + " to byte in strict mode");
@@ -606,6 +748,9 @@ int64_t Value::asInt(bool strict) const
                 }
                 return std::stoll(str,nullptr,10);
             } catch(...) { return 0; }
+        }
+        else if (isObjectInstance(*v) || isActorInstance(*v)) {
+            throw std::invalid_argument("unable to convert object to int");
         }
     }
     if (strict)
@@ -669,6 +814,9 @@ double Value::asReal(bool strict) const
                 auto str { toUTF8StdString(asStringObj(*v)->s) };
                 return std::stod(str);
             } catch(...) { return 0.0; }
+        }
+        else if (isObjectInstance(*v) || isActorInstance(*v)) {
+            throw std::invalid_argument("unable to convert object to real");
         }
     }
     if (strict)
@@ -737,8 +885,15 @@ std::string Value::typeName() const
         else
             return "unknown";
     }
-    else if (isObj())
-        return "object";
+    else if (isObj()) {
+        if (isObjectInstance(*this))
+            return toUTF8StdString(asObjectType(asObjectInstance(*this)->instanceType)->name);
+        if (isActorInstance(*this))
+            return toUTF8StdString(asObjectType(asActorInstance(*this)->instanceType)->name);
+        if (isObjectType(*this))
+            return toUTF8StdString(asObjectType(*this)->name);
+        return to_string(type());
+    }
     return "unknown";
 }
 
@@ -797,7 +952,7 @@ bool Value::equals(const Value& rhs, bool strict) const
         // Check if all elements are numeric
         bool allNumeric = true;
         for (int i = 0; i < rhsList->length(); i++) {
-            if (!rhsList->elts.at(i).isNumber()) {
+            if (!rhsList->getElement(i).isNumber()) {
                 allNumeric = false;
                 break;
             }
@@ -809,7 +964,7 @@ bool Value::equals(const Value& rhs, bool strict) const
             if (lhsVec->length() != rhsList->length())
                 return false;
             for (int i = 0; i < rhsList->length(); i++) {
-                if (std::abs(lhsVec->vec[i] - rhsList->elts.at(i).asReal()) > 1e-15)
+                if (std::abs(lhsVec->vec()[i] - rhsList->getElement(i).asReal()) > 1e-15)
                     return false;
             }
             return true;
@@ -838,7 +993,7 @@ bool Value::equals(const Value& rhs, bool strict) const
         // Check if all elements are numeric
         bool allNumeric = true;
         for (int i = 0; i < rhsList->length(); i++) {
-            if (!rhsList->elts.at(i).isNumber()) {
+            if (!rhsList->getElement(i).isNumber()) {
                 allNumeric = false;
                 break;
             }
@@ -862,7 +1017,7 @@ bool Value::equals(const Value& rhs, bool strict) const
                     return (lhsMat->rows() == 0 && lhsMat->cols() == 0);
                 } else if (expectedSize == 1) {
                     return (lhsMat->rows() == 1 && lhsMat->cols() == 1 &&
-                            std::abs(lhsMat->mat(0,0) - rhsList->elts.at(0).asReal()) <= 1e-15);
+                            std::abs(lhsMat->mat()(0,0) - rhsList->getElement(0).asReal()) <= 1e-15);
                 }
             }
         }
@@ -872,11 +1027,33 @@ bool Value::equals(const Value& rhs, bool strict) const
         // List compared to matrix - symmetric case
         return rhs.equals(*this, strict);
     }
+    // Tensor comparisons
+    else if (isTensor(*this) && isTensor(rhs)) {
+        if (asObj() == rhs.asObj())
+            return true;
+        return asTensor(*this)->equals(asTensor(rhs));
+    }
+    // Orient comparisons
+    else if (isOrient(*this) && isOrient(rhs)) {
+        if (asObj() == rhs.asObj())
+            return true;
+        return asOrient(*this)->equals(asOrient(rhs));
+    }
     else if (isList(*this) && isList(rhs)) {
         return asList(*this)->equals(asList(rhs));
     }
     else if (isDict(*this) && isDict(rhs)) {
         return asDict(*this)->equals(asDict(rhs));
+    }
+    else if (isRange(*this) && isRange(rhs)) {
+        if (asObj() == rhs.asObj())
+            return true;
+        auto r1 = asRange(*this);
+        auto r2 = asRange(rhs);
+        return r1->start.equals(r2->start, strict) &&
+               r1->stop.equals(r2->stop, strict) &&
+               r1->step.equals(r2->step, strict) &&
+               r1->closed == r2->closed;
     }
     else if (referenceSemantics() || rhs.referenceSemantics()) {
         if (!(referenceSemantics() && rhs.referenceSemantics()))
@@ -893,8 +1070,14 @@ bool Value::equals(const Value& rhs, bool strict) const
 bool Value::is(const Value& rhs, bool strict) const
 {
     if (isTypeSpec(*this)) {
-        if (isTypeSpec(rhs))
-            return asTypeSpec(*this) == asTypeSpec(rhs);
+        if (isTypeSpec(rhs)) {
+            if (asTypeSpec(*this) == asTypeSpec(rhs)) return true;
+            // Type-on-type subtype check: ChildType is ParentType, or
+            // Implementer is Interface (covers extends + implements).
+            if (isObjectType(*this) && isObjectType(rhs))
+                return isSubtypeOf(asObjectType(*this), asObjectType(rhs));
+            return false;
+        }
         if (rhs.isType())
             return asTypeSpec(*this)->typeValue == rhs.asType();
     }
@@ -905,41 +1088,19 @@ bool Value::is(const Value& rhs, bool strict) const
         ObjTypeSpec* ts = asTypeSpec(rhs);
         switch (ts->typeValue) {
             case ValueType::Object:
-                if (isObjectInstance(*this)) {
-                    ObjObjectType* t = asObjectType(asObjectInstance(*this)->instanceType);
-                    while (t) {
-                        if (t == ts)
-                            return true;
-                        if (t->superType.isNil()) break;
-                        t = asObjectType(t->superType);
-                    }
-                    return false;
-                }
+                if (isObjectInstance(*this))
+                    return isSubtypeOf(asObjectType(asObjectInstance(*this)->instanceType),
+                                       static_cast<ObjObjectType*>(ts));
                 if (isException(*this) && isObjectType(rhs)) {
                     ObjException* ex = asException(*this);
-                    if (isTypeSpec(ex->exType)) {
-                        ObjObjectType* et = asObjectType(ex->exType);
-                        ObjObjectType* target = asObjectType(rhs);
-                        while (et) {
-                            if (et == target)
-                                return true;
-                            if (et->superType.isNil()) break;
-                            et = asObjectType(et->superType);
-                        }
-                    }
+                    if (isTypeSpec(ex->exType))
+                        return isSubtypeOf(asObjectType(ex->exType), asObjectType(rhs));
                 }
                 break;
             case ValueType::Actor:
-                if (isActorInstance(*this)) {
-                    ObjObjectType* t = asObjectType(asActorInstance(*this)->instanceType);
-                    while (t) {
-                        if (t == ts)
-                            return true;
-                        if (t->superType.isNil()) break;
-                        t = asObjectType(t->superType);
-                    }
-                    return false;
-                }
+                if (isActorInstance(*this))
+                    return isSubtypeOf(asObjectType(asActorInstance(*this)->instanceType),
+                                       static_cast<ObjObjectType*>(ts));
                 break;
             default:
                 return type() == ts->typeValue;
@@ -992,13 +1153,13 @@ size_t Value::hash() const {
 }
 
 
-// deep copy if reference type
-Value Value::clone() const
+// deep copy if reference type, preserving object graph structure
+Value Value::clone(ptr<CloneContext> ctx) const
 {
     if (isPrimitive()) // value type
         return *this;
     else if (isObj())
-        return Value(asObj()->clone());
+        return Value(asObj()->clone(ctx));
 
     throw std::runtime_error("unhandled clone()");
 }
@@ -1019,14 +1180,45 @@ Value Value::strongRef() const
     if (!isWeak())
         return *this;
 
-    if (!isAlive())
+    ObjControl* c = asControl();
+    Obj* obj = c->obj;
+    if (!obj)
         return nilVal();
 
-    Obj* obj = asControl()->obj;
-    // Increment strong count before constructing Value to ensure object stays alive
-    obj->incRef();
+    // Atomically try to increment strong count. This avoids the TOCTOU race
+    // where isAlive() returns true but by the time we call incRef(), another
+    // thread has already decremented strong to 0 and freed the object.
+    // Our weak reference keeps the control block (and object memory) alive,
+    // so accessing obj->control->strong is safe even after the destructor runs.
+    if (!obj->tryIncRef())
+        return nilVal();
+
     Value v;
     v.val = SignBit | QNAN | uint64_t(uintptr_t(obj));
+    return v;
+}
+
+Value Value::constRef() const
+{
+    if (!isObj())
+        return *this; // primitives are already immutable
+    if (isConst())
+        return *this; // already const
+    // Create a new Value with ConstMask set, same strong ref counting
+    Value v;
+    v.val = val.load() | ConstMask;
+    v.incRefObj(); // const refs are strong refs
+    return v;
+}
+
+Value Value::mutableRef() const
+{
+    if (!isConst())
+        return *this;
+    // Strip the const bit, keep everything else
+    Value v;
+    v.val = val.load() & ~ConstMask;
+    v.incRefObj();
     return v;
 }
 
@@ -1123,7 +1315,7 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
                 pass = l1->length() == l2->length();
                 if (pass) {
                     for(int i=0;i<l1->length();i++)
-                        if(!l1->elts.at(i).equals(l2->elts.at(i), true)) { pass=false; break; }
+                        if(!l1->getElement(i).equals(l2->getElement(i), true)) { pass=false; break; }
                 }
             }
             else if (isDict(v) && isDict(read)) {
@@ -1178,8 +1370,8 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
     roundTrip("dict_val", d);
 
     Value vec { Value::vectorVal(2) };
-    asVector(vec)->vec[0] = 1.0;
-    asVector(vec)->vec[1] = 2.0;
+    asVector(vec)->vecMut()[0] = 1.0;
+    asVector(vec)->vecMut()[1] = 2.0;
     roundTrip("vector_val", vec);
 
     Eigen::MatrixXd mat(1,2);
@@ -1316,6 +1508,28 @@ bool Value::resolveFuture()
     return true;
 }
 
+FutureStatus Value::tryResolveFuture()
+{
+    if (!isFuture(*this))
+        return FutureStatus::Resolved;
+
+    ObjFuture* fut = asFuture(*this);
+    if (fut->future.wait_for(std::chrono::microseconds(0)) != std::future_status::ready) {
+        // Not ready — register this thread as a waiter so wakeWaiters() wakes us
+        fut->addWaiter(VM::thread);
+        return FutureStatus::Pending;
+    }
+
+    // Ready — resolve in-place
+    Value resolved = fut->asValue();
+    *this = resolved;
+    if (isException(resolved)) {
+        VM::instance().raiseException(resolved);
+        return FutureStatus::Error;
+    }
+    return FutureStatus::Resolved;
+}
+
 void Value::resolveSignal()
 {
     if (isSignal(*this))
@@ -1350,8 +1564,8 @@ Value roxal::defaultValue(ValueType t)
         case ValueType::Matrix: return Value::matrixVal();
         case ValueType::Signal: throw std::runtime_error("Can't default-construct signal");
         case ValueType::Event: return Value::eventVal();
+        case ValueType::Orient: return Value::orientVal();
         case ValueType::Tensor:
-        case ValueType::Orient:
         case ValueType::Object:
         case ValueType::Actor:
         default:
@@ -1366,6 +1580,16 @@ Value roxal::defaultValue(ValueType t)
 
 Value roxal::toType(ValueType t, Value v, bool strict)
 {
+    // nil flows freely into reference-identity target types (list, dict,
+    // object, actor, string, signal, event, function, closure, tensor,
+    // module). Rejected for value-shaped types (vector, matrix, range,
+    // orient, enum, primitives), which must default to a constructed value.
+    if (v.isNil() && t != ValueType::Nil) {
+        if (isNilAcceptableTargetType(t))
+            return v;
+        throw std::invalid_argument("unable to convert nil to " + to_string(t));
+    }
+
     if (!v.isBoxed()) {
         if (v.type() == t)
             return v;
@@ -1379,7 +1603,8 @@ Value roxal::toType(ValueType t, Value v, bool strict)
         }
         Value unboxedv { v };
         unboxedv.unbox();
-        return toType(t, unboxedv, strict);
+        if (!unboxedv.isBoxed())
+            return toType(t, unboxedv, strict);
     }
 
     switch (t) {
@@ -1433,10 +1658,10 @@ Value roxal::toType(ValueType t, Value v, bool strict)
                 for (const auto& entry : vObjType->orderedPublicProperties()) {
                     auto propName { Value::stringVal(entry.property->name) };
                     #ifdef DEBUG_BUILD
-                    assert(vObj->properties.find(entry.key) != vObj->properties.end());
+                    assert(vObj->findProperty(entry.key) != nullptr);
                     #endif
                     asDict(dictValue)->store(propName,
-                                             vObj->properties[entry.key].value);
+                                             vObj->propertySlot(entry.key).value);
                 }
                 return dictValue;
             }
@@ -1454,6 +1679,12 @@ Value roxal::toType(const Value& typeSpec, Value v, bool strict)
 
         if (ts->typeValue == ValueType::Nil)
             return v;
+
+        if (v.isNil()) {
+            if (isNilAcceptableTargetType(ts->typeValue))
+                return v;
+            throw std::invalid_argument("unable to convert nil to " + to_string(ts->typeValue));
+        }
 
         if (ts->typeValue == ValueType::Enum) {
             ObjObjectType* enumType = dynamic_cast<ObjObjectType*>(ts);
@@ -1582,7 +1813,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
         if (count == 1) {
             Value arg = *begin;
             if (isList(arg)) {
-                auto bits = asList(arg)->elts.get();
+                auto bits = asList(arg)->getElements();
                 if (bits.size() != 8)
                     throw std::runtime_error("byte constructor expects list of 8 bools or 0/1 ints");
                 uint8_t value = 0;
@@ -1607,46 +1838,14 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
         }
     }
 
-    if (type == ValueType::Int) {
-        size_t count = end - begin;
-        if (count == 1) {
-            Value arg = *begin;
-            if (isList(arg)) {
-                auto parts = asList(arg)->elts.get();
-                if (parts.size() == 32) {
-                    uint32_t value = 0;
-                    for (size_t i = 0; i < parts.size(); ++i) {
-                        Value p = parts[i];
-                        bool bit;
-                        if (p.isBool())
-                            bit = p.asBool();
-                        else if (p.isInt() || p.isByte()) {
-                            int iv = p.asInt(false);
-                            if (iv != 0 && iv != 1)
-                                throw std::runtime_error("int bit list elements must be 0 or 1");
-                            bit = iv != 0;
-                        } else {
-                            throw std::runtime_error("int constructor expects list of bools or ints");
-                        }
-                        if (bit)
-                            value |= (1u << (31 - i));
-                    }
-                    int32_t result = *reinterpret_cast<int32_t*>(&value);
-                    return Value::intVal(result);
-                } else if (parts.size() == 4) {
-                    uint32_t value = 0;
-                    for (size_t i = 0; i < 4; ++i) {
-                        uint8_t b = toType(ValueType::Byte, parts[i], false).asByte(false);
-                        value |= uint32_t(b) << (8 * (3 - i));
-                    }
-                    int32_t result = *reinterpret_cast<int32_t*>(&value);
-                    return Value::intVal(result);
-                } else {
-                    throw std::runtime_error("int constructor expects list of 32 bits or 4 bytes");
-                }
-            }
-        }
-    }
+    // Note: the bit-list (32 bools) and byte-list (4 bytes) overloads of
+    // int(...) were removed in favor of the more general and unambiguous
+    // sys.from_bytes(bytes, dtype='int', signed=false [, endian]) and
+    // sys.bits_to_bytes(bits) builtins, which support all widths (1/2/4/8
+    // bytes), explicit endian control, and strict element validation.
+    // byte([8 bits]) is kept since it composes correctly with bits_to_bytes
+    // (MSB-first within byte) and is a useful single-byte shorthand.
+
     if (type == ValueType::Vector) {
         size_t count = end - begin;
         if (count == 0) {
@@ -1656,19 +1855,71 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
             if (arg.isInt())
                 return Value::vectorVal(arg.asInt());
             if (isList(arg)) {
-                auto listVals = asList(arg)->elts.get();
+                auto listVals = asList(arg)->getElements();
                 Eigen::VectorXd vals(listVals.size());
-                for(size_t i=0; i<listVals.size(); ++i) {
-                    if (!listVals[i].isNumber() && !isSignal(listVals[i]))
-                        throw std::runtime_error("vector constructor expects list of numeric elements");
-                    vals[i] = toType(ValueType::Real, listVals[i], false).asReal();
+
+                // Check if any element is a quantity
+                bool hasQuantity = false;
+                for (size_t i = 0; i < listVals.size(); ++i) {
+                    if (isObjectInstance(listVals[i])) { hasQuantity = true; break; }
                 }
+
+                if (hasQuantity) {
+                    std::array<int32_t,4> dims = {0,0,0,0};
+                    bool isDimensioned = false;
+                    for (size_t i = 0; i < listVals.size(); ++i) {
+                        double siVal;
+                        if (!tryExtractQuantity(listVals[i], siVal, dims, isDimensioned, /*requireMatchingDims=*/false))
+                            throw std::runtime_error("vector from list with quantities: all elements must be quantities or zero");
+                        vals[i] = siVal;
+                    }
+                } else {
+                    for (size_t i = 0; i < listVals.size(); ++i) {
+                        if (!listVals[i].isNumber() && !isSignal(listVals[i]))
+                            throw std::runtime_error("vector constructor expects list of numeric elements");
+                        vals[i] = toType(ValueType::Real, listVals[i], false).asReal();
+                    }
+                }
+
                 return Value::vectorVal(vals);
             }
             if (isVector(arg)) {
-                return Value(asVector(arg)->clone());
+                return Value(asVector(arg)->clone(nullptr));
             }
-            throw std::runtime_error("vector constructor expects int length, list of reals, or vector");
+            if (isMatrix(arg)) {
+                // Only allow 1×n or n×1 matrices
+                auto mat = asMatrix(arg);
+                int rows = mat->mat().rows();
+                int cols = mat->mat().cols();
+                if (rows == 1) {
+                    // Row vector
+                    Eigen::VectorXd vals(cols);
+                    for (int c = 0; c < cols; ++c)
+                        vals[c] = mat->mat()(0, c);
+                    return Value::vectorVal(vals);
+                } else if (cols == 1) {
+                    // Column vector
+                    Eigen::VectorXd vals(rows);
+                    for (int r = 0; r < rows; ++r)
+                        vals[r] = mat->mat()(r, 0);
+                    return Value::vectorVal(vals);
+                } else {
+                    throw std::runtime_error("vector(matrix) requires a 1×n or n×1 matrix, got " +
+                        std::to_string(rows) + "×" + std::to_string(cols));
+                }
+            }
+            if (isTensor(arg)) {
+                // Only allow 1D tensors
+                auto t = asTensor(arg);
+                if (t->rank() != 1)
+                    throw std::runtime_error("vector(tensor) requires a 1D tensor, got rank " +
+                        std::to_string(t->rank()));
+                Eigen::VectorXd vals(t->numel());
+                for (int64_t i = 0; i < t->numel(); ++i)
+                    vals[i] = t->at(i);
+                return Value::vectorVal(vals);
+            }
+            throw std::runtime_error("vector constructor expects int length, list of reals, vector, 1-row/col matrix, or 1D tensor");
         } else {
             throw std::runtime_error("vector constructor with >1 arg unimplemented");
         }
@@ -1676,10 +1927,19 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
 
     if (type == ValueType::Matrix) {
         size_t count = end - begin;
+        if (count == 0) {
+            return Value::matrixVal();
+        }
+        if (count == 2 && begin->isInt() && (begin + 1)->isInt()) {
+            // matrix(rows, cols) - create zero matrix of given size
+            int32_t rows = begin->asInt();
+            int32_t cols = (begin + 1)->asInt();
+            return Value::matrixVal(rows, cols);
+        }
         if (count == 1) {
             Value arg = *begin;
             if (isList(arg)) {
-                auto rowsVals = asList(arg)->elts.get();
+                auto rowsVals = asList(arg)->getElements();
                 if (rowsVals.size() == 0)
                     return Value::matrixVal();
 
@@ -1704,7 +1964,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                 for(size_t r=0; r<rowCount; ++r) {
                     auto rowVal = rowsVals[r];
                     if (isList(rowVal)) {
-                        auto rowList = asList(rowVal)->elts.get();
+                        auto rowList = asList(rowVal)->getElements();
                         if ((int)rowList.size() != colCount)
                             throw std::runtime_error("matrix rows must have equal length");
                         for(int c=0; c<colCount; ++c)
@@ -1714,7 +1974,7 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                         if (vec->length() != colCount)
                             throw std::runtime_error("matrix rows must have equal length");
                         for(int c=0; c<colCount; ++c)
-                            vals(r,c) = vec->vec[c];
+                            vals(r,c) = vec->vec()[c];
                     } else {
                         throw std::runtime_error("matrix constructor expects list of lists or vectors");
                     }
@@ -1725,16 +1985,127 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
                 auto vec = asVector(arg);
                 Eigen::MatrixXd vals(1, vec->length());
                 for(int c=0; c<vec->length(); ++c)
-                    vals(0,c) = vec->vec[c];
+                    vals(0,c) = vec->vec()[c];
                 return Value::matrixVal(vals);
             }
             if (isMatrix(arg)) {
-                return Value(asMatrix(arg)->clone());
+                return Value(asMatrix(arg)->clone(nullptr));
             }
-            throw std::runtime_error("matrix constructor expects list, vector, or matrix");
+            if (isTensor(arg)) {
+                // Only allow 1D or 2D tensors
+                auto t = asTensor(arg);
+                if (t->rank() == 1) {
+                    // 1D tensor → 1-row matrix
+                    Eigen::MatrixXd vals(1, t->numel());
+                    for (int64_t c = 0; c < t->numel(); ++c)
+                        vals(0, c) = t->at(c);
+                    return Value::matrixVal(vals);
+                } else if (t->rank() == 2) {
+                    // 2D tensor → matrix
+                    int64_t rows = t->shape()[0];
+                    int64_t cols = t->shape()[1];
+                    Eigen::MatrixXd vals(rows, cols);
+                    for (int64_t r = 0; r < rows; ++r)
+                        for (int64_t c = 0; c < cols; ++c)
+                            vals(r, c) = t->at(r * cols + c);
+                    return Value::matrixVal(vals);
+                } else {
+                    throw std::runtime_error("matrix(tensor) requires a 1D or 2D tensor, got rank " +
+                        std::to_string(t->rank()));
+                }
+            }
+            throw std::runtime_error("matrix constructor expects list, vector, matrix, or 1D/2D tensor");
         } else {
             throw std::runtime_error("matrix constructor with incorrect arg count");
         }
+    }
+
+    if (type == ValueType::Tensor) {
+        size_t count = end - begin;
+        if (count == 0) {
+            return Value::tensorVal();
+        }
+        if (count >= 1) {
+            std::vector<int64_t> shape;
+            TensorDType dtype = TensorDType::Float64;
+            std::vector<double> data;
+            bool hasData = false;
+            auto it = begin;
+
+            // Check if first arg is a list (old syntax) or int (new varargs syntax)
+            if (isList(*it)) {
+                // tensor([shape], ...) - list-based shape
+                auto shapeList = asList(*it)->getElements();
+                shape.reserve(shapeList.size());
+                for (const auto& v : shapeList) {
+                    if (!v.isInt())
+                        throw std::runtime_error("tensor shape elements must be integers");
+                    shape.push_back(v.asInt());
+                }
+                ++it;
+            } else if (it->isInt()) {
+                // tensor(dim1, dim2, ...) - varargs shape
+                while (it != end && it->isInt()) {
+                    shape.push_back(it->asInt());
+                    ++it;
+                }
+            } else if (isTensor(*it)) {
+                // tensor(existingTensor) - copy
+                return Value(asTensor(*it)->clone(nullptr));
+            } else if (isVector(*it)) {
+                // tensor(vector) → 1D tensor
+                auto vec = asVector(*it);
+                std::vector<int64_t> vecShape = { static_cast<int64_t>(vec->length()) };
+                std::vector<double> vecData(vec->vec().data(), vec->vec().data() + vec->length());
+                return Value::tensorVal(vecShape, vecData, TensorDType::Float64);
+            } else if (isMatrix(*it)) {
+                // tensor(matrix) → 2D tensor
+                auto mat = asMatrix(*it);
+                int64_t rows = mat->mat().rows();
+                int64_t cols = mat->mat().cols();
+                std::vector<int64_t> matShape = { rows, cols };
+                std::vector<double> matData;
+                matData.reserve(rows * cols);
+                for (int64_t r = 0; r < rows; ++r)
+                    for (int64_t c = 0; c < cols; ++c)
+                        matData.push_back(mat->mat()(r, c));
+                return Value::tensorVal(matShape, matData, TensorDType::Float64);
+            } else {
+                throw std::runtime_error("tensor constructor expects shape list, dimension ints, tensor, vector, or matrix");
+            }
+
+            // Process remaining arguments (data list and/or dtype string)
+            // When named params are used, missing optional args come as nil
+            for (; it != end; ++it) {
+                Value arg = *it;
+                if (arg.isNil()) {
+                    // Skip nil (default value for missing named param)
+                    continue;
+                } else if (isList(arg)) {
+                    // Data list
+                    auto dataList = asList(arg)->getElements();
+                    data.reserve(dataList.size());
+                    for (const auto& v : dataList) {
+                        if (!v.isNumber())
+                            throw std::runtime_error("tensor data elements must be numeric");
+                        data.push_back(v.isInt() ? static_cast<double>(v.asInt()) : v.asReal());
+                    }
+                    hasData = true;
+                } else if (isString(arg)) {
+                    // dtype string
+                    dtype = tensorDTypeFromString(toUTF8StdString(asStringObj(arg)->s));
+                } else {
+                    throw std::runtime_error("tensor constructor: unexpected argument after shape");
+                }
+            }
+
+            if (hasData) {
+                return Value::tensorVal(shape, data, dtype);
+            } else {
+                return Value::tensorVal(shape, dtype);
+            }
+        }
+        throw std::runtime_error("tensor constructor: invalid arguments");
     }
 
     if (end - 1 == begin)
@@ -1798,13 +2169,20 @@ Value roxal::negate(Value v)
         return Value::realVal(-v.asReal());
     else if (isVector(v)) {
         const ObjVector* vec = asVector(v);
-        Eigen::VectorXd result = -vec->vec;
+        Eigen::VectorXd result = -vec->vec();
         return Value::vectorVal(result);
     }
     else if (isMatrix(v)) {
         const ObjMatrix* mat = asMatrix(v);
-        Eigen::MatrixXd result = -mat->mat;
+        Eigen::MatrixXd result = -mat->mat();
         return Value::matrixVal(result);
+    }
+    else if (isTensor(v)) {
+        const ObjTensor* t = asTensor(v);
+        auto result = newTensorObj(t->shape(), t->dtype());
+        for (int64_t i = 0; i < t->numel(); ++i)
+            result->setAt(i, -t->at(i));
+        return Value::objVal(std::move(result));
     }
     else if (v.isBool())
         return Value::boolVal(!v.asBool());
@@ -1907,7 +2285,7 @@ Value roxal::add(Value l, Value r)
         const ObjVector* rv = asVector(r);
         if (lv->length() != rv->length())
             throw std::invalid_argument("Vector addition requires vectors of same length");
-        Eigen::VectorXd result = lv->vec + rv->vec;
+        Eigen::VectorXd result = lv->vec() + rv->vec();
         return Value::vectorVal(result);
     }
     else if (isMatrix(l) && isMatrix(r)) {
@@ -1915,8 +2293,34 @@ Value roxal::add(Value l, Value r)
         const ObjMatrix* rm = asMatrix(r);
         if (lm->rows() != rm->rows() || lm->cols() != rm->cols())
             throw std::invalid_argument("Matrix addition requires matrices of same size");
-        Eigen::MatrixXd result = lm->mat + rm->mat;
+        Eigen::MatrixXd result = lm->mat() + rm->mat();
         return Value::matrixVal(result);
+    }
+    else if (isTensor(l) && isTensor(r)) {
+        const ObjTensor* lt = asTensor(l);
+        const ObjTensor* rt = asTensor(r);
+        if (lt->shape() != rt->shape())
+            throw std::invalid_argument("Tensor addition requires tensors of same shape");
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) + rt->at(i));
+        return Value::objVal(std::move(result));
+    }
+    else if (isTensor(l) && r.isNumber()) {
+        const ObjTensor* lt = asTensor(l);
+        double scalar = r.isInt() ? static_cast<double>(r.asInt()) : r.asReal();
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) + scalar);
+        return Value::objVal(std::move(result));
+    }
+    else if (l.isNumber() && isTensor(r)) {
+        const ObjTensor* rt = asTensor(r);
+        double scalar = l.isInt() ? static_cast<double>(l.asInt()) : l.asReal();
+        auto result = newTensorObj(rt->shape(), rt->dtype());
+        for (int64_t i = 0; i < rt->numel(); ++i)
+            result->setAt(i, scalar + rt->at(i));
+        return Value::objVal(std::move(result));
     }
     else if (isSignal(l) || isSignal(r)) {
         return signalBinaryOp("add",
@@ -1924,23 +2328,22 @@ Value roxal::add(Value l, Value r)
                               l, r);
     }
     else if (isList(l) && isList(r)) {
-        // List + List → concatenation (clone LHS, then concatenate RHS)
+        // List + List → concatenation. New top-level list; element refs are
+        // shared (shallow) from BOTH operands (Python-style). LHS is never mutated.
         ObjList* lv = asList(l);
         const ObjList* rv = asList(r);
 
-        auto result = lv->clone();  // Clone LHS for by-value semantics
-        static_cast<ObjList*>(result.get())->concatenate(rv);          // Concatenate RHS in-place
+        auto result = lv->shallowClone();  // share LHS element refs (COW)
+        static_cast<ObjList*>(result.get())->concatenate(rv);  // ensureUnique COW-copies the vector, then shares RHS refs
 
         return Value::objVal(std::move(result));
     }
     else if (isList(l)) {
-        // List + anything → append (clone LHS, then append RHS)
-        ObjList* lv = asList(l);
-
-        auto result = lv->clone();  // Clone LHS for by-value semantics
-        static_cast<ObjList*>(result.get())->append(r);                // Append RHS in-place
-
-        return Value::objVal(std::move(result));
+        // List + non-list is not allowed: `+` is list-only concatenation, matching
+        // vector/dict operand rules. To add a single element use list.append(x); to
+        // concatenate a one-element list use list + [x].
+        throw std::invalid_argument("Cannot add " + r.typeName() + " to a list "
+                                    "(use list.append(x) to add a single element, or list + [x] to concatenate)");
     }
     throw std::invalid_argument("unsupported operand types to add() - "+l.typeName()+" and "+r.typeName());
 }
@@ -1953,7 +2356,7 @@ Value roxal::subtract(Value l, Value r)
         const ObjVector* rv = asVector(r);
         if (lv->length() != rv->length())
             throw std::invalid_argument("Vector subtraction requires vectors of same length");
-        Eigen::VectorXd result = lv->vec - rv->vec;
+        Eigen::VectorXd result = lv->vec() - rv->vec();
         return Value::vectorVal(result);
     }
     else if (isMatrix(l) && isMatrix(r)) {
@@ -1961,8 +2364,34 @@ Value roxal::subtract(Value l, Value r)
         const ObjMatrix* rm = asMatrix(r);
         if (lm->rows() != rm->rows() || lm->cols() != rm->cols())
             throw std::invalid_argument("Matrix subtraction requires matrices of same size");
-        Eigen::MatrixXd result = lm->mat - rm->mat;
+        Eigen::MatrixXd result = lm->mat() - rm->mat();
         return Value::matrixVal(result);
+    }
+    else if (isTensor(l) && isTensor(r)) {
+        const ObjTensor* lt = asTensor(l);
+        const ObjTensor* rt = asTensor(r);
+        if (lt->shape() != rt->shape())
+            throw std::invalid_argument("Tensor subtraction requires tensors of same shape");
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) - rt->at(i));
+        return Value::objVal(std::move(result));
+    }
+    else if (isTensor(l) && r.isNumber()) {
+        const ObjTensor* lt = asTensor(l);
+        double scalar = r.isInt() ? static_cast<double>(r.asInt()) : r.asReal();
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) - scalar);
+        return Value::objVal(std::move(result));
+    }
+    else if (l.isNumber() && isTensor(r)) {
+        const ObjTensor* rt = asTensor(r);
+        double scalar = l.isInt() ? static_cast<double>(l.asInt()) : l.asReal();
+        auto result = newTensorObj(rt->shape(), rt->dtype());
+        for (int64_t i = 0; i < rt->numel(); ++i)
+            result->setAt(i, scalar - rt->at(i));
+        return Value::objVal(std::move(result));
     }
     else if (isSignal(l) || isSignal(r)) {
         return signalBinaryOp("subtract",
@@ -1999,19 +2428,19 @@ Value roxal::multiply(Value l, Value r)
         const ObjVector* rv = asVector(r);
         if (lv->length() != rv->length())
             throw std::invalid_argument("Vector dot product requires vectors of same length");
-        double dot = lv->vec.dot(rv->vec);
+        double dot = lv->vec().dot(rv->vec());
         return Value::realVal(dot);
     }
     if (isVector(l) && r.isNumber()) {
         const ObjVector* lv = asVector(l);
         double scalar = toType(ValueType::Real, r, false).asReal();
-        Eigen::VectorXd result = lv->vec * scalar;
+        Eigen::VectorXd result = lv->vec() * scalar;
         return Value::vectorVal(result);
     }
     if (l.isNumber() && isVector(r)) {
         const ObjVector* rv = asVector(r);
         double scalar = toType(ValueType::Real, l, false).asReal();
-        Eigen::VectorXd result = rv->vec * scalar;
+        Eigen::VectorXd result = rv->vec() * scalar;
         return Value::vectorVal(result);
     }
     if (isMatrix(l) && isMatrix(r)) {
@@ -2019,7 +2448,7 @@ Value roxal::multiply(Value l, Value r)
         const ObjMatrix* rm = asMatrix(r);
         if (lm->cols() != rm->rows())
             throw std::invalid_argument("Matrix multiplication dimension mismatch");
-        Eigen::MatrixXd result = lm->mat * rm->mat;
+        Eigen::MatrixXd result = lm->mat() * rm->mat();
         return Value::matrixVal(result);
     }
     if (isMatrix(l) && isVector(r)) {
@@ -2027,7 +2456,7 @@ Value roxal::multiply(Value l, Value r)
         const ObjVector* rv = asVector(r);
         if (lm->cols() != rv->length())
             throw std::invalid_argument("Matrix and vector dimension mismatch");
-        Eigen::VectorXd result = lm->mat * rv->vec;
+        Eigen::VectorXd result = lm->mat() * rv->vec();
         return Value::vectorVal(result);
     }
     if (isVector(l) && isMatrix(r)) {
@@ -2035,21 +2464,65 @@ Value roxal::multiply(Value l, Value r)
         const ObjMatrix* rm = asMatrix(r);
         if (lv->length() != rm->rows())
             throw std::invalid_argument("Vector and matrix dimension mismatch");
-        Eigen::VectorXd result = lv->vec.transpose() * rm->mat;
+        Eigen::VectorXd result = lv->vec().transpose() * rm->mat();
         return Value::vectorVal(result);
     }
     if (isMatrix(l) && r.isNumber()) {
         const ObjMatrix* lm = asMatrix(l);
         double scalar = toType(ValueType::Real, r, false).asReal();
-        Eigen::MatrixXd result = lm->mat * scalar;
+        Eigen::MatrixXd result = lm->mat() * scalar;
         return Value::matrixVal(result);
     }
     if (l.isNumber() && isMatrix(r)) {
         const ObjMatrix* rm = asMatrix(r);
         double scalar = toType(ValueType::Real, l, false).asReal();
-        Eigen::MatrixXd result = scalar * rm->mat;
+        Eigen::MatrixXd result = scalar * rm->mat();
         return Value::matrixVal(result);
     }
+    if (isTensor(l) && isTensor(r)) {
+        // Element-wise multiplication
+        const ObjTensor* lt = asTensor(l);
+        const ObjTensor* rt = asTensor(r);
+        if (lt->shape() != rt->shape())
+            throw std::invalid_argument("Tensor element-wise multiplication requires tensors of same shape");
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) * rt->at(i));
+        return Value::objVal(std::move(result));
+    }
+    if (isTensor(l) && r.isNumber()) {
+        const ObjTensor* lt = asTensor(l);
+        double scalar = r.isInt() ? static_cast<double>(r.asInt()) : r.asReal();
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) * scalar);
+        return Value::objVal(std::move(result));
+    }
+    if (l.isNumber() && isTensor(r)) {
+        const ObjTensor* rt = asTensor(r);
+        double scalar = l.isInt() ? static_cast<double>(l.asInt()) : l.asReal();
+        auto result = newTensorObj(rt->shape(), rt->dtype());
+        for (int64_t i = 0; i < rt->numel(); ++i)
+            result->setAt(i, scalar * rt->at(i));
+        return Value::objVal(std::move(result));
+    }
+    // Orient composition: orient * orient
+    if (isOrient(l) && isOrient(r)) {
+        Eigen::Quaterniond result = asOrient(l)->quat() * asOrient(r)->quat();
+        return Value::orientVal(result.normalized());
+    }
+    // Orient * vector: rotate a 3D vector
+    if (isOrient(l) && isVector(r)) {
+        const ObjVector* rv = asVector(r);
+        if (rv->length() != 3)
+            throw std::invalid_argument("orient * vector requires a 3D vector");
+        Eigen::Vector3d v(rv->vec()[0], rv->vec()[1], rv->vec()[2]);
+        Eigen::Vector3d rotated = asOrient(l)->quat() * v;
+        Eigen::VectorXd result(3);
+        result[0] = rotated[0]; result[1] = rotated[1]; result[2] = rotated[2];
+        return Value::vectorVal(result);
+    }
+
     if (isSignal(l) || isSignal(r)) {
         return signalBinaryOp("multiply",
                               [](Value a, Value b) { return multiply(a, b); },
@@ -2080,6 +2553,41 @@ Value roxal::multiply(Value l, Value r)
 
 Value roxal::divide(Value l, Value r)
 {
+    if (isTensor(l) && isTensor(r)) {
+        // Element-wise division
+        const ObjTensor* lt = asTensor(l);
+        const ObjTensor* rt = asTensor(r);
+        if (lt->shape() != rt->shape())
+            throw std::invalid_argument("Tensor element-wise division requires tensors of same shape");
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i) {
+            if (rt->at(i) == 0.0)
+                throw std::invalid_argument("Tensor division by zero");
+            result->setAt(i, lt->at(i) / rt->at(i));
+        }
+        return Value::objVal(std::move(result));
+    }
+    if (isTensor(l) && r.isNumber()) {
+        const ObjTensor* lt = asTensor(l);
+        double scalar = r.isInt() ? static_cast<double>(r.asInt()) : r.asReal();
+        if (scalar == 0.0)
+            throw std::invalid_argument("Tensor division by zero");
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) / scalar);
+        return Value::objVal(std::move(result));
+    }
+    if (l.isNumber() && isTensor(r)) {
+        const ObjTensor* rt = asTensor(r);
+        double scalar = l.isInt() ? static_cast<double>(l.asInt()) : l.asReal();
+        auto result = newTensorObj(rt->shape(), rt->dtype());
+        for (int64_t i = 0; i < rt->numel(); ++i) {
+            if (rt->at(i) == 0.0)
+                throw std::invalid_argument("Tensor division by zero");
+            result->setAt(i, scalar / rt->at(i));
+        }
+        return Value::objVal(std::move(result));
+    }
     if (isSignal(l) || isSignal(r)) {
         return signalBinaryOp("divide",
                               [](Value a, Value b) { return divide(a, b); },
@@ -2161,6 +2669,11 @@ void roxal::copyInto(Value& lhs, const Value& rhs)
             if (!isMatrix(rhs))
                 throw std::invalid_argument("copy into matrix requires matrix RHS");
             asMatrix(lhs)->set(asMatrix(rhs));
+            break;
+        case ObjType::Orient:
+            if (!isOrient(rhs))
+                throw std::invalid_argument("copy into orient requires orient RHS");
+            asOrient(lhs)->set(asOrient(rhs));
             break;
         case ObjType::Signal:
             if (!isSignal(rhs))
@@ -2382,6 +2895,32 @@ Value roxal::greater(Value l, Value r)
             default: return Value::falseVal();
         }
     }
+    else if (isTensor(l) && isTensor(r)) {
+        const ObjTensor* lt = asTensor(l);
+        const ObjTensor* rt = asTensor(r);
+        if (lt->shape() != rt->shape())
+            throw std::invalid_argument("Tensor comparison requires tensors of same shape");
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) > rt->at(i) ? 1.0 : 0.0);
+        return Value::objVal(std::move(result));
+    }
+    else if (isTensor(l) && r.isNumber()) {
+        const ObjTensor* lt = asTensor(l);
+        double scalar = r.isInt() ? static_cast<double>(r.asInt()) : r.asReal();
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) > scalar ? 1.0 : 0.0);
+        return Value::objVal(std::move(result));
+    }
+    else if (l.isNumber() && isTensor(r)) {
+        const ObjTensor* rt = asTensor(r);
+        double scalar = l.isInt() ? static_cast<double>(l.asInt()) : l.asReal();
+        auto result = newTensorObj(rt->shape(), rt->dtype());
+        for (int64_t i = 0; i < rt->numel(); ++i)
+            result->setAt(i, scalar > rt->at(i) ? 1.0 : 0.0);
+        return Value::objVal(std::move(result));
+    }
     else if (l.isObj() && r.isObj()) {
         if (isString(l) && isString(r)) {
             auto lstr = asStringObj(l);
@@ -2416,6 +2955,32 @@ Value roxal::less(Value l, Value r)
             default: return Value::falseVal();
         }
     }
+    else if (isTensor(l) && isTensor(r)) {
+        const ObjTensor* lt = asTensor(l);
+        const ObjTensor* rt = asTensor(r);
+        if (lt->shape() != rt->shape())
+            throw std::invalid_argument("Tensor comparison requires tensors of same shape");
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) < rt->at(i) ? 1.0 : 0.0);
+        return Value::objVal(std::move(result));
+    }
+    else if (isTensor(l) && r.isNumber()) {
+        const ObjTensor* lt = asTensor(l);
+        double scalar = r.isInt() ? static_cast<double>(r.asInt()) : r.asReal();
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) < scalar ? 1.0 : 0.0);
+        return Value::objVal(std::move(result));
+    }
+    else if (l.isNumber() && isTensor(r)) {
+        const ObjTensor* rt = asTensor(r);
+        double scalar = l.isInt() ? static_cast<double>(l.asInt()) : l.asReal();
+        auto result = newTensorObj(rt->shape(), rt->dtype());
+        for (int64_t i = 0; i < rt->numel(); ++i)
+            result->setAt(i, scalar < rt->at(i) ? 1.0 : 0.0);
+        return Value::objVal(std::move(result));
+    }
     else if (l.isObj() && r.isObj()) {
         if (isString(l) && isString(r)) {
             auto lstr = asStringObj(l);
@@ -2432,6 +2997,114 @@ Value roxal::less(Value l, Value r)
 }
 
 
+Value roxal::greaterEqual(Value l, Value r)
+{
+    if (isSignal(l) || isSignal(r)) {
+        return signalBinaryOp("greaterEqual",
+                              [](Value a, Value b) { return greaterEqual(a, b); },
+                              l, r);
+    }
+
+    if (l.isNumber() && r.isNumber()) {
+        ValueType resultType(binaryOpType(l,r));
+        switch (resultType) {
+            case ValueType::Int: return Value::boolVal(l.asInt() >= r.asInt());
+            case ValueType::Real: return Value::boolVal(l.asReal() >= r.asReal());
+            case ValueType::Byte: return Value::boolVal(l.asByte() >= r.asByte());
+            default: return Value::falseVal();
+        }
+    }
+    else if (isTensor(l) && isTensor(r)) {
+        const ObjTensor* lt = asTensor(l);
+        const ObjTensor* rt = asTensor(r);
+        if (lt->shape() != rt->shape())
+            throw std::invalid_argument("Tensor comparison requires tensors of same shape");
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) >= rt->at(i) ? 1.0 : 0.0);
+        return Value::objVal(std::move(result));
+    }
+    else if (isTensor(l) && r.isNumber()) {
+        const ObjTensor* lt = asTensor(l);
+        double scalar = r.isInt() ? static_cast<double>(r.asInt()) : r.asReal();
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) >= scalar ? 1.0 : 0.0);
+        return Value::objVal(std::move(result));
+    }
+    else if (l.isNumber() && isTensor(r)) {
+        const ObjTensor* rt = asTensor(r);
+        double scalar = l.isInt() ? static_cast<double>(l.asInt()) : l.asReal();
+        auto result = newTensorObj(rt->shape(), rt->dtype());
+        for (int64_t i = 0; i < rt->numel(); ++i)
+            result->setAt(i, scalar >= rt->at(i) ? 1.0 : 0.0);
+        return Value::objVal(std::move(result));
+    }
+    else if (l.isObj() && r.isObj()) {
+        if (isString(l) && isString(r)) {
+            auto lstr = asStringObj(l);
+            auto rstr = asStringObj(r);
+            return Value::boolVal(lstr->s.compareCodePointOrder(rstr->s) >= 0);
+        }
+    }
+    throw std::invalid_argument("Invalid arguments to greaterEqual operator - "+l.typeName()+" and "+r.typeName());
+}
+
+
+Value roxal::lessEqual(Value l, Value r)
+{
+    if (isSignal(l) || isSignal(r)) {
+        return signalBinaryOp("lessEqual",
+                              [](Value a, Value b) { return lessEqual(a, b); },
+                              l, r);
+    }
+
+    if (l.isNumber() && r.isNumber()) {
+        ValueType resultType(binaryOpType(l,r));
+        switch (resultType) {
+            case ValueType::Int: return Value::boolVal(l.asInt() <= r.asInt());
+            case ValueType::Real: return Value::boolVal(l.asReal() <= r.asReal());
+            case ValueType::Byte: return Value::boolVal(l.asByte() <= r.asByte());
+            default: return Value::falseVal();
+        }
+    }
+    else if (isTensor(l) && isTensor(r)) {
+        const ObjTensor* lt = asTensor(l);
+        const ObjTensor* rt = asTensor(r);
+        if (lt->shape() != rt->shape())
+            throw std::invalid_argument("Tensor comparison requires tensors of same shape");
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) <= rt->at(i) ? 1.0 : 0.0);
+        return Value::objVal(std::move(result));
+    }
+    else if (isTensor(l) && r.isNumber()) {
+        const ObjTensor* lt = asTensor(l);
+        double scalar = r.isInt() ? static_cast<double>(r.asInt()) : r.asReal();
+        auto result = newTensorObj(lt->shape(), lt->dtype());
+        for (int64_t i = 0; i < lt->numel(); ++i)
+            result->setAt(i, lt->at(i) <= scalar ? 1.0 : 0.0);
+        return Value::objVal(std::move(result));
+    }
+    else if (l.isNumber() && isTensor(r)) {
+        const ObjTensor* rt = asTensor(r);
+        double scalar = l.isInt() ? static_cast<double>(l.asInt()) : l.asReal();
+        auto result = newTensorObj(rt->shape(), rt->dtype());
+        for (int64_t i = 0; i < rt->numel(); ++i)
+            result->setAt(i, scalar <= rt->at(i) ? 1.0 : 0.0);
+        return Value::objVal(std::move(result));
+    }
+    else if (l.isObj() && r.isObj()) {
+        if (isString(l) && isString(r)) {
+            auto lstr = asStringObj(l);
+            auto rstr = asStringObj(r);
+            return Value::boolVal(lstr->s.compareCodePointOrder(rstr->s) <= 0);
+        }
+    }
+    throw std::invalid_argument("Invalid arguments to lessEqual operator - "+l.typeName()+" and "+r.typeName());
+}
+
+
 Value roxal::equal(Value l, Value r, bool strict)
 {
     if (isSignal(l) || isSignal(r)) {
@@ -2441,6 +3114,18 @@ Value roxal::equal(Value l, Value r, bool strict)
     }
 
     return Value::boolVal(l.equals(r, strict));
+}
+
+
+Value roxal::notEqual(Value l, Value r, bool strict)
+{
+    if (isSignal(l) || isSignal(r)) {
+        return signalBinaryOp("notEqual",
+                              [strict](Value a, Value b) { return notEqual(a, b, strict); },
+                              l, r);
+    }
+
+    return Value::boolVal(!l.equals(r, strict));
 }
 
 
@@ -2489,16 +3174,66 @@ void roxal::writeValue(std::ostream& out, const Value& v, roxal::ptr<Serializati
     bool useCtx = ctx != nullptr;
     ptr<SerializationContext> localCtx = make_ptr<SerializationContext>();
     if(!ctx) ctx = localCtx;
+#ifdef ROXAL_COMPUTE_SERVER
+    auto* netCtx = dynamic_cast<NetworkSerializationContext*>(ctx.get());
+#else
+    auto* netCtx = static_cast<SerializationContext*>(nullptr);
+#endif
     if (isForeignPtr(v))
         throw std::runtime_error("Cannot serialize foreign pointers");
 
     if (isFuture(v)) {
         Value resolved = v;
-        if (!resolved.resolveFuture())
-            return;
+        if (!resolved.resolveFuture()) {
+            // resolveFuture has already raised the Roxal-level exception via
+            // vm.raiseException, but we must not return silently — that would
+            // leave the output stream missing this value and desynchronise
+            // the eventual readValue. Throw a C++ runtime_error so the
+            // surrounding native-call wrapper sets ok=false (its existing
+            // catch) and the Roxal exception that resolveFuture already set
+            // up propagates to user code.
+            throw std::runtime_error("writeValue: future resolution raised an exception");
+        }
         writeValue(out, resolved, ctx);
         return;
     }
+
+#ifdef ROXAL_COMPUTE_SERVER
+    if (netCtx && isActorInstance(v)) {
+        auto* actor = asActorInstance(v);
+        int64_t actorId = 0;
+
+        bool canForwardAsRemote = false;
+        if (actor->isRemote) {
+            auto remoteConn = actor->remoteConn.lock();
+            canForwardAsRemote = (remoteConn != nullptr && remoteConn.get() == netCtx->conn);
+        }
+
+        if (canForwardAsRemote) {
+            actorId = actor->remoteActorId;
+        } else {
+            auto it = netCtx->localActorToForeignId.find(actor);
+            if (it != netCtx->localActorToForeignId.end()) {
+                actorId = it->second;
+            } else {
+                actorId = netCtx->conn->registerLocalActor(v);
+                netCtx->localActorToForeignId[actor] = actorId;
+                netCtx->foreignIdToLocalActor[actorId] = actor;
+            }
+        }
+
+        uint8_t marker = ComputeActorRefMarker;
+        out.write(reinterpret_cast<char*>(&marker), 1);
+        out.write(reinterpret_cast<char*>(&actorId), sizeof(actorId));
+        writeValue(out, actor->instanceType, ctx);
+        return;
+    }
+
+    if (netCtx && isSignal(v)) {
+        throw std::runtime_error(
+                "Remote actor calls do not support signal values; pass signal.value or another sampled value instead.");
+    }
+#endif
 
     auto writeObjWithRef = [&](Obj* o){
         uint8_t flag = 1;
@@ -2570,6 +3305,9 @@ void roxal::writeValue(std::ostream& out, const Value& v, roxal::ptr<Serializati
         case ValueType::Dict:
         case ValueType::Vector:
         case ValueType::Matrix:
+        case ValueType::Orient:
+        case ValueType::Tensor:
+        case ValueType::Signal:
         case ValueType::Object:
         case ValueType::Actor:
         case ValueType::Function:
@@ -2587,9 +3325,48 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
     bool useCtx = ctx != nullptr;
     ptr<SerializationContext> localCtx = make_ptr<SerializationContext>();
     if(!ctx) ctx = localCtx;
+#ifdef ROXAL_COMPUTE_SERVER
+    auto* netCtx = dynamic_cast<NetworkSerializationContext*>(ctx.get());
+#else
+    auto* netCtx = static_cast<SerializationContext*>(nullptr);
+#endif
     uint8_t typeByte;
     if(!in.read(reinterpret_cast<char*>(&typeByte),1))
         throw std::runtime_error("readValue: unable to read type");
+
+#ifdef ROXAL_COMPUTE_SERVER
+    if (typeByte == ComputeActorRefMarker) {
+        int64_t actorId = 0;
+        in.read(reinterpret_cast<char*>(&actorId), sizeof(actorId));
+        if (!in)
+            throw std::runtime_error("readValue: unable to read network actor id");
+
+        Value typeVal = readValue(in, ctx);
+
+        if (!netCtx || netCtx->conn == nullptr)
+            throw std::runtime_error("readValue: network actor ref requires NetworkSerializationContext");
+
+        // Resolve the deserialized type to the canonical registered instance so that
+        // pointer-identity type checks (isSubtypeOf) work correctly.
+        typeVal = resolveCanonicalSerializedObjectType(typeVal);
+
+        auto existing = netCtx->foreignIdToLocalActor.find(actorId);
+        if (existing != netCtx->foreignIdToLocalActor.end())
+            return Value::objRef(const_cast<Obj*>(existing->second));
+
+        Value localActor = netCtx->conn->resolveLocalActor(actorId);
+        if (localActor.isNonNil()) {
+            netCtx->foreignIdToLocalActor[actorId] = localActor.asObj();
+            return localActor;
+        }
+
+        Value proxy = makeRemoteActor(typeVal, actorId,
+                                      ptr<ComputeConnection>(netCtx->conn->shared_from_this()));
+        netCtx->foreignIdToLocalActor[actorId] = proxy.asObj();
+        return proxy;
+    }
+#endif
+
     ValueType t = static_cast<ValueType>(typeByte);
     auto readObjWithRef = [&](auto objMaker){
         uint8_t flag; in.read(reinterpret_cast<char*>(&flag),1);
@@ -2713,7 +3490,13 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             if (useCtx)
                 ctx->idToObj[id] = obj;
             obj->read(in, ctx);
-            return owned;
+            Value resolved = owned;
+#ifdef ROXAL_COMPUTE_SERVER
+            resolved = resolveCanonicalSerializedObjectType(owned);
+            if (useCtx && resolved.isObj())
+                ctx->idToObj[id] = resolved.asObj();
+#endif
+            return resolved;
         }
         case ValueType::String: {
             return readOwnedObject([&](){
@@ -2740,6 +3523,15 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
         case ValueType::Matrix: {
             return readOwnedObject([&](){ return Value::matrixVal(); });
         }
+        case ValueType::Tensor: {
+            return readOwnedObject([&](){ return Value::tensorVal(); });
+        }
+        case ValueType::Orient: {
+            return readOwnedObject([&](){ return Value::orientVal(); });
+        }
+        case ValueType::Signal: {
+            return readOwnedObject([&](){ return Value::signalVal(nullptr); });
+        }
         case ValueType::Object: {
             uint8_t flag; in.read(reinterpret_cast<char*>(&flag),1);
             uint64_t id;  in.read(reinterpret_cast<char*>(&id),8);
@@ -2749,6 +3541,9 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
                 return Value::objRef(it->second);
             }
             Value typeVal = readValue(in, ctx);
+#ifdef ROXAL_COMPUTE_SERVER
+            typeVal = resolveCanonicalSerializedObjectType(typeVal);
+#endif
             ObjObjectType* t = asObjectType(typeVal);
             debug_assert_msg(!t->isActor, "Expected object type for deserialization");
             Value objVal = Value::objectInstanceVal(typeVal);
@@ -2756,11 +3551,11 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             if (useCtx)
                 ctx->idToObj[id] = obj;
             uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
-            obj->properties.clear();
+            obj->clearProperties();
             for(uint32_t i=0;i<count;i++) {
                 int32_t h; in.read(reinterpret_cast<char*>(&h),4);
                 Value v = readValue(in, ctx);
-                auto& slot = obj->properties[h];
+                auto& slot = obj->propertySlot(h);
                 slot.clearSignal();
                 slot.value = v;
             }
@@ -2783,15 +3578,18 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             }
 
             Value typeVal = readValue(in, ctx);
+#ifdef ROXAL_COMPUTE_SERVER
+            typeVal = resolveCanonicalSerializedObjectType(typeVal);
+#endif
             ObjObjectType* t = asObjectType(typeVal);
             debug_assert_msg(t->isActor, "Expected actor type for deserialization");
             obj->initialize(typeVal);
             uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
-            obj->properties.clear();
+            obj->clearProperties();
             for(uint32_t i=0;i<count;i++) {
                 int32_t h; in.read(reinterpret_cast<char*>(&h),4);
                 Value v = readValue(in, ctx);
-                auto& slot = obj->properties[h];
+                auto& slot = obj->propertySlot(h);
                 slot.clearSignal();
                 slot.value = v;
             }
@@ -2811,10 +3609,37 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             });
         }
         case ValueType::Closure: {
-            return readOwnedObject([&](){
+            // Both ObjClosure and ObjOverloadSet flow through ValueType::Closure
+            // (ObjOverloadSet::valueType() returns Closure so first-class
+            // references stay transparent). Discriminate by peeking the
+            // per-object type tag that ObjClosure::write / ObjOverloadSet::write
+            // both place as the first byte of their payload.
+            uint8_t flag; in.read(reinterpret_cast<char*>(&flag),1);
+            uint64_t id;  in.read(reinterpret_cast<char*>(&id),8);
+            if (useCtx && flag == 0) {
+                auto it = ctx->idToObj.find(id);
+                if (it == ctx->idToObj.end())
+                    throw std::runtime_error("Unknown object ref id");
+                return Value::objRef(it->second);
+            }
+            // Peek the obj-type tag without consuming it.
+            auto pos = in.tellg();
+            uint8_t typeTag;
+            if (!in.read(reinterpret_cast<char*>(&typeTag),1))
+                throw std::runtime_error("readValue: unable to peek obj-type tag");
+            in.seekg(pos);
+
+            Value owned;
+            if (typeTag == static_cast<uint8_t>(ObjType::OverloadSet)) {
+                owned = Value::objVal(newOverloadSetObj(icu::UnicodeString()));
+            } else {
                 Value func { Value::functionVal(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString()) };
-                return Value::closureVal(func);
-            });
+                owned = Value::closureVal(func);
+            }
+            Obj* obj = owned.asObj();
+            if (useCtx) ctx->idToObj[id] = obj;
+            obj->read(in, ctx);
+            return owned;
         }
         case ValueType::Upvalue: {
             return readOwnedObject([&](){ return Value::upvalueVal(nullptr); });

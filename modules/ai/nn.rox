@@ -1,0 +1,61 @@
+@builtin
+func tensor_device(t):
+  """Return the device where a tensor's data resides ('cpu' or 'cuda')."""
+
+@builtin
+func memory_info(device:string='auto'):
+  """Return memory info dict: {device, total, free, used} (bytes). Device: 'auto' (GPU if available, else CPU), 'cpu', or 'cuda'."""
+
+@builtin
+type Model object:
+
+  @builtin
+  proc init(path:string, device:string='auto', warmup:bool=true):
+    """Load an ONNX model from the given file path. Device: 'auto' (GPU if available), 'cpu', or 'cuda'. Set warmup=false to skip the initial warm-up inference."""
+
+  @builtin
+  func predict(input):
+    """Run inference. Input may be a tensor, a dict {name: tensor}, or a list of tensors. Returns output tensor (or list if multiple outputs). Also works with signals for reactive dataflow."""
+
+  @builtin
+  func inputs():
+    """Return list of input descriptors [{name, shape, dtype}, ...]."""
+
+  @builtin
+  func outputs():
+    """Return list of output descriptors [{name, shape, dtype}, ...]."""
+
+  @builtin
+  func device():
+    """Return current execution device string."""
+
+  @builtin
+  proc close():
+    """Release model session and free resources."""
+
+@builtin
+type Tokenizer object:
+
+  @builtin
+  proc init(path:string):
+    """Load a HuggingFace tokenizer from a tokenizer.json file."""
+
+  @builtin
+  func encode(text:string) -> list:
+    """Encode text to a list of token IDs (integers)."""
+
+  @builtin
+  func decode(ids: const list) -> string:
+    """Decode a list of token IDs back to text."""
+
+  @builtin
+  func vocab_size() -> int:
+    """Return the vocabulary size."""
+
+  @builtin
+  func special_tokens() -> dict:
+    """Return dict mapping special token content strings to their IDs."""
+
+  @builtin
+  proc close():
+    """Release tokenizer resources."""

@@ -38,11 +38,14 @@ public:
     virtual std::any visit(ptr<ast::Suite> ast);
     virtual std::any visit(ptr<ast::ExpressionStatement> ast);
     virtual std::any visit(ptr<ast::ReturnStatement> ast);
+    virtual std::any visit(ptr<ast::BreakStatement> ast);
+    virtual std::any visit(ptr<ast::ContinueStatement> ast);
     virtual std::any visit(ptr<ast::IfStatement> ast);
     virtual std::any visit(ptr<ast::WhileStatement> ast);
     virtual std::any visit(ptr<ast::ForStatement> ast);
     virtual std::any visit(ptr<ast::WhenStatement> ast);
     virtual std::any visit(ptr<ast::UntilStatement> ast);
+    virtual std::any visit(ptr<ast::AdheringIfStatement> ast);
     virtual std::any visit(ptr<ast::TryStatement> ast);
     virtual std::any visit(ptr<ast::MatchStatement> ast);
     virtual std::any visit(ptr<ast::WithStatement> ast);
@@ -62,6 +65,8 @@ public:
     virtual std::any visit(ptr<ast::Str> ast);
     virtual std::any visit(ptr<ast::Type> ast);
     virtual std::any visit(ptr<ast::Num> ast);
+    virtual std::any visit(ptr<ast::SuffixedNum> ast);
+    virtual std::any visit(ptr<ast::SuffixedStr> ast);
     virtual std::any visit(ptr<ast::List> ast);
     virtual std::any visit(ptr<ast::Vector> ast);
     virtual std::any visit(ptr<ast::Matrix> ast);
@@ -78,8 +83,11 @@ public:
 
 private:
     std::vector<ScopeInfo> scopes;
+    std::vector<ast::TypeDecl::Kind> typeKindStack; // tracks enclosing type declarations
     bool replMode { false };
     bool replScopeInitialized { false };
+
+    bool inActorScope() const { return !typeKindStack.empty() && typeKindStack.back() == ast::TypeDecl::Kind::Actor; }
 
     void pushScope(bool strict);
     void popScope();

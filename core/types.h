@@ -28,13 +28,47 @@ enum class BuiltinType {
     Event
 };
 
+// Member visibility — paralleled by ast::Access (which uses the same
+// underlying ordering). Defined here so the static type system can carry
+// access information without requiring AST.h.
+enum class Access : uint8_t { Public = 0, Private = 1 };
+
 std::string to_string(BuiltinType t);
+std::optional<BuiltinType> builtinTypeFromName(const std::string& name);
+
+// True when nil is a valid coercion target for this builtin type.
+// Mirrors isNilAcceptableTargetType(ValueType) in compiler/Value.h — the
+// reference-identity types (handles whose "no value yet" state is meaningful).
+inline bool isNilAcceptableTargetBuiltinType(BuiltinType t) {
+    switch (t) {
+        case BuiltinType::String:
+        case BuiltinType::List:
+        case BuiltinType::Dict:
+        case BuiltinType::Object:
+        case BuiltinType::Actor:
+        case BuiltinType::Signal:
+        case BuiltinType::Event:
+        case BuiltinType::Func:
+        case BuiltinType::Tensor:
+            return true;
+        default:
+            return false;
+    }
+}
 
 // check if a value of builtin type `from` can be converted to builtin type
 // `to` using the same rules as `toType` in compiler/Value.cpp. The strict flag
 // determines whether strict conversions are required (as per conversions.md).
 bool convertibleTo(BuiltinType from, BuiltinType to, bool strict=true);
 
+// Check if a value of sourceType is acceptable where targetType is expected,
+// without any conversion. For builtin types: identity only. For object/actor
+// types: identity or sourceType is a subtype (extends/implements) of targetType.
+// This is distinct from convertibleTo() which checks if conversion is possible.
+// Note: for object/actor types, this only checks the BuiltinType-level match
+// (Object==Object, Actor==Actor). Full inheritance checking requires runtime
+// ObjObjectType access — see VM::isTypeAssignable() for the complete check.
+bool isAssignableFrom(BuiltinType target, BuiltinType source);
 
 
 struct Type {
@@ -84,6 +118,7 @@ struct Type {
             int32_t nameHashCode; // hashCode() of above (for use at runtime)
             std::optional<ptr<Type>> type;
             bool hasDefault;
+            Access access { Access::Public };
 
             // Property accessor flags
             // If true, accessing this property calls __get_<name>() or __set_<name>(value)
@@ -92,7 +127,21 @@ struct Type {
         };
 
         std::vector<PropType> properties;
-        std::vector<std::pair<icu::UnicodeString, ptr<FuncType>>> methods;
+
+        // Compile-time view of a method on this type. The numeric
+        // methodModifiers bits match ast::MethodModifier (Implicit,
+        // StatementAction, Abstract); we use uint8_t here to avoid a
+        // circular dependency on AST.h. Populated by TypeDeducer.
+        struct MethodInfo {
+            MethodInfo() {}
+            MethodInfo(const icu::UnicodeString& n, ptr<FuncType> ft)
+              : name(n), funcType(std::move(ft)) {}
+            icu::UnicodeString name;
+            ptr<FuncType>      funcType;
+            uint8_t            methodModifiers = 0;
+            Access             access = Access::Public;
+        };
+        std::vector<MethodInfo> methods;
 
         std::string toString() const;
     };
@@ -104,6 +153,7 @@ struct Type {
     };
 
     BuiltinType builtin;
+    bool isConst { false };  // type is const-qualified (e.g. const List, const O)
 
     std::optional<FuncType> func;   // if Func
     std::optional<ObjectType> obj;  // if Object or Actor

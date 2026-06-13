@@ -1,0 +1,7 @@
+# Regression: continue in a for-loop must advance the index, not infinite-loop.
+var iterations = 0
+for i in range(..<5):
+  iterations = iterations + 1
+  continue if i == 2
+  print(i)
+print("iterations={iterations}")

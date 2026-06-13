@@ -1,0 +1,8 @@
+type I interface:
+    func required()
+
+type Bad object implements I:
+    func somethingElse():
+        print("nope")
+
+var b = Bad()

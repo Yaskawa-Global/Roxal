@@ -24,7 +24,11 @@ public:
     Value help_builtin(VM& vm, ArgsView args);
     Value clone_builtin(VM& vm, ArgsView args);
     Value wait_builtin(VM& vm, ArgsView args);
+    Value ignore_builtin(VM& vm, ArgsView args);
     Value is_ready_builtin(VM& vm, ArgsView args);
+    Value allof_builtin(VM& vm, ArgsView args);
+    Value anyof_builtin(VM& vm, ArgsView args);
+    Value event_subscriber_count_builtin(VM& vm, ArgsView args);
     Value fork_builtin(VM& vm, ArgsView args);
     Value join_builtin(VM& vm, ArgsView args);
     Value exit_builtin(VM& vm, ArgsView args);
@@ -35,15 +39,26 @@ public:
     Value weakref_builtin(VM& vm, ArgsView args);
     Value weak_alive_builtin(VM& vm, ArgsView args);
     Value strongref_builtin(VM& vm, ArgsView args);
+    Value refcount_builtin(VM& vm, ArgsView args);
+    Value arity_builtin(VM& vm, ArgsView args);
     Value gc_builtin(VM& vm, ArgsView args);
     Value gc_config_builtin(VM& vm, ArgsView args);
     Value serialize_builtin(VM& vm, ArgsView args);
     Value deserialize_builtin(VM& vm, ArgsView args);
+    Value to_bytes_builtin(VM& vm, ArgsView args);
+    Value from_bytes_builtin(VM& vm, ArgsView args);
+    Value bits_to_bytes_builtin(VM& vm, ArgsView args);
+    Value bytes_to_bits_builtin(VM& vm, ArgsView args);
+    Value lshift_builtin(VM& vm, ArgsView args);
+    Value rshift_builtin(VM& vm, ArgsView args);
     Value to_json_builtin(VM& vm, ArgsView args);
     Value from_json_builtin(VM& vm, ArgsView args);
-    Value filter_builtin(VM& vm, ArgsView args);
-    Value map_builtin(VM& vm, ArgsView args);
-    Value reduce_builtin(VM& vm, ArgsView args);
+    Value to_xml_builtin(VM& vm, ArgsView args);
+    Value from_xml_builtin(VM& vm, ArgsView args);
+    // list method builtins (registered via defineBuiltinMethod on ValueType::List)
+    Value list_filter_builtin(VM& vm, ArgsView args);
+    Value list_map_builtin(VM& vm, ArgsView args);
+    Value list_reduce_builtin(VM& vm, ArgsView args);
 
     // Time type natives
     Value time_init_native(VM& vm, ArgsView args);
@@ -56,6 +71,9 @@ public:
     Value time_until_native(VM& vm, ArgsView args);
     Value time_format_native(VM& vm, ArgsView args);
     Value time_components_native(VM& vm, ArgsView args);
+
+    // quantity type natives
+    Value quantity_set_builtin(VM& vm, ArgsView args);
 
     // TimeSpan type natives
     Value timespan_init_native(VM& vm, ArgsView args);
@@ -92,16 +110,20 @@ private:
     Value moduleTypeValue; // ObjModuleType*
     Value timeTypeValue;
     Value timeSpanTypeValue;
+    Value quantityTypeValue;
     ObjObjectType* timeTypeObj { nullptr };
     ObjObjectType* timeSpanTypeObj { nullptr };
+    ObjObjectType* quantityTypeObj { nullptr };
 
     Value typeMethodDecl(const Value& typeValue, const std::string& methodName) const;
 };
 
 ObjObjectType* sysTimeType();
 ObjObjectType* sysTimeSpanType();
+ObjObjectType* sysQuantityType();
 std::string sysTimeDefaultString(ObjectInstance* inst);
 std::string sysTimeSpanDefaultString(ObjectInstance* inst);
+std::string sysQuantityDefaultString(ObjectInstance* inst);
 Value sysNewTimeSpan(int64_t totalMicros);
 
 }

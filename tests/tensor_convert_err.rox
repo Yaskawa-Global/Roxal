@@ -1,0 +1,4 @@
+# Test: vector(matrix) with non-vector-shaped matrix should error
+var m = matrix([[1, 2, 3], [4, 5, 6]])
+var v = vector(m)
+print(v)

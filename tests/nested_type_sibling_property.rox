@@ -1,0 +1,21 @@
+// Triply-nested types where an enclosing nested type declares a property whose
+// type or initializer references a sibling nested type by unqualified or
+// dotted name. The property emission would previously emit
+// `GetModuleVar grandparent + GetProp parent + GetProp sibling`, which fails
+// at runtime because the parent's NESTED_TYPE attachment to grandparent
+// hasn't run yet — see the in-flight type anchor in TypeScope.
+
+type Outer interface:
+  type Middle object:
+    type Inner enum:
+      A
+      B
+    var k :Inner = Inner.A
+    var j :Middle.Inner = Middle.Inner.B
+
+var ia :Outer.Middle.Inner = Outer.Middle.Inner.A
+print(ia)
+
+var m = Outer.Middle()
+print(m.k)
+print(m.j)

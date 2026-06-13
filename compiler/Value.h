@@ -15,6 +15,7 @@
 #include <core/memory.h>
 #include <core/types.h>
 #include <Eigen/Dense>
+#include <Eigen/Geometry>
 
 // #if USE_GC_SGCL
 // #include <core/sgcl/sgcl.h>
@@ -31,6 +32,12 @@ namespace df {
 
 
 namespace roxal {
+
+/// Result of a non-blocking future resolution attempt.
+enum class FutureStatus { Resolved, Pending, Error };
+
+// Forward declaration for tensor dtype
+enum class TensorDType : uint8_t;
 
 class VM;
 class Value;
@@ -84,12 +91,41 @@ enum class ValueType {
 
 std::string to_string(ValueType t);
 
+/// True when nil is a valid coercion target for this type.
+/// nil is the natural absence-of-value for types whose user-facing semantics
+/// are reference-identity (you hold a handle, and "no handle yet" is meaningful).
+/// Rejected for types that have a natural value-shaped identity (empty range,
+/// zero vector, identity orient) since those should default to a constructed
+/// value, not nil.
+inline bool isNilAcceptableTargetType(ValueType t) {
+    switch (t) {
+        case ValueType::String:
+        case ValueType::List:
+        case ValueType::Dict:
+        case ValueType::Object:
+        case ValueType::Actor:
+        case ValueType::Signal:
+        case ValueType::Event:
+        case ValueType::Function:
+        case ValueType::Closure:
+        case ValueType::Tensor:
+        case ValueType::Module:
+            return true;
+        default:
+            return false;
+    }
+}
 
 
 struct SerializationContext {
+    virtual ~SerializationContext() = default;
     std::unordered_map<const Obj*, uint64_t> objToId;
     std::unordered_map<uint64_t, Obj*> idToObj;
     uint64_t nextId = 1;
+};
+
+struct CloneContext {
+    std::unordered_map<const Obj*, Obj*> originalToClone;
 };
 
 
@@ -108,6 +144,9 @@ const uint64_t SignBit = ((uint64_t)0x8000000000000000);
 // Bit 49 is unused in the NAN object representation.  Use it for the weak
 // reference flag when the value holds an object pointer.
 const uint64_t WeakMask = uint64_t(1) << 49;
+// Bit 48 flags a const (immutable snapshot) reference to an object.
+// Const refs participate in normal strong ref counting (keep the object alive).
+const uint64_t ConstMask = uint64_t(1) << 48;
 
 const int TypeTagOffset = 46;
 const uint64_t TypeTag = uint64_t(0xf) << TypeTagOffset;
@@ -220,6 +259,13 @@ public:
     static Value matrixVal(int32_t rows, int32_t cols);
     static Value matrixVal(const Eigen::MatrixXd& values);
 
+    static Value orientVal(); // ObjOrient (identity quaternion)
+    static Value orientVal(const Eigen::Quaterniond& q);
+
+    static Value tensorVal(); // ObjTensor
+    static Value tensorVal(const std::vector<int64_t>& shape, TensorDType dtype);
+    static Value tensorVal(const std::vector<int64_t>& shape, const std::vector<double>& data, TensorDType dtype);
+
     static Value signalVal(roxal::ptr<df::Signal> s); // ObjSignal
 
     static Value eventVal(); // ObjEventType
@@ -245,7 +291,8 @@ public:
 
     static Value closureVal(const Value& function); // ObjClosure
 
-    static Value futureVal(const std::shared_future<Value>& fv); // ObjFuture
+    static Value futureVal(const std::shared_future<Value>& fv,
+                           ptr<type::Type> promisedType = nullptr); // ObjFuture
 
     static Value nativeVal(NativeFn function, void* data=nullptr,
                            ptr<roxal::type::Type> funcType=nullptr,
@@ -319,6 +366,10 @@ public:
     bool isWeak() const { return (val.load() & WeakMask) != 0; }
     Value weakRef() const;
     Value strongRef() const;
+
+    bool isConst() const { return (val.load() & ConstMask) != 0; }
+    Value constRef() const;
+    Value mutableRef() const;
 
     /// @brief Checks if the value is boxed.
     /// @return True if the value is boxed, false otherwise.
@@ -436,6 +487,7 @@ public:
         switch (type()) {
             case ValueType::Vector:
             case ValueType::Matrix:
+            case ValueType::Orient:
             case ValueType::Tensor:
                 return true;
             default:
@@ -457,23 +509,30 @@ public:
         assert(isObj());
         #endif
         if (isWeak()) {
-            ObjControl* c = (ObjControl*)(uintptr_t)(val & ~(SignBit | QNAN | WeakMask));
+            ObjControl* c = (ObjControl*)(uintptr_t)(val & ~(SignBit | QNAN | WeakMask | ConstMask));
             return c->obj;
         }
-        return (Obj*)(uintptr_t)(val & ~(SignBit | QNAN | WeakMask));
+        return (Obj*)(uintptr_t)(val & ~(SignBit | QNAN | WeakMask | ConstMask));
     }
 
     inline ObjControl* asControl() const {
         #ifdef DEBUG_BUILD
         assert(isObj());
         #endif
-        return (ObjControl*)(uintptr_t)(val & ~(SignBit | QNAN | WeakMask));
+        return (ObjControl*)(uintptr_t)(val & ~(SignBit | QNAN | WeakMask | ConstMask));
     }
 
 
     // @brief if this Value wraps a future, block until it resolves and replace with the result.
     // @return false if resolving raised a Roxal exception (handled or not).
     bool resolveFuture();
+
+    /// @brief Non-blocking future resolution attempt.  If this Value wraps a
+    /// future that is already ready, resolve it in-place and return Resolved.
+    /// If not ready, register the current thread as a waiter and return Pending.
+    /// If resolving produced an exception, raise it and return Error.
+    FutureStatus tryResolveFuture();
+
     void resolveSignal();
     void resolve();
 
@@ -495,9 +554,10 @@ public:
     static void testPrimitiveValues();
     #endif
 
-    /// @brief Creates a deep copy of the value.
+    /// @brief Creates a deep copy of the value, preserving object graph structure.
+    /// @param ctx Clone context for tracking already-cloned objects (handles cycles and shared refs).
     /// @return The cloned value.
-    Value clone() const;
+    Value clone(ptr<CloneContext> ctx) const;
 
     /// @brief Determine if this value's type can be converted to another type.
     bool convertibleTo(ValueType to, bool strict=true) const;
@@ -519,6 +579,20 @@ protected:
     void decRefObj();
     void incWeakObj();
     void decWeakObj();
+};
+
+
+// moved from ObjControl.h due to needing complete value type
+struct SnapshotToken {
+    std::atomic<int32_t> refcount{1};
+    uint64_t epoch;
+    std::unordered_map<const Obj*, Value> cloneMap; // per-snapshot alias/cycle preservation (weak refs for identity lookup; containers cache strong refs to children)
+
+    explicit SnapshotToken(uint64_t e) : epoch(e) {}
+
+    void incRef() { refcount.fetch_add(1, std::memory_order_relaxed); }
+    // Returns true if this was the last ref (caller should delete + update globals)
+    bool decRef() { return refcount.fetch_sub(1, std::memory_order_acq_rel) == 1; }
 };
 
 
@@ -556,6 +630,8 @@ bool convertibleTo(ValueType from, ValueType to, bool strict=true);
 std::vector<std::tuple<std::string,bool,std::string>> testConversions();
 // run serialization unit tests used by the runtime '_runtests' builtin
 std::vector<std::tuple<std::string,bool,std::string>> testValueSerialization();
+// run orient conversion tests (TestRefOrient vs Eigen) used by '_runtests'
+std::vector<std::tuple<std::string,bool,std::string>> testOrientConversions();
 
 bool isFalsey(const Value& v);
 bool isTruthy(const Value& v);
@@ -581,7 +657,10 @@ Value lor(Value l, Value r);
 
 Value greater(Value l, Value r);
 Value less(Value l, Value r);
+Value greaterEqual(Value l, Value r);
+Value lessEqual(Value l, Value r);
 Value equal(Value l, Value r, bool strict = false);
+Value notEqual(Value l, Value r, bool strict = false);
 
 std::string toString(const Value& v);
 

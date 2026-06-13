@@ -1,0 +1,23 @@
+// Test that const actor param with interior aliases correctly isolates.
+// The sole-owner fast path must NOT fire when interior objects are aliased,
+// otherwise mutations through the alias would leak into the frozen view.
+
+type O object:
+    var i: int
+
+type Worker actor:
+    func read(data: list) -> int:
+        return data[0].i
+
+var inner = O(10)
+var items = [inner]
+// inner is aliased: referenced by both 'items[0]' and 'inner' variable.
+// items root has sole-ownership (strong=1 after move), but inner.strong=2.
+
+var w = Worker()
+var result = w.read(move(items))
+print('result=' + result)
+
+// Mutate through the alias after the actor call
+inner.i = 99
+print('inner.i=' + inner.i)

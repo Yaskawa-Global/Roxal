@@ -12,5 +12,5 @@ var a = A()
 var f1 = a.f()
 var f2 = a.g()
 
-wait(for=[f1, f2])
-
+wait(for=f1)
+wait(for=f2)

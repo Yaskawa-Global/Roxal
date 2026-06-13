@@ -1,0 +1,11 @@
+type W actor:
+  func compute(n :int, ms :int) -> int:
+    wait(ms=ms)
+    return n
+
+# Two actors → real race: w2.compute(2, 5) wins on a 5ms vs 50ms gap.
+w1 = W()
+w2 = W()
+got = wait(for=anyof(w1.compute(1, 50), w2.compute(2, 5)))
+print(got.index)
+print(got.value)

@@ -1,0 +1,65 @@
+# Test math.min, math.max, math.sum and type methods
+
+import math
+
+# === Tensor methods ===
+var t = tensor(2, 3, data=[3.0, 1.0, 4.0, 1.0, 5.0, 9.0])
+print(t.min())
+print(t.max())
+print(t.sum())
+
+# === Tensor via math module ===
+print(math.min(t))
+print(math.max(t))
+print(math.sum(t))
+
+# === 1D tensor ===
+var t1 = tensor(4, data=[-2.0, 0.0, 7.0, 3.0])
+print(t1.min())
+print(t1.max())
+print(t1.sum())
+
+# === Vector methods ===
+var v = [2.0 7.0 1.0]
+print(v.min())
+print(v.max())
+print(v.sum())
+
+# === Vector via math module ===
+print(math.min(v))
+print(math.max(v))
+print(math.sum(v))
+
+# === Matrix methods ===
+var m = [1 2; 3 4]
+print(m.min())
+print(m.max())
+print(m.sum())
+
+# === Matrix via math module ===
+print(math.min(m))
+print(math.max(m))
+print(math.sum(m))
+
+# === List via math module ===
+print(math.min([10.0, 3.0, 7.0]))
+print(math.max([10.0, 3.0, 7.0]))
+print(math.sum([10.0, 3.0, 7.0]))
+
+# === Single element ===
+var t2 = tensor(1, data=[42.0])
+print(t2.min())
+print(t2.max())
+print(t2.sum())
+
+# === All same values ===
+var t3 = tensor(3, data=[5.0, 5.0, 5.0])
+print(t3.min())
+print(t3.max())
+print(t3.sum())
+
+# === Negative values ===
+var t4 = tensor(3, data=[-10.0, -1.0, -5.0])
+print(t4.min())
+print(t4.max())
+print(t4.sum())

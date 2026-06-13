@@ -1,0 +1,1 @@
+Type 'Bad' does not satisfy interface 'I':\n  missing getter for property 'name'

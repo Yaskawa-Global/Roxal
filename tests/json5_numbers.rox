@@ -1,0 +1,5 @@
+// JSON5 number forms: leading +, .5, 5., 0x, Infinity, -Infinity, NaN.
+print(from_json('[+1, +2.5, .5, 5., 0xff, 0X10]'))
+print(from_json('[Infinity, -Infinity, NaN]'))
+// Writer: NaN and Infinity emit literals in JSON5 mode
+print(to_json(from_json('[Infinity, -Infinity, NaN]'), false, true))

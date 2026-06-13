@@ -2,6 +2,7 @@
 
 #include "dds/ModuleDDS.h"
 #include "dds/DdsAdapter.h"
+#include "dds/AsyncDDSManager.h"
 
 #include "Object.h"
 #include "Value.h"
@@ -251,11 +252,11 @@ void ModuleDDS::registerNativeTypes()
 void ModuleDDS::linkNativeFunctions()
 {
     ObjModuleType* mod = asModuleType(moduleTypeValue);
-    auto linkFn = [&](const char* name, NativeFn fn) {
+    auto linkFn = [&](const char* name, NativeFn fn, uint32_t resolveArgMask = 0) {
         auto val = mod->vars.load(toUnicodeString(name));
         if (val.has_value() && isClosure(val.value())) {
             ObjClosure* cl = asClosure(val.value());
-            asFunction(cl->function)->nativeImpl = fn;
+            asFunction(cl->function)->builtinInfo = make_ptr<BuiltinFuncInfo>(fn, std::vector<Value>{}, resolveArgMask);
         }
     };
 
@@ -275,9 +276,9 @@ void ModuleDDS::linkNativeFunctions()
 void ModuleDDS::setProperty(ObjectInstance* obj, const icu::UnicodeString& name, const Value& v)
 {
     auto h = name.hashCode();
-    auto it = obj->properties.find(h);
-    if (it != obj->properties.end())
-        it->second.assign(v);
+    auto it = obj->findProperty(h);
+    if (it)
+        it->assign(v);
 }
 
 Value ModuleDDS::makeHandleValue(dds_entity_t ent)
@@ -786,9 +787,9 @@ Value ModuleDDS::dds_close_entity(VM&, ArgsView args)
     } else if (isObjectInstance(target)) {
         ObjectInstance* inst = asObjectInstance(target);
         icu::UnicodeString handleName = toUnicodeString("handle");
-        auto it = inst->properties.find(handleName.hashCode());
-        if (it != inst->properties.end() && isForeignPtr(it->second.value))
-            fp = asForeignPtr(it->second.value);
+        auto it = inst->findProperty(handleName.hashCode());
+        if (it && isForeignPtr(it->value))
+            fp = asForeignPtr(it->value);
     }
     if (fp) {
         dds_entity_t e = static_cast<dds_entity_t>(reinterpret_cast<intptr_t>(fp->ptr));
@@ -820,14 +821,20 @@ Value ModuleDDS::dds_write(VM&, ArgsView args)
         throw std::runtime_error("dds.write unknown struct type: " + support->typeName);
 
     const dds_topic_descriptor_t* desc = support->descriptor.get();
-    auto sample = std::unique_ptr<void, std::function<void(void*)>>(
-        dds_alloc(desc->m_size),
-        [desc](void* p){ if (p) dds_sample_free(p, desc, DDS_FREE_ALL); });
-    self->fillSampleFromValue(*info, desc, sample.get(), args[1]);
-    dds_return_t rc = ::dds_write(writer, sample.get());
-    if (rc < 0)
-        throw std::runtime_error(std::string("dds_write failed: ") + dds_strretcode(-rc));
-    return Value::nilVal();
+    // Allocate sample - ownership will be transferred to async operation
+    void* sample = dds_alloc(desc->m_size);
+    if (!sample)
+        throw std::runtime_error("dds.write failed to allocate sample");
+    self->fillSampleFromValue(*info, desc, sample, args[1]);
+
+    // Submit async write operation
+    PendingDDSOp op;
+    op.type = PendingDDSOp::Type::DdsWrite;
+    op.writer = writer;
+    op.sample = sample;  // Transfer ownership
+    op.descriptor = support->descriptor;  // Shared ownership for cleanup
+
+    return AsyncDDSManager::instance().submit(std::move(op));
 }
 
 Value ModuleDDS::dds_read(VM&, ArgsView args)
@@ -895,9 +902,9 @@ dds_entity_t ModuleDDS::entityFromValue(const Value& v, bool allowNil)
     } else if (isObjectInstance(v)) {
         ObjectInstance* inst = asObjectInstance(v);
         icu::UnicodeString handleName = toUnicodeString("handle");
-        auto it = inst->properties.find(handleName.hashCode());
-        if (it != inst->properties.end() && isForeignPtr(it->second.value))
-            return static_cast<dds_entity_t>(reinterpret_cast<intptr_t>(asForeignPtr(it->second.value)->ptr));
+        auto it = inst->findProperty(handleName.hashCode());
+        if (it && isForeignPtr(it->value))
+            return static_cast<dds_entity_t>(reinterpret_cast<intptr_t>(asForeignPtr(it->value)->ptr));
     }
     if (allowNil)
         return 0;
@@ -1116,9 +1123,9 @@ static Value getFieldValue(const Value& msg, const std::string& name)
     if (!isObjectInstance(msg))
         return Value::nilVal();
     ObjectInstance* inst = asObjectInstance(msg);
-    auto it = inst->properties.find(toUnicodeString(name).hashCode());
-    if (it != inst->properties.end())
-        return it->second.value;
+    auto it = inst->findProperty(toUnicodeString(name).hashCode());
+    if (it)
+        return it->value;
     return Value::nilVal();
 }
 
@@ -1329,7 +1336,7 @@ void ModuleDDS::fillSampleFromValue(const StructInfo& info,
                     break;
                 }
                 ObjList* lst = asList(fval);
-                size_t len = lst->elts.size();
+                size_t len = lst->length();
                 size_t elemSz = typeSizeInternal(*field.type.element, this);
                 if (field.type.isArray) {
                     if (field.type.bounded && field.type.bound > 0 && len != field.type.bound)
@@ -1338,7 +1345,7 @@ void ModuleDDS::fillSampleFromValue(const StructInfo& info,
                         break;
                     std::memset(target, 0, elemSz * field.type.bound);
                     for (size_t idx = 0; idx < len; ++idx) {
-                        Value ev = lst->elts.at(idx);
+                        Value ev = lst->getElement(idx);
                         char* elemPtr = static_cast<char*>(target) + elemSz * idx;
                         switch (field.type.element->kind) {
                             case FieldType::Kind::Bool:
@@ -1402,7 +1409,7 @@ void ModuleDDS::fillSampleFromValue(const StructInfo& info,
                         break;
                     std::memset(seq->_buffer, 0, elemSz * len);
                     for (size_t idx = 0; idx < len; ++idx) {
-                        Value ev = lst->elts.at(idx);
+                        Value ev = lst->getElement(idx);
                         char* elemPtr = reinterpret_cast<char*>(seq->_buffer + elemSz * idx);
                         switch (field.type.element->kind) {
                             case FieldType::Kind::Bool:
@@ -1582,7 +1589,7 @@ Value ModuleDDS::valueFromSample(const StructInfo& info,
                                 default:
                                     break;
                             }
-                            lst->elts.push_back(ev);
+                            lst->append(ev);
                         }
                     } else {
                         const dds_sequence_t* seq = reinterpret_cast<const dds_sequence_t*>(src);
@@ -1629,7 +1636,7 @@ Value ModuleDDS::valueFromSample(const StructInfo& info,
                                     default:
                                         break;
                                 }
-                                lst->elts.push_back(ev);
+                                lst->append(ev);
                             }
                         }
                     }
@@ -1805,7 +1812,7 @@ std::unique_ptr<dds_qos_t, decltype(&dds_delete_qos)> ModuleDDS::qosFromValue(co
                 bad("partition must be list of strings");
             std::vector<std::string> parts;
             ObjList* lst = asList(val);
-            auto entries = lst->elts.get();
+            auto entries = lst->getElements();
             for (const auto& entry : entries) {
                 if (!isString(entry))
                     bad("partition entries must be strings");

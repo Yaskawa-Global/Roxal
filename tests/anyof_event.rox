@@ -1,0 +1,15 @@
+type W actor:
+  func slow(n :int) -> int:
+    wait(ms=200)
+    return n
+  proc emit_after(ms :int):
+    wait(ms=ms)
+    emit Sig()
+
+type Sig event
+
+# Event fires after 5ms; future resolves after 200ms — event wins.
+w = W()
+w.emit_after(5)
+got = wait(for=anyof(w.slow(99), Sig))
+print(got.index)

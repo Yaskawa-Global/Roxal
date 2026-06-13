@@ -53,12 +53,22 @@ void visitThreadRoots(Thread& thread, ValueVisitor& visitor)
         visitCallFrameRoots(frame, visitor);
     }
 
+    for (const auto& pending : thread.pendingConversions) {
+        visitStrongValue(visitor, pending.savedLHS);
+        visitStrongValue(visitor, pending.convReceiver);
+    }
+    for (const auto& guard : thread.conversionInProgress) {
+        visitStrongValue(visitor, guard.receiver);
+    }
+
     for (const auto& entry : thread.eventHandlers) {
         visitStrongValue(visitor, entry.first);
         for (const auto& reg : entry.second) {
             visitStrongValue(visitor, reg.closure);
             if (reg.matchValue.has_value())
                 visitStrongValue(visitor, reg.matchValue.value());
+            if (reg.targetFilter.has_value())
+                visitStrongValue(visitor, reg.targetFilter.value());
         }
     }
 
@@ -74,9 +84,71 @@ void visitThreadRoots(Thread& thread, ValueVisitor& visitor)
         }
     });
 
+    // Trace event dispatch state (active handler dispatch in progress)
+    if (thread.eventDispatch.active) {
+        visitStrongValue(visitor, thread.eventDispatch.currentEvent.eventType);
+        visitStrongValue(visitor, thread.eventDispatch.currentEvent.instance);
+        for (const auto& reg : thread.eventDispatch.handlerSnapshot) {
+            visitStrongValue(visitor, reg.closure);
+            if (reg.matchValue.has_value())
+                visitStrongValue(visitor, reg.matchValue.value());
+            if (reg.targetFilter.has_value())
+                visitStrongValue(visitor, reg.targetFilter.value());
+        }
+    }
+
     visitStrongValue(visitor, thread.currentActorCall);
     visitStrongValue(visitor, thread.currentBoundCall);
+#ifdef ROXAL_COMPUTE_SERVER
+    if (thread.remoteComputeCallState.active) {
+        for (const auto& arg : thread.remoteComputeCallState.args) {
+            visitStrongValue(visitor, arg);
+        }
+        visitStrongValue(visitor, thread.remoteComputeCallState.completionFuture);
+        visitStrongValue(visitor, thread.remoteComputeCallState.result);
+    }
+#endif
     visitStrongValue(visitor, thread.pendingWaitFor);
+    visitStrongValue(visitor, thread.awaitedFuture);
+    visitStrongValue(visitor, thread.pendingUncaughtException);
+    for (const auto& session : thread.stmtActionStack) {
+        visitStrongValue(visitor, session.lastReceiver);
+    }
+    visitStrongValue(visitor, thread.pendingConstructorInstance);
+    if (thread.waitSuspension.active) {
+        visitStrongValue(visitor, thread.waitSuspension.storedValue);
+    }
+
+    // Trace native continuation stack (e.g., filter/map/reduce iteration, param conversions)
+    for (const auto& cont : thread.nativeContinuationStack) {
+        visitStrongValue(visitor, cont.state);
+    }
+
+    // Trace native default param state stack
+    for (const auto& state : thread.nativeDefaultParamStack) {
+        visitStrongValue(visitor, state.receiver);
+        visitStrongValue(visitor, state.declFunction);
+        for (const auto& val : state.argsBuffer) {
+            visitStrongValue(visitor, val);
+        }
+        for (const auto& entry : state.paramDefaultFuncs) {
+            visitStrongValue(visitor, entry.second);
+        }
+    }
+
+    // Trace native param conversion state stack
+    for (const auto& state : thread.nativeParamConversionStack) {
+        visitStrongValue(visitor, state.receiver);
+        visitStrongValue(visitor, state.declFunction);
+        for (const auto& val : state.argsBuffer) {
+            visitStrongValue(visitor, val);
+        }
+    }
+
+    // Trace closure param conversion stack (deferred closure call with async param conversions)
+    for (const auto& state : thread.closureParamConversionStack) {
+        visitStrongValue(visitor, state.moduleType);
+    }
 }
 
 } // namespace
@@ -86,6 +158,40 @@ namespace roxal {
 SimpleMarkSweepGC& SimpleMarkSweepGC::instance() {
     static SimpleMarkSweepGC gc;
     return gc;
+}
+
+SimpleMarkSweepGC::ExternalParticipant::ExternalParticipant(SimpleMarkSweepGC& gc)
+    : gc_(&gc), id_(gc.nextExternalParticipantId_.fetch_add(1, std::memory_order_relaxed))
+{
+    gc_->externalParticipantEnter(id_);
+}
+
+SimpleMarkSweepGC::ExternalParticipant::~ExternalParticipant()
+{
+    if (gc_ != nullptr) {
+        gc_->externalParticipantExit(id_);
+    }
+}
+
+void SimpleMarkSweepGC::ExternalParticipant::setRootVisitor(std::function<void(ValueVisitor&)> visitor)
+{
+    if (gc_ != nullptr) {
+        gc_->externalParticipantSetVisitor(id_, std::move(visitor));
+    }
+}
+
+void SimpleMarkSweepGC::ExternalParticipant::clearRootVisitor()
+{
+    if (gc_ != nullptr) {
+        gc_->externalParticipantClearVisitor(id_);
+    }
+}
+
+void SimpleMarkSweepGC::ExternalParticipant::pollSafepointIfRequested()
+{
+    if (gc_ != nullptr) {
+        gc_->externalParticipantSafepoint(id_);
+    }
 }
 
 void SimpleMarkSweepGC::registerAllocation(ObjControl* control) {
@@ -213,6 +319,69 @@ void SimpleMarkSweepGC::onThreadExit() {
     safepointCv_.notify_all();
 }
 
+void SimpleMarkSweepGC::registerExternalRootProvider(ExternalRootProvider* provider)
+{
+    if (!provider) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    externalRootProviders_.insert(provider);
+}
+
+void SimpleMarkSweepGC::unregisterExternalRootProvider(ExternalRootProvider* provider)
+{
+    if (!provider) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    externalRootProviders_.erase(provider);
+}
+
+void SimpleMarkSweepGC::externalParticipantEnter(std::uint64_t id)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    externalParticipants_[id] = ExternalParticipantState {};
+    ++activeThreads_;
+    safepointCv_.notify_all();
+}
+
+void SimpleMarkSweepGC::externalParticipantExit(std::uint64_t id)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = externalParticipants_.find(id);
+    if (it != externalParticipants_.end()) {
+        if (it->second.atSafepoint && threadsAtSafepoint_ > 0) {
+            --threadsAtSafepoint_;
+        }
+        externalParticipants_.erase(it);
+    }
+    if (activeThreads_ > 0) {
+        --activeThreads_;
+    }
+    safepointCv_.notify_all();
+}
+
+void SimpleMarkSweepGC::externalParticipantSetVisitor(
+        std::uint64_t id, std::function<void(ValueVisitor&)> visitor)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = externalParticipants_.find(id);
+    if (it != externalParticipants_.end()) {
+        it->second.rootVisitor = std::move(visitor);
+    }
+}
+
+void SimpleMarkSweepGC::externalParticipantClearVisitor(std::uint64_t id)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = externalParticipants_.find(id);
+    if (it != externalParticipants_.end()) {
+        it->second.rootVisitor = nullptr;
+    }
+}
+
 void SimpleMarkSweepGC::safepoint(Thread& currentThread) {
     if (!gcEnabled_.load(std::memory_order_acquire) ||
         !collectionRequested_.load(std::memory_order_acquire)) {
@@ -250,7 +419,7 @@ void SimpleMarkSweepGC::safepoint(Thread& currentThread) {
             return;
         }
 
-        if (collector_ && collector_ != &currentThread) {
+        if ((collector_ && collector_ != &currentThread) || externalCollectorActive_) {
             // Another thread is handling the collection; wait for it to complete.
             while (collectionRequested_.load(std::memory_order_acquire)) {
                 safepointCv_.wait(lock);
@@ -283,6 +452,8 @@ void SimpleMarkSweepGC::safepoint(Thread& currentThread) {
         collectionRequested_.store(false, std::memory_order_release);
         bytesAllocatedSinceLastCollect_.store(0, std::memory_order_relaxed);
         collector_ = nullptr;
+        externalCollectorActive_ = false;
+        externalCollectorThread_ = std::thread::id {};
         --threadsAtSafepoint_;
     }
 
@@ -315,6 +486,97 @@ void SimpleMarkSweepGC::safepoint(Thread& currentThread) {
                   << " ms; allocated now " << allocatedAfter << " bytes" << std::endl;
     }
 #endif
+}
+
+void SimpleMarkSweepGC::externalParticipantSafepoint(std::uint64_t id)
+{
+    if (!gcEnabled_.load(std::memory_order_acquire) ||
+        !collectionRequested_.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    std::vector<Obj*> toDestroy;
+
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (!collectionRequested_.load(std::memory_order_acquire)) {
+            return;
+        }
+
+        auto stateIt = externalParticipants_.find(id);
+        if (stateIt == externalParticipants_.end()) {
+            return;
+        }
+
+        if (!stateIt->second.atSafepoint) {
+            stateIt->second.atSafepoint = true;
+            ++threadsAtSafepoint_;
+            safepointCv_.notify_all();
+        }
+
+        while (collectionRequested_.load(std::memory_order_acquire) &&
+               threadsAtSafepoint_ < activeThreads_) {
+            safepointCv_.wait(lock);
+        }
+
+        if (!collectionRequested_.load(std::memory_order_acquire)) {
+            stateIt = externalParticipants_.find(id);
+            if (stateIt != externalParticipants_.end() && stateIt->second.atSafepoint) {
+                stateIt->second.atSafepoint = false;
+                --threadsAtSafepoint_;
+            }
+            safepointCv_.notify_all();
+            return;
+        }
+
+        const bool currentIsExternalCollector =
+                externalCollectorActive_ && externalCollectorThread_ == std::this_thread::get_id();
+        if ((collector_ != nullptr) || (externalCollectorActive_ && !currentIsExternalCollector)) {
+            while (collectionRequested_.load(std::memory_order_acquire)) {
+                safepointCv_.wait(lock);
+            }
+            stateIt = externalParticipants_.find(id);
+            if (stateIt != externalParticipants_.end() && stateIt->second.atSafepoint) {
+                stateIt->second.atSafepoint = false;
+                --threadsAtSafepoint_;
+            }
+            safepointCv_.notify_all();
+            return;
+        }
+
+        externalCollectorActive_ = true;
+        externalCollectorThread_ = std::this_thread::get_id();
+        CollectionResult result = performCollection(lock);
+        toDestroy = std::move(result.unreachable);
+        collectionRequested_.store(false, std::memory_order_release);
+        bytesAllocatedSinceLastCollect_.store(0, std::memory_order_relaxed);
+        externalCollectorActive_ = false;
+        externalCollectorThread_ = std::thread::id {};
+
+        stateIt = externalParticipants_.find(id);
+        if (stateIt != externalParticipants_.end() && stateIt->second.atSafepoint) {
+            stateIt->second.atSafepoint = false;
+            --threadsAtSafepoint_;
+        }
+    }
+
+    safepointCv_.notify_all();
+
+    bool pushed = false;
+    for (Obj* obj : toDestroy) {
+        if (!obj) {
+            continue;
+        }
+        Obj::unrefedObjs.push_back(obj);
+        pushed = true;
+    }
+
+    if (pushed) {
+        if (VM* vm = vm_.load(std::memory_order_acquire)) {
+            vm->requestObjectCleanup();
+            vm->freeObjects();
+        }
+    }
 }
 
 SimpleMarkSweepGC::CollectionResult SimpleMarkSweepGC::performCollection(std::unique_lock<std::mutex>& lock) {
@@ -392,6 +654,48 @@ SimpleMarkSweepGC::CollectionResult SimpleMarkSweepGC::performCollection(std::un
 
     visitRoots(marker);
     marker.drain();
+
+    // MVCC: mark version chain snapshots.
+    // Version chain entries hold raw Obj* snapshots that aren't reachable via
+    // normal Value tracing.  We must mark them so the sweep doesn't collect
+    // objects that an active snapshot may still need for version resolution.
+    for (ObjControl* control : controls_) {
+        if (!control || !control->obj)
+            continue;
+        if (control->markEpoch.load(std::memory_order_relaxed) != epoch)
+            continue;
+        ObjVersion* ver = control->versionChain.load(std::memory_order_relaxed);
+        while (ver) {
+            if (ver->snapshot && ver->snapshot->control) {
+                ObjControl* snapCtrl = ver->snapshot->control;
+                if (!snapCtrl->collecting.load(std::memory_order_relaxed) &&
+                    snapCtrl->markEpoch.load(std::memory_order_relaxed) != epoch) {
+                    snapCtrl->markEpoch.store(epoch, std::memory_order_relaxed);
+                    // Trace the snapshot's children too (they may hold refs)
+                    marker.worklist.push_back(ver->snapshot);
+                }
+            }
+            ver = ver->prev;
+        }
+    }
+    marker.drain();
+
+    // MVCC: trim version chains on live objects.
+    // All threads are at a safepoint, so no concurrent readers.
+    {
+        uint64_t minEpoch = snapshotEpochTracker.minEpoch();
+        for (ObjControl* control : controls_) {
+            if (!control || !control->obj)
+                continue;
+            if (control->collecting.load(std::memory_order_relaxed))
+                continue;
+            // Only trim marked (live) objects that have a version chain
+            if (control->markEpoch.load(std::memory_order_relaxed) == epoch
+                && control->versionChain.load(std::memory_order_relaxed) != nullptr) {
+                control->obj->trimVersionChain(minEpoch);
+            }
+        }
+    }
 
     std::vector<Obj*> unreachable;
     unreachable.reserve(controls_.size());
@@ -485,7 +789,12 @@ void SimpleMarkSweepGC::visitRoots(ValueVisitor& visitor) {
 
     visitStrongValue(visitor, vm.dataflowEngineActor);
     visitStrongValue(visitor, vm.conditionalInterruptClosure);
+    visitStrongValue(visitor, vm.combinatorRelayFunction);
     visitStrongValue(visitor, vm.initString);
+
+    // RT REPL pending closure (in-flight between setupLine and runFor)
+    if (vm.pendingRTClosure_.isObj())
+        visitStrongValue(visitor, vm.pendingRTClosure_);
 
     for (const auto& typeEntry : vm.builtinMethods) {
         for (const auto& methodEntry : typeEntry.second) {
@@ -499,12 +808,33 @@ void SimpleMarkSweepGC::visitRoots(ValueVisitor& visitor) {
         }
     });
 
+    // Cross-compiler user-module registry. In practice every Value here is
+    // also reachable via ObjModuleType::allModules above, but visit
+    // explicitly so the registry is self-sufficient as a root — if a future
+    // change ever introduces a path that registers a module without also
+    // pushing to allModules, the registry stays correct.
+    {
+        std::lock_guard<std::mutex> guard(vm.userModuleRegistryMutex);
+        for (const auto& entry : vm.userModuleRegistry) {
+            visitStrongValue(visitor, entry.second);
+        }
+    }
+
     // Note: ObjObjectType::enumTypes is NOT visited here. It holds raw pointers for
     // fast enum value -> type lookup, but enum types are already rooted through modules:
     // - User-defined enums are stored in module vars via DefineModuleVar opcode
     // - DDS/Proto enums are stored in module vars via registerGeneratedTypes()
     // - ObjModuleType::trace() traces all vars, so enum types are visited via allModules above
-
+    for (ExternalRootProvider* provider : externalRootProviders_) {
+        if (provider != nullptr) {
+            provider->visitRoots(visitor);
+        }
+    }
+    for (auto& entry : externalParticipants_) {
+        if (entry.second.rootVisitor) {
+            entry.second.rootVisitor(visitor);
+        }
+    }
 }
 
 size_t SimpleMarkSweepGC::collectNowForShutdown() {

@@ -1,0 +1,10 @@
+func f(x :int):
+    print("int:{x}")
+
+func f(x :string):
+    print("str:{x}")
+
+// Pass through a first-class reference to force runtime dispatch.
+g = f
+g(5)
+g("hello")

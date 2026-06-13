@@ -1,0 +1,27 @@
+// Test commutative operator dispatch (operator* used for both LHS and RHS)
+
+type Scaled object:
+  var v :real = 0.0
+
+  proc init(v :real):
+    this.v = v
+
+  func operator*(other) -> Scaled:
+    // commutative: works for Scaled * scalar and scalar * Scaled
+    if other is Scaled:
+      return Scaled(v * other.v)
+    return Scaled(v * real(other))
+
+var s = Scaled(3.0)
+
+// LHS: Scaled * real
+var r1 = s * 2.0
+print(r1.v)
+
+// RHS: real * Scaled (commutative dispatch swaps args)
+var r2 = 2.0 * s
+print(r2.v)
+
+// LHS: Scaled * Scaled
+var r3 = s * Scaled(4.0)
+print(r3.v)

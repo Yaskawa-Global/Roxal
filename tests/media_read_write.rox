@@ -1,0 +1,48 @@
+import media
+
+// Read RGB PNG
+var img = media.Image('../tests/test_image_rgb.png')
+print(img.width())
+print(img.height())
+print(img.channels())
+
+// Read RGBA PNG
+var img2 = media.Image('../tests/test_image_rgba.png')
+print(img2.channels())
+
+// Check pixel values of RGB image (top-left is red: 255,0,0)
+print(img.data[0, 0, 0])  // R=255
+print(img.data[0, 0, 1])  // G=0
+print(img.data[0, 0, 2])  // B=0
+
+// Write as PNG and read back
+img.write('media_rw_test.png')
+var img3 = media.Image('media_rw_test.png')
+print(img3.width())
+print(img3.height())
+print(img3.channels())
+
+// Write as JPEG and read back
+img.write('media_rw_test.jpg', quality=95)
+var img4 = media.Image('media_rw_test.jpg')
+print(img4.width())
+print(img4.height())
+print(img4.channels())
+
+// Read with channel conversion (force grayscale)
+var gray = media.Image('../tests/test_image_rgb.png', channels=1)
+print(gray.channels())
+
+// Construct from tensor
+var t = img.data
+var img5 = media.Image(source=t)
+print(img5.width())
+print(img5.height())
+
+// Clone and verify independence
+var img6 = clone(img)
+print(img6.width())
+print(img6.height())
+img6.grayscale()
+print(img6.channels())  // 1 (clone was modified)
+print(img.channels())   // 3 (original unchanged)

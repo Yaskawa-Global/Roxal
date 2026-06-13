@@ -182,6 +182,66 @@ Chunk::size_type Chunk::invokeInstruction(const std::string& name, size_type off
 }
 
 
+Chunk::size_type Chunk::constantPlusIndexInstruction(const std::string& name, size_type offset, bool doubleByteArg) const
+{
+    size_type cur = offset + 1;
+    uint16_t constant;
+    if (doubleByteArg) {
+        constant = (uint16_t(code.at(cur)) << 8) | code.at(cur+1);
+        cur += 2;
+    } else {
+        constant = code.at(cur);
+        cur += 1;
+    }
+    uint16_t index = (uint16_t(code.at(cur)) << 8) | code.at(cur+1);
+    cur += 2;
+    std::cout << format("%-16s [%d] %4d '", name.c_str(), index, constant);
+    auto value = constants.at(constant);
+    std::cout << toString(value) << "'" << std::endl;
+    return cur;
+}
+
+
+Chunk::size_type Chunk::argPlusIndexInstruction(const std::string& name, size_type offset, bool doubleByteArg) const
+{
+    size_type cur = offset + 1;
+    uint16_t arg;
+    if (doubleByteArg) {
+        arg = (uint16_t(code.at(cur)) << 8) | code.at(cur+1);
+        cur += 2;
+    } else {
+        arg = code.at(cur);
+        cur += 1;
+    }
+    uint16_t index = (uint16_t(code.at(cur)) << 8) | code.at(cur+1);
+    cur += 2;
+    std::cout << format("%-16s [%d] slot=%d", name.c_str(), index, arg) << std::endl;
+    return cur;
+}
+
+
+Chunk::size_type Chunk::invokeOverloadAtInstruction(const std::string& name, size_type offset, bool doubleByteArg) const
+{
+    size_type cur = offset + 1;
+    uint16_t constant;
+    if (doubleByteArg) {
+        constant = (uint16_t(code.at(cur)) << 8) | code.at(cur+1);
+        cur += 2;
+    } else {
+        constant = code.at(cur);
+        cur += 1;
+    }
+    uint16_t index = (uint16_t(code.at(cur)) << 8) | code.at(cur+1);
+    cur += 2;
+    uint8_t argCount = code.at(cur);  // single-byte CallSpec for all-positional
+    cur += 1;
+    std::cout << format("%-16s [%d] (%d args) %4d '", name.c_str(), index, argCount, constant);
+    auto value = constants.at(constant);
+    std::cout << toString(value) << "'" << std::endl;
+    return cur;
+}
+
+
 
 Chunk::size_type Chunk::disassembleInstruction(size_type offset)
 {
@@ -221,6 +281,8 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return simpleInstruction("CONST_INT1", offset);
         case OpCode::Equal:
             return simpleInstruction("EQUAL", offset);
+        case OpCode::NotEqual:
+            return simpleInstruction("NOT_EQUAL", offset);
         case OpCode::Is:
             return simpleInstruction("IS", offset);
         case OpCode::In:
@@ -229,6 +291,10 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return simpleInstruction("GREATER", offset);
         case OpCode::Less:
             return simpleInstruction("LESS", offset);
+        case OpCode::GreaterEqual:
+            return simpleInstruction("GREATER_EQUAL", offset);
+        case OpCode::LessEqual:
+            return simpleInstruction("LESS_EQUAL", offset);
         case OpCode::Add:
             return simpleInstruction("ADD", offset);
         case OpCode::Subtract:
@@ -257,6 +323,8 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return simpleInstruction("POP", offset);
         case OpCode::PopN:
             return byteInstruction("POPN", offset);
+        case OpCode::StmtAction:
+            return simpleInstruction("STMT_ACTION", offset);
         case OpCode::Dup:
             return simpleInstruction("DUP", offset);
         case OpCode::DupBelow:
@@ -274,6 +342,21 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
         case OpCode::Call: {
             byteInstruction("CALL", offset);
             // compute num of bytes to skip over CallSpec
+            auto ip = code.begin()+offset+1;
+            CallSpec callSpec{ip};
+            if (!callSpec.allPositional) {
+                std::cout << format("%04d      |                 %3d  ",offset+2,callSpec.argCount);
+                for(auto arg : callSpec.args)
+                    if (arg.positional)
+                        std::cout << "p ";
+                    else
+                        std::cout << "n ";
+                std::cout << std::endl;
+            }
+            return offset+1+callSpec.toBytes().size();
+        }
+        case OpCode::RemoteCall: {
+            byteInstruction("REMOTE_CALL", offset);
             auto ip = code.begin()+offset+1;
             CallSpec callSpec{ip};
             if (!callSpec.allPositional) {
@@ -332,12 +415,16 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return constantInstruction("METHOD", offset, doubleByteArg);
         case OpCode::EnumLabel:
             return constantInstruction("ENUM_LABEL", offset, doubleByteArg);
+        case OpCode::NestedType:
+            return constantInstruction("NESTED_TYPE", offset, doubleByteArg);
         case OpCode::EventPayload:
             return constantInstruction("EVENT_PAYLOAD", offset, doubleByteArg);
         case OpCode::EventExtend:
             return simpleInstruction("EVENT_EXTEND", offset);
         case OpCode::Extend:
             return simpleInstruction("EXTEND", offset);
+        case OpCode::Implements:
+            return simpleInstruction("IMPLEMENTS", offset);
         case OpCode::DefineModuleConst:
             return constantInstruction("DEFINE_MODULE_CONST", offset, doubleByteArg);
         case OpCode::DefineModuleVar:
@@ -406,6 +493,24 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return simpleInstruction("THROW", offset);
         case OpCode::CopyInto:
             return simpleInstruction("COPY_INTO", offset);
+        case OpCode::MakeConst:
+            return simpleInstruction("MAKE_CONST", offset);
+        case OpCode::MoveLocal:
+            return argInstruction("MOVE_LOCAL", offset, doubleByteArg);
+        case OpCode::MoveModuleVar:
+            return constantInstruction("MOVE_MODULE_VAR", offset, doubleByteArg);
+        case OpCode::MoveProp:
+            return constantInstruction("MOVE_PROP", offset, doubleByteArg);
+        case OpCode::DefineModuleOverload:
+            return constantInstruction("DEFINE_MODULE_OVERLOAD", offset, doubleByteArg);
+        case OpCode::GetOverloadAt:
+            return constantPlusIndexInstruction("GET_OVERLOAD_AT", offset, doubleByteArg);
+        case OpCode::DefineLocalOverload:
+            return argInstruction("DEFINE_LOCAL_OVERLOAD", offset, doubleByteArg);
+        case OpCode::GetLocalOverloadAt:
+            return argPlusIndexInstruction("GET_LOCAL_OVERLOAD_AT", offset, doubleByteArg);
+        case OpCode::InvokeOverloadAt:
+            return invokeOverloadAtInstruction("INVOKE_OVERLOAD_AT", offset, doubleByteArg);
         case OpCode::Nop:
             return simpleInstruction("NOP", offset);
         default:
@@ -544,6 +649,12 @@ std::vector<int8_t> CallSpec::paramPositions(ptr<type::Type> calleeType, bool th
                 bool hasVariadic = funcType.hasVariadic();
                 size_t regularParamCount = hasVariadic ? funcType.params.size() - 1 : funcType.params.size();
 
+                // Too many positional args when there is no variadic param to absorb them
+                if (!hasVariadic && argCount > regularParamCount)
+                    throw std::runtime_error("Too many arguments in call to "+calleeType->toString()
+                                             +": expected at most "+std::to_string(regularParamCount)
+                                             +", got "+std::to_string(argCount));
+
                 // Fill regular params first
                 for(size_t i=0; i<argCount && i<regularParamCount; i++)
                     argPositions.push_back(i);
@@ -657,6 +768,10 @@ std::vector<int8_t> CallSpec::paramPositions(ptr<type::Type> calleeType, bool th
                             if (!seenNamedArgInCallOrder) {
                                 if (positionalArgIndex < regularParamCount)
                                     argPositions[positionalArgIndex] = ai;
+                                else
+                                    throw std::runtime_error("Too many arguments in call to "+calleeType->toString()
+                                                             +": expected at most "+std::to_string(regularParamCount)
+                                                             +" positional");
                             }
                             else
                                 throw std::runtime_error("Can't use positional arguments after named arguments in call to "+calleeType->toString());

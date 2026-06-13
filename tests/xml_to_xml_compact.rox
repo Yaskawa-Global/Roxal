@@ -1,0 +1,9 @@
+var xml = '<robot name="arm"><joint name="j1"/><joint name="j2"><axis xyz="0 0 1"/></joint></robot>'
+var doc = from_xml(xml)
+var xml2 = to_xml(doc, false)
+var doc2 = from_xml(xml2)
+print(doc2.tag)
+print(doc2.attrs.name)
+print(len(doc2.joint))
+print(doc2.joint[1].attrs.name)
+print(doc2.joint[1].axis.attrs.xyz)

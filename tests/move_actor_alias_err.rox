@@ -1,0 +1,10 @@
+// Test that passing aliased value to mutable actor param errors at boundary
+type Worker actor:
+    func process(data: mutable list) -> int:
+        return len(data)
+
+var w = Worker()
+var x = [1, 2, 3]
+var y = x
+var result = w.process(move(x))
+print(result)

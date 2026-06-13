@@ -190,8 +190,7 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
             ActorInstance* self = asActorInstance(args[0]);
 
             auto setProp = [&](const icu::UnicodeString& name, const Value& v) {
-                auto& slot = self->properties[name.hashCode()];
-                slot.assign(v);
+                self->assignProperty(name.hashCode(), v);
             };
 
             Value addrVal = Value::stringVal(toUnicodeString(this->targetAddress));
@@ -266,9 +265,9 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
                 throw std::invalid_argument("close expects service instance");
             ActorInstance* self = asActorInstance(args[0]);
             auto clearProp = [&](const icu::UnicodeString& name) {
-                auto hit = self->properties.find(name.hashCode());
-                if (hit != self->properties.end())
-                    hit->second.assign(Value::nilVal());
+                auto hit = self->findProperty(name.hashCode());
+                if (hit)
+                    hit->assign(Value::nilVal());
             };
             clearProp(toUnicodeString("__connector"));
             clearProp(toUnicodeString("__channel"));
@@ -331,25 +330,31 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
                     ObjObjectType* responseType = asObjectType(responseTypeVal);
                     size_t expectedArgs = fieldHashes.size() + 2;
 
-                    if (args.size() < 2 || args.size() > expectedArgs || !isActorInstance(args[0]))
+                    if (args.size() < 1 || args.size() > expectedArgs || !isActorInstance(args[0]))
                         throw std::invalid_argument(method.name + " expects receiver plus parameters");
                     ActorInstance* self = asActorInstance(args[0]);
-                    Value requestArg = args[1];
+                    Value requestArg = (args.size() >= 2) ? args[1] : Value::nilVal();
                     Value requestValue;
-                    if (!requestArg.isNil()) {
-                        if (!isObjectInstance(requestArg))
-                            throw std::invalid_argument(method.name + " expects request object instance");
-                        ObjectInstance* inst = asObjectInstance(requestArg);
-                        if (!inst->instanceType.is(requestTypeVal))
-                            throw std::invalid_argument(method.name + " expects request of type " +
-                                                        toUTF8StdString(asObjectType(requestTypeVal)->name));
+
+                    // Check if args[1] is a full request object of the expected type
+                    bool isRequestObj = !requestArg.isNil() && isObjectInstance(requestArg)
+                                        && asObjectInstance(requestArg)->instanceType.is(requestTypeVal);
+
+                    if (isRequestObj) {
                         requestValue = requestArg;
+                    } else if (fieldHashes.empty()) {
+                        // Empty request type — auto-construct with no fields needed
+                        requestValue = Value::objectInstanceVal(requestTypeVal);
                     } else {
+                        // Build request from field arguments.
+                        // If args[1] is nil (defaulted/skipped), field args start at position 2.
+                        // Otherwise args[1] is the first field value (positional field args).
                         requestValue = Value::objectInstanceVal(requestTypeVal);
                         ObjectInstance* inst = asObjectInstance(requestValue);
-                        size_t providedFields = args.size() - 2;
+                        size_t fieldStart = requestArg.isNil() ? 2 : 1;
+                        size_t providedFields = (args.size() > fieldStart) ? args.size() - fieldStart : 0;
                         for (size_t i = 0; i < fieldHashes.size(); ++i) {
-                            Value argVal = (i < providedFields) ? args[2 + i] : Value::nilVal();
+                            Value argVal = (i < providedFields) ? args[fieldStart + i] : Value::nilVal();
                             if (argVal.isNil())
                                 continue;
                             auto propIt = requestType->properties.find(fieldHashes[i]);
@@ -360,18 +365,18 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
                                     coerced = toType(prop.type, argVal, false);
                                 }
                             }
-                            inst->properties[fieldHashes[i]].assign(coerced);
+                            inst->assignProperty(fieldHashes[i], coerced);
                         }
                     }
 
                     // reuse connector if available, else create and store
-                    Value connVal = self->properties[toUnicodeString("__connector").hashCode()].value;
+                    Value connVal = self->propertySlot(toUnicodeString("__connector").hashCode()).value;
                     ACUCommunicator* comm = nullptr;
                     if (isForeignPtr(connVal))
                         comm = static_cast<ACUCommunicator*>(asForeignPtr(connVal)->ptr);
 
                     if (!comm) {
-                        Value addrVal = self->properties[toUnicodeString("__addr").hashCode()].value;
+                        Value addrVal = self->propertySlot(toUnicodeString("__addr").hashCode()).value;
                         std::string addr = targetAddress;
                         if (isString(addrVal))
                             addr = toUTF8StdString(asStringObj(addrVal)->s);
@@ -382,11 +387,11 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
                         Value fpComm = Value::foreignPtrVal(comm);
                         asForeignPtr(fpCh)->registerCleanup([](void* p){ delete static_cast<std::shared_ptr<grpc::Channel>*>(p); });
                         asForeignPtr(fpComm)->registerCleanup([](void* p){ delete static_cast<ACUCommunicator*>(p); });
-                        self->properties[toUnicodeString("__channel").hashCode()].assign(fpCh);
-                        self->properties[toUnicodeString("__connector").hashCode()].assign(fpComm);
+                        self->assignProperty(toUnicodeString("__channel").hashCode(), fpCh);
+                        self->assignProperty(toUnicodeString("__connector").hashCode(), fpComm);
                     }
 
-                    Value timeoutVal = self->properties[toUnicodeString("__timeout_ms").hashCode()].value;
+                    Value timeoutVal = self->propertySlot(toUnicodeString("__timeout_ms").hashCode()).value;
                     std::optional<std::chrono::milliseconds> timeout;
                     if (timeoutVal.isNumber()) {
                         int64_t ms = timeoutVal.asInt();
@@ -453,9 +458,9 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
                             return Value::nilVal();
                         if (responseFieldCount == 1) {
                             int32_t hash = responseType->propertyOrder.front();
-                            auto it = respInst->properties.find(hash);
-                            if (it != respInst->properties.end())
-                                return it->second.value;
+                            auto it = respInst->findProperty(hash);
+                            if (it)
+                                return it->value;
                             return Value::nilVal();
                         }
                         return respVal;
@@ -482,7 +487,7 @@ void ModuleGrpc::addNativeMethod(ObjObjectType* type,
                                                toUnicodeString("grpc"),
                                                toUnicodeString("grpc")));
     ObjFunction* of = asFunction(fnVal);
-    of->nativeImpl = fn;
+    of->builtinInfo = make_ptr<BuiltinFuncInfo>(fn, defaultValues);
     of->ownerType = Value::objRef(type);
     of->fnType = FunctionType::Method;
     of->access = ast::Access::Public;
@@ -497,7 +502,6 @@ void ModuleGrpc::addNativeMethod(ObjObjectType* type,
     if (!returnTypes.empty())
         t->func->returnTypes = returnTypes;
     of->funcType = t;
-    of->nativeDefaults = defaultValues;
 
     Value closure = Value::closureVal(fnVal);
     ObjObjectType::Method m;
@@ -505,7 +509,7 @@ void ModuleGrpc::addNativeMethod(ObjObjectType* type,
     m.closure = closure;
     m.access = ast::Access::Public;
     m.ownerType = Value::objRef(type);
-    type->methods[toUnicodeString(name).hashCode()] = m;
+    type->methods[toUnicodeString(name).hashCode()].overloads.push_back(m);
 }
 
 Value ModuleGrpc::makeServiceType(const std::string& serviceName)

@@ -1,0 +1,15 @@
+// Get-only accessor is excluded from the init(*) synthesized parameter
+// list. Calling with its name as a keyword arg is therefore an unknown
+// parameter, caught at the call site.
+
+type Box object:
+  var name :string = "?"
+  var label :string = "unset":
+    get:
+      return _label
+
+  proc init(*):
+    print("init")
+
+var b = Box(label="x")
+print(b.label)

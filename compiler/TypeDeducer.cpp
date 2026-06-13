@@ -2,12 +2,16 @@
 
 #include "TypeDeducer.h"
 
+#include <algorithm>
+
 
 using namespace roxal;
 
 using roxal::type::BuiltinType;
 using roxal::type::Type;
 using roxal::type::to_string;
+using roxal::ast::TypeName;
+using roxal::ast::joinTypeName;
 
 static std::string linePos(ptr<ast::AST> node)
 {
@@ -114,7 +118,9 @@ std::any TypeDeducer::visit(ptr<ast::Import> ast)
 std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
 {
     ast::Anys results {};
+    typeKindStack.push_back(ast->kind);
     ast->acceptChildren(*this, results);
+    typeKindStack.pop_back();
 
     // if (ast->type.has_value())
     //     std::cout << toUTF8StdString(ast->name) << " : " <<  ast->type.value()->toString() << std::endl;
@@ -123,7 +129,7 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
 
         ptr<type::Type> underlyingType;
         if (ast->extends.has_value()) {
-            auto extendsStr = toUTF8StdString(ast->extends.value());
+            auto extendsStr = toUTF8StdString(joinTypeName(ast->extends.value()));
             if (extendsStr == to_string(BuiltinType::Byte))
                 underlyingType = make_ptr<type::Type>(BuiltinType::Byte);
             else if (extendsStr == to_string(BuiltinType::Int))
@@ -220,11 +226,26 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
             type::Type::ObjectType::PropType propType;
             propType.name = prop->name;
             propType.nameHashCode = prop->name.hashCode();
-            // Set type if available
-            if (prop->varType.has_value() && std::holds_alternative<BuiltinType>(prop->varType.value())) {
-                propType.type = make_ptr<type::Type>(std::get<BuiltinType>(prop->varType.value()));
+            // Set type if available — builtin annotation directly, or
+            // resolve a TypeName by lookup (so e.g. `var engine :Engine`
+            // gets a fully-fledged Engine type::Type with its methods,
+            // enabling compile-time method overload dispatch through
+            // property chains like `car.engine.handle(...)`).
+            if (prop->varType.has_value()) {
+                if (std::holds_alternative<BuiltinType>(prop->varType.value())) {
+                    propType.type = make_ptr<type::Type>(std::get<BuiltinType>(prop->varType.value()));
+                } else {
+                    const auto& tn = std::get<ast::TypeName>(prop->varType.value());
+                    if (!tn.empty()) {
+                        auto info = lookupVar(tn.back());
+                        if (info.has_value() && info->type)
+                            propType.type = info->type;
+                    }
+                }
             }
             propType.hasDefault = prop->initializer.has_value();
+            propType.access = (prop->access == ast::Access::Private)
+                                  ? type::Access::Private : type::Access::Public;
             objType->obj->properties.push_back(propType);
         }
 
@@ -241,6 +262,8 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
             // TODO: handle custom type identifiers (non-builtin types)
 
             propType.hasDefault = propAccessor->initializer.has_value();
+            propType.access = (propAccessor->access == ast::Access::Private)
+                                  ? type::Access::Private : type::Access::Public;
 
             // Set accessor flags
             propType.hasGetter = propAccessor->getter.has_value();
@@ -255,13 +278,115 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
             objType->obj->properties.push_back(propType);
         }
 
-        // Register methods
+        // Register methods. We populate the FuncType params so the
+        // OverloadResolver can rank candidates by signature, and carry
+        // the AST's methodModifiers/access through so callers can check
+        // for `implicit`, `abstract`, etc. without re-walking the AST.
         for (const auto& method : ast->methods) {
             if (method->name.has_value()) {
-                // Create a basic function type for the method
                 ptr<type::Type::FuncType> methodType = make_ptr<type::Type::FuncType>();
                 methodType->isProc = method->isProc;
-                objType->obj->methods.emplace_back(method->name.value(), methodType);
+
+                // `proc init(*)` sugar: expand the single `*` param into one
+                // ParamType per public property of the enclosing type so the
+                // compile-time OverloadResolver sees the synthesized signature.
+                bool isStarInit = method->name.value() == icu::UnicodeString("init")
+                                  && method->params.size() == 1
+                                  && method->params[0]->isStar;
+                if (isStarInit) {
+                    // Helper: convert an AST VarType into a runtime
+                    // type::Type, matching RoxalCompiler::emitStarInitPrologue.
+                    auto pushParam = [&](const icu::UnicodeString& name,
+                                         bool hasDefault,
+                                         const ast::VarType* declaredType) {
+                        type::Type::FuncType::ParamType pt(name);
+                        pt.hasDefault = hasDefault;
+                        if (declaredType != nullptr) {
+                            ptr<type::Type> paramT = make_ptr<type::Type>();
+                            if (std::holds_alternative<ast::BuiltinType>(*declaredType)) {
+                                paramT->builtin = std::get<ast::BuiltinType>(*declaredType);
+                            } else {
+                                paramT->builtin = type::BuiltinType::Object;
+                                type::Type::ObjectType ot;
+                                const auto& tn = std::get<ast::TypeName>(*declaredType);
+                                if (!tn.empty()) ot.name = tn.back();
+                                paramT->obj = ot;
+                            }
+                            pt.type = paramT;
+                        }
+                        methodType->params.push_back(pt);
+                    };
+
+                    // Every init(*) param has a default — either the property's
+                    // explicit initializer, or an implicit type-construction
+                    // default (zero / nil). See RoxalCompiler::emitStarInitPrologue.
+                    //
+                    // Merge plain data props (`ast->properties`) and accessor-
+                    // equipped props (`ast->propertyAccessors`) in source-
+                    // declaration order so callers see params in the order the
+                    // properties appear in the user's type body — regardless
+                    // of whether each is a plain `var` or accessor-implemented.
+                    // Get-only accessors are excluded — they're read-only on
+                    // the public surface.
+                    struct Entry {
+                        ast::LinePos pos;
+                        icu::UnicodeString name;
+                        const ast::VarType* declaredType;
+                    };
+                    std::vector<Entry> entries;
+                    entries.reserve(ast->properties.size()
+                                    + ast->propertyAccessors.size());
+                    for (const auto& prop : ast->properties) {
+                        if (prop->access != ast::Access::Public)
+                            continue;
+                        const ast::VarType* dt = prop->varType.has_value()
+                            ? &prop->varType.value() : nullptr;
+                        entries.push_back({prop->interval.first, prop->name, dt});
+                    }
+                    for (const auto& pa : ast->propertyAccessors) {
+                        if (pa->access != ast::Access::Public)
+                            continue;
+                        if (pa->getter.has_value() && !pa->setter.has_value())
+                            continue;
+                        entries.push_back({pa->interval.first, pa->name, &pa->propType});
+                    }
+                    std::sort(entries.begin(), entries.end(),
+                              [](const Entry& a, const Entry& b) {
+                                  if (a.pos.line != b.pos.line)
+                                      return a.pos.line < b.pos.line;
+                                  return a.pos.pos < b.pos.pos;
+                              });
+                    for (const auto& e : entries)
+                        pushParam(e.name, /*hasDefault=*/true, e.declaredType);
+                } else {
+                    for (const auto& p : method->params) {
+                        type::Type::FuncType::ParamType pt(p->name);
+                        pt.hasDefault = p->defaultValue.has_value();
+                        pt.variadic = p->variadic;
+                        if (p->type.has_value()) {
+                            ptr<type::Type> paramT = make_ptr<type::Type>();
+                            if (std::holds_alternative<ast::BuiltinType>(p->type.value())) {
+                                paramT->builtin = std::get<ast::BuiltinType>(p->type.value());
+                            } else {
+                                // TypeName — leave builtin unset; resolver treats
+                                // a typed param without builtin info as Object/Actor
+                                // by name when needed.
+                                paramT->builtin = type::BuiltinType::Object;
+                                type::Type::ObjectType ot;
+                                const auto& tn = std::get<ast::TypeName>(p->type.value());
+                                if (!tn.empty()) ot.name = tn.back();
+                                paramT->obj = ot;
+                            }
+                            pt.type = paramT;
+                        }
+                        methodType->params.push_back(pt);
+                    }
+                }
+                type::Type::ObjectType::MethodInfo info(method->name.value(), methodType);
+                info.methodModifiers = method->methodModifiers;
+                info.access = (method->access == ast::Access::Private)
+                              ? type::Access::Private : type::Access::Public;
+                objType->obj->methods.push_back(info);
             }
         }
 
@@ -303,9 +428,9 @@ std::any TypeDeducer::visit(ptr<ast::VarDecl> ast)
     if (ast->varType.has_value()) {
         if (std::holds_alternative<BuiltinType>(ast->varType.value())) {
             ast->type = make_ptr<type::Type>(std::get<BuiltinType>(ast->varType.value()));
-        } else if (std::holds_alternative<icu::UnicodeString>(ast->varType.value())) {
+        } else if (std::holds_alternative<TypeName>(ast->varType.value())) {
             // Custom type (like Widget, MyClass, etc.) or runtime type variable
-            auto typeName = std::get<icu::UnicodeString>(ast->varType.value());
+            auto typeName = joinTypeName(std::get<TypeName>(ast->varType.value()));
             auto typeInfo = lookupVar(typeName);
             if (typeInfo.has_value() && typeInfo->type != nullptr) {
                 // Only use as compile-time type if it's not a runtime type variable
@@ -377,6 +502,22 @@ std::any TypeDeducer::visit(ptr<ast::ReturnStatement> ast)
 }
 
 
+std::any TypeDeducer::visit(ptr<ast::BreakStatement> ast)
+{
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    return results;
+}
+
+
+std::any TypeDeducer::visit(ptr<ast::ContinueStatement> ast)
+{
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    return results;
+}
+
+
 std::any TypeDeducer::visit(ptr<ast::IfStatement> ast)
 {
     ast::Anys results {};
@@ -408,6 +549,13 @@ std::any TypeDeducer::visit(ptr<ast::WhenStatement> ast)
 }
 
 std::any TypeDeducer::visit(ptr<ast::UntilStatement> ast)
+{
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    return results;
+}
+
+std::any TypeDeducer::visit(ptr<ast::AdheringIfStatement> ast)
 {
     ast::Anys results {};
     ast->acceptChildren(*this, results);
@@ -514,16 +662,21 @@ std::any TypeDeducer::visit(ptr<ast::Function> ast)
     type->func->isProc = ast->isProc;
     if (ast->returnTypes.has_value()) {
         auto& returnTypes = ast->returnTypes.value();
-        for (const auto& returnType : returnTypes) {
-            if (std::holds_alternative<BuiltinType>(returnType)) {
-                type->func->returnTypes.push_back(make_ptr<Type>(std::get<BuiltinType>(returnType)));
+        for (size_t ri = 0; ri < returnTypes.size(); ri++) {
+            ptr<Type> retType;
+            if (std::holds_alternative<BuiltinType>(returnTypes[ri])) {
+                retType = make_ptr<Type>(std::get<BuiltinType>(returnTypes[ri]));
             }
-            else if (std::holds_alternative<icu::UnicodeString>(returnType)) {
+            else if (std::holds_alternative<TypeName>(returnTypes[ri])) {
                 // lookup name - for now create a placeholder
                 // TODO: implement proper name lookup
-                ptr<Type> placeholderType = make_ptr<Type>(BuiltinType::Object);
-                type->func->returnTypes.push_back(placeholderType);
+                retType = make_ptr<Type>(BuiltinType::Object);
             }
+            // Mark return type as const if explicitly qualified (-> const T).
+            // Default is mutable (isConst=false). Only -> const T freezes at actor boundary.
+            if (retType && ri < ast->returnTypeConst.size() && ast->returnTypeConst[ri])
+                retType->isConst = true;
+            type->func->returnTypes.push_back(retType);
         }
 
         if (returnTypes.size() > 1) {
@@ -542,13 +695,26 @@ std::any TypeDeducer::visit(ptr<ast::Function> ast)
                 paramType.name = param->name;
                 paramType.nameHashCode = param->name.hashCode();
                 paramType.type = make_ptr<Type>(std::get<BuiltinType>(param->type.value()));
+                if (param->isConst || (inActorScope() && !param->isMutable))
+                    paramType.type.value()->isConst = true;
                 paramType.hasDefault = param->defaultValue.has_value();
                 paramType.variadic = param->variadic;
                 type->func.value().params[i] = paramType;
             }
-            else if (std::holds_alternative<icu::UnicodeString>(param->type.value())) {
-                // lookup name
-                //...
+            else if (std::holds_alternative<TypeName>(param->type.value())) {
+                // Named type (user-defined object/actor) — use Object as placeholder
+                // builtin type with the type name stored in obj for runtime resolution.
+                Type::FuncType::ParamType paramType {};
+                paramType.name = param->name;
+                paramType.nameHashCode = param->name.hashCode();
+                paramType.type = make_ptr<Type>(BuiltinType::Object);
+                paramType.type.value()->obj = Type::ObjectType{};
+                paramType.type.value()->obj->name = joinTypeName(std::get<TypeName>(param->type.value()));
+                if (param->isConst || (inActorScope() && !param->isMutable))
+                    paramType.type.value()->isConst = true;
+                paramType.hasDefault = param->defaultValue.has_value();
+                paramType.variadic = param->variadic;
+                type->func.value().params[i] = paramType;
             }
         }
         else {
@@ -631,6 +797,8 @@ std::any TypeDeducer::visit(ptr<ast::BinaryOp> ast)
             case ast::BinaryOp::NotEqual:
             case ast::BinaryOp::LessThan:
             case ast::BinaryOp::GreaterThan:
+            case ast::BinaryOp::LessOrEqual:
+            case ast::BinaryOp::GreaterOrEqual:
                 supportsSignal = true;
                 break;
             default:
@@ -679,15 +847,21 @@ std::any TypeDeducer::visit(ptr<ast::BinaryOp> ast)
                 if (lhsType==BuiltinType::Bool && rhsType==BuiltinType::Bool)
                     ast->type = make_ptr<Type>(BuiltinType::Bool);
                 break;
-            case ast::BinaryOp::Equal:
-            case ast::BinaryOp::NotEqual:
             case ast::BinaryOp::In:
             case ast::BinaryOp::NotIn:
+                ast->type = make_ptr<Type>(BuiltinType::Bool);
+                break;
+            case ast::BinaryOp::Equal:
+            case ast::BinaryOp::NotEqual:
             case ast::BinaryOp::LessThan:
             case ast::BinaryOp::GreaterThan:
             case ast::BinaryOp::LessOrEqual:
             case ast::BinaryOp::GreaterOrEqual:
-                ast->type = make_ptr<Type>(BuiltinType::Bool);
+                // Tensor comparisons return a tensor; scalar comparisons return bool
+                if (lhsType == BuiltinType::Tensor || rhsType == BuiltinType::Tensor)
+                    ast->type = make_ptr<Type>(BuiltinType::Tensor);
+                else
+                    ast->type = make_ptr<Type>(BuiltinType::Bool);
                 break;
             default: break;
         }
@@ -740,6 +914,24 @@ std::any TypeDeducer::visit(ptr<ast::UnaryOp> ast)
                         ast->type = make_ptr<Type>(BuiltinType::Int);
                     break;
                 case ast::UnaryOp::Accessor:
+                    // Property access on a typed receiver: if the receiver
+                    // is an object/actor with a known properties list,
+                    // look up the property by name and propagate its type
+                    // up to this accessor expression. This lets chains
+                    // like `obj.prop.method(args)` resolve `prop`'s type
+                    // for downstream compile-time method dispatch.
+                    if (ast->member.has_value() &&
+                        (argType == BuiltinType::Object || argType == BuiltinType::Actor) &&
+                        ast->arg->type.value()->obj.has_value())
+                    {
+                        const auto& objT = ast->arg->type.value()->obj.value();
+                        for (const auto& p : objT.properties) {
+                            if (p.name == ast->member.value() && p.type.has_value()) {
+                                ast->type = p.type.value();
+                                break;
+                            }
+                        }
+                    }
                     break;
                 default:
                     break;
@@ -875,6 +1067,20 @@ std::any TypeDeducer::visit(ptr<ast::Num> ast)
         ast->type = make_ptr<Type>(BuiltinType::Real);
     else
         throw std::runtime_error("Unhandled Num literal type");
+    return {};
+}
+
+
+std::any TypeDeducer::visit(ptr<ast::SuffixedNum> ast)
+{
+    // Type depends on suffix function return type; resolved by compiler
+    // For now, leave type unset
+    return {};
+}
+
+std::any TypeDeducer::visit(ptr<ast::SuffixedStr> ast)
+{
+    // Type depends on suffix function return type; resolved by compiler
     return {};
 }
 

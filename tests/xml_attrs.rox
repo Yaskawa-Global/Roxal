@@ -1,0 +1,9 @@
+var xml = '<joint name="j1" type="revolute"><parent link="base"/></joint>'
+var doc = from_xml(xml)
+var xml2 = to_xml(doc, false)
+var doc2 = from_xml(xml2)
+print(doc2.tag)
+print(doc2.attrs.name)
+print(doc2.attrs['type'])
+print(doc2.parent.tag)
+print(doc2.parent.attrs.link)

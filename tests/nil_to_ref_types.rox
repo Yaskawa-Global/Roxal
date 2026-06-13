@@ -1,0 +1,46 @@
+// nil coerces into reference-identity types at every site:
+//   var decl, function return, parameter, typed assignment, field assignment
+
+type Step object:
+  var name :string = ""
+  var next :Step = nil
+
+// 1. var decl with explicit type
+var s1 :Step = nil
+print(s1)
+
+var l1 :list = nil
+print(l1)
+
+var d1 :dict = nil
+print(d1)
+
+var s2 :string = nil
+print(s2)
+
+// 2. function return
+func makeStep() -> Step:
+  return nil
+
+var made = makeStep()
+print(made)
+
+// 3. typed parameter
+func use(n :Step):
+  print("use=" + string(n))
+
+use(nil)
+
+// 4. typed field assignment via constructor
+type Node object:
+  var link :Node = nil
+  proc init(link :Node):
+    this.link = link
+
+var n1 = Node(nil)
+print(n1.link)
+
+// 5. typed field assignment after construction
+var st = Step()
+st.next = nil
+print(st.next)

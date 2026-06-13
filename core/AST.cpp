@@ -325,6 +325,8 @@ std::any ExpressionStatement::accept(ASTVisitor& v)
 void ExpressionStatement::acceptChildren(ASTVisitor& v, Anys& results)
 {
     results.push_back( expr->accept(v) );
+    if (atHost)
+        results.push_back( (*atHost)->accept(v) );
 }
 
 
@@ -334,6 +336,8 @@ void ExpressionStatement::output(std::ostream& os, int indent) const
     os << spaces(indent)+"ExprStmt" << std::endl;
     //sourceOut();
     expr->output(os,indent+1);
+    if (atHost)
+        (*atHost)->output(os,indent+1);
 }
 
 
@@ -367,6 +371,62 @@ void ReturnStatement::output(std::ostream& os, int indent) const
     //sourceOut();
     if (expr.has_value())
         expr.value()->output(os,indent+1);
+}
+
+
+
+std::any BreakStatement::accept(ASTVisitor& v)
+{
+    Anys results {};
+
+    if (v.visitFirst())
+        results.push_back( v.visit(dynamic_ptr_cast<BreakStatement>(ptr_from_this())) );
+
+    if (v.visitChildren())
+        acceptChildren(v, results);
+
+    if (v.visitLast())
+        results.push_back( v.visit(dynamic_ptr_cast<BreakStatement>(ptr_from_this())) );
+
+    return results;
+}
+
+void BreakStatement::acceptChildren(ASTVisitor& v, Anys& results)
+{
+    (void)v; (void)results;
+}
+
+void BreakStatement::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"Break" << std::endl;
+}
+
+
+
+std::any ContinueStatement::accept(ASTVisitor& v)
+{
+    Anys results {};
+
+    if (v.visitFirst())
+        results.push_back( v.visit(dynamic_ptr_cast<ContinueStatement>(ptr_from_this())) );
+
+    if (v.visitChildren())
+        acceptChildren(v, results);
+
+    if (v.visitLast())
+        results.push_back( v.visit(dynamic_ptr_cast<ContinueStatement>(ptr_from_this())) );
+
+    return results;
+}
+
+void ContinueStatement::acceptChildren(ASTVisitor& v, Anys& results)
+{
+    (void)v; (void)results;
+}
+
+void ContinueStatement::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"Continue" << std::endl;
 }
 
 
@@ -566,6 +626,38 @@ void UntilStatement::acceptChildren(ASTVisitor& v, Anys& results)
 }
 
 
+std::any AdheringIfStatement::accept(ASTVisitor& v)
+{
+    Anys results {};
+
+    if (v.visitFirst())
+        results.push_back( v.visit(dynamic_ptr_cast<AdheringIfStatement>(ptr_from_this())) );
+
+    if (v.visitChildren())
+        acceptChildren(v, results);
+
+    if (v.visitLast())
+        results.push_back( v.visit(dynamic_ptr_cast<AdheringIfStatement>(ptr_from_this())) );
+
+    return results;
+}
+
+void AdheringIfStatement::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"AdheringIf" << std::endl;
+    os << spaces(indent+1) << "stmt:" << std::endl;
+    stmt->output(os, indent+2);
+    os << spaces(indent+1) << "condition:" << std::endl;
+    condition->output(os, indent+2);
+}
+
+void AdheringIfStatement::acceptChildren(ASTVisitor& v, Anys& results)
+{
+    results.push_back( stmt->accept(v) );
+    results.push_back( condition->accept(v) );
+}
+
+
 std::any RaiseStatement::accept(ASTVisitor& v)
 {
     Anys results {};
@@ -747,6 +839,8 @@ void VarDecl::acceptChildren(ASTVisitor& v, Anys& results)
 {
     if (initializer.has_value())
         results.push_back( initializer.value()->accept(v) );
+    if (atHost)
+        results.push_back( (*atHost)->accept(v) );
 }
 
 
@@ -754,11 +848,13 @@ void VarDecl::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"VarDecl " << (access==Access::Private?"private ":"") << (isConst ? "const " : "") << toUTF8StdString(name);
     if (varType.has_value()) {
-        if (std::holds_alternative<icu::UnicodeString>(varType.value()))
-            os << " :" << toUTF8StdString(std::get<icu::UnicodeString>(varType.value()));
+        if (std::holds_alternative<TypeName>(varType.value()))
+            os << " :" << toUTF8StdString(joinTypeName(std::get<TypeName>(varType.value())));
         else if (std::holds_alternative<BuiltinType>(varType.value()))
             os << " :" << to_string(std::get<BuiltinType>(varType.value()));
     }
+    if (atHost)
+        os << " at <host-expr>";
     os << std::endl;
 
     for(auto& annot : annotations)
@@ -766,6 +862,8 @@ void VarDecl::output(std::ostream& os, int indent) const
 
     if (initializer.has_value())
         initializer.value()->output(os,indent+1);
+    if (atHost)
+        (*atHost)->output(os,indent+1);
 }
 
 
@@ -809,8 +907,8 @@ void PropertyAccessor::acceptChildren(ASTVisitor& v, Anys& results)
 void PropertyAccessor::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"PropertyAccessor " << (access==Access::Private?"private ":"") << toUTF8StdString(name);
-    if (std::holds_alternative<icu::UnicodeString>(propType))
-        os << " :" << toUTF8StdString(std::get<icu::UnicodeString>(propType));
+    if (std::holds_alternative<TypeName>(propType))
+        os << " :" << toUTF8StdString(joinTypeName(std::get<TypeName>(propType)));
     else if (std::holds_alternative<BuiltinType>(propType))
         os << " :" << to_string(std::get<BuiltinType>(propType));
 
@@ -921,16 +1019,16 @@ void Function::output(std::ostream& os, int indent) const
         if (types.size() == 1) {
             if (std::holds_alternative<BuiltinType>(types[0]))
                 os << to_string(std::get<BuiltinType>(types[0]));
-            else if (std::holds_alternative<icu::UnicodeString>(types[0]))
-                os << toUTF8StdString(std::get<icu::UnicodeString>(types[0]));
+            else if (std::holds_alternative<TypeName>(types[0]))
+                os << toUTF8StdString(joinTypeName(std::get<TypeName>(types[0])));
         } else {
             os << "[";
             for (size_t i = 0; i < types.size(); i++) {
                 if (i > 0) os << ", ";
                 if (std::holds_alternative<BuiltinType>(types[i]))
                     os << to_string(std::get<BuiltinType>(types[i]));
-                else if (std::holds_alternative<icu::UnicodeString>(types[i]))
-                    os << toUTF8StdString(std::get<icu::UnicodeString>(types[i]));
+                else if (std::holds_alternative<TypeName>(types[i]))
+                    os << toUTF8StdString(joinTypeName(std::get<TypeName>(types[i])));
             }
             os << "]";
         }
@@ -983,8 +1081,8 @@ void Parameter::output(std::ostream& os, int indent) const
         os << " : ";
         if (std::holds_alternative<BuiltinType>(type.value()))
             os << to_string(std::get<BuiltinType>(type.value()));
-        else if (std::holds_alternative<icu::UnicodeString>(type.value()))
-            os << toUTF8StdString(std::get<icu::UnicodeString>(type.value()));
+        else if (std::holds_alternative<TypeName>(type.value()))
+            os << toUTF8StdString(joinTypeName(std::get<TypeName>(type.value())));
     }
     os << std::endl;
     if (defaultValue.has_value()) {
@@ -1031,6 +1129,9 @@ void TypeDecl::acceptChildren(ASTVisitor& v, Anys& results)
     for(auto& enumLabel : enumLabels)
         if (enumLabel.second != nullptr)
             results.push_back( enumLabel.second->accept(v) );
+
+    for(auto& nestedType : nestedTypes)
+        results.push_back( nestedType->accept(v) );
 }
 
 
@@ -1048,13 +1149,13 @@ void TypeDecl::output(std::ostream& os, int indent) const
     }
     os << spaces(indent)+"TypeDecl " << kindName
        << " " << toUTF8StdString(name)
-       << (extends.has_value() ? " "+toUTF8StdString(extends.value()) :"")
+       << (extends.has_value() ? " "+toUTF8StdString(joinTypeName(extends.value())) :"")
        << std::endl;
     if (!implements.empty()) {
         os << spaces(indent)
-           << " implements " << toUTF8StdString(implements.at(0));
+           << " implements " << toUTF8StdString(joinTypeName(implements.at(0)));
         for(int i=1; i<implements.size();i++)
-            os << ", " << toUTF8StdString(implements.at(i));
+            os << ", " << toUTF8StdString(joinTypeName(implements.at(i)));
         os << std::endl;
     }
     for(auto& annot : annotations)
@@ -1074,6 +1175,8 @@ void TypeDecl::output(std::ostream& os, int indent) const
         else
             os << std::endl;
     }
+    for(auto& nestedType : nestedTypes)
+        nestedType->output(os, indent+1);
 }
 
 
@@ -1111,7 +1214,7 @@ std::string BinaryOp::opString() const
         case Subtract: return "-";
         case Multiply: return "\u00D7";
         case Divide: return "/";
-        case Modulo: return "%";
+        case Modulo: return "rem";
         case And: return "and";
         case Or: return "or";
         case BitAnd: return "&";
@@ -1252,15 +1355,19 @@ void Assignment::acceptChildren(ASTVisitor& v, Anys& results)
 {
     results.push_back( lhs->accept(v) );
     results.push_back( rhs->accept(v) );
+    if (atHost)
+        results.push_back( (*atHost)->accept(v) );
 }
 
 
 void Assignment::output(std::ostream& os, int indent) const
 {
-    os << spaces(indent)+"Assignment " << opString() << std::endl;
+    os << spaces(indent)+"Assignment " << opString() << (atHost ? " at <host-expr>" : "") << std::endl;
     //sourceOut();
     lhs->output(os,indent+1);
     rhs->output(os,indent+1);
+    if (atHost)
+        (*atHost)->output(os,indent+1);
 }
 
 
@@ -1534,6 +1641,41 @@ std::any Str::accept(ASTVisitor& v)
 void Str::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Str \"" << toUTF8StdString(str) << "\"" << std::endl;
+}
+
+
+std::any SuffixedNum::accept(ASTVisitor& v)
+{
+    if (v.visitFirst() || v.visitLast())
+        return v.visit(dynamic_ptr_cast<SuffixedNum>(ptr_from_this()));
+    return {};
+}
+
+void SuffixedNum::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"SuffixedNum ";
+    if (std::holds_alternative<int32_t>(num))
+        os << std::to_string(std::get<int32_t>(num)) << ":int";
+    else if (std::holds_alternative<int64_t>(num))
+        os << std::to_string(std::get<int64_t>(num)) << ":int";
+    else if (std::holds_alternative<double>(num))
+        os << std::to_string(std::get<double>(num)) << ":real";
+    else
+        os << "?";
+    os << " suffix=\"" << toUTF8StdString(suffix) << "\"" << std::endl;
+}
+
+
+std::any SuffixedStr::accept(ASTVisitor& v)
+{
+    if (v.visitFirst() || v.visitLast())
+        return v.visit(dynamic_ptr_cast<SuffixedStr>(ptr_from_this()));
+    return {};
+}
+
+void SuffixedStr::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"SuffixedStr \"" << toUTF8StdString(str) << "\" suffix=\"" << toUTF8StdString(suffix) << "\"" << std::endl;
 }
 
 

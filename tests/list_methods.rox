@@ -1,0 +1,49 @@
+// list mutator methods: append, extend, insert, remove, pop
+
+l = [10, 20, 30]
+
+// append - add one element
+l.append(40)
+print(l)              // [10, 20, 30, 40]
+
+// extend - unpack another list's elements
+l.extend([50, 60])
+print(l)              // [10, 20, 30, 40, 50, 60]
+
+// insert - before the given index
+l.insert(0, 5)
+print(l)              // [5, 10, 20, 30, 40, 50, 60]
+l.insert(2, 15)
+print(l)              // [5, 10, 15, 20, 30, 40, 50, 60]
+l.insert(-1, 55)      // before the last element
+print(l)              // [5, 10, 15, 20, 30, 40, 50, 55, 60]
+l.insert(100, 70)     // out-of-range index clamps to the end
+print(l)              // [5, 10, 15, 20, 30, 40, 50, 55, 60, 70]
+
+// pop - remove and return by index (default: last)
+print(l.pop())        // 70
+print(l)              // [5, 10, 15, 20, 30, 40, 50, 55, 60]
+print(l.pop(0))       // 5
+print(l)              // [10, 15, 20, 30, 40, 50, 55, 60]
+
+// remove - delete first element equal to the value
+l.remove(30)
+print(l)              // [10, 15, 20, 40, 50, 55, 60]
+
+// guard remove with postfix-if to avoid an error when absent
+l.remove(999) if 999 in l
+print(l)              // unchanged
+
+// append vs extend with a list argument
+m = [1, 2]
+m.append([3, 4])
+print(m)              // [1, 2, [3, 4]]  (one nested element)
+n = [1, 2]
+n.extend([3, 4])
+print(n)              // [1, 2, 3, 4]    (elements unpacked)
+
+// methods mutate in place; an aliased reference sees the change
+a = [1, 2]
+b = a
+a.append(3)
+print(b)              // [1, 2, 3]

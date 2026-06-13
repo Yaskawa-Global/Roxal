@@ -1,21 +1,29 @@
-// Test list + operator for concatenation and append
+// Test list + operator (list-only concatenation) and the mutator methods.
 
-// Test list + list (concatenation)
+// list + list concatenation (returns a new list)
 var list1 = [1, 2, 3]
 var list2 = [4, 5, 6]
 var concat = list1 + list2
 print("List concatenation: " + concat)
 
-// Test list + value (append)
+// append adds a single element (a list is added as ONE nested element)
 var list3 = [1, 2, 3]
-var appended = list3 + 4
-print("List append: " + appended)
+list3.append(4)
+print("After append: " + list3)
+list3.append([5, 6])
+print("After append list: " + list3)
 
-// Test mixed types
-var mixed = [1, 2] + "hello"
-print("Mixed append: " + mixed)
+// extend adds each element of another list
+var list4 = [1, 2]
+list4.extend([3, 4])
+print("After extend: " + list4)
 
-// Verify original lists unchanged (by-value semantics)
+// list + [x] concatenates a single element without mutating the operands
+var list5 = [1, 2]
+var added = list5 + ["hello"]
+print("Plus singleton: " + added)
+
+// Verify + operands unchanged (by-value semantics)
 print("Original list1: " + list1)
 print("Original list2: " + list2)
-print("Original list3: " + list3)
+print("Original list5: " + list5)

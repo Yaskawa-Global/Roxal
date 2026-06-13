@@ -1,0 +1,19 @@
+// Mixed-dimension quantities in a vector literal are allowed.
+// Each element is converted to its SI scalar at construction time;
+// dimensional information is not retained in the vector.
+
+// 1D vector with mixed dimensions
+print([10mm 20deg])              // [0.01 (m), 0.349… (rad)]
+print([1m 2s 3kg 4rad])
+
+// Zero remains a permitted bare element (additive identity)
+print([10mm 0 20deg])
+
+// Mixed-dim matrix: rows may contain mixed dimensions
+print([10mm 20deg; 30kg 40s])
+
+// Mixed-dim vector is stored as plain reals after construction
+var v = [10mm 20deg 5kg]
+print(v[0])
+print(v[1])
+print(v[2])

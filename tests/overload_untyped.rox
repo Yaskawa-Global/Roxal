@@ -1,0 +1,10 @@
+// f(x) (untyped) vs f(x:int): typed wins for int args.
+
+func f(x):
+    print("any")
+
+func f(x :int):
+    print("int")
+
+f(5)
+f("hello")

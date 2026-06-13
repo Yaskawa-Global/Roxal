@@ -1,0 +1,5 @@
+// `*` parameter is only valid inside `proc init(*)`. Using it on a free
+// function should compile-error.
+
+func f(*):
+  print("never")

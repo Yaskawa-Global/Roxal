@@ -1,0 +1,45 @@
+import media
+
+var img = media.Image('../tests/test_image_rgb.png')
+
+// Convert to float32 (clone to preserve original)
+var f = clone(img)
+f.to_float()
+print(f.channels())
+// Red pixel: 255/255.0 = 1.0
+print(f.data[0, 0, 0])  // 1
+// Green channel of red pixel: 0/255.0 = 0.0
+print(f.data[0, 0, 1])  // 0
+
+// Convert back to uint8
+f.to_uint8()
+print(f.data[0, 0, 0])  // 255
+print(f.data[0, 0, 1])  // 0
+
+// Brightness (double brightness of the image)
+var b = clone(img)
+b.brightness(2.0)
+// Red pixel R was 255, clamped to 255
+print(b.data[0, 0, 0])  // 255
+// Green pixel G was 255, *2 = clamped to 255
+print(b.data[0, 1, 1])  // 255
+// Gray(128) * 2 = 256, clamped to 255
+print(b.data[2, 0, 0])  // 255
+
+// Brightness (half)
+var b2 = clone(img)
+b2.brightness(0.5)
+// Red pixel R was 255, *0.5 = 128 (rounded)
+print(b2.data[0, 0, 0])  // 128
+// Gray(128) * 0.5 = 64
+print(b2.data[2, 0, 0])  // 64
+
+// Saturation=0 should give grayscale-like result
+var s = clone(img)
+s.saturation(0.0)
+print(s.channels())  // still 3
+// For red pixel (255,0,0): gray = 0.299*255 = ~76
+// All channels should be ~76
+print(s.data[0, 0, 0])  // 76
+print(s.data[0, 0, 1])  // 76
+print(s.data[0, 0, 2])  // 76

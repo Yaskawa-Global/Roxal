@@ -1,0 +1,24 @@
+// Angular acceleration and jerk suffix tests
+// (rad/s^2, rad/s², rad/s^3, rad/s³, deg/s^2, deg/s², deg/s^3, deg/s³)
+
+// Caret form
+print(1rad/s^2)
+print(2rad/s^3)
+print(1deg/s^2)
+print(1deg/s^3)
+
+// Unicode superscript form: should produce identical quantities
+print(1rad/s² == 1rad/s^2)
+print(1rad/s³ == 1rad/s^3)
+print(1deg/s² == 1deg/s^2)
+print(1deg/s³ == 1deg/s^3)
+
+// Predicates classify them correctly
+print((1rad/s^2).is_angular_acceleration)
+print((1rad/s^3).is_angular_acceleration)
+print((1rad/s^2).is_linear_acceleration)
+print((1rad/s^2).is_angular_velocity)
+
+// deg/rad conversion: 180deg = pi rad, so 180deg/s² ≈ 3.14159 rad/s²
+print(180deg/s^2 == 1rad/s^2 * 3.14159265358979323846)
+print(180deg/s^3 == 1rad/s^3 * 3.14159265358979323846)

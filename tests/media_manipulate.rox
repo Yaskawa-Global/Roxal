@@ -1,0 +1,60 @@
+import media
+
+var img = media.Image('../tests/test_image_rgb.png')
+
+// Resize (clone first to preserve original)
+var r = clone(img)
+r.resize(8, 6)
+print(r.width())
+print(r.height())
+print(r.channels())
+
+// Crop (take 2x2 from top-left)
+var c = clone(img)
+c.crop(0, 0, 2, 2)
+print(c.width())
+print(c.height())
+// Top-left pixel should be red
+print(c.data[0, 0, 0])  // R=255
+
+// Flip horizontal
+var fh = clone(img)
+fh.flip_horizontal()
+print(fh.width())
+print(fh.height())
+// Top-right pixel of original (white: 255,255,255) becomes top-left
+print(fh.data[0, 0, 0])  // R=255
+print(fh.data[0, 0, 1])  // G=255
+print(fh.data[0, 0, 2])  // B=255
+
+// Flip vertical
+var fv = clone(img)
+fv.flip_vertical()
+print(fv.width())
+// Bottom row of original becomes top row
+// Bottom-left of original is gray(128,128,128)
+print(fv.data[0, 0, 0])  // 128
+
+// Rotate 90 clockwise: [3,4,3] -> [4,3,3]
+var r90 = clone(img)
+r90.rotate90()
+print(r90.width())
+print(r90.height())
+
+// Rotate 180: same shape
+var r180 = clone(img)
+r180.rotate180()
+print(r180.width())
+print(r180.height())
+
+// Rotate 270 clockwise: [3,4,3] -> [4,3,3]
+var r270 = clone(img)
+r270.rotate270()
+print(r270.width())
+print(r270.height())
+
+// Grayscale
+var g = clone(img)
+g.grayscale()
+print(g.channels())
+print(g.width())

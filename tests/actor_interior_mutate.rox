@@ -1,0 +1,35 @@
+
+type O object:
+  var i: int
+
+type A actor:
+  private var l: list
+  private var o: O
+
+  proc init():
+    l = [1,O(42),3]
+    o = l[1]
+    print("A initialized l={l}")
+
+  func extractL() -> list:
+    print("extractL: moving l out of A")
+    return move(l)
+
+  func mutateO():
+    print("mutateO: mutating o in A")
+    o.i = 100
+    print("mutateO: l={l} o.i={o.i}")
+    return true
+
+  func showO():
+    print("showO(): o.i={o.i}")
+    return true
+
+var a = A()
+
+var l = a.extractL()
+print("l={l} o.i={l[1].i}")
+wait(for=a.mutateO())
+print("l={l} o.i={l[1].i}")
+wait(for=a.showO())
+print('done')

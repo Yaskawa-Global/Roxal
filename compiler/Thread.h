@@ -12,7 +12,7 @@
 #include "core/TimePoint.h"
 #include "Value.h"
 #include "Object.h"
-#include "InterpretResult.h"
+#include "ExecutionStatus.h"
 
 namespace roxal {
 
@@ -28,7 +28,7 @@ public:
         thisid = nextId.fetch_add(1);
         actor = false;
         quit = false;
-        result = InterpretResult::OK;
+        result = ExecutionStatus::OK;
         frames.reserve(256);
         actorInstanceRaw.store(nullptr, std::memory_order_relaxed);
     }
@@ -77,7 +77,7 @@ public:
     std::atomic_bool threadSleep;
     std::atomic<TimePoint> threadSleepUntil;
 
-    InterpretResult result;
+    ExecutionStatus result;
 
     // list of open UpValue (Value* pointers into the stack) in stack address order
     std::list<Value> openUpvalues; // ObjUpvalue
@@ -96,6 +96,14 @@ public:
         Value closure;
         std::optional<Value> matchValue;    // for 'becomes' clause
         std::optional<Value> targetFilter;  // for 'where evt.target == <value>' clause
+        // For combinator slot wakeups: closure wraps the shared sentinel
+        // function combinatorRelayFunction and the dispatcher routes the
+        // event to combinatorTarget instead of running user code.
+        // combinatorTarget is a weak Value ref to an ObjCombinator;
+        // oneShot causes the registration to be skipped after fulfilment.
+        Value combinatorTarget { Value::nilVal() };
+        uint32_t combinatorSlot { 0 };
+        bool oneShot { false };
     };
     std::unordered_map<Value, std::vector<HandlerRegistration>, ValueHasher, ValueEqual> eventHandlers;
 
@@ -126,6 +134,230 @@ public:
 
     int execute_depth;
 
+    // State event handler dispatch within execute().
+    // Handlers are pushed as regular call frames one at a time.
+    struct EventDispatchState {
+        bool active = false;
+        PendingEvent currentEvent;
+        std::vector<HandlerRegistration> handlerSnapshot; // copy of handlers at dispatch start
+        size_t nextHandlerIndex = 0;
+        bool prevThreadSleep { false };
+        TimePoint prevThreadSleepUntil;
+    };
+    EventDispatchState eventDispatch;
+    bool eventHandlerJustReturned { false };
+
+    // Continuation for native functions that need to call Roxal closures
+    // without re-entering execute() (e.g., list.filter/map/reduce)
+    struct NativeContinuation {
+        // Handler called when the closure returns
+        // Parameters: VM reference, closure return value
+        // Returns: true to continue (may push another frame), false on error
+        std::function<bool(class VM&, Value)> onComplete;
+
+        // Arbitrary state data for the continuation (e.g., iteration state)
+        Value state { Value::nilVal() };
+
+        bool active { false };
+
+        // Stack cleanup: indices into the value stack (relative to stack.begin()).
+        // Using indices instead of pointers/iterators because the stack vector may
+        // reallocate during nested operations, invalidating raw pointers.
+        ptrdiff_t resultSlotIndex { -1 };  // -1 = not set
+        ptrdiff_t stackBaseIndex { -1 };
+
+        // Frame depth when callback frames are pushed (set by pushContinuationCall).
+        // Used by processContinuationDispatch to distinguish "this continuation pushed
+        // another iteration" from "an outer continuation's callback frame is on top."
+        size_t callbackFrameDepth { 0 };
+
+        void clear() {
+            onComplete = nullptr;
+            state = Value::nilVal();
+            active = false;
+            resultSlotIndex = -1;
+            stackBaseIndex = -1;
+            callbackFrameDepth = 0;
+        }
+    };
+    std::vector<NativeContinuation> nativeContinuationStack;
+    bool continuationCallbackReturned { false };
+
+    NativeContinuation& pushContinuation() {
+        if (nativeContinuationStack.size() == nativeContinuationStack.capacity())
+            nativeContinuationStack.reserve(nativeContinuationStack.capacity() + 8);
+        nativeContinuationStack.emplace_back();
+        auto& cont = nativeContinuationStack.back();
+        cont.active = true;
+        return cont;
+    }
+    NativeContinuation& currentContinuation() { return nativeContinuationStack.back(); }
+    const NativeContinuation& currentContinuation() const { return nativeContinuationStack.back(); }
+    void popContinuation() {
+        if (!nativeContinuationStack.empty())
+            nativeContinuationStack.pop_back();
+    }
+    bool hasContinuation() const { return !nativeContinuationStack.empty(); }
+
+    // State for deferred native function call when default params need closure evaluation.
+    // We push closure frames and use this state to complete the native call after all defaults are evaluated.
+    struct NativeDefaultParamState {
+        bool active { false };
+
+        // Native function to call after all defaults are evaluated
+        NativeFn nativeFunc;
+        ptr<type::Type> funcType;
+        std::vector<Value> staticDefaults;
+        CallSpec callSpec;
+        bool includeReceiver { false };
+        Value receiver { Value::nilVal() };
+        Value declFunction { Value::nilVal() };
+        uint32_t resolveArgMask { 0 };
+
+        // Args buffer being built (heap-allocated when needed)
+        std::vector<Value> argsBuffer;
+
+        // Param indices that need closure default evaluation (in order)
+        std::vector<size_t> closureParamIndices;
+        size_t nextClosureIndex { 0 };
+
+        // Map from param name hash to default closure
+        std::map<int32_t, Value> paramDefaultFuncs;
+
+        // Stack state for cleanup
+        size_t originalArgCount { 0 };
+
+        void clear() {
+            active = false;
+            nativeFunc = nullptr;
+            funcType = nullptr;
+            staticDefaults.clear();
+            callSpec = CallSpec(0);
+            includeReceiver = false;
+            receiver = Value::nilVal();
+            declFunction = Value::nilVal();
+            resolveArgMask = 0;
+            argsBuffer.clear();
+            closureParamIndices.clear();
+            nextClosureIndex = 0;
+            paramDefaultFuncs.clear();
+            originalArgCount = 0;
+        }
+    };
+    std::vector<NativeDefaultParamState> nativeDefaultParamStack;
+
+    NativeDefaultParamState& pushNativeDefaultParam() {
+        nativeDefaultParamStack.emplace_back();
+        auto& state = nativeDefaultParamStack.back();
+        state.active = true;
+        return state;
+    }
+    NativeDefaultParamState& currentNativeDefaultParam() { return nativeDefaultParamStack.back(); }
+    void popNativeDefaultParam() {
+        if (!nativeDefaultParamStack.empty())
+            nativeDefaultParamStack.pop_back();
+    }
+    bool hasNativeDefaultParam() const { return !nativeDefaultParamStack.empty(); }
+
+    // State for deferred native function call when params need async type conversion.
+    // Used when a native function has typed params that require executing Roxal code
+    // (e.g., user-defined operator->string on an object passed to print(value:string)).
+    struct NativeParamConversionState {
+        bool active { false };
+
+        // Native function to call after all conversions complete
+        NativeFn nativeFunc;
+        ptr<type::Type> funcType;
+        CallSpec callSpec;
+        bool includeReceiver { false };
+        Value receiver { Value::nilVal() };
+        Value declFunction { Value::nilVal() };
+        uint32_t resolveArgMask { 0 };
+
+        // Args buffer (fully marshaled; async params updated as conversions complete)
+        std::vector<Value> argsBuffer;
+
+        // Param indices (into argsBuffer, accounting for receiver offset) needing async conversion
+        std::vector<size_t> conversionParamIndices;
+        size_t nextConversionIndex { 0 };
+
+        // Stack state for cleanup
+        size_t originalArgCount { 0 };
+
+        void clear() {
+            active = false;
+            nativeFunc = nullptr;
+            funcType = nullptr;
+            callSpec = CallSpec(0);
+            includeReceiver = false;
+            receiver = Value::nilVal();
+            declFunction = Value::nilVal();
+            resolveArgMask = 0;
+            argsBuffer.clear();
+            conversionParamIndices.clear();
+            nextConversionIndex = 0;
+            originalArgCount = 0;
+        }
+    };
+    std::vector<NativeParamConversionState> nativeParamConversionStack;
+
+    NativeParamConversionState& pushNativeParamConversion() {
+        nativeParamConversionStack.emplace_back();
+        auto& state = nativeParamConversionStack.back();
+        state.active = true;
+        return state;
+    }
+    NativeParamConversionState& currentNativeParamConversion() { return nativeParamConversionStack.back(); }
+    void popNativeParamConversion() {
+        if (!nativeParamConversionStack.empty())
+            nativeParamConversionStack.pop_back();
+    }
+    bool hasNativeParamConversion() const { return !nativeParamConversionStack.empty(); }
+
+    // State for deferred closure (Roxal function) call when params need async type conversion.
+    // Mirrors NativeParamConversionState but stores results directly into frame stack slots
+    // instead of an args buffer.  Activated from frameStart when funcType has typed params
+    // needing user-defined conversion (operator->T, implicit constructor).
+    struct ClosureParamConversionState {
+        bool active { false };
+
+        // The frame whose param slots we're converting (by depth, not pointer — frames may move)
+        size_t targetFrameDepth { 0 };
+
+        // Param indices needing async conversion (indices into funcType params / frame slots)
+        std::vector<size_t> conversionParamIndices;
+        size_t nextConversionIndex { 0 };
+
+        // funcType for param type info
+        ptr<type::Type> funcType;
+
+        // Module type for resolving user-defined type names
+        Value moduleType { Value::nilVal() };
+
+        void clear() {
+            active = false;
+            targetFrameDepth = 0;
+            conversionParamIndices.clear();
+            nextConversionIndex = 0;
+            funcType = nullptr;
+            moduleType = Value::nilVal();
+        }
+    };
+    std::vector<ClosureParamConversionState> closureParamConversionStack;
+
+    ClosureParamConversionState& pushClosureParamConversion() {
+        closureParamConversionStack.emplace_back();
+        auto& state = closureParamConversionStack.back();
+        state.active = true;
+        return state;
+    }
+    ClosureParamConversionState& currentClosureParamConversion() { return closureParamConversionStack.back(); }
+    void popClosureParamConversion() {
+        if (!closureParamConversionStack.empty())
+            closureParamConversionStack.pop_back();
+    }
+    bool hasClosureParamConversion() const { return !closureParamConversionStack.empty(); }
+
     void pruneEventRegistrations();
 
     // Keeps the currently executing actor call target alive while the
@@ -136,16 +368,124 @@ public:
     // reachable while dispatched directly on this thread.
     Value currentBoundCall { Value::nilVal() };
 
+#ifdef ROXAL_COMPUTE_SERVER
+    struct RemoteComputeCallState {
+        bool active { false };
+        std::vector<Value> args;
+        Value completionFuture { Value::nilVal() };
+        Value result { Value::nilVal() };
+
+        void clear() {
+            active = false;
+            args.clear();
+            completionFuture = Value::nilVal();
+            result = Value::nilVal();
+        }
+    };
+    RemoteComputeCallState remoteComputeCallState;
+#endif
+
     // Future supplied to sys.wait(for=...) that should be awaited after
     // any requested sleep completes.
     Value pendingWaitFor { Value::nilVal() };
 
+    struct WaitSuspension {
+        enum class ResultMode {
+            Nil,
+            StoredValue,
+            PendingWaitTarget
+        };
+
+        bool active { false };
+        ResultMode resultMode { ResultMode::Nil };
+        Value storedValue { Value::nilVal() };
+        Value* resultSlot { nullptr };
+        ValueStack::iterator stackBase;
+        size_t frameDepth { 0 };
+
+        void clear() {
+            active = false;
+            resultMode = ResultMode::Nil;
+            storedValue = Value::nilVal();
+            resultSlot = nullptr;
+            frameDepth = 0;
+        }
+    };
+    WaitSuspension waitSuspension;
+
+    // Tracks the future this thread is waiting on inside execute().
+    // When set, the dispatch loop gates on this (like threadSleep) and
+    // sleeps on the condvar until the future resolves or 1ms elapses.
+    Value awaitedFuture { Value::nilVal() };
+
+    // Saved instruction pointer before opcode read, used by tryAwait*
+    // helpers to rewind the IP when yielding on an unresolved future.
+    Chunk::iterator instructionStart;
+
     std::atomic_bool exceptionJumpPending;
     int nativeCallDepth;
+
+    // Set true by VM::callNativeFn's catch block when a C++ exception thrown
+    // by a builtin was converted via raiseException(). Consumers like the
+    // OpCode::Call construction path read this to know "the call raised — do
+    // not write a synthetic return value into the call's result slot, the
+    // exception is already sitting there." Cleared at the start of every
+    // callNativeFn so each call has a clean signal.
+    bool lastNativeCallRaised { false };
+
+    // Set by VM::raiseException when an exception is about to escape all
+    // frames on this thread (uncaught). Read by the actor return path so
+    // the exception Value is forwarded through the actor's return future
+    // (where downstream code — e.g. wait(for=fut) or sys.allof / sys.anyof
+    // — can detect it via isException(resolved) and re-raise). Cleared
+    // after consumption.
+    Value pendingUncaughtException { Value::nilVal() };
 
     // Constructor setter support: track pending setter cleanup
     Value pendingConstructorInstance { Value::nilVal() };
     int pendingSetterCount { 0 };
+
+    // Pending conversion operator support (for OpCode::Add string concatenation etc.)
+    // Uses a stack to support nested conversions (e.g. Outer.operator->string uses Inner in concat)
+    struct PendingConversion {
+        enum class Kind { Concat, TypeConversion };
+        Kind kind;
+        Value savedLHS;              // saved LHS string for concatenation (Concat only)
+        Value convReceiver;          // receiver being converted (for recursion guard)
+        size_t frameDepth { 0 };     // frame count when conversion was set up
+    };
+    std::vector<PendingConversion> pendingConversions;
+
+    // Recursion guard for conversion operators (prevents infinite loop when
+    // operator->string uses string concatenation with `this`)
+    struct ConversionGuard {
+        Value receiver;
+        size_t frameDepth;  // frame count when guard was added; cleaned up when frame returns
+    };
+    std::vector<ConversionGuard> conversionInProgress;
+
+    // State for the StmtAction opcode loop. The opcode peeks the stack top,
+    // dispatches by runtime type (future → await, has statement-action method
+    // → invoke, otherwise → pop), and re-fires until terminal. Iterations are
+    // bounded; same-instance returns are detected as cycles.
+    //
+    // We use a stack of sessions because StmtAction can be nested: the action
+    // method invoked by an outer StmtAction often contains its own statement
+    // statements (with their own StmtAction opcodes). Each session is keyed by
+    // (ip, frameDepth) so re-entries at the same site continue the same
+    // session, while entries at different sites push new ones. Stale entries
+    // from inner sessions that errored are cleaned up on entry.
+    //
+    // lastReceiver is held as a Value (not a raw Obj*) so it stays GC-rooted
+    // between yields — see Thread::trace for the visit.
+    struct StmtActionSession {
+        Chunk::iterator ip;
+        size_t frameDepth;
+        int iters;
+        Value lastReceiver;
+    };
+    std::vector<StmtActionSession> stmtActionStack;
+    static constexpr int kStmtActionIterCap = 1024;
 
 private:
     ptr<std::thread> osthread;

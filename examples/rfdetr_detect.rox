@@ -1,0 +1,187 @@
+# RF-DETR Object Detection (Roboflow Detection Transformer)
+# Loads an image, runs RF-DETR ONNX model, prints detected objects.
+# RF-DETR is an end-to-end detector (no NMS needed) using a DINOv2 ViT backbone.
+#
+# Model (rf-detr-base-coco.onnx, ~103MB):
+#   wget https://huggingface.co/PierreMarieCurie/rf-detr-onnx/resolve/main/rf-detr-base-coco.onnx
+#
+# Other variants available (nano, small, medium, large, xlarge, xxlarge):
+#   https://huggingface.co/PierreMarieCurie/rf-detr-onnx
+#
+# Usage:
+#   roxal examples/rfdetr_detect.rox <image.jpg> [rf-detr-base-coco.onnx]
+
+import media
+import ai.nn
+import math
+
+# ============================================================
+# COCO 91 class names (full COCO set used by DETR models)
+# ============================================================
+
+# DETR uses COCO category IDs as indices (0 = background, some IDs unused)
+var CLASSES = [
+  "N/A", "person", "bicycle", "car", "motorcycle", "airplane",
+  "bus", "train", "truck", "boat", "traffic light",
+  "fire hydrant", "N/A", "stop sign", "parking meter", "bench",
+  "bird", "cat", "dog", "horse", "sheep",
+  "cow", "elephant", "bear", "zebra", "giraffe",
+  "N/A", "backpack", "umbrella", "N/A", "N/A",
+  "handbag", "tie", "suitcase", "frisbee", "skis",
+  "snowboard", "sports ball", "kite", "baseball bat", "baseball glove",
+  "skateboard", "surfboard", "tennis racket", "bottle", "N/A",
+  "wine glass", "cup", "fork", "knife", "spoon",
+  "bowl", "banana", "apple", "sandwich", "orange",
+  "broccoli", "carrot", "hot dog", "pizza", "donut",
+  "cake", "chair", "couch", "potted plant", "bed",
+  "N/A", "dining table", "N/A", "N/A", "toilet",
+  "N/A", "tv", "laptop", "mouse", "remote",
+  "keyboard", "cell phone", "microwave", "oven", "toaster",
+  "sink", "refrigerator", "N/A", "book", "clock",
+  "vase", "scissors", "teddy bear", "hair drier", "toothbrush"
+]
+
+var NUM_CLASSES = 91
+var NUM_DETECTIONS = 300
+var CONF_THRESHOLD = 0.5
+var INPUT_SIZE = 560
+
+# ============================================================
+# Parse arguments
+# ============================================================
+
+if len(args) < 1:
+  print("Usage: roxal examples/rfdetr_detect.rox <image> [model.onnx]")
+  exit(1)
+
+var image_path = args[0]
+var model_path = "rf-detr-base-coco.onnx"
+if len(args) >= 2:
+  model_path = args[1]
+
+# ============================================================
+# Load image and preprocess
+# ============================================================
+
+print("Loading image: {image_path}")
+var img = media.Image(image_path)
+var orig_w = img.width()
+var orig_h = img.height()
+print("  Original size: {orig_w}x{orig_h}")
+
+img.resize(INPUT_SIZE, INPUT_SIZE)
+
+# RF-DETR requires ImageNet normalization
+var input = img.to_tensor(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+
+# ============================================================
+# Load model and run inference
+# ============================================================
+
+print("Loading model: {model_path}")
+var model = ai.nn.Model(model_path)
+print("  Device: {model.device()}")
+
+print("Running inference...")
+var result = model.predict(input)
+# result is a list of 2 tensors:
+#   result[0] = pred_boxes  [1, 300, 4]  (cx, cy, w, h — normalized [0,1])
+#   result[1] = pred_logits [1, 300, 91] (raw logits, apply sigmoid)
+var pred_boxes = result[0]
+var pred_logits = result[1]
+
+# ============================================================
+# Post-process: extract detections above threshold
+# RF-DETR is end-to-end — no NMS needed.
+# ============================================================
+
+func sigmoid(x :real) -> real:
+  return 1.0 / (1.0 + math.exp(-x))
+
+var detections = []    # list of [x1, y1, x2, y2, score, class_id]
+
+var i = 0
+while i < NUM_DETECTIONS:
+  # Find best class score for this detection (apply sigmoid to logits)
+  var best_class = 0
+  var best_score = sigmoid(pred_logits[0, i, 0])
+  var c = 1
+  while c < NUM_CLASSES:
+    var score = sigmoid(pred_logits[0, i, c])
+    if score > best_score:
+      best_score = score
+      best_class = c
+    c = c + 1
+
+  if best_score >= CONF_THRESHOLD:
+    # Convert cx, cy, w, h -> x1, y1, x2, y2
+    var cx = pred_boxes[0, i, 0]
+    var cy = pred_boxes[0, i, 1]
+    var bw = pred_boxes[0, i, 2]
+    var bh = pred_boxes[0, i, 3]
+    var x1 = cx - bw / 2.0
+    var y1 = cy - bh / 2.0
+    var x2 = cx + bw / 2.0
+    var y2 = cy + bh / 2.0
+
+    # Clamp to [0, 1]
+    if x1 < 0.0:
+      x1 = 0.0
+    if y1 < 0.0:
+      y1 = 0.0
+    if x2 > 1.0:
+      x2 = 1.0
+    if y2 > 1.0:
+      y2 = 1.0
+
+    detections.append([x1, y1, x2, y2, best_score, best_class])
+
+  i = i + 1
+
+print("Detections above {CONF_THRESHOLD} threshold: {len(detections)}")
+
+# ============================================================
+# Sort by score descending
+# ============================================================
+
+var si = 0
+while si < len(detections) - 1:
+  var max_idx = si
+  var max_score = detections[si][4]
+  var sj = si + 1
+  while sj < len(detections):
+    if detections[sj][4] > max_score:
+      max_score = detections[sj][4]
+      max_idx = sj
+    sj = sj + 1
+  if max_idx != si:
+    var tmp = detections[si]
+    detections[si] = detections[max_idx]
+    detections[max_idx] = tmp
+  si = si + 1
+
+# ============================================================
+# Print results (scale boxes to original image size)
+# ============================================================
+
+# Boxes are normalized [0,1] — scale directly to original dimensions
+var sx = real(orig_w)
+var sy = real(orig_h)
+
+print("")
+print("Detected {len(detections)} objects:")
+print("")
+
+var di = 0
+while di < len(detections):
+  var det = detections[di]
+  var name = CLASSES[int(det[5])]
+  var conf = int(det[4] * 100.0)
+  var bx1 = int(det[0] * sx)
+  var by1 = int(det[1] * sy)
+  var bx2 = int(det[2] * sx)
+  var by2 = int(det[3] * sy)
+  print("  {name} ({conf}%) [{bx1}, {by1}, {bx2}, {by2}]")
+  di = di + 1
+
+model.close()

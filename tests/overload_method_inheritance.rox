@@ -1,0 +1,22 @@
+// Subclass overload set replaces parent's overload set entirely.
+// Animal has handle(x:int) and handle(x:string).
+// Dog overrides handle(x:int) only — calling handle("hi") on a Dog
+// is an error (Dog has no string overload, parent's is shadowed).
+
+type Animal object:
+    func handle(x :int):
+        print("animal-int:{x}")
+
+    func handle(x :string):
+        print("animal-str:{x}")
+
+type Dog object extends Animal:
+    func handle(x :int):
+        print("dog-int:{x}")
+
+var a = Animal()
+a.handle(5)
+a.handle("hi")
+
+var d = Dog()
+d.handle(5)

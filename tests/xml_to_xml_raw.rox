@@ -1,0 +1,10 @@
+var xml = '<root>alpha<item id="1">beta</item>gamma</root>'
+var doc = from_xml(xml, 'raw')
+var xml2 = to_xml(doc, false, 'raw')
+var doc2 = from_xml(xml2, 'raw')
+print(doc2.tag)
+print(doc2.children[0])
+print(doc2.children[1].tag)
+print(doc2.children[1].attrs.id)
+print(doc2.children[1].children[0])
+print(doc2.children[2])

@@ -1,0 +1,4 @@
+# Test: vector(tensor) with 2D tensor should error
+var t = tensor(2, 3)
+var v = vector(t)
+print(v)

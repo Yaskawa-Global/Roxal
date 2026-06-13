@@ -1,0 +1,6 @@
+// `*` must be the sole parameter — mixing with other params is rejected.
+
+type Foo object:
+  var x :int = 0
+  proc init(*, y :int):
+    print("never")

@@ -1,0 +1,15 @@
+// Test clone() preserves shared references
+type Node object:
+    var value :int = 0
+
+var shared = Node()
+shared.value = 42
+
+var container = [shared, shared]
+print(container[0] is container[1])  // true (same object)
+
+var cloned = clone(container)
+print(cloned[0] is cloned[1])  // Should be true (structure preserved)
+print(cloned[0] is shared)     // Should be false (different object)
+cloned[0].value = 99
+print(cloned[1].value)         // Should be 99 (same cloned object)

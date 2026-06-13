@@ -1,0 +1,10 @@
+type HerePrintWorkerActor actor:
+  func run() -> int:
+    print("server-only", flush=true, here=true)
+    print("routed")
+    return 9
+
+var worker = HerePrintWorkerActor() at "__COMPUTE_TEST_ADDR__"
+var result = worker.run()
+wait(for=result)
+print(result)

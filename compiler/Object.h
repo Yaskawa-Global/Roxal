@@ -20,6 +20,7 @@
 #include <unordered_set>
 #include <vector>
 #include <algorithm>
+#include <array>
 
 #include <core/common.h>
 #include <core/AST.h>
@@ -29,6 +30,11 @@
 #include "Value.h"
 #include "SimpleMarkSweepGC.h"
 #include <Eigen/Dense>
+#include <Eigen/Geometry>
+
+#ifdef ROXAL_ENABLE_ONNX
+#include <onnxruntime_cxx_api.h>
+#endif
 
 
 // forward decls
@@ -49,6 +55,9 @@ struct ObjEventType; // forward
 struct ObjEventInstance; // forward
 struct ObjFunction; // forward for bound native default values
 struct ObjException; // forward
+#ifdef ROXAL_COMPUTE_SERVER
+class ComputeConnection; // forward
+#endif
 
 void visitInternedStrings(const std::function<void(ObjString*)>& fn);
 void purgeDeadInternedStrings();
@@ -81,18 +90,26 @@ enum class ObjType {
     Type,
     List,
     Dict,
+    Orient,
     Vector,
     Matrix,
+    Tensor,
     Signal,
     Library,
     ForeignPtr,
     File,
     EventType,
     EventInstance,
-    Exception
+    Exception,
+    OverloadSet,
+    Combinator
 };
 
-
+/// Returns true if the object type is user-mutable and can hold Value references
+/// to other objects (container types relevant for graph isolation checking).
+inline bool isMutableRefContainerType(ObjType t) {
+    return t == ObjType::List || t == ObjType::Dict || t == ObjType::Instance;
+}
 
 
 
@@ -116,7 +133,30 @@ struct Obj {
     // manual teardown.
     virtual void dropReferences();
 
-    virtual unique_ptr<Obj, UnreleasedObj> clone() const = 0; // deep copy
+    virtual unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const = 0; // deep copy preserving structure
+    virtual unique_ptr<Obj, UnreleasedObj> shallowClone() const; // shallow copy (copies property slots, not children); returns nullptr for types that don't support it
+
+    // MVCC: throws if this object is a frozen clone (const snapshot).
+    // Call at the top of every mutation method to prevent const violations
+    // that bypass the Value-level const bit (e.g. builtin method dispatch).
+    inline void ensureMutable() const {
+        if (control->snapshotToken)
+            throw std::runtime_error("Cannot mutate const value");
+    }
+
+    // MVCC: save current state into the version chain before mutation.
+    // Only call when activeSnapshotCount > 0.
+    void saveVersion();
+
+    // MVCC: free version chain entries and release SnapshotToken.
+    // Called from dropReferences() during object destruction.
+    void cleanupMVCC();
+
+    // MVCC: trim version chain entries that no active snapshot can observe.
+    // Keeps the newest entry with epoch <= minEpoch as a floor version.
+    // If minEpoch == UINT64_MAX (no active snapshots), clears the entire chain.
+    // Called from GC sweep when all threads are at a safepoint.
+    void trimVersionChain(uint64_t minEpoch);
 
     virtual void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const = 0;
     virtual void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) = 0;
@@ -124,6 +164,20 @@ struct Obj {
     inline void incRef()
     {
         control->strong.fetch_add(1,std::memory_order_relaxed);
+    }
+
+    // Atomically increment strong count only if currently > 0.
+    // Returns true on success (caller now holds a strong ref).
+    // Returns false if the object is already dying (strong == 0).
+    inline bool tryIncRef()
+    {
+        int32_t prev = control->strong.load(std::memory_order_relaxed);
+        while (prev > 0) {
+            if (control->strong.compare_exchange_weak(prev, prev + 1,
+                    std::memory_order_relaxed, std::memory_order_relaxed))
+                return true;
+        }
+        return false;
     }
 
     void decRef();
@@ -149,6 +203,25 @@ struct Obj {
 
 template<typename T>
 inline void delObj(T* o);
+
+// MVCC snapshot functions
+
+/// Create a frozen snapshot of a mutable value (T → const T).
+/// Shallow-clones the root object, allocates a SnapshotToken, sets ConstMask.
+/// Returns the original value unchanged if it's already const or not a reference type.
+Value createFrozenSnapshot(const Value& v);
+
+/// Check whether all mutable interior objects reachable from \p root are
+/// exclusively owned by the graph (no external aliases).  The root itself
+/// is excluded — the caller verifies sole-ownership separately.
+bool isIsolatedGraph(Obj* root);
+
+/// Resolve a child value read through a frozen parent.
+/// For primitives, returns the value directly.
+/// For reference types, materializes a frozen clone at the parent's snapshot epoch,
+/// caching it back into the parent's property slot via `cacheSlot` (if non-null).
+/// Uses the SnapshotToken's cloneMap for alias/cycle preservation.
+Value resolveConstChild(const Value& child, SnapshotToken* token, Value* cacheSlot = nullptr);
 
 struct UnreleasedObj {
     template<typename T>
@@ -318,7 +391,7 @@ struct ObjPrimitive : public Obj
         ValueType btype;
     } as;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -391,7 +464,7 @@ struct ObjString : public Obj
     // number of 16bit Unicode code units
     int32_t length() const { return s.length(); }
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override { return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjString*>(this)); } // strings are interned/immutable
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override { return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjString*>(this)); } // strings are interned/immutable
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -410,8 +483,11 @@ inline bool isString(const Value& v) { return isObjType(v, ObjType::String); }
 inline ObjString* asStringObj(const Value& v) { return static_cast<ObjString*>(v.asObj()); }
 inline UnicodeString asUString(const Value& v) { return asStringObj(v)->s; }
 
-// allocate new ObjString on heap and copy s (or return existing interned string)
-unique_ptr<ObjString, UnreleasedObj> newObjString(const UnicodeString& s);
+// allocate new ObjString on heap and copy s (or return existing interned string).
+// If wasInterned is non-null and the string was found in the intern table,
+// *wasInterned is set to true and the returned object has an extra strong ref
+// (via tryIncRef) that the caller must compensate for.
+unique_ptr<ObjString, UnreleasedObj> newObjString(const UnicodeString& s, bool* wasInterned = nullptr);
 void updateInternedString(ObjString* obj, const UnicodeString& newVal);
 
 std::string objStringToString(const ObjString* os);
@@ -433,7 +509,7 @@ struct ObjRange : public Obj
     Value step;
     bool closed;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -475,31 +551,57 @@ std::string objRangeToString(const ObjRange* r);
 
 struct ObjList : public Obj
 {
-    ObjList() { type = ObjType::List; }
+    ObjList() : elts_(make_ptr<std::vector<Value>>()) { type = ObjType::List; }
     ObjList(const ObjRange* r);
     virtual ~ObjList() {}
 
-    int32_t length() const { return elts.size(); }
+    int32_t length() const { return static_cast<int32_t>(elts_->size()); }
+    bool empty() const { return elts_->empty(); }
 
+    // Element access by integer index (no bounds-check Value wrapping)
+    Value getElement(size_t i) const { return elts_->at(i); }
+    void setElement(size_t i, const Value& v);  // MVCC-guarded
+
+    // Element access by Value index (with bounds checking and slice support)
     Value index(const Value& i) const;
     void setIndex(const Value& i, const Value& v);
 
+    // Bulk access: returns a snapshot copy of the elements vector
+    std::vector<Value> getElements() const { return *elts_; }
+    // Bulk replace: sets all elements from a plain vector
+    void setElements(const std::vector<Value>& v);  // MVCC-guarded
+
+    // Capacity
+    void reserve(size_t n) { ensureUnique(); elts_->reserve(n); }
+
     // List operations (in-place)
-    void concatenate(const ObjList* other);  // Concatenate other list to this list
-    void append(const Value& value);         // Append value to this list
+    void concatenate(const ObjList* other);  // Concatenate other list to this list (extend)
+    void append(const Value& value);         // Append value as a single element
+    void insertAt(int64_t index, const Value& value);  // Insert value before index (Python-style; clamps out-of-range)
+    Value removeAt(int64_t index);           // Remove and return element at index (pop); throws if out of range
+    bool removeValue(const Value& value, bool strict = false);  // Remove first element equal to value; returns whether found
     void set(const ObjList* other);          // Shallow copy from other list
 
     bool equals(const ObjList* other) const;  // Deep equality comparison
 
-    atomic_vector<Value> elts;
+    // Replace element at index without MVCC guards (for frozen snapshot caching)
+    void cacheElement(int64_t index, const Value& val) { ensureUnique(); (*elts_)[index] = val; }
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
+    unique_ptr<Obj, UnreleasedObj> shallowClone() const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(ValueVisitor& visitor) const override;
     void dropReferences() override;
+
+private:
+    ptr<std::vector<Value>> elts_;
+    void ensureUnique() {
+        if (elts_.use_count() > 1)
+            elts_ = make_ptr<std::vector<Value>>(*elts_);
+    }
 };
 
 
@@ -519,62 +621,6 @@ std::string objListToString(const ObjList* ol);
 
 struct ObjDict : public Obj
 {
-    ObjDict() { type = ObjType::Dict; }
-    virtual ~ObjDict() {}
-
-    int32_t length() const {
-        std::lock_guard<std::mutex> lock(m);
-        return m_keys.size();
-    }
-
-    bool contains(const Value& key) const {
-        std::lock_guard<std::mutex> lock(m);
-        return (entries.find(key) != entries.end());
-    }
-
-    Value at(const Value& key) const {
-        std::lock_guard<std::mutex> lock(m);
-        auto it = entries.find(key);
-        if (it != entries.end())
-            return it->second;
-        return Value::nilVal();
-    }
-
-    std::vector<Value> keys() const {
-        std::lock_guard<std::mutex> lock(m);
-        return m_keys;
-    }
-
-    std::vector<std::pair<Value,Value>> items() const {
-        std::lock_guard<std::mutex> lock(m);
-        std::vector<std::pair<Value,Value>> keyvalues {};
-        // can't just iterate over the entries directly, as we want to preserve order according to m_keys
-        for(auto it=m_keys.cbegin(); it!=m_keys.cend(); it++)
-            keyvalues.push_back(std::pair<Value,Value>(*it,entries.at(*it)));
-        return keyvalues;
-    }
-
-    void store(const Value& key, const Value& val) {
-        std::lock_guard<std::mutex> lock(m);
-        if (entries.find(key) == entries.end()) // key exists?
-            m_keys.push_back(key); // no, add to keys list
-        entries[key] = val; // insert or replace
-    }
-
-    void erase(const Value& key) {
-        std::lock_guard<std::mutex> lock(m);
-        auto it = entries.find(key);
-        if (it != entries.end()) {
-            entries.erase(it);
-            // Remove key from m_keys vector
-            m_keys.erase(std::remove(m_keys.begin(), m_keys.end(), key), m_keys.end());
-        }
-    }
-
-    void set(const ObjDict* other); // Shallow copy from other dict
-
-    bool equals(const ObjDict* other) const;  // Deep equality comparison
-
     struct ValueComparitor
     {
         using is_transparent = std::true_type;
@@ -583,20 +629,71 @@ struct ObjDict : public Obj
         bool operator()(const Value& lhs, const Value& rhs) const { return less(lhs, rhs).asBool(); }
     };
 
-private:
-    mutable std::mutex m;
-    std::vector<Value> m_keys;
-    // TODO: transition unordered map (since m_keys provides ordering) - Value hash?
-    std::map<Value,Value,ValueComparitor> entries;
+    struct DictData {
+        std::map<Value,Value,ValueComparitor> entries;
+        std::vector<Value> m_keys;
+    };
 
-public:
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    ObjDict() : data_(make_ptr<DictData>()) { type = ObjType::Dict; }
+    virtual ~ObjDict() {}
+
+    int32_t length() const {
+        return data_->m_keys.size();
+    }
+
+    bool contains(const Value& key) const {
+        return (data_->entries.find(key) != data_->entries.end());
+    }
+
+    Value at(const Value& key) const {
+        auto it = data_->entries.find(key);
+        if (it != data_->entries.end())
+            return it->second;
+        return Value::nilVal();
+    }
+
+    std::vector<Value> keys() const {
+        return data_->m_keys;
+    }
+
+    std::vector<std::pair<Value,Value>> items() const {
+        std::vector<std::pair<Value,Value>> keyvalues {};
+        // can't just iterate over the entries directly, as we want to preserve order according to m_keys
+        for(auto it=data_->m_keys.cbegin(); it!=data_->m_keys.cend(); it++)
+            keyvalues.push_back(std::pair<Value,Value>(*it,data_->entries.at(*it)));
+        return keyvalues;
+    }
+
+    void store(const Value& key, const Value& val);   // MVCC-guarded
+    void erase(const Value& key);                      // MVCC-guarded
+
+    // Replace value for existing key without MVCC guards (for frozen snapshot caching)
+    void cacheValue(const Value& key, const Value& val) {
+        ensureUnique();
+        auto it = data_->entries.find(key);
+        if (it != data_->entries.end())
+            it->second = val;
+    }
+
+    void set(const ObjDict* other); // Shallow copy from other dict
+
+    bool equals(const ObjDict* other) const;  // Deep equality comparison
+
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
+    unique_ptr<Obj, UnreleasedObj> shallowClone() const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(ValueVisitor& visitor) const override;
     void dropReferences() override;
+
+private:
+    ptr<DictData> data_;
+    void ensureUnique() {
+        if (data_.use_count() > 1)
+            data_ = make_ptr<DictData>(*data_);
+    }
 };
 
 
@@ -615,12 +712,12 @@ std::string objDictToString(const ObjDict* od);
 
 struct ObjVector : public Obj
 {
-    ObjVector() { type = ObjType::Vector; }
+    ObjVector() : vec_(make_ptr<Eigen::VectorXd>()) { type = ObjType::Vector; }
     ObjVector(const Eigen::VectorXd& values);
     ObjVector(int32_t size);
     virtual ~ObjVector() {}
 
-    int32_t length() const { return vec.size(); }
+    int32_t length() const { return vec_->size(); }
 
     Value index(const Value& i) const;
     void setIndex(const Value& i, const Value& v);
@@ -629,14 +726,24 @@ struct ObjVector : public Obj
 
     void set(const ObjVector* other); // Shallow copy from other vector
 
-    Eigen::VectorXd vec;
+    // COW accessors
+    const Eigen::VectorXd& vec() const { return *vec_; }
+    Eigen::VectorXd& vecMut();  // MVCC-guarded
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
+    unique_ptr<Obj, UnreleasedObj> shallowClone() const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(ValueVisitor& visitor) const override { (void)visitor; }
+
+private:
+    ptr<Eigen::VectorXd> vec_;
+    void ensureUnique() {
+        if (vec_.use_count() > 1)
+            vec_ = make_ptr<Eigen::VectorXd>(*vec_);
+    }
 };
 
 inline bool isVector(const Value& v) { return isObjType(v, ObjType::Vector); }
@@ -654,13 +761,13 @@ std::string objVectorToString(const ObjVector* ov);
 
 struct ObjMatrix : public Obj
 {
-    ObjMatrix() { type = ObjType::Matrix; }
+    ObjMatrix() : mat_(make_ptr<Eigen::MatrixXd>()) { type = ObjType::Matrix; }
     ObjMatrix(const Eigen::MatrixXd& values);
     ObjMatrix(int32_t rows, int32_t cols);
     virtual ~ObjMatrix() {}
 
-    int32_t rows() const { return mat.rows(); }
-    int32_t cols() const { return mat.cols(); }
+    int32_t rows() const { return mat_->rows(); }
+    int32_t cols() const { return mat_->cols(); }
 
     // single index returns a row (or range of rows)
     Value index(const Value& row) const;
@@ -677,14 +784,24 @@ struct ObjMatrix : public Obj
 
     void set(const ObjMatrix* other); // Shallow copy from other matrix
 
-    Eigen::MatrixXd mat;
+    // COW accessors
+    const Eigen::MatrixXd& mat() const { return *mat_; }
+    Eigen::MatrixXd& matMut();  // MVCC-guarded
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
+    unique_ptr<Obj, UnreleasedObj> shallowClone() const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(ValueVisitor& visitor) const override { (void)visitor; }
+
+private:
+    ptr<Eigen::MatrixXd> mat_;
+    void ensureUnique() {
+        if (mat_.use_count() > 1)
+            mat_ = make_ptr<Eigen::MatrixXd>(*mat_);
+    }
 };
 
 inline bool isMatrix(const Value& v) { return isObjType(v, ObjType::Matrix); }
@@ -695,6 +812,201 @@ unique_ptr<ObjMatrix, UnreleasedObj> newMatrixObj(int32_t rows, int32_t cols);
 unique_ptr<ObjMatrix, UnreleasedObj> newMatrixObj(const Eigen::MatrixXd& values);
 
 std::string objMatrixToString(const ObjMatrix* om);
+
+
+//
+// orient (3D orientation, backed by unit quaternion)
+
+struct ObjOrient : public Obj
+{
+    ObjOrient() : quat_(make_ptr<Eigen::Quaterniond>(Eigen::Quaterniond::Identity())) { type = ObjType::Orient; }
+    ObjOrient(const Eigen::Quaterniond& q);
+    virtual ~ObjOrient() {}
+
+    bool equals(const ObjOrient* other, double eps = 1e-12) const;
+
+    void set(const ObjOrient* other);
+
+    // COW accessors
+    const Eigen::Quaterniond& quat() const { return *quat_; }
+    Eigen::Quaterniond& quatMut();  // MVCC-guarded
+
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
+    unique_ptr<Obj, UnreleasedObj> shallowClone() const override;
+
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(ValueVisitor& visitor) const override { (void)visitor; }
+
+private:
+    ptr<Eigen::Quaterniond> quat_;
+    void ensureUnique() {
+        if (quat_.use_count() > 1)
+            quat_ = make_ptr<Eigen::Quaterniond>(*quat_);
+    }
+};
+
+inline bool isOrient(const Value& v) { return isObjType(v, ObjType::Orient); }
+inline ObjOrient* asOrient(const Value& v) { return static_cast<ObjOrient*>(v.asObj()); }
+
+unique_ptr<ObjOrient, UnreleasedObj> newOrientObj();
+unique_ptr<ObjOrient, UnreleasedObj> newOrientObj(const Eigen::Quaterniond& q);
+
+std::string objOrientToString(const ObjOrient* oo);
+
+
+//
+// tensor
+
+enum class TensorDType : uint8_t {
+    Float16 = 0,
+    Float32 = 1,
+    Float64 = 2,   // default, matches double storage
+    Int8    = 3,
+    Int16   = 4,
+    Int32   = 5,
+    Int64   = 6,
+    UInt8   = 7,
+    Bool    = 8
+};
+
+std::string to_string(TensorDType dtype);
+TensorDType tensorDTypeFromString(const std::string& s);
+
+struct ObjTensor : public Obj
+{
+    ObjTensor();
+    ObjTensor(const std::vector<int64_t>& shape, TensorDType dtype = TensorDType::Float64);
+    virtual ~ObjTensor() {}
+
+#ifdef ROXAL_ENABLE_ONNX
+    /// Construct from an ONNX Runtime value (takes ownership, zero-copy).
+    /// Shape and dtype are read from the Ort::Value.
+    explicit ObjTensor(Ort::Value&& ortValue);
+
+    /// True when the tensor data lives inside an Ort::Value.
+    bool isOrtBacked() const { return ort_value_ != nullptr; }
+
+    /// Return a const reference to the underlying Ort::Value.
+    /// Throws if not ORT-backed.
+    const Ort::Value& ortValue() const;
+
+    /// Return a mutable Ort::Value (e.g. for pre-allocated inference output).
+    /// Triggers COW if shared.
+    Ort::Value& ortValueMut();
+
+    /// True when the underlying Ort::Value resides in GPU memory.
+    bool isOnGpu() const;
+
+    /// If the tensor is on GPU, copy data to CPU (lazy materialization).
+    /// Logically const — tensor value unchanged, only memory location.
+    void ensureCpu() const;
+#else
+    bool isOrtBacked() const { return false; }
+#endif
+
+    // Shape and dtype accessors
+    const std::vector<int64_t>& shape() const { return shape_; }
+    int64_t rank() const { return static_cast<int64_t>(shape_.size()); }
+    int64_t numel() const;  // total number of elements
+    TensorDType dtype() const { return dtype_; }
+
+    // Element access (multi-dimensional indexing)
+    Value index(const std::vector<Value>& indices) const;
+    void setIndex(const std::vector<Value>& indices, const Value& v);
+
+    // Single flat index access - works with both native and ORT storage.
+    // Reads from ORT buffer directly without copying when ORT-backed.
+    double at(int64_t flatIdx) const;
+    void setAt(int64_t flatIdx, double v);
+
+    // Reshape (returns new tensor)
+    Value reshape(const std::vector<int64_t>& newShape) const;
+
+    // Raw data pointer access (COW).
+    // For ORT-backed tensors this returns the ORT buffer directly
+    // (only valid when dtype is Float64; use at() for type-safe access).
+    const double* data() const;
+    double* dataMut();
+
+    // Type-erased raw data access for bulk I/O (e.g., image read/write).
+    // Works with any dtype. For ORT-backed tensors returns ORT buffer directly.
+    const void* rawData() const;
+    void* rawDataMut();  // triggers COW
+
+    bool equals(const ObjTensor* other, double eps = 1e-15) const;
+    void set(const ObjTensor* other);
+
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
+    unique_ptr<Obj, UnreleasedObj> shallowClone() const override;
+
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(ValueVisitor& visitor) const override { (void)visitor; }  // no Value refs
+
+private:
+    std::vector<int64_t> shape_;
+    std::vector<int64_t> strides_;
+    TensorDType dtype_ = TensorDType::Float64;
+
+#ifdef ROXAL_ENABLE_ONNX
+    // ORT-backed storage.  Wrapped in shared_ptr for COW (Ort::Value is move-only).
+    // When non-null, this is the authoritative data source.
+    // Mutable so ensureCpu() can lazily materialize a CPU copy while remaining
+    // logically const (the tensor value is unchanged).
+    mutable std::shared_ptr<Ort::Value> ort_value_;
+
+    /// COW guard for the Ort::Value (deep-copies if shared).
+    void ensureOrtUnique();
+#else
+    // Native storage (used when ONNX Runtime is not available)
+    ptr<std::vector<double>> data_;
+
+    void ensureUnique() {
+        if (data_.use_count() > 1)
+            data_ = make_ptr<std::vector<double>>(*data_);
+    }
+#endif
+
+    void computeStrides();
+    int64_t flatIndex(const std::vector<int64_t>& indices) const;
+};
+
+inline bool isTensor(const Value& v) { return isObjType(v, ObjType::Tensor); }
+inline ObjTensor* asTensor(const Value& v) { return static_cast<ObjTensor*>(v.asObj()); }
+
+/// @brief Clone values with value semantics that require explicit cloning.
+/// @param v The value to potentially clone.
+/// @return A cloned value if v is an object with value semantics (vector/matrix/tensor),
+///         otherwise returns v unchanged. Primitives and immutable objects (strings) don't need cloning.
+/// @note Clone is cheap for vector/matrix/tensor due to copy-on-write (COW) -
+///       data is shared until mutation, when it's copied lazily.
+inline Value cloneIfValueSemantics(const Value& v) {
+    // Only clone mutable objects that should have value semantics
+    // Primitives are copied by value naturally, ObjPrimitive (strings) are immutable
+    // Note: clone() uses COW for vector/matrix/tensor - data is shared, not copied
+    // nullptr context is fine here - value semantics types (vector/matrix/tensor) don't need cycle tracking
+    if (v.isObj() && v.valueSemantics() && !isObjPrimitive(v)) {
+        return Value(v.asObj()->clone(nullptr));
+    }
+    return v;
+}
+
+unique_ptr<ObjTensor, UnreleasedObj> newTensorObj();
+unique_ptr<ObjTensor, UnreleasedObj> newTensorObj(const std::vector<int64_t>& shape,
+                                                   TensorDType dtype = TensorDType::Float64);
+unique_ptr<ObjTensor, UnreleasedObj> newTensorObj(const std::vector<int64_t>& shape,
+                                                   const std::vector<double>& data,
+                                                   TensorDType dtype = TensorDType::Float64);
+#ifdef ROXAL_ENABLE_ONNX
+/// Create a tensor that takes ownership of an Ort::Value (zero-copy).
+unique_ptr<ObjTensor, UnreleasedObj> newTensorObj(Ort::Value&& ortValue);
+#endif
+
+std::string objTensorToString(const ObjTensor* ot);
+
 
 //
 // signal (dataflow signal wrapper)
@@ -713,7 +1025,7 @@ struct ObjSignal : public Obj {
     // Optional callback invoked when signal.stop() is called (for gRPC streaming)
     std::function<void()> onStopCallback;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -760,7 +1072,7 @@ struct ObjEventType : public Obj {
     std::optional<PayloadPropertyView> findPayloadPropertyByHash15(uint16_t hash15,
                                                                    bool& ambiguous) const;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -776,7 +1088,7 @@ struct ObjEventInstance : public Obj {
     Value typeHandle;
     std::unordered_map<int32_t, Value> payload;  // keyed by property name hash
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -807,7 +1119,7 @@ struct ObjLibrary : public Obj {
     virtual ~ObjLibrary();
     void* handle;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -833,7 +1145,7 @@ struct ObjForeignPtr : public Obj {
     void* ptr;
     std::function<void(void*)> cleanup;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -862,7 +1174,7 @@ struct ObjFile : public Obj {
     bool binary;
     mutable std::mutex mutex;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -902,7 +1214,7 @@ struct ObjException : public Obj {
     Value stackTrace; // list of stack frames when raised
     Value detail;     // auxiliary data provided by native code
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -941,6 +1253,22 @@ class VM; // forward for native functions
 struct ArgsView; // forward for native functions
 //using NativeFn = std::function<Value(VM&, ArgsView)>;
 
+// Info for functions declared in .rox with C++ native implementation attached via link()
+struct BuiltinFuncInfo {
+    NativeFn function;
+    std::vector<Value> defaultValues;
+    uint32_t resolveArgMask {0};  // bit N set → resolve future arg N before native call
+    bool noMutateSelf {false};    // method doesn't mutate receiver state
+    uint32_t noMutateArgs {0};    // bitmask: bit N set → arg N not mutated
+    bool resolveReturn {false};   // if true, resolve returned future before caller resumes
+
+    BuiltinFuncInfo() = default;
+    BuiltinFuncInfo(NativeFn fn, std::vector<Value> defaults = {}, uint32_t mask = 0,
+                    bool noMutateSelf_ = false, uint32_t noMutateArgs_ = 0)
+        : function(fn), defaultValues(std::move(defaults)), resolveArgMask(mask),
+          noMutateSelf(noMutateSelf_), noMutateArgs(noMutateArgs_) {}
+};
+
 struct ObjFunction : public Obj
 {
     ObjFunction(const icu::UnicodeString& name,
@@ -957,14 +1285,14 @@ struct ObjFunction : public Obj
     std::vector<ptr<ast::Annotation>> annotations;
     icu::UnicodeString doc;
     void* nativeSpec { nullptr }; // for ffi or other native info
-    NativeFn nativeImpl;
-    std::vector<Value> nativeDefaults;
+    unique_ptr<BuiltinFuncInfo> builtinInfo;  // non-null when C++ impl attached via link()
 
     bool strict;        // true if function was compiled in strict mode
 
     FunctionType fnType { FunctionType::Function };
     Value ownerType { Value::nilVal() }; // weak ref owning type
     ast::Access access { ast::Access::Public };
+    ast::MethodModifiers methodModifiers { 0 }; // bitset of MethodModifier flags
 
     // for parameters with default values that must be re-evaluated on each call
     //  this is map from param name UnicodeString::hashCode() -> Value ObjFunction
@@ -975,7 +1303,7 @@ struct ObjFunction : public Obj
 
     void clear(); // reset to blank without other reference values
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1019,7 +1347,7 @@ struct ObjUpvalue : public Obj {
     Value* location;
     Value closed;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1062,7 +1390,7 @@ struct ObjClosure : public Obj
     // thread expected to execute this closure when used as an event handler
     weak_ptr<Thread> handlerThread;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1090,10 +1418,25 @@ inline unique_ptr<ObjClosure, UnreleasedObj> newClosureObj(Value function) { // 
 
 // future
 
+struct ObjCombinator; // forward
+
+// Waiter on an ObjFuture. Either a Thread (woken via Thread::wake()) or a
+// Combinator slot (woken via ObjCombinator::notifySlotReady()). The
+// combinator entry holds a weak Value reference to avoid keeping the
+// combinator alive past its useful lifetime.
+struct ObjFutureWaiter {
+    enum class Kind { Thread, Combinator };
+    Kind kind { Kind::Thread };
+    weak_ptr<Thread> thread;
+    Value combinator { Value::nilVal() };  // weak ref to ObjCombinator
+    uint32_t slotIndex { 0 };
+};
+
 struct ObjFuture : public Obj
 {
-    ObjFuture(const std::shared_future<Value>& fv)
-        : future(fv)
+    ObjFuture(const std::shared_future<Value>& fv,
+              ptr<type::Type> promisedType = nullptr)
+        : future(fv), promisedType(std::move(promisedType))
     {
         type = ObjType::Future;
     }
@@ -1102,14 +1445,22 @@ struct ObjFuture : public Obj
     Value asValue() { return future.valid() ? future.get() : Value::nilVal(); }
 
     std::shared_future<Value> future;
+    ptr<type::Type> promisedType;  // type of the promised value (nullptr = unknown)
+
+    // Strong reference to the producer object (e.g. an ObjCombinator) so the
+    // producer is kept alive while the future is reachable. nilVal for plain
+    // actor-method futures.
+    Value producer { Value::nilVal() };
 
     mutable std::mutex waitMutex;
-    std::vector<weak_ptr<Thread>> waiters;
+    std::vector<ObjFutureWaiter> waiters;
 
     void addWaiter(const ptr<Thread>& t);
+    // `cbWeak` must be a weak Value reference to an ObjCombinator.
+    void addCombinatorWaiter(const Value& cbWeak, uint32_t slotIndex);
     void wakeWaiters();
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1124,11 +1475,98 @@ inline ObjFuture* asFuture(const Value& v) {
     return static_cast<ObjFuture*>(v.asObj());
 }
 
-inline unique_ptr<ObjFuture, UnreleasedObj> newFutureObj(const std::shared_future<Value>& fv) {
+inline unique_ptr<ObjFuture, UnreleasedObj> newFutureObj(const std::shared_future<Value>& fv,
+                                                         ptr<type::Type> promisedType = nullptr) {
     #ifdef DEBUG_BUILD
-    return newObj<ObjFuture>(__func__, __FILE__,__LINE__,fv);
+    return newObj<ObjFuture>(__func__, __FILE__,__LINE__,fv, std::move(promisedType));
     #else
-    return newObj<ObjFuture>(fv);
+    return newObj<ObjFuture>(fv, std::move(promisedType));
+    #endif
+}
+
+
+
+// combinator (allof / anyof)
+//
+// Composes a set of futures, event types, and bool-signal values into a
+// single future that resolves when all (Mode::All) or the first (Mode::Any)
+// inputs resolve. Each slot is wired up at construction with a wakeup that
+// calls notifySlotReady — futures via ObjFuture::waiters, event/signal
+// slots via a one-shot HandlerRegistration with combinatorTarget set.
+//
+// The output future is kept alive (and the combinator with it) until either
+// the user releases all references to the future, or the combinator is
+// fulfilled and its subscriptions are released.
+struct ObjCombinator : public Obj
+{
+    enum class Mode { All, Any };
+    enum class SlotKind { Future, EventType, Signal };
+
+    struct Slot {
+        SlotKind kind { SlotKind::Future };
+        Value input { Value::nilVal() };       // strong ref to ObjFuture / ObjEventType / ObjSignal
+        Value resolvedValue { Value::nilVal() }; // captured for All mode list assembly
+        // Strong ref to the relay closure (event/signal slots only). Held
+        // so the closure stays alive while the slot is unfulfilled. Cleared
+        // on cancel(); HandlerRegistration also holds a strong ref so the
+        // closure survives until the registration is itself removed.
+        Value relayClosure { Value::nilVal() };
+        bool resolved { false };
+    };
+
+    ObjCombinator(Mode m, size_t slotCount)
+      : mode(m), pendingCount(slotCount), promise(make_ptr<std::promise<Value>>())
+    {
+        type = ObjType::Combinator;
+        slots.resize(slotCount);
+    }
+    virtual ~ObjCombinator() {}
+
+    std::shared_future<Value> sharedFuture() {
+        return promise->get_future().share();
+    }
+
+    // Called when slot[slotIndex] becomes ready with `value`.
+    // Thread-safe; idempotent once fulfilled.
+    void notifySlotReady(uint32_t slotIndex, const Value& value);
+
+    // Unsubscribe combinator from any unfulfilled slots. Safe to call multiple
+    // times; called automatically when fulfilled or when dropping references.
+    void cancel();
+
+    Mode mode;
+    size_t pendingCount;
+    bool fulfilled { false };
+    std::vector<Slot> slots;
+    ptr<std::promise<Value>> promise;
+    // Weak Value reference to the output ObjFuture wrapping our promise's
+    // shared_future. We wake its waiter list after set_value so a combinator
+    // composed of combinators (nested) propagates correctly. Set by the
+    // builtin once the output future is constructed.
+    Value outputFuture { Value::nilVal() };
+    mutable std::mutex mutex;
+
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
+
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(ValueVisitor& visitor) const override;
+    void dropReferences() override;
+};
+
+inline bool isCombinator(const Value& v) { return isObjType(v, ObjType::Combinator); }
+inline ObjCombinator* asCombinator(const Value& v) {
+    debug_assert_msg(isCombinator(v), "Value is an ObjCombinator");
+    return static_cast<ObjCombinator*>(v.asObj());
+}
+
+inline unique_ptr<ObjCombinator, UnreleasedObj> newCombinatorObj(ObjCombinator::Mode mode,
+                                                                  size_t slotCount) {
+    #ifdef DEBUG_BUILD
+    return newObj<ObjCombinator>(__func__, __FILE__,__LINE__,mode, slotCount);
+    #else
+    return newObj<ObjCombinator>(mode, slotCount);
     #endif
 }
 
@@ -1148,8 +1586,9 @@ struct ObjNative : public Obj
     void* data;
     ptr<roxal::type::Type> funcType;
     std::vector<Value> defaultValues;
+    uint32_t resolveArgMask {0}; // bit N set → resolve arg N before call
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1183,7 +1622,7 @@ struct ObjTypeSpec : public Obj
 
     ValueType typeValue;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1220,6 +1659,13 @@ struct ObjObjectType : public ObjTypeSpec
     bool isInterface;
     bool isEnumeration;
     Value superType { Value::nilVal() }; // parent type
+
+    // `implements` clauses on this type. Each entry is an objRef to an
+    // ObjObjectType with isInterface=true. Does NOT include interfaces
+    // inherited transitively via superType — those are reached by walking
+    // the chain in isSubtypeOf.
+    std::vector<Value> implementedInterfaces;
+
     bool isCStruct { false };
     int cstructArch { hostArch };
     uint16_t enumTypeId;
@@ -1251,19 +1697,69 @@ struct ObjObjectType : public ObjTypeSpec
         icu::UnicodeString name;
         Value closure;
         ast::Access access { ast::Access::Public };
+        ast::MethodModifiers methodModifiers { 0 };
         Value ownerType { Value::nilVal() }; // weak ref to owning type
     };
-    std::unordered_map<int32_t, Method> methods;
+    // Methods on a type are stored as overload sets, keyed by name hash.
+    // A name with one declaration has overloads.size() == 1 — the common case;
+    // call sites that don't care about overloading use the findUniqueMethod
+    // helper to retrieve the single member.
+    struct MethodOverloadSet {
+        std::vector<Method> overloads;
+    };
+    std::unordered_map<int32_t, MethodOverloadSet> methods;
+
+    // Returns the single overload for `hash` if exactly one exists, else nullptr.
+    // Use this at call sites that pre-date overloading and never had to handle
+    // multiple methods of the same name (getters/setters, statement-action,
+    // operator dispatch, remote-actor lookup, builtin modules).
+    Method* findUniqueMethod(int32_t hash) {
+        auto it = methods.find(hash);
+        if (it == methods.end() || it->second.overloads.size() != 1) return nullptr;
+        return &it->second.overloads[0];
+    }
+    const Method* findUniqueMethod(int32_t hash) const {
+        auto it = methods.find(hash);
+        if (it == methods.end() || it->second.overloads.size() != 1) return nullptr;
+        return &it->second.overloads[0];
+    }
+
+    // Returns the first overload for `hash`, or nullptr if no method has that
+    // name. For sites that walk an inheritance chain looking for "is this
+    // method declared on this type at all?" (e.g. init lookup) — true overload
+    // resolution among the set happens at the call site separately.
+    Method* firstOverload(int32_t hash) {
+        auto it = methods.find(hash);
+        if (it == methods.end() || it->second.overloads.empty()) return nullptr;
+        return &it->second.overloads[0];
+    }
+    const Method* firstOverload(int32_t hash) const {
+        auto it = methods.find(hash);
+        if (it == methods.end() || it->second.overloads.empty()) return nullptr;
+        return &it->second.overloads[0];
+    }
+
+    // Cached method-name hash of the @statement-action method on this type
+    // (or the inherited one). Set during method registration; -1 means none.
+    // Avoids a scan over methods on the StmtAction opcode hot path.
+    int32_t statementActionMethodHash { -1 };
 
     // name -> value
     std::unordered_map<int32_t, std::pair<icu::UnicodeString, Value>> enumLabelValues;
 
+    // nested type declarations
+    struct NestedType {
+        icu::UnicodeString name;
+        Value type;
+        ast::Access access { ast::Access::Public };
+    };
+    std::unordered_map<int32_t, NestedType> nestedTypes;
 
     // global enum type id -> ObjObjectType
     //  TODO: make thread safe?
     static std::unordered_map<uint16_t, ObjObjectType*> enumTypes;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1276,6 +1772,27 @@ struct ObjObjectType : public ObjTypeSpec
 inline bool isObjectType(const Value& v) { return isObjType(v, ObjType::Type) && ((asTypeSpec(v)->typeValue == ValueType::Object) || (asTypeSpec(v)->typeValue == ValueType::Actor)); }
 inline ObjObjectType* asObjectType(const Value& v) { return static_cast<ObjObjectType*>(v.asObj()); }
 
+// Check if sourceType is the same type as targetType or a subtype (extends/implements).
+// Used by Value::is() and future promised-type assignability checks.
+inline bool isSubtypeOf(ObjObjectType* sourceType, ObjObjectType* targetType) {
+    ObjObjectType* t = sourceType;
+    while (t) {
+        if (t == targetType) return true;
+        // implements: each interface in the list, plus its own extends chain
+        for (const Value& ifaceVal : t->implementedInterfaces) {
+            if (!isObjectType(ifaceVal)) continue;
+            for (ObjObjectType* it = asObjectType(ifaceVal); it; ) {
+                if (it == targetType) return true;
+                if (it->superType.isNil()) break;
+                it = asObjectType(it->superType);
+            }
+        }
+        if (t->superType.isNil()) break;
+        t = asObjectType(t->superType);
+    }
+    return false;
+}
+
 inline bool isEnumType(const Value& v) { return isObjType(v, ObjType::Type) && asTypeSpec(v)->typeValue == ValueType::Enum; }
 
 unique_ptr<ObjObjectType, UnreleasedObj> newObjectTypeObj(const icu::UnicodeString& typeName, bool isActor, bool isInterface = false, bool isEnumeration = false);
@@ -1285,7 +1802,7 @@ struct ObjPackageType : public ObjTypeSpec
 {
     // TODO
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1313,6 +1830,10 @@ struct ObjModuleType : public ObjTypeSpec
     icu::UnicodeString moduleAliasFullName(const icu::UnicodeString& alias) const;
     void clearModuleAliases();
 
+    // Registered literal suffixes: suffix string -> function name
+    // Populated during compilation of @suffix-annotated functions.
+    std::unordered_map<icu::UnicodeString, icu::UnicodeString> registeredSuffixes;
+
     // cstruct type annotations: type name hash -> arch (32 or 64)
     std::unordered_map<int32_t, int> cstructArch;
     // property ctype annotations: type name hash -> (prop name hash -> ctype)
@@ -1320,7 +1841,7 @@ struct ObjModuleType : public ObjTypeSpec
 
     static atomic_vector<Value> allModules;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1346,17 +1867,37 @@ unique_ptr<ObjModuleType, UnreleasedObj> newModuleTypeObj(const icu::UnicodeStri
 
 struct ObjectInstance : public Obj
 {
+    using PropertyMap = std::unordered_map<int32_t, VariablesMap::MonitoredValue>;
+
     ObjectInstance(const Value& objectType);
     virtual ~ObjectInstance();
 
     Value instanceType;
-    std::unordered_map<int32_t, VariablesMap::MonitoredValue> properties;
 
-    // convenience methods for property access (e.g. for builtin method implementations)
+    // Property access by hash
+    // Non-const version triggers ensureUnique() because callers may write through
+    // the returned pointer (e.g. resolveConstChild caching).
+    VariablesMap::MonitoredValue* findProperty(int32_t hash) {
+        ensureUnique();
+        auto it = properties_->find(hash);
+        return (it != properties_->end()) ? &it->second : nullptr;
+    }
+    const VariablesMap::MonitoredValue* findProperty(int32_t hash) const {
+        auto it = properties_->find(hash);
+        return (it != properties_->end()) ? &it->second : nullptr;
+    }
+    bool hasProperty(int32_t hash) const { return properties_->contains(hash); }
+    // Returns a reference to the slot, creating it if it doesn't exist (like operator[])
+    VariablesMap::MonitoredValue& propertySlot(int32_t hash);       // MVCC-guarded
+    void assignProperty(int32_t hash, const Value& value);          // MVCC-guarded
+    void emplaceProperty(int32_t hash, VariablesMap::MonitoredValue mv);  // MVCC-guarded
+    void clearProperties() { ensureUnique(); properties_->clear(); }
+
+    // convenience methods for property access by name (e.g. for builtin method implementations)
     Value getProperty(const icu::UnicodeString& name) const;
     Value getProperty(const std::string& name) const { return getProperty(toUnicodeString(name)); }
     Value getProperty(const char* name) const { return getProperty(toUnicodeString(name)); }
-    void setProperty(const icu::UnicodeString& name, Value value);
+    void setProperty(const icu::UnicodeString& name, Value value);  // MVCC-guarded
     void setProperty(const std::string& name, Value value) { setProperty(toUnicodeString(name), value); }
     void setProperty(const char* name, Value value) { setProperty(toUnicodeString(name), value); }
 
@@ -1364,19 +1905,38 @@ struct ObjectInstance : public Obj
     Value ensurePropertySignal(const icu::UnicodeString& name, const std::string& signalName)
       { return ensurePropertySignal(name.hashCode(), signalName); }
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
+    unique_ptr<Obj, UnreleasedObj> shallowClone() const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(ValueVisitor& visitor) const override;
     void dropReferences() override;
+
+private:
+    ptr<PropertyMap> properties_;
+    void ensureUnique() {
+        if (properties_.use_count() > 1)
+            properties_ = make_ptr<PropertyMap>(*properties_);
+    }
 };
 
 inline bool isObjectInstance(const Value& v) { return isObjType(v, ObjType::Instance); }
 inline ObjectInstance* asObjectInstance(const Value& v) { return static_cast<ObjectInstance*>(v.asObj()); }
 
 unique_ptr<ObjectInstance, UnreleasedObj> newObjectInstance(const Value& objectType);
+
+/// Quantity extraction for vector construction and orient.
+/// If v is a sys.quantity object, extracts the SI canonical value into siValue
+/// and the 4-element dimension vector into dims, returning true.
+/// If v is a bare zero (int or real == 0), returns true with siValue=0 and dims left unchanged
+/// (compatible with any dimension).
+/// Otherwise returns false.
+/// When requireMatchingDims is true, a quantity whose dims don't match the running dims
+/// (after isDimensioned has been set by a prior call) throws std::runtime_error.
+/// When false, mixed dims are accepted and dims is updated to the latest extracted dims.
+bool tryExtractQuantity(const Value& v, double& siValue, std::array<int32_t,4>& dims, bool& isDimensioned, bool requireMatchingDims = true);
 
 
 //
@@ -1393,12 +1953,27 @@ struct ActorInstance : public Obj
     void initialize(const Value& objectType);
 
     Value instanceType;
-    std::unordered_map<int32_t, VariablesMap::MonitoredValue> properties;
+
+    // Property access by hash (same API as ObjectInstance)
+    VariablesMap::MonitoredValue* findProperty(int32_t hash) {
+        auto it = properties.find(hash);
+        return (it != properties.end()) ? &it->second : nullptr;
+    }
+    const VariablesMap::MonitoredValue* findProperty(int32_t hash) const {
+        auto it = properties.find(hash);
+        return (it != properties.end()) ? &it->second : nullptr;
+    }
+    bool hasProperty(int32_t hash) const { return properties.contains(hash); }
+    VariablesMap::MonitoredValue& propertySlot(int32_t hash);       // MVCC-guarded
+    void assignProperty(int32_t hash, const Value& value);          // MVCC-guarded
+    void emplaceProperty(int32_t hash, VariablesMap::MonitoredValue mv);  // MVCC-guarded
+    void clearProperties() { properties.clear(); }
 
     Value ensurePropertySignal(int32_t nameHash, const std::string& signalName);
 
     // Returns a future resolved with the queued method's result, or nil for proc methods
-    Value queueCall(const Value& callee, const CallSpec& callSpec, Value* argsStackTop);
+    Value queueCall(const Value& callee, const CallSpec& callSpec, Value* argsStackTop,
+                    bool forceCompletionFuture = false);
 
 
     // queue of actor method calls
@@ -1410,6 +1985,32 @@ struct ActorInstance : public Obj
         ptr<std::promise<Value>> returnPromise;
         Value returnFuture;
         CallSpec callSpec;
+#ifdef ROXAL_COMPUTE_SERVER
+        struct PrintTarget {
+            enum class Kind : std::uint8_t {
+                LocalStdout,
+                RemoteCall
+            };
+
+            Kind kind { Kind::LocalStdout };
+            weak_ptr<ComputeConnection> remoteConn;
+            uint64_t remoteCallId { 0 };
+
+            static PrintTarget localStdout() { return {}; }
+
+            static PrintTarget remoteCall(const ptr<ComputeConnection>& conn, uint64_t callId) {
+                PrintTarget target;
+                target.kind = Kind::RemoteCall;
+                target.remoteConn = conn;
+                target.remoteCallId = callId;
+                return target;
+            }
+
+            bool routesRemotely() const { return kind == Kind::RemoteCall; }
+        };
+
+        PrintTarget printTarget;
+#endif
 
         bool valid() const { return !callee.isNil(); }
     };
@@ -1420,14 +2021,26 @@ struct ActorInstance : public Obj
 
     std::thread::id thread_id;
     weak_ptr<Thread> thread;
+    std::atomic<bool> alive{false}; // true while actor OS thread is running; guards queueCall
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override { throw std::runtime_error("cannot clone actor instances"); }
+#ifdef ROXAL_COMPUTE_SERVER
+    bool isRemote { false };
+    int64_t remoteActorId { 0 };
+    weak_ptr<ComputeConnection> remoteConn;
+    // Keep the transport alive until a connection cache/registry exists.
+    ptr<ComputeConnection> remoteConnHold;
+#endif
+
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override { throw std::runtime_error("cannot clone actor instances"); }
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
 
     void trace(ValueVisitor& visitor) const override;
     void dropReferences() override;
+
+private:
+    std::unordered_map<int32_t, VariablesMap::MonitoredValue> properties;
 };
 
 inline bool isActorInstance(const Value& v) { return isObjType(v, ObjType::Actor); }
@@ -1435,6 +2048,10 @@ inline ActorInstance* asActorInstance(const Value& v) { return static_cast<Actor
 
 unique_ptr<ActorInstance, UnreleasedObj> newActorInstance(const Value& objectType);
 unique_ptr<ActorInstance, UnreleasedObj> newActorInstance(ActorInstance::UninitializedTag);
+
+#ifdef ROXAL_COMPUTE_SERVER
+Value makeRemoteActor(const Value& actorType, int64_t remoteId, ptr<ComputeConnection> conn);
+#endif
 
 
 
@@ -1449,7 +2066,7 @@ struct ObjBoundMethod : public Obj
     Value receiver;
     Value method;
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
@@ -1466,6 +2083,49 @@ inline unique_ptr<ObjBoundMethod, UnreleasedObj> newBoundMethodObj(const Value& 
     return newObj<ObjBoundMethod>(__func__, __FILE__, __LINE__, instance, closure);
 #else
     return newObj<ObjBoundMethod>(instance, closure);
+#endif
+}
+
+//
+// OverloadSet — a name bound to multiple closures distinguished by parameter
+// signature. Constructed at module init by DefineModuleOverload opcodes;
+// resolved at call sites by OverloadResolver. Names with exactly one
+// declaration bind to a plain closure (no OverloadSet allocated).
+//
+struct ObjOverloadSet : public Obj
+{
+    ObjOverloadSet(const icu::UnicodeString& name);
+    virtual ~ObjOverloadSet();
+
+    icu::UnicodeString name;
+    std::vector<Value> closures;        // each entry is an ObjClosure*
+    bool importedFromModule = false;    // true if populated by ImportModuleVars
+
+    // Append a closure. Caller is responsible for ensuring the new closure's
+    // parameter signature is distinguishable from the existing ones (validated
+    // at the DefineModuleOverload opcode handler).
+    void add(const Value& closure) { closures.push_back(closure); }
+
+    // If exactly one overload, return it; else nilVal().
+    Value asSingle() const { return closures.size() == 1 ? closures[0] : Value::nilVal(); }
+
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
+
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    void trace(ValueVisitor& visitor) const override;
+    void dropReferences() override;
+};
+
+inline bool isOverloadSet(const Value& v) { return isObjType(v, ObjType::OverloadSet); }
+inline ObjOverloadSet* asOverloadSet(const Value& v) { return static_cast<ObjOverloadSet*>(v.asObj()); }
+
+inline unique_ptr<ObjOverloadSet, UnreleasedObj> newOverloadSetObj(const icu::UnicodeString& name) {
+#ifdef DEBUG_BUILD
+    return newObj<ObjOverloadSet>(__func__, __FILE__, __LINE__, name);
+#else
+    return newObj<ObjOverloadSet>(name);
 #endif
 }
 
@@ -1490,7 +2150,7 @@ struct ObjBoundNative : public Obj
     std::vector<Value> defaultValues;
     Value declFunction; // ObjFunction for default arg expressions
 
-    unique_ptr<Obj, UnreleasedObj> clone() const override;
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;

@@ -17,6 +17,40 @@ using roxal::type::to_string;
 enum class Access { Public, Private };
 
 
+// Method modifier flags. Stored as a bitset so multiple modifiers can be
+// combined where the combination is meaningful (e.g. `implicit statement
+// action`). Contradictions are rejected during compilation, not by the
+// representation.
+enum class MethodModifier : uint8_t {
+    None             = 0,
+    Implicit         = 1 << 0,
+    StatementAction  = 1 << 1,
+    Abstract         = 1 << 2,
+};
+using MethodModifiers = uint8_t;
+inline bool hasModifier(MethodModifiers m, MethodModifier flag) {
+    return (m & static_cast<MethodModifiers>(flag)) != 0;
+}
+inline void setModifier(MethodModifiers& m, MethodModifier flag) {
+    m = static_cast<MethodModifiers>(m | static_cast<MethodModifiers>(flag));
+}
+
+// Qualified type name: ["Outer", "Inner"] for Outer.Inner, or ["Foo"] for simple Foo
+using TypeName = std::vector<icu::UnicodeString>;
+// Type reference: either a builtin type or a qualified user type name
+using VarType = std::variant<BuiltinType, TypeName>;
+
+inline icu::UnicodeString joinTypeName(const TypeName& components) {
+    icu::UnicodeString result = components[0];
+    for (size_t i = 1; i < components.size(); i++) {
+        result += ".";
+        result += components[i];
+    }
+    return result;
+}
+
+
+
 
 class File;
 class SingleInput;
@@ -32,11 +66,14 @@ class Expression;
 class Suite;
 class ExpressionStatement;
 class ReturnStatement;
+class BreakStatement;
+class ContinueStatement;
 class IfStatement;
 class WhileStatement;
 class ForStatement;
 class WhenStatement;
 class UntilStatement;
+class AdheringIfStatement;
 class TryStatement;
 class MatchStatement;
 class WithStatement;
@@ -56,6 +93,8 @@ class Bool;
 class Str;
 class Type;
 class Num;
+class SuffixedNum;
+class SuffixedStr;
 class List;
 class Vector;
 class Matrix;
@@ -88,11 +127,14 @@ public:
     virtual std::any visit(ptr<Suite> ast) = 0;
     virtual std::any visit(ptr<ExpressionStatement> ast) = 0;
     virtual std::any visit(ptr<ReturnStatement> ast) = 0;
+    virtual std::any visit(ptr<BreakStatement> ast) = 0;
+    virtual std::any visit(ptr<ContinueStatement> ast) = 0;
     virtual std::any visit(ptr<IfStatement> ast) = 0;
     virtual std::any visit(ptr<WhileStatement> ast) = 0;
     virtual std::any visit(ptr<ForStatement> ast) = 0;
     virtual std::any visit(ptr<WhenStatement> ast) = 0;
     virtual std::any visit(ptr<UntilStatement> ast) = 0;
+    virtual std::any visit(ptr<AdheringIfStatement> ast) = 0;
     virtual std::any visit(ptr<TryStatement> ast) = 0;
     virtual std::any visit(ptr<MatchStatement> ast) = 0;
     virtual std::any visit(ptr<WithStatement> ast) = 0;
@@ -112,6 +154,8 @@ public:
     virtual std::any visit(ptr<Str> ast) = 0;
     virtual std::any visit(ptr<Type> ast) = 0;
     virtual std::any visit(ptr<Num> ast) = 0;
+    virtual std::any visit(ptr<SuffixedNum> ast) = 0;
+    virtual std::any visit(ptr<SuffixedStr> ast) = 0;
     virtual std::any visit(ptr<List> ast) = 0;
     virtual std::any visit(ptr<Vector> ast) = 0;
     virtual std::any visit(ptr<Matrix> ast) = 0;
@@ -271,11 +315,14 @@ struct Statement : public AST {
         Suite,
         Expression,
         Return,
+        Break,
+        Continue,
         If,
         While,
         For,
         When,
         Until,
+        AdheringIf,
         Try,
         Raise,
         Match,
@@ -306,6 +353,7 @@ struct ExpressionStatement : public Statement {
     ExpressionStatement() : Statement(StmtType::Expression) {}
 
     ptr<ast::Expression> expr;
+    std::optional<ptr<ast::Expression>> atHost; // optional: host expression from 'at <expr>'
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
@@ -318,6 +366,26 @@ struct ReturnStatement : public Statement {
     ReturnStatement() : Statement(StmtType::Return) {}
 
     std::optional<ptr<ast::Expression>> expr;
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v, Anys& results);
+};
+
+
+struct BreakStatement : public Statement {
+    BreakStatement() : Statement(StmtType::Break) {}
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v, Anys& results);
+};
+
+
+struct ContinueStatement : public Statement {
+    ContinueStatement() : Statement(StmtType::Continue) {}
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
@@ -387,6 +455,19 @@ struct WhenStatement : public Statement {
 
 struct UntilStatement : public Statement {
     UntilStatement() : Statement(StmtType::Until) {}
+
+    ptr<ast::Statement> stmt;
+    ptr<ast::Expression> condition;
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v, Anys& results);
+};
+
+
+struct AdheringIfStatement : public Statement {
+    AdheringIfStatement() : Statement(StmtType::AdheringIf) {}
 
     ptr<ast::Statement> stmt;
     ptr<ast::Expression> condition;
@@ -490,9 +571,12 @@ struct VarDecl : public Declaration {
 
     icu::UnicodeString name;
     std::optional<ptr<Expression>> initializer;
-    std::optional<std::variant<BuiltinType,icu::UnicodeString>> varType;
+    std::optional<VarType> varType;
     Access access { Access::Public };
-    bool isConst { false };
+    bool isConst { false };        // declaration is 'const' (cannot reassign)
+    bool isTypeConst { false };    // type is qualified with 'const' (e.g. var x: const T)
+    bool isTypeMutable { false };  // type is qualified with 'mutable' (e.g. const x: mutable T)
+    std::optional<ptr<Expression>> atHost; // optional: host expression from 'at <expr>'
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
@@ -503,16 +587,18 @@ struct VarDecl : public Declaration {
 
 struct PropertyAccessor : public AST {
     icu::UnicodeString name;
-    std::variant<BuiltinType, icu::UnicodeString> propType;
+    VarType propType;
     std::optional<ptr<Expression>> initializer;
     Access access { Access::Public };
     bool isConst { false }; // true if declared with const instead of var
 
-    // At least one must be present (validated during semantic analysis)
-    // For one-liner: variant holds ptr<Statement> (compound_stmt or expr_stmt)
-    // For block: variant holds ptr<Suite>
-    std::optional<std::variant<ptr<Suite>, ptr<Statement>>> getter;
-    std::optional<std::variant<ptr<Suite>, ptr<Statement>>> setter;
+    // At least one must be present (validated during semantic analysis).
+    // - std::optional empty: accessor not declared.
+    // - variant holds ptr<Suite>: block body.
+    // - variant holds ptr<Statement>: one-liner (compound_stmt or expr_stmt).
+    // - variant holds std::monostate: declared abstract (no body) -- only valid in interfaces.
+    std::optional<std::variant<ptr<Suite>, ptr<Statement>, std::monostate>> getter;
+    std::optional<std::variant<ptr<Suite>, ptr<Statement>, std::monostate>> setter;
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
@@ -536,9 +622,12 @@ struct Function : public AST {
     bool isProc;
     std::optional<icu::UnicodeString> name; // none if lambda func
     std::vector<ptr<Parameter>> params;
-    std::optional<std::vector<std::variant<BuiltinType,icu::UnicodeString>>> returnTypes;
+    std::optional<std::vector<VarType>> returnTypes;
+    std::vector<bool> returnTypeConst; // parallel to returnTypes: true if 'const' qualifier
     std::variant<ptr<Suite>, ptr<Expression>, std::monostate> body; // no body if abstract
     Access access { Access::Public };
+    MethodModifiers methodModifiers { 0 }; // bitset of MethodModifier flags
+                                            // (Implicit, StatementAction, ...)
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
@@ -549,9 +638,12 @@ struct Function : public AST {
 
 struct Parameter : public AST {
     icu::UnicodeString name;
-    std::optional<std::variant<BuiltinType,icu::UnicodeString>> type;
+    std::optional<VarType> type;
     std::optional<ptr<Expression>> defaultValue;
     bool variadic = false;  // true if ...name syntax (collects remaining positional args)
+    bool isConst = false;   // true if parameter type is qualified with 'const'
+    bool isMutable = false; // true if parameter type is qualified with 'mutable'
+    bool isStar = false;    // true if user wrote `*` sole-param sugar for `proc init(*)`
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
@@ -567,8 +659,9 @@ struct TypeDecl : public Declaration {
     Kind kind;
 
     icu::UnicodeString name;
-    std::optional<icu::UnicodeString> extends;
-    std::vector<icu::UnicodeString> implements;
+    Access access { Access::Public }; // for nested type declarations
+    std::optional<TypeName> extends;
+    std::vector<TypeName> implements;
 
     std::vector<ptr<Function>> methods;
 
@@ -580,6 +673,9 @@ struct TypeDecl : public Declaration {
 
     // only for enumerations
     std::vector<std::pair<icu::UnicodeString, ptr<Expression>>> enumLabels;
+
+    // nested type declarations within object/actor types
+    std::vector<ptr<TypeDecl>> nestedTypes;
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
@@ -668,6 +764,7 @@ struct Assignment : public Expression {
     Op op;
     ptr<Expression> lhs;
     ptr<Expression> rhs;
+    std::optional<ptr<Expression>> atHost; // optional: host expression from 'at <expr>'
 
     std::string opString() const;
 
@@ -772,7 +869,9 @@ struct Literal : public Expression {
         List,
         Dict,
         Vector,
-        Matrix
+        Matrix,
+        SuffixedNum,
+        SuffixedStr
     };
     Literal() : Expression(ExprType::Literal), literalType(Nil) {}
 
@@ -805,6 +904,27 @@ struct Str : public Literal {
     Str() { literalType = LiteralType::Str; }
 
     icu::UnicodeString str;
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+};
+
+
+struct SuffixedNum : public Literal {
+    SuffixedNum() { literalType = LiteralType::SuffixedNum; }
+
+    std::variant<int32_t,int64_t,double> num;
+    icu::UnicodeString suffix;  // raw suffix string: "m", "m/s", "kg·m/s²", etc.
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+};
+
+struct SuffixedStr : public Literal {
+    SuffixedStr() { literalType = LiteralType::SuffixedStr; }
+
+    icu::UnicodeString str;
+    icu::UnicodeString suffix;
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
@@ -846,7 +966,7 @@ struct Dict : public Literal {
 struct Vector : public Literal {
     Vector() { literalType = LiteralType::Vector; }
 
-    std::vector<ptr<ast::Num>> elements;
+    std::vector<ptr<ast::Expression>> elements;
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;

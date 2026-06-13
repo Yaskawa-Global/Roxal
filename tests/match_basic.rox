@@ -1,7 +1,7 @@
 # Test match statement implementation
 
 # Test 1: Simple value matching
-func test_simple_match(x: int) -> str:
+func test_simple_match(x: int) -> string:
     match x:
         case 1:
             return "one"
@@ -18,7 +18,7 @@ print("  2 -> " + test_simple_match(2))
 print("  5 -> " + test_simple_match(5))
 
 # Test 2: Multiple patterns per case
-func test_multiple_patterns(x: int) -> str:
+func test_multiple_patterns(x: int) -> string:
     match x:
         case 1, 2, 3:
             return "small"
@@ -34,7 +34,7 @@ print("  10 -> " + test_multiple_patterns(10))
 print("  5 -> " + test_multiple_patterns(5))
 
 # Test 3: Range matching
-func test_range_match(age: int) -> str:
+func test_range_match(age: int) -> string:
     match age:
         case 0..12:
             return "child"
@@ -55,7 +55,7 @@ print("  70 -> " + test_range_match(70))
 print("  -1 -> " + test_range_match(-1))
 
 # Test 4: String matching
-func test_string_match(cmd: str) -> str:
+func test_string_match(cmd: string) -> string:
     match cmd:
         case "start", "begin":
             return "starting"

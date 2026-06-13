@@ -106,7 +106,7 @@ public:
     }
 
   //void swap(ptr& other) noexcept { sp_.swap(other.sp_); }
-  //long use_count() const noexcept { return sp_.use_count(); }
+  long use_count() const noexcept { return sp_.use_count(); }
   //std::shared_ptr<T> as_shared() const noexcept { return sp_; }
 
   // ensure weak_ptr::lock() can build a ptr from a shared_ptr
@@ -157,6 +157,13 @@ inline ptr<T> dynamic_ptr_cast(const ptr<U>& p) {
     if (auto* q = dynamic_cast<T*>(p.get()))
         return ptr<T>::template alias_from<U>(p, q);
     return {}; // empty
+}
+
+// static_ptr_cast<T>(p): like std::static_pointer_cast — use when T* and U* are
+// statically known to be compatible (e.g. upcast or trusted downcast).
+template<class T, class U>
+inline ptr<T> static_ptr_cast(const ptr<U>& p) {
+    return ptr<T>::template alias_from<U>(p, static_cast<T*>(p.get()));
 }
 
 

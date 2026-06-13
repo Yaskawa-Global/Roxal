@@ -1,0 +1,10 @@
+type TensorWorker actor:
+  func sum_corners(t: tensor) -> real:
+    return t[0, 0] + t[1, 1]
+
+var worker = TensorWorker() at "__COMPUTE_TEST_ADDR__"
+var t = tensor([2, 2], [1, 2, 3, 4])
+
+var result = worker.sum_corners(t)
+wait(for=result)
+print(result)

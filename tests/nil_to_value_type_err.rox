@@ -1,0 +1,3 @@
+// nil should NOT coerce into value-shaped types — vector here.
+var v :vector = nil
+print(v)

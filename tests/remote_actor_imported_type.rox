@@ -1,0 +1,11 @@
+import remote_actor_dep_types.*
+
+type Worker actor:
+  func sumPoint(p: Point) -> int:
+    return p.x + p.y
+
+var point = Point(20, 22)
+var worker = Worker() at "__COMPUTE_TEST_ADDR__"
+var result = worker.sumPoint(point)
+wait(for=result)
+print(result)

@@ -1,0 +1,9 @@
+# const members with const type should share the same frozen value (no clone)
+type Config object:
+    const items = [1, 2, 3]
+
+var a = Config()
+var b = Config()
+# same frozen list object, not independent copies
+print(a.items is b.items)
+print(a.items)

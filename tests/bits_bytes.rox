@@ -1,0 +1,74 @@
+// Bit/byte conversion utilities: to_bytes, from_bytes,
+// bits_to_bytes, bytes_to_bits, lshift, rshift.
+
+// --- Integer round-trip ---
+print(to_bytes(305419896, width=4))           // [120, 86, 52, 18]   (0x12345678 LE)
+print(from_bytes([120, 86, 52, 18], dtype=int, signed=false))  // 305419896
+
+// Default int width = 8 (full int64)
+print(to_bytes(1))                            // [1, 0, 0, 0, 0, 0, 0, 0]
+print(from_bytes(to_bytes(0)) == 0.0)          // true (8 bytes default real reinterp)
+
+// Width validation
+print(from_bytes(to_bytes(255, width=1), dtype=int, signed=false))  // 255
+
+// --- Signed sign-extension (default) vs zero-extension ---
+print(from_bytes(to_bytes(-1, width=2), dtype=int))                 // -1   (signed=true default)
+print(from_bytes(to_bytes(-1, width=2), dtype=int, signed=false))   // 65535 (zero-extended)
+print(from_bytes(to_bytes(-128, width=1), dtype=int))               // -128
+
+// --- Real round-trip via 8-byte IEEE double ---
+print(from_bytes(to_bytes(3.14), dtype=real))         // 3.14
+print(from_bytes(to_bytes(-2.5), dtype=real))         // -2.5
+
+// --- Real <-> IEEE float32 (width=4) ---
+print(from_bytes(to_bytes(1.5, width=4), dtype=real))   // 1.5
+print(from_bytes(to_bytes(-3.5, width=4), dtype=real))  // -3.5
+
+// --- The robotics use-case: bool-list -> bytes -> float32 ---
+// Step 1: a float32's IEEE bytes (1.5 = 0x3FC00000 LE = [0, 0, 192, 63])
+var b32 = to_bytes(1.5, width=4)
+print(b32)                                      // [0, 0, 192, 63]
+// Step 2: bytes -> bits
+var bits = bytes_to_bits(b32)
+print(len(bits))                                // 32
+// Step 3: bits -> bytes -> real (round-trip)
+print(from_bytes(bits_to_bytes(bits), dtype=real))   // 1.5
+
+// --- Endian control ---
+print(to_bytes(16909060, width=4, endian='big'))      // [1, 2, 3, 4]
+print(to_bytes(16909060, width=4, endian='little'))   // [4, 3, 2, 1]
+print(from_bytes([1, 2, 3, 4], dtype=int, endian='big', signed=false))  // 16909060
+
+// --- String round-trip (UTF-8) ---
+print(from_bytes(to_bytes('hello'), dtype=string))   // hello
+print(to_bytes('A'))                                    // [65]
+
+// --- bool ---
+print(to_bytes(true))                            // [1]
+print(to_bytes(false))                           // [0]
+print(from_bytes([0], dtype=bool))             // false
+print(from_bytes([42], dtype=bool))            // true (nonzero)
+
+// --- bits packing modes (MSB-first default vs LSB-first) ---
+// One byte 0xA5 = 0b10100101 — palindrome bit pattern, same either way.
+print(bytes_to_bits([165]))                      // default MSB-first: [true,false,true,false,false,true,false,true]
+print(bytes_to_bits([165], msb_first=false))     // LSB-first: same (palindrome)
+
+// Use a non-palindrome for an asymmetric demo:
+print(bytes_to_bits([1]))                        // default MSB-first: [false x7, true]
+print(bytes_to_bits([1], msb_first=false))       // LSB-first: [true, false x7]
+
+// Round-trip bits<->bytes (default MSB-first both ways)
+print(bits_to_bytes(bytes_to_bits([255, 0, 170])) == [255, 0, 170])  // true
+
+// Matches byte([8 bits]) constructor convention (also MSB-first):
+print(byte([true, false, false, false, false, false, false, false]))      // 128
+print(bits_to_bytes([true, false, false, false, false, false, false, false]))  // [128]
+
+// --- Shifts ---
+print(lshift(1, 3))      // 8
+print(lshift(255, 8))    // 65280
+print(rshift(16, 2))     // 4
+print(rshift(-8, 1))     // -4 (arithmetic; sign preserved)
+print(rshift(255, 4))    // 15

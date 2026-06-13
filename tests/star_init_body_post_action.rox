@@ -1,0 +1,22 @@
+type Point object:
+  var x :int = 0
+  var y :int = 0
+
+  proc init(*):
+    // body runs AFTER auto-assign; can adjust via this.<member>
+    if this.x < 0:
+      this.x = 0
+    if this.y < 0:
+      this.y = 0
+
+var a = Point(-3, 5)
+print(a.x)
+print(a.y)
+
+var b = Point(2, -1)
+print(b.x)
+print(b.y)
+
+var c = Point()
+print(c.x)
+print(c.y)

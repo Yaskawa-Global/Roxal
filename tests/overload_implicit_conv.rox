@@ -1,0 +1,22 @@
+// Strict-implicit conversion (byte->int is safe widening) beats untyped:
+// f(x:int) wins for a byte arg over f(x).
+
+func f(x):
+    print("any")
+
+func f(x :int):
+    print("int")
+
+var b :byte = 5
+f(b)
+
+// String->int is non-strict-only. With both an untyped fallback and a
+// typed-int overload, the untyped should win for a string arg (avoiding
+// silent string->int coercion).
+func g(x):
+    print("g-any")
+
+func g(x :int):
+    print("g-int")
+
+g("hello")

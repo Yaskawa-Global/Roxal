@@ -1,6 +1,6 @@
 @builtin
-proc print(value='', end='\n', flush:bool=false):
-  """print the string representation of value followed by end and flush if requested"""
+proc print(value:string='', end='\n', flush:bool=false, here:bool=false):
+  """print the string representation of value followed by end, optionally flush, and with here=true force output on the current process instead of routed remote output"""
 
 @builtin
 func len(v) -> int:
@@ -15,8 +15,8 @@ func clone(v):
   """return a deep copy of v"""
 
 @builtin
-proc wait(s:int=0, ms:int=0, us:int=0, ns:int=0, for=nil):
-  """wait until the specified amount of time elapses and optionally await a future or list of futures afterwards"""
+func wait(duration=nil, s:int=0, ms:int=0, us:int=0, ns:int=0, for=nil):
+  """wait for duration (time quantity or numeric seconds) or legacy s/ms/us/ns fields, then optionally await a single future; returns nil for pure delay, the resolved value for a future, or the supplied nonfuture value after any delay; do not mix duration with s/ms/us/ns"""
 
 @builtin
 func is_ready(future) -> bool:
@@ -63,12 +63,44 @@ func _strongref(value):
   """return a strong reference from a weak reference"""
 
 @builtin
+func _refcount(value) -> int:
+  """return the strong reference count of a value (-1 for non-objects)"""
+
+@builtin
+func _arity(fn) -> int:
+  """return the number of parameters a function expects"""
+
+@builtin
 func serialize(value, protocol:string='default') -> list:
   """serialize value using protocol and return list of bytes"""
 
 @builtin
-func deserialize(bytes:list, protocol:string='default'):
+func deserialize(bytes: const list, protocol:string='default'):
   """deserialize list of bytes using protocol"""
+
+@builtin
+func to_bytes(v, width:int=0, endian:string='little') -> list:
+  """reinterpret v as raw bytes. Source types: bool (1 byte), byte (1 byte), int (width 1/2/4/8; default 8; two's complement), real (width 4 for IEEE float32 downcast or 8 for double; default 8), string (UTF-8 bytes; width must be 0). endian is 'little' (default) or 'big'."""
+
+@builtin
+func from_bytes(bytes:list, dtype=real, endian:string='little', signed:bool=true):
+  """reinterpret a list of bytes as the requested type. dtype is a type value: int (length 1/2/4/8; result is always Roxal int), real (len 4 for float32 upcast, or 8 for double), bool (len 1), string (UTF-8 decode). dtype may also be passed as a string ('int'/'real'/'bool'/'string'). endian is 'little' (default), 'big' (alias 'network'). signed=true (default) sign-extends the input bits to int64 when reading widths < 8; signed=false zero-extends — useful for unsigned hardware registers (e.g. a 16-bit register 0xFFFF reads as -1 with signed=true, 65535 with signed=false)."""
+
+@builtin
+func bits_to_bytes(bits:list, msb_first:bool=true) -> list:
+  """pack a list of bool (or 0/1) bits into a list of byte. Length of result is ceil(len(bits)/8) with the last byte zero-padded. msb_first=true (default) places the first bit in each byte's MSB — matches the byte([8 bits]) constructor convention. msb_first=false places it in the LSB."""
+
+@builtin
+func bytes_to_bits(bytes:list, msb_first:bool=true) -> list:
+  """unpack a list of byte into a list of bool. Result length is 8 * len(bytes). msb_first=true (default) emits each byte's MSB first; msb_first=false emits the LSB first."""
+
+@builtin
+func lshift(v:int, n:int) -> int:
+  """left shift v by n bits (0 <= n < 64). Equivalent to v * 2^n modulo 2^64."""
+
+@builtin
+func rshift(v:int, n:int) -> int:
+  """arithmetic right shift v by n bits (0 <= n < 64). Sign is preserved (negative v stays negative)."""
 
 @builtin
 func to_json(value, indent:bool=true) -> string:
@@ -77,6 +109,30 @@ func to_json(value, indent:bool=true) -> string:
 @builtin
 func from_json(json:string):
   """parse JSON string into a value"""
+
+@builtin
+func to_xml(value, indent:bool=true, mode:string='auto') -> string:
+  """convert XML-shaped value to an XML string"""
+
+@builtin
+func from_xml(xml:string, mode:string='compact', preserve_whitespace:bool=false):
+  """parse XML string into compact or raw value form"""
+
+@builtin
+func upper(s:string) -> string:
+  """return s with all letters converted to uppercase (Unicode-aware)"""
+
+@builtin
+func lower(s:string) -> string:
+  """return s with all letters converted to lowercase (Unicode-aware)"""
+
+@builtin
+func capitalize(s:string) -> string:
+  """return s with the first character uppercased and the rest lowercased (Unicode-aware; matches Python str.capitalize)"""
+
+@builtin
+func title(s:string) -> string:
+  """return s with the first letter of each word uppercased and the rest lowercased (Unicode-aware via ICU word boundaries; matches Python str.title)"""
 
 @builtin
 type Time object:
@@ -141,6 +197,68 @@ type Time object:
   func from_parts(seconds:int, micros:int=0, kind:string='wall') -> Time:
     """construct a Time from explicit seconds and microseconds"""
 
+  func operator+(other):
+    """add TimeSpan or time quantity, return new Time"""
+    if other is TimeSpan:
+      var us = (_seconds * 1000000 + _micros) + (other.seconds() * 1000000 + other.microseconds())
+      return Time.from_parts(seconds=us / 1000000, micros=us rem 1000000, kind=kind())
+    if other is quantity:
+      var span = TimeSpan(other)
+      return this + span
+    raise 'Time.operator+ expects TimeSpan or time quantity'
+
+  func operator-(other):
+    """subtract Time (->TimeSpan), TimeSpan or quantity (->Time)"""
+    if other is Time:
+      if _steady != other._steady:
+        raise 'Time.operator- requires both times from the same clock'
+      return diff(other)
+    if other is TimeSpan:
+      var us = (_seconds * 1000000 + _micros) - (other.seconds() * 1000000 + other.microseconds())
+      return Time.from_parts(seconds=us / 1000000, micros=us rem 1000000, kind=kind())
+    if other is quantity:
+      var span = TimeSpan(other)
+      return this - span
+    raise 'Time.operator- expects Time, TimeSpan or time quantity'
+
+  func operator==(other) -> bool:
+    if other is Time:
+      if _steady != other._steady:
+        return false
+      return _seconds == other._seconds and _micros == other._micros
+    return false
+
+  func operator!=(other) -> bool:
+    if other is Time:
+      if _steady != other._steady:
+        return true
+      return _seconds != other._seconds or _micros != other._micros
+    return true
+
+  func operator<(other) -> bool:
+    if not (other is Time):
+      raise 'Time.operator< expects Time'
+    if _steady != other._steady:
+      raise 'Time.operator< requires both times from the same clock'
+    if _seconds != other._seconds:
+      return _seconds < other._seconds
+    return _micros < other._micros
+
+  func operator>(other) -> bool:
+    if not (other is Time):
+      raise 'Time.operator> expects Time'
+    if _steady != other._steady:
+      raise 'Time.operator> requires both times from the same clock'
+    if _seconds != other._seconds:
+      return _seconds > other._seconds
+    return _micros > other._micros
+
+  func operator<=(other) -> bool:
+    return not (this > other)
+
+  func operator>=(other) -> bool:
+    return not (this < other)
+
 @builtin
 type TimeSpan object:
 
@@ -195,6 +313,70 @@ type TimeSpan object:
   func from_fields(days:int=0, hours:int=0, minutes:int=0, seconds:int=0, millis:int=0, micros:int=0) -> TimeSpan:
     """construct a new TimeSpan from component fields"""
 
+  func operator+(other):
+    """add TimeSpan or time quantity to this span"""
+    if other is TimeSpan:
+      var us = (_seconds * 1000000 + _micros) + (other.seconds() * 1000000 + other.microseconds())
+      return TimeSpan(micros=us)
+    if other is quantity:
+      return this + TimeSpan(other)
+    raise 'TimeSpan.operator+ expects TimeSpan or time quantity'
+
+  func operator-(other):
+    """subtract TimeSpan or time quantity from this span"""
+    if other is TimeSpan:
+      var us = (_seconds * 1000000 + _micros) - (other.seconds() * 1000000 + other.microseconds())
+      return TimeSpan(micros=us)
+    if other is quantity:
+      return this - TimeSpan(other)
+    raise 'TimeSpan.operator- expects TimeSpan or time quantity'
+
+  func operator-():
+    """negate this span"""
+    return TimeSpan(micros=-(_seconds * 1000000 + _micros))
+
+  func operator==(other) -> bool:
+    if other is TimeSpan:
+      return _seconds == other.seconds() and _micros == other.microseconds()
+    if other is quantity:
+      return this == TimeSpan(other)
+    return false
+
+  func operator!=(other) -> bool:
+    if other is TimeSpan:
+      return _seconds != other.seconds() or _micros != other.microseconds()
+    if other is quantity:
+      return this != TimeSpan(other)
+    return true
+
+  func operator<(other) -> bool:
+    if other is quantity:
+      return this < TimeSpan(other)
+    if not (other is TimeSpan):
+      raise 'TimeSpan.operator< expects TimeSpan or time quantity'
+    var lhs = _seconds * 1000000 + _micros
+    var rhs = other.seconds() * 1000000 + other.microseconds()
+    return lhs < rhs
+
+  func operator>(other) -> bool:
+    if other is quantity:
+      return this > TimeSpan(other)
+    if not (other is TimeSpan):
+      raise 'TimeSpan.operator> expects TimeSpan or time quantity'
+    var lhs = _seconds * 1000000 + _micros
+    var rhs = other.seconds() * 1000000 + other.microseconds()
+    return lhs > rhs
+
+  func operator<=(other) -> bool:
+    return not (this > other)
+
+  func operator>=(other) -> bool:
+    return not (this < other)
+
+  implicit func operator quantity() -> quantity:
+    """convert to a time-dimensioned quantity"""
+    return quantity(v=total_seconds(), d=[0, 1, 0, 0])
+
 @builtin
 func _clock() -> real:
   """return process time in seconds"""
@@ -223,15 +405,642 @@ func _df_graphdot(title:string='') -> string:
 func loadlib(path:string):
   """load a native library at path"""
 
-@builtin
-func filter(items, predicate) -> list:
-  """return a new list containing elements for which predicate(element) returns true"""
+func filter(items: const list, predicate) -> list:
+  """return a new list containing elements for which predicate(element) returns true; predicate can optionally take (element, index)"""
+  var result = []
+  var arity = _arity(predicate)
+  var i = 0
+  for item in items:
+    if arity >= 2:
+      if predicate(item, i):
+        result.append(item)
+    else:
+      if predicate(item):
+        result.append(item)
+    i = i + 1
+  return result
 
-@builtin
-func map(items, transform) -> list:
-  """return a new list with transform(element) applied to each element"""
+func map(items: const list, transform) -> list:
+  """return a new list with transform(element) applied to each element; transform can optionally take (element, index)"""
+  var result = []
+  var arity = _arity(transform)
+  var i = 0
+  for item in items:
+    if arity >= 2:
+      result.append(transform(item, i))
+    else:
+      result.append(transform(item))
+    i = i + 1
+  return result
 
-@builtin
-func reduce(items, reducer, initial):
-  """reduce items to a single value by calling reducer(accumulator, element) for each element"""
+func reduce(items: const list, reducer, initial):
+  """reduce items to a single value by calling reducer(accumulator, element) for each element; reducer can optionally take (accumulator, element, index)"""
+  var acc = initial
+  var arity = _arity(reducer)
+  var i = 0
+  for item in items:
+    if arity >= 3:
+      acc = reducer(acc, item, i)
+    else:
+      acc = reducer(acc, item)
+    i = i + 1
+  return acc
 
+
+// ============================================================================
+// quantity — dimensional physical quantity type
+// ============================================================================
+//
+// Stores a real value in SI canonical units (m, kg, s, rad) plus a dimension
+// vector of 4 integer exponents [Length, Time, Mass, Angle].
+// Arithmetic operators perform automatic dimensional analysis.
+
+type _dimension enum:
+  L   // Length
+  T   // Time
+  M   // Mass
+  A   // Angle
+
+
+type quantity object:
+  private var _v :real = 0.0
+  private var _d :list = [0, 0, 0, 0]
+
+  proc init(v :real = 0.0, d :list = [0, 0, 0, 0]):
+    _v = v
+    _d = d
+
+  proc init(s :string):
+    """parse a quantity literal like '30deg/s', '5Nm', '9.81m/s^2', '100mm', '45°'; round-trips with operator string()"""
+    set(s)
+
+  @builtin
+  proc set(s :string):
+    """replace this quantity's value and dimension by parsing s (same forms as the string-constructor)"""
+
+  // --- helpers ---
+
+  private func dim_label() -> string:
+    // Build a human-readable SI dimension label like "ms⁻²kg"
+    var units = ['m', 's', 'kg', 'rad']
+    var sup_digits = ['\u2070', '\u00B9', '\u00B2', '\u00B3', '\u2074', '\u2075', '\u2076', '\u2077', '\u2078', '\u2079']
+    var result = ''
+    var i = 0
+    for u in units:
+      var e = _d[i]
+      if e != 0:
+        result = result + u
+        if e != 1:
+          var es = ''
+          var ae = e
+          if ae < 0:
+            es = '\u207B'
+            ae = -ae
+          if ae >= 10:
+            es = es + sup_digits[ae / 10]
+          es = es + sup_digits[ae rem 10]
+          result = result + es
+      i = i + 1
+    if result == '':
+      return 'dimensionless'
+    return result
+
+  private func check_same_dim(other :quantity, op :string):
+    if _d != other._d:
+      raise 'dimension mismatch in ' + op + ': ' + dim_label() + ' vs ' + other.dim_label()
+
+  // --- arithmetic operators ---
+
+  func operator-() -> quantity:
+    return quantity(v=-_v, d=_d)
+
+  // self + other (self is on the left)
+  func loperator+(other) -> quantity:
+    if other is quantity:
+      check_same_dim(other, '+')
+      return quantity(v=_v + other._v, d=_d)
+    if other is TimeSpan:
+      if _d != [0,1,0,0]:
+        raise 'dimension mismatch in +: ' + dim_label() + ' vs time'
+      return quantity(v=_v + other.total_seconds(), d=[0,1,0,0])
+    raise 'unsupported operand type for quantity +'
+
+  // other + self (self is on the right)
+  func roperator+(other) -> quantity:
+    if other is TimeSpan:
+      if _d != [0,1,0,0]:
+        raise 'dimension mismatch in +: time vs ' + dim_label()
+      return quantity(v=other.total_seconds() + _v, d=[0,1,0,0])
+    raise 'unsupported operand type for quantity +'
+
+  // self - other (self is on the left)
+  func loperator-(other) -> quantity:
+    if other is quantity:
+      check_same_dim(other, '-')
+      return quantity(v=_v - other._v, d=_d)
+    if other is TimeSpan:
+      if _d != [0,1,0,0]:
+        raise 'dimension mismatch in -: ' + dim_label() + ' vs time'
+      return quantity(v=_v - other.total_seconds(), d=[0,1,0,0])
+    raise 'unsupported operand type for quantity -'
+
+  // other - self (self is on the right)
+  func roperator-(other) -> quantity:
+    if other is TimeSpan:
+      if _d != [0,1,0,0]:
+        raise 'dimension mismatch in -: time vs ' + dim_label()
+      return quantity(v=other.total_seconds() - _v, d=[0,1,0,0])
+    raise 'unsupported operand type for quantity -'
+
+  // quantity * other
+  func loperator*(other) -> quantity:
+    if other is quantity:
+      return quantity(v=_v * other._v, d=[_d[0]+other._d[0], _d[1]+other._d[1], _d[2]+other._d[2], _d[3]+other._d[3]])
+    return quantity(v=_v * real(other), d=_d)
+
+  // other * quantity
+  func roperator*(other) -> quantity:
+    if other is quantity:
+      return quantity(v=other._v * _v, d=[_d[0]+other._d[0], _d[1]+other._d[1], _d[2]+other._d[2], _d[3]+other._d[3]])
+    return quantity(v=real(other) * _v, d=_d)
+
+  // quantity / other
+  func loperator/(other) -> quantity:
+    if other is quantity:
+      var rd = [_d[0]-other._d[0], _d[1]-other._d[1], _d[2]-other._d[2], _d[3]-other._d[3]]
+      return quantity(v=_v / other._v, d=rd)
+    return quantity(v=_v / real(other), d=_d)
+
+  // other / quantity
+  func roperator/(other) -> quantity:
+    if other is quantity:
+      var rd = [other._d[0]-_d[0], other._d[1]-_d[1], other._d[2]-_d[2], other._d[3]-_d[3]]
+      return quantity(v=other._v / _v, d=rd)
+    return quantity(v=real(other) / _v, d=[0-_d[0], 0-_d[1], 0-_d[2], 0-_d[3]])
+
+  // --- comparison operators ---
+
+  func operator==(other) -> bool:
+    if other is TimeSpan:
+      if _d != [0,1,0,0]:
+        raise 'dimension mismatch in ==: ' + dim_label() + ' vs time'
+      return _v == other.total_seconds()
+    if other is quantity:
+      check_same_dim(other, '==')
+      return _v == other._v
+    // allow comparison with 0 for any dimension
+    if real(other) == 0.0:
+      return _v == 0.0
+    return false
+
+  func operator!=(other) -> bool:
+    if other is TimeSpan:
+      if _d != [0,1,0,0]:
+        raise 'dimension mismatch in !=: ' + dim_label() + ' vs time'
+      return _v != other.total_seconds()
+    if other is quantity:
+      check_same_dim(other, '!=')
+      return _v != other._v
+    if real(other) == 0.0:
+      return _v != 0.0
+    return true
+
+  func operator<(other) -> bool:
+    if other is TimeSpan:
+      if _d != [0,1,0,0]:
+        raise 'dimension mismatch in <: ' + dim_label() + ' vs time'
+      return _v < other.total_seconds()
+    if other is quantity:
+      check_same_dim(other, '<')
+      return _v < other._v
+    raise 'unsupported operand type for quantity <'
+
+  func operator>(other) -> bool:
+    if other is TimeSpan:
+      if _d != [0,1,0,0]:
+        raise 'dimension mismatch in >: ' + dim_label() + ' vs time'
+      return _v > other.total_seconds()
+    if other is quantity:
+      check_same_dim(other, '>')
+      return _v > other._v
+    raise 'unsupported operand type for quantity >'
+
+  func operator<=(other) -> bool:
+    if other is TimeSpan:
+      if _d != [0,1,0,0]:
+        raise 'dimension mismatch in <=: ' + dim_label() + ' vs time'
+      return _v <= other.total_seconds()
+    if other is quantity:
+      check_same_dim(other, '<=')
+      return _v <= other._v
+    raise 'unsupported operand type for quantity <='
+
+  func operator>=(other) -> bool:
+    if other is TimeSpan:
+      if _d != [0,1,0,0]:
+        raise 'dimension mismatch in >=: ' + dim_label() + ' vs time'
+      return _v >= other.total_seconds()
+    if other is quantity:
+      check_same_dim(other, '>=')
+      return _v >= other._v
+    raise 'unsupported operand type for quantity >='
+
+  // --- conversion operators ---
+
+  func operator real() -> real:
+    if not is_dimensionless:
+      raise 'cannot convert quantity with dimensions ' + dim_label() + ' to real; only dimensionless quantities can be converted'
+    return _v
+
+  implicit func operator TimeSpan() -> TimeSpan:
+    if _d != [0,1,0,0]:
+      raise 'cannot convert quantity with dimensions ' + dim_label() + ' to TimeSpan; must be time dimension'
+    var total_us = int(_v * 1000000.0)
+    return TimeSpan(micros=total_us)
+
+  // --- string display ---
+
+  implicit func operator string() -> string:
+    // Display in the most natural unit for the dimension vector
+    // Use absolute value for range selection so negatives display correctly
+    var av = _v
+    if av < 0:
+      av = -av
+    // Length [1,0,0,0]
+    if _d == [1,0,0,0]:
+      if av >= 1.0 or av == 0.0:
+        return string(_v) + 'm'
+      if av >= 0.01:
+        return string(_v * 100.0) + 'cm'
+      if av >= 0.001:
+        return string(_v * 1000.0) + 'mm'
+      return string(_v * 1000000.0) + 'um'
+    // Time [0,1,0,0]
+    if _d == [0,1,0,0]:
+      if av >= 3600.0:
+        return string(_v / 3600.0) + 'hr'
+      if av >= 60.0:
+        return string(_v / 60.0) + 'min'
+      if av >= 1.0 or av == 0.0:
+        return string(_v) + 's'
+      if av >= 0.001:
+        return string(_v * 1000.0) + 'ms'
+      return string(_v * 1000000.0) + 'us'
+    // Mass [0,0,1,0]
+    if _d == [0,0,1,0]:
+      if av >= 1.0 or av == 0.0:
+        return string(_v) + 'kg'
+      if av >= 0.001:
+        return string(_v * 1000.0) + 'g'
+      return string(_v * 1000000.0) + 'mg'
+    // Angle [0,0,0,1]
+    if _d == [0,0,0,1]:
+      return string(_v * 180.0 / 3.14159265358979323846) + '\u00B0'
+    // Velocity [1,-1,0,0]
+    if _d == [1,-1,0,0]:
+      return string(_v) + 'm/s'
+    // Acceleration [1,-2,0,0]
+    if _d == [1,-2,0,0]:
+      return string(_v) + 'ms\u207B\u00B2'
+    // Force [1,-2,1,0]
+    if _d == [1,-2,1,0]:
+      return string(_v) + 'N'
+    // Torque [2,-2,1,0]
+    if _d == [2,-2,1,0]:
+      return string(_v) + 'Nm'
+    // Angular velocity [0,-1,0,1]
+    if _d == [0,-1,0,1]:
+      return string(_v * 180.0 / 3.14159265358979323846) + '\u00B0/s'
+    // Dimensionless [0,0,0,0]
+    if is_dimensionless:
+      return string(_v)
+    // Unknown dimension — show as SI units with superscript exponents
+    return string(_v) + dim_label()
+
+  // --- property getters for value extraction ---
+  // Length getters
+  var meters :real:
+    get:
+      if _d != [1,0,0,0]:
+        raise 'cannot get meters from quantity with dimensions ' + dim_label()
+      return _v
+  var millimeters :real:
+    get:
+      if _d != [1,0,0,0]:
+        raise 'cannot get millimeters from quantity with dimensions ' + dim_label()
+      return _v * 1000.0
+  var centimeters :real:
+    get:
+      if _d != [1,0,0,0]:
+        raise 'cannot get centimeters from quantity with dimensions ' + dim_label()
+      return _v * 100.0
+  var micrometers :real:
+    get:
+      if _d != [1,0,0,0]:
+        raise 'cannot get micrometers from quantity with dimensions ' + dim_label()
+      return _v * 1000000.0
+  var inches :real:
+    get:
+      if _d != [1,0,0,0]:
+        raise 'cannot get inches from quantity with dimensions ' + dim_label()
+      return _v / 0.0254
+  var feet :real:
+    get:
+      if _d != [1,0,0,0]:
+        raise 'cannot get feet from quantity with dimensions ' + dim_label()
+      return _v / 0.3048
+  var mils :real:
+    get:
+      if _d != [1,0,0,0]:
+        raise 'cannot get mils from quantity with dimensions ' + dim_label()
+      return _v / 0.0000254
+
+  // Mass getters
+  var kilograms :real:
+    get:
+      if _d != [0,0,1,0]:
+        raise 'cannot get kilograms from quantity with dimensions ' + dim_label()
+      return _v
+  var grams :real:
+    get:
+      if _d != [0,0,1,0]:
+        raise 'cannot get grams from quantity with dimensions ' + dim_label()
+      return _v * 1000.0
+  var milligrams :real:
+    get:
+      if _d != [0,0,1,0]:
+        raise 'cannot get milligrams from quantity with dimensions ' + dim_label()
+      return _v * 1000000.0
+  var pounds :real:
+    get:
+      if _d != [0,0,1,0]:
+        raise 'cannot get pounds from quantity with dimensions ' + dim_label()
+      return _v / 0.45359237
+  var ounces :real:
+    get:
+      if _d != [0,0,1,0]:
+        raise 'cannot get ounces from quantity with dimensions ' + dim_label()
+      return _v / 0.0283495231
+
+  // Time getters
+  var seconds :real:
+    get:
+      if _d != [0,1,0,0]:
+        raise 'cannot get seconds from quantity with dimensions ' + dim_label()
+      return _v
+  var milliseconds :real:
+    get:
+      if _d != [0,1,0,0]:
+        raise 'cannot get milliseconds from quantity with dimensions ' + dim_label()
+      return _v * 1000.0
+  var microseconds :real:
+    get:
+      if _d != [0,1,0,0]:
+        raise 'cannot get microseconds from quantity with dimensions ' + dim_label()
+      return _v * 1000000.0
+  var minutes :real:
+    get:
+      if _d != [0,1,0,0]:
+        raise 'cannot get minutes from quantity with dimensions ' + dim_label()
+      return _v / 60.0
+  var hours :real:
+    get:
+      if _d != [0,1,0,0]:
+        raise 'cannot get hours from quantity with dimensions ' + dim_label()
+      return _v / 3600.0
+
+  // Angle getters
+  var radians :real:
+    get:
+      if _d != [0,0,0,1]:
+        raise 'cannot get radians from quantity with dimensions ' + dim_label()
+      return _v
+  var degrees :real:
+    get:
+      if _d != [0,0,0,1]:
+        raise 'cannot get degrees from quantity with dimensions ' + dim_label()
+      return _v * 180.0 / 3.14159265358979323846
+
+  // --- dimension introspection predicates ---
+  var is_dimensionless        :bool:
+    get: return _d == [0,0,0,0]
+  var is_length               :bool:
+    get: return _d == [1,0,0,0]
+  var is_time                 :bool:
+    get: return _d == [0,1,0,0]
+  var is_mass                 :bool:
+    get: return _d == [0,0,1,0]
+  var is_angle                :bool:
+    get: return _d == [0,0,0,1]
+  var is_linear_velocity      :bool:
+    get: return _d == [1,-1,0,0]
+  var is_angular_velocity     :bool:
+    get: return _d == [0,-1,0,1]
+  var is_linear_acceleration  :bool:
+    get: return _d == [1,-2,0,0]
+  var is_angular_acceleration :bool:
+    get: return _d == [0,-2,0,1]
+  var is_linear_jerk          :bool:
+    get: return _d == [1,-3,0,0]
+  var is_angular_jerk         :bool:
+    get: return _d == [0,-3,0,1]
+  var is_force                :bool:
+    get: return _d == [1,-2,1,0]
+  var is_torque               :bool:
+    get: return _d == [2,-2,1,0]
+
+
+// --- Suffix functions for quantity literals ---
+
+// Length
+@suffix("um")
+func _suf_um(v) -> quantity:
+  return quantity(v=real(v) * 0.000001, d=[1,0,0,0])
+
+@suffix("\u03BCm")
+func _suf_um2(v) -> quantity:
+  return quantity(v=real(v) * 0.000001, d=[1,0,0,0])
+
+@suffix("mm")
+func _suf_mm(v) -> quantity:
+  return quantity(v=real(v) * 0.001, d=[1,0,0,0])
+
+@suffix("cm")
+func _suf_cm(v) -> quantity:
+  return quantity(v=real(v) * 0.01, d=[1,0,0,0])
+
+@suffix("m")
+func _suf_m(v) -> quantity:
+  return quantity(v=real(v), d=[1,0,0,0])
+
+@suffix("in")
+func _suf_in(v) -> quantity:
+  return quantity(v=real(v) * 0.0254, d=[1,0,0,0])
+
+@suffix("ft")
+func _suf_ft(v) -> quantity:
+  return quantity(v=real(v) * 0.3048, d=[1,0,0,0])
+
+@suffix("mil")
+func _suf_mil(v) -> quantity:
+  return quantity(v=real(v) * 0.0000254, d=[1,0,0,0])
+
+// Mass
+@suffix("mg")
+func _suf_mg(v) -> quantity:
+  return quantity(v=real(v) * 0.000001, d=[0,0,1,0])
+
+@suffix("g")
+func _suf_g(v) -> quantity:
+  return quantity(v=real(v) * 0.001, d=[0,0,1,0])
+
+@suffix("kg")
+func _suf_kg(v) -> quantity:
+  return quantity(v=real(v), d=[0,0,1,0])
+
+@suffix("lb")
+func _suf_lb(v) -> quantity:
+  return quantity(v=real(v) * 0.45359237, d=[0,0,1,0])
+
+@suffix("oz")
+func _suf_oz(v) -> quantity:
+  return quantity(v=real(v) * 0.0283495231, d=[0,0,1,0])
+
+// Time
+@suffix("us")
+func _suf_us(v) -> quantity:
+  return quantity(v=real(v) * 0.000001, d=[0,1,0,0])
+
+@suffix("\u03BCs")
+func _suf_us2(v) -> quantity:
+  return quantity(v=real(v) * 0.000001, d=[0,1,0,0])
+
+@suffix("ms")
+func _suf_ms(v) -> quantity:
+  return quantity(v=real(v) * 0.001, d=[0,1,0,0])
+
+@suffix("s")
+func _suf_s(v) -> quantity:
+  return quantity(v=real(v), d=[0,1,0,0])
+
+@suffix("min")
+func _suf_min(v) -> quantity:
+  return quantity(v=real(v) * 60.0, d=[0,1,0,0])
+
+@suffix("hr")
+func _suf_hr(v) -> quantity:
+  return quantity(v=real(v) * 3600.0, d=[0,1,0,0])
+
+// Angle
+@suffix("rad")
+func _suf_rad(v) -> quantity:
+  return quantity(v=real(v), d=[0,0,0,1])
+
+@suffix("deg")
+func _suf_deg(v) -> quantity:
+  return quantity(v=real(v) * 3.14159265358979323846 / 180.0, d=[0,0,0,1])
+
+@suffix("\u00B0")
+func _suf_degree_symbol(v) -> quantity:
+  return quantity(v=real(v) * 3.14159265358979323846 / 180.0, d=[0,0,0,1])
+
+// Velocity
+@suffix("mm/s")
+func _suf_mmps(v) -> quantity:
+  return quantity(v=real(v) * 0.001, d=[1,-1,0,0])
+
+@suffix("cm/s")
+func _suf_cmps(v) -> quantity:
+  return quantity(v=real(v) * 0.01, d=[1,-1,0,0])
+
+@suffix("m/s")
+func _suf_mps(v) -> quantity:
+  return quantity(v=real(v), d=[1,-1,0,0])
+
+// Acceleration
+@suffix("m/s^2")
+func _suf_mps2(v) -> quantity:
+  return quantity(v=real(v), d=[1,-2,0,0])
+
+@suffix("m/s\u00B2")
+func _suf_mps2u(v) -> quantity:
+  return quantity(v=real(v), d=[1,-2,0,0])
+
+// Jerk (linear)
+@suffix("m/s^3")
+func _suf_mps3(v) -> quantity:
+  return quantity(v=real(v), d=[1,-3,0,0])
+
+@suffix("m/s\u00B3")
+func _suf_mps3u(v) -> quantity:
+  return quantity(v=real(v), d=[1,-3,0,0])
+
+@suffix("mm/s^3")
+func _suf_mmps3(v) -> quantity:
+  return quantity(v=real(v) * 0.001, d=[1,-3,0,0])
+
+@suffix("mm/s\u00B3")
+func _suf_mmps3u(v) -> quantity:
+  return quantity(v=real(v) * 0.001, d=[1,-3,0,0])
+
+// Force
+@suffix("N")
+func _suf_N(v) -> quantity:
+  return quantity(v=real(v), d=[1,-2,1,0])
+
+// Torque
+@suffix("Nm")
+func _suf_Nm(v) -> quantity:
+  return quantity(v=real(v), d=[2,-2,1,0])
+
+@suffix("N\u00B7m")
+func _suf_Ndotm(v) -> quantity:
+  return quantity(v=real(v), d=[2,-2,1,0])
+
+// Angular velocity
+@suffix("rad/s")
+func _suf_radps(v) -> quantity:
+  return quantity(v=real(v), d=[0,-1,0,1])
+
+@suffix("deg/s")
+func _suf_degps(v) -> quantity:
+  return quantity(v=real(v) * 3.14159265358979323846 / 180.0, d=[0,-1,0,1])
+
+// Angular acceleration
+@suffix("rad/s^2")
+func _suf_radps2(v) -> quantity:
+  return quantity(v=real(v), d=[0,-2,0,1])
+
+@suffix("rad/s²")
+func _suf_radps2u(v) -> quantity:
+  return quantity(v=real(v), d=[0,-2,0,1])
+
+@suffix("deg/s^2")
+func _suf_degps2(v) -> quantity:
+  return quantity(v=real(v) * 3.14159265358979323846 / 180.0, d=[0,-2,0,1])
+
+@suffix("deg/s²")
+func _suf_degps2u(v) -> quantity:
+  return quantity(v=real(v) * 3.14159265358979323846 / 180.0, d=[0,-2,0,1])
+
+// Angular jerk
+@suffix("rad/s^3")
+func _suf_radps3(v) -> quantity:
+  return quantity(v=real(v), d=[0,-3,0,1])
+
+@suffix("rad/s³")
+func _suf_radps3u(v) -> quantity:
+  return quantity(v=real(v), d=[0,-3,0,1])
+
+@suffix("deg/s^3")
+func _suf_degps3(v) -> quantity:
+  return quantity(v=real(v) * 3.14159265358979323846 / 180.0, d=[0,-3,0,1])
+
+@suffix("deg/s³")
+func _suf_degps3u(v) -> quantity:
+  return quantity(v=real(v) * 3.14159265358979323846 / 180.0, d=[0,-3,0,1])
+
+// Percent (dimensionless ratio, stored as 0..1)
+@suffix("%")
+func _suf_pct(v) -> quantity:
+  return quantity(v=real(v) / 100.0, d=[0,0,0,0])

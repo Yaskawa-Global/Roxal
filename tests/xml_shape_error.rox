@@ -1,0 +1,1 @@
+to_xml({'tag': 'robot', 'attrs': {}, 'children': [123]}, false, 'raw')

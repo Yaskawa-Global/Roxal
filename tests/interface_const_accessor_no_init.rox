@@ -1,0 +1,3 @@
+type I interface:
+    const a :int:
+        get

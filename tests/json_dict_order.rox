@@ -1,0 +1,13 @@
+// Dict insertion order must survive to_json (writer side) and the full
+// from_json -> to_json round-trip (parser preserves parse order via
+// json11 keys_in_order).
+
+var d = {'c': 1, 'a': 2, 'b': 3}
+print(to_json(d, false))
+
+var d2 = from_json('{"z": 9, "y": 8, "x": 7}')
+print(to_json(d2, false))
+
+// Round-trip via JSON5 output
+var d3 = from_json(to_json(d, false, true))
+print(to_json(d3, false))

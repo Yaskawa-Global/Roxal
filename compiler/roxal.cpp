@@ -34,6 +34,15 @@
 #include "Object.h"
 #include "Introspection.h"
 #include "RuntimeConfig.h"
+#ifdef ROXAL_COMPUTE_SERVER
+#include "ComputeServer.h"
+#include "ComputeProtocol.h"
+#endif
+
+#include <Eigen/Version>
+#ifdef ROXAL_ENABLE_DDS
+#include <dds/version.h>
+#endif
 
 
 extern "C" {
@@ -384,14 +393,69 @@ static int repl()
         std::string line(cline);
         linenoiseFree(cline);
 
-        if (line=="quit") {
+        if (line=="/quit") {
             quit = true;
             break;
-        } else if (line.rfind("run ", 0) == 0) {
-            std::string path = trimws(line.substr(4));
+        } else if (line=="?") {
+            std::cout
+                << "  /help   — list REPL commands\n"
+                << "  help()  — help on a Roxal symbol (e.g. help(print))\n";
+            buffer.clear();
+            indents.assign(1,0);
+            waitingIndent = false;
+            continue;
+        } else if (line=="/help") {
+            std::cout
+                << "REPL commands (chat-style /-prefix, like Slack/Discord/Notion):\n"
+                << "  /help            show this list\n"
+                << "  /run <file>      compile and execute a Roxal script file\n"
+                << "                   (`.rox` extension assumed if missing)\n"
+                << "  /reload          drop the user-module cache so the next\n"
+                << "                   `/run` (or `import`) recompiles dependency\n"
+                << "                   `.rox` files from source — picks up edits\n"
+                << "  /quit            exit the REPL (or press Ctrl-D)\n";
+            buffer.clear();
+            indents.assign(1,0);
+            waitingIndent = false;
+            continue;
+        } else if (line=="/reload") {
+            // Drop the cross-compiler user-module cache so the next import (or
+            // the next `/run`) recompiles dependency modules from source.
+            // Bindings already in the REPL module's vars are *not* cleared,
+            // but ImportModuleVars uses overwrite=true when the target is the
+            // REPL module, so re-issuing the imports rebinds to the freshly-
+            // loaded module's values. Old user-created instances still hold
+            // references to the previous types — known limitation (see
+            // implementation-notes.md "Future: in-place reload").
+            vm.clearUserModuleRegistry();
+            std::cout << "user-module cache cleared" << std::endl;
+            buffer.clear();
+            indents.assign(1,0);
+            waitingIndent = false;
+            continue;
+        } else if ((line == "quit" || line == "exit")
+                   && !(vm.replModuleType()
+                        && vm.replModuleType()->vars.exists(
+                               icu::UnicodeString::fromUTF8(line)))) {
+            // Soft hint for Python/JS-habit users who type the bareword.
+            // Only fires when `quit` / `exit` aren't bound in the REPL module
+            // (or globals) — so `var quit = 5; quit` still works as plain
+            // Roxal code.
+            std::cout << "Use /quit or Ctrl-D to exit the REPL.\n";
+            buffer.clear();
+            indents.assign(1,0);
+            waitingIndent = false;
+            continue;
+        } else if (line == "/run" || line.rfind("/run ", 0) == 0) {
+            std::string path = line.size() > 4 ? trimws(line.substr(5)) : std::string{};
             if (path.empty()) {
                 std::cerr << "Error: no file specified" << std::endl;
             } else {
+                // Convenience: append `.rox` when the argument has no
+                // extension or a different one. `/run foo` is treated as
+                // `/run foo.rox`.
+                if (std::filesystem::path(path).extension() != ".rox")
+                    path += ".rox";
                 std::ifstream script(path);
                 if (!script.is_open()) {
                     std::cerr << "Error: file not found: " << path << std::endl;
@@ -407,7 +471,7 @@ static int repl()
                     std::stringstream scriptStream;
                     scriptStream << script.rdbuf();
                     try {
-                        vm.interpretLine(scriptStream, false, displayPath);
+                        vm.runLine(scriptStream, false, displayPath);
                     } catch (std::exception& e) {
                         std::cerr << "Error: " << e.what() << std::endl;
                     }
@@ -420,6 +484,19 @@ static int repl()
                 exitCode = vm.exitCode();
                 break;
             }
+            continue;
+        } else if (!line.empty() && line[0] == '/') {
+            // Any `/`-prefixed line at col 0 that didn't match a known REPL
+            // command above — surface a friendly error instead of letting the
+            // parser barf on the leading slash.
+            std::string cmd = line;
+            auto sp = cmd.find(' ');
+            if (sp != std::string::npos) cmd = cmd.substr(0, sp);
+            std::cerr << "Unknown REPL command: '" << cmd
+                      << "'. Type /help for available commands." << std::endl;
+            buffer.clear();
+            indents.assign(1,0);
+            waitingIndent = false;
             continue;
         }
 
@@ -447,7 +524,7 @@ static int repl()
                 stream.str("");
                 stream.clear();
                 stream << buffer << std::flush;
-                vm.interpretLine(stream);
+                vm.runLine(stream);
             } catch (std::exception& e) {
                 std::cerr << "Error: " << e.what() << std::endl;
             }
@@ -465,7 +542,7 @@ static int repl()
 }
 
 
-static InterpretResult runFile(const std::string& path,
+static ExecutionStatus runFile(const std::string& path,
                                const std::vector<std::string>& modulePaths,
                                bool outputBytecodeDisassembly=false)
 {
@@ -509,13 +586,62 @@ static InterpretResult runFile(const std::string& path,
         // Add the folder containing the script to the search paths
         vm->appendModulePaths({relativePath.string()});
         vm->appendModulePaths(modulePaths);
-        return vm->interpret(sourcestream, filePath.string());
+        return vm->run(sourcestream, filePath.string());
     } catch (std::exception& e) {
-        throw std::runtime_error("Error interpreting file '" + filePath.string() + "': " + e.what());
+        throw std::runtime_error("Error running file '" + filePath.string() + "': " + e.what());
     }
 }
 
-static InterpretResult runString(const std::string& source,
+// Compile a script and all its transitive imports without executing.
+// This ensures all .roc cache files exist for RT deployment.
+static ExecutionStatus precompileFile(const std::string& path,
+                                      const std::vector<std::string>& modulePaths,
+                                      bool outputBytecodeDisassembly=false)
+{
+    std::filesystem::path filePath(path);
+    std::ifstream sourcestream(filePath); // assumed UTF-8
+    if (!sourcestream.is_open()) {
+        for(const auto& modPath : modulePaths) {
+            std::filesystem::path candidate = std::filesystem::path(modPath) / filePath;
+            sourcestream.open(candidate);
+            if (sourcestream.is_open()) {
+                filePath = candidate;
+                break;
+            }
+        }
+    }
+
+    if (!sourcestream.is_open())
+        throw std::runtime_error("file not found: " + path);
+
+    std::filesystem::path fileAndPath(filePath);
+
+    // construct a relative directory path containing the file, from the current working directory
+    std::filesystem::path absolutePath = std::filesystem::absolute(filePath);
+    std::filesystem::path currentPath = std::filesystem::current_path();
+    std::filesystem::path parentPath = absolutePath.parent_path();
+    std::filesystem::path relativePath = std::filesystem::relative(parentPath, currentPath);
+
+    VM* vm { nullptr };
+    try {
+        vm = &VM::instance();
+    } catch (std::exception& e) {
+        throw std::runtime_error("Failed to initialize VM: " + std::string(e.what()));
+    }
+
+    try {
+        vm->setDisassemblyOutput(outputBytecodeDisassembly);
+        // Add the folder containing the script to the search paths
+        vm->appendModulePaths({relativePath.string()});
+        vm->appendModulePaths(modulePaths);
+        // Use setup() to compile without executing
+        return vm->setup(sourcestream, filePath.string());
+    } catch (std::exception& e) {
+        throw std::runtime_error("Error precompiling file '" + filePath.string() + "': " + e.what());
+    }
+}
+
+static ExecutionStatus runString(const std::string& source,
                                  const std::vector<std::string>& modulePaths,
                                  bool outputBytecodeDisassembly=false)
 {
@@ -524,7 +650,7 @@ static InterpretResult runString(const std::string& source,
     std::signal(SIGINT, sigint_handler);
     vm.setDisassemblyOutput(outputBytecodeDisassembly);
     vm.appendModulePaths(modulePaths);
-    return vm.interpret(sourcestream, "cli");
+    return vm.run(sourcestream, "cli");
 }
 
 
@@ -616,7 +742,11 @@ int main(int argc, const char* argv[])
             if (arg == "-f" || arg == "-p" ||
                 arg == "--input-file" || arg == "--module-paths" ||
                 arg == "--astgraph" || arg == "--gc-threshold" ||
-                arg == "--stack-size" || arg == "--max-call-frames") {
+                arg == "--stack-size" || arg == "--max-call-frames"
+#ifdef ROXAL_COMPUTE_SERVER
+                || arg == "--port"
+#endif
+                ) {
                 ++i; // skip next arg (the option's value)
             }
         } else {
@@ -646,12 +776,17 @@ int main(int argc, const char* argv[])
         ("nocache", "disable reading and writing .roc cache files")
         ("recompile", "ignore existing .roc cache files but write new ones")
         ("dis", "output dissasembly of VM bytecodes during compilation")
+        ("precompile", "compile script and all imports without executing (ensures .roc cache files exist)")
         ("ast", "parse only and output text Abstract Syntax Tree (AST)")
         ("astgraph", po::value< std::vector<std::string> >(), "parse only and output GraphViz dot file")
         ("gc-threshold", po::value<long long>(), gcOptionHelp.c_str())
         ("nogc", "disable garbage collection")
         ("stack-size", po::value<size_t>()->default_value(VM::DefaultMaxStack), stackOptionHelp.c_str())
         ("max-call-frames", po::value<size_t>()->default_value(VM::DefaultMaxCallFrames), frameOptionHelp.c_str())
+        #ifdef ROXAL_COMPUTE_SERVER
+        ("server", "run as a Roxal compute server")
+        ("port", po::value<int>()->default_value(ComputeDefaultPort), "server listen port (0 for ephemeral)")
+        #endif
         #ifdef DEBUG_BUILD
         ("opcode-prof", "collect opcode execution frequencies in opcode_profile.json")
         #endif
@@ -691,36 +826,32 @@ int main(int argc, const char* argv[])
 
     if (vmap.count("version")) {
         std::cout << VM::versionString() << " " << buildDate();
-        std::vector<std::string> features;
-        #ifdef ROXAL_ENABLE_FILEIO
-            features.push_back("fileio");
-        #endif
-        #ifdef ROXAL_ENABLE_GRPC
-            features.push_back("grpc");
-        #endif
-        #ifdef ROXAL_ENABLE_DDS
-            features.push_back("dds");
-        #endif
-        #ifdef ENABLE_UI
-            features.push_back("ui");
-        #endif
-        #ifdef ROXAL_ENABLE_REGEX
-            features.push_back("regex");
-        #endif
-        #ifdef ROXAL_ENABLE_SOCKET
-            features.push_back("socket");
-        #endif
-        if (!features.empty()) {
-            std::cout << " [";
-            for (size_t i = 0; i < features.size(); ++i) {
-                if (i > 0) std::cout << ",";
-                std::cout << features[i];
-            }
-            std::cout << "]";
-        }
+        const std::string featureString = VM::featureString();
+        if (!featureString.empty())
+            std::cout << " " << featureString;
         std::cout << std::endl;
         return 0;
     }
+
+    // Verify Eigen version to catch accidental use of system Eigen instead of deps/eigen
+    if (EIGEN_MAJOR_VERSION != 5 || EIGEN_MINOR_VERSION != 0 || EIGEN_PATCH_VERSION != 1) {
+        std::cerr << "Fatal: expected Eigen 5.0.1 (from deps/eigen) but found "
+                  << EIGEN_MAJOR_VERSION << "." << EIGEN_MINOR_VERSION << "." << EIGEN_PATCH_VERSION
+                  << ". Check CMAKE_PREFIX_PATH and ROXAL_EIGEN_ROOT." << std::endl;
+        return 1;
+    }
+
+#ifdef ROXAL_ENABLE_DDS
+    // Verify CycloneDDS version to catch accidental use of a different install
+    // than the one currently validated for Roxal.
+    if (DDS_VERSION_MAJOR != 11 || DDS_VERSION_MINOR != 0 || DDS_VERSION_PATCH != 0) {
+        std::cerr << "Fatal: expected CycloneDDS 11.0.0 but found "
+                  << DDS_VERSION_MAJOR << "." << DDS_VERSION_MINOR << "." << DDS_VERSION_PATCH
+                  << ". Check CMAKE_PREFIX_PATH, ROXAL_DDS_ROOT, and CycloneDDS_DIR."
+                  << std::endl;
+        return 1;
+    }
+#endif
 
     const size_t stackSizeLimit = vmap["stack-size"].as<size_t>();
     if (stackSizeLimit == 0) {
@@ -843,16 +974,41 @@ int main(int argc, const char* argv[])
         #endif
     }
 
+#ifdef ROXAL_COMPUTE_SERVER
+    if (vmap.count("server")) {
+        if (vmap.count("execute") || vmap.count("input-file") || vmap.count("ast") ||
+            vmap.count("astgraph") || vmap.count("precompile")) {
+            std::cerr << "Error: --server cannot be combined with script execution or parse modes" << std::endl;
+            return 1;
+        }
+
+        int port = vmap["port"].as<int>();
+        if (port < 0 || port > 65535) {
+            std::cerr << "Error: --port must be in the range 0..65535" << std::endl;
+            return 1;
+        }
+
+        try {
+            ComputeServer server;
+            server.listen(static_cast<std::uint16_t>(port));
+        } catch (const std::exception& e) {
+            std::cerr << "Compute server error: " << e.what() << std::endl;
+            return 1;
+        }
+        return 0;
+    }
+#endif
+
     if (vmap.count("execute")) {
         VM::instance().setCacheMode(cacheMode);
         VM::instance().setScriptArguments(scriptArgs);
         bool outputBytecodeDisassembly = (vmap.count("dis") > 0);
-        InterpretResult res =
+        ExecutionStatus res =
             runString(vmap["execute"].as<std::string>(), modulePaths,
                       outputBytecodeDisassembly);
         if (VM::instance().isExitRequested())
             return VM::instance().exitCode();
-        if (res != InterpretResult::OK)
+        if (res != ExecutionStatus::OK)
             return 1;
     }
     else if (vmap.count("input-file") == 0) {
@@ -873,15 +1029,24 @@ int main(int argc, const char* argv[])
                 generateAST(filename, false);
             else if (vmap.count("astgraph"))
                 generateAST(filename, true, vmap["astgraph"].as<std::vector<std::string>>().at(0));
+            else if (vmap.count("precompile")) {
+                bool outputBytecodeDisassembly = (vmap.count("dis") > 0);
+                VM::instance().setCacheMode(cacheMode);
+                ExecutionStatus res =
+                    precompileFile(filename, modulePaths, outputBytecodeDisassembly);
+                if (res != ExecutionStatus::OK)
+                    return 1;
+                std::cout << "Precompilation successful: " << filename << std::endl;
+            }
             else {
                 bool outputBytecodeDisassembly = (vmap.count("dis") > 0);
                 VM::instance().setCacheMode(cacheMode);
                 VM::instance().setScriptArguments(scriptArgs);
-                InterpretResult res =
+                ExecutionStatus res =
                     runFile(filename, modulePaths, outputBytecodeDisassembly);
                 if (VM::instance().isExitRequested())
                     return VM::instance().exitCode();
-                if (res != InterpretResult::OK)
+                if (res != ExecutionStatus::OK)
                     return 1;
             }
         } catch (std::exception& e) {

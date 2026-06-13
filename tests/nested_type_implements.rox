@@ -1,0 +1,13 @@
+type ISome interface:
+    func ping()
+
+type Outer object:
+    type Inner object implements ISome:
+        func ping():
+            print("inner.ping")
+
+var i = Outer.Inner()
+i.ping()
+print(i is ISome)
+print(Outer.Inner is ISome)
+print("done")

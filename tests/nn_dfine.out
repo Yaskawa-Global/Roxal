@@ -1,0 +1,22 @@
+FP32 inputs=1 outputs=2
+  in: pixel_values dtype=float32
+  out0: logits dtype=float32
+  out1: pred_boxes dtype=float32
+  result count=2
+  logits type=<type tensor>
+  boxes type=<type tensor>
+INT8 inputs=1 outputs=2
+  in: pixel_values dtype=float32
+  out0: logits dtype=float32
+  out1: pred_boxes dtype=float32
+  result count=2
+  logits type=<type tensor>
+  boxes type=<type tensor>
+FP16 inputs=1 outputs=2
+  in: pixel_values dtype=float32
+  out0: logits dtype=float32
+  out1: pred_boxes dtype=float32
+  result count=2
+  logits type=<type tensor>
+  boxes type=<type tensor>
+done

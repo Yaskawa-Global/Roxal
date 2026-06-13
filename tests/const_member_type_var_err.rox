@@ -1,0 +1,5 @@
+# var (non-const) members cannot be accessed via the type
+type Foo object:
+    var x: int = 5
+
+print(Foo.x)

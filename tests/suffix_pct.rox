@@ -1,0 +1,30 @@
+// Percent literal suffix tests
+
+// Integer percent
+print(0%)
+print(50%)
+print(100%)
+
+// Float percent
+print(0.5%)
+print(99.9%)
+
+// Scientific notation percent
+print(1e2%)
+
+// '%' produces a dimensionless quantity
+var p = 50%
+print(p.is_dimensionless)
+print(p.is_length)
+print(p.is_angle)
+
+// Conversion to real (dimensionless quantities convert cleanly)
+print(real(50%))
+print(real(100%))
+
+// 'rem' is the remainder operator (was '%' before; sign of dividend)
+print(10 rem 3)
+print(7 rem 2)
+
+// Works on real operands too
+print(10.5 rem 4.0)

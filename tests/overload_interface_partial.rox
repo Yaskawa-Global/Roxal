@@ -1,0 +1,13 @@
+// Interface declares two abstract overloads of `handle`. Implementer
+// provides only one — conformance check should fail and identify the
+// missing signature.
+
+type Handler interface:
+    func handle(x :int)
+    func handle(x :string)
+
+type Box object implements Handler:
+    func handle(x :int):
+        print("box-int:{x}")
+
+var b = Box()

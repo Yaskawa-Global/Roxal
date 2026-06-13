@@ -1,0 +1,6 @@
+type Concrete object:
+    func foo():
+        print("foo")
+
+type Bad interface extends Concrete:
+    func bar()

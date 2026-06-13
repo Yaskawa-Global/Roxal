@@ -1,0 +1,9 @@
+# private nested type: accessible within methods, rejected from outside
+type Foo object:
+    private type Secret enum: a, b, c
+    func getSecret() -> string:
+        return "{Foo.Secret.a}"
+
+var f = Foo()
+print(f.getSecret())
+print(Foo.Secret.a)

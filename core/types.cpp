@@ -22,10 +22,24 @@ std::string roxal::type::to_string(BuiltinType t)
     return builtinTypeToString[size_t(t)];
 }
 
+std::optional<BuiltinType> roxal::type::builtinTypeFromName(const std::string& name)
+{
+    for (size_t i = 0; i < builtinTypeToString.size(); ++i) {
+        if (builtinTypeToString[i] == name)
+            return static_cast<BuiltinType>(i);
+    }
+    return std::nullopt;
+}
+
 bool roxal::type::convertibleTo(BuiltinType from, BuiltinType to, bool strict)
 {
     if (from == to)
         return true;
+
+    // nil flows into reference-identity target types; rejected for value-shaped
+    // types (range, vector, matrix, orient, enum, primitives).
+    if (from == BuiltinType::Nil)
+        return isNilAcceptableTargetBuiltinType(to);
 
     auto idx = [](BuiltinType t) -> int {
         switch(t) {
@@ -74,13 +88,30 @@ bool roxal::type::convertibleTo(BuiltinType from, BuiltinType to, bool strict)
     if (to == BuiltinType::Dict && from == BuiltinType::Object)
         return !strict;
 
+    // Object/Actor → builtin: allow at compile time because user-defined
+    // conversion operators (operator->T) may handle it at runtime.
+    // The VM's tryConvertValue will produce a runtime error if no operator exists.
+    if ((from == BuiltinType::Object || from == BuiltinType::Actor) && ti >= 0)
+        return true;
+
+    return false;
+}
+
+
+bool roxal::type::isAssignableFrom(BuiltinType target, BuiltinType source)
+{
+    if (target == source)
+        return true;
+    // Object and Actor are their own categories — no cross-assignment.
+    // Inheritance checking (subtype walks) requires ObjObjectType at runtime;
+    // see VM::isTypeAssignable() for the full check.
     return false;
 }
 
 
 std::string Type::toString() const
 {
-    auto tspec = to_string(builtin);
+    auto tspec = (isConst ? "const " : "") + to_string(builtin);
 
     if (builtin == BuiltinType::Func) {
         if (func.has_value()) {

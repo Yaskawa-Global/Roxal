@@ -1,0 +1,13 @@
+Test: identity passed ok
+Test: rpy_getters passed 6 cases ok
+Test: rpy_list_getter passed ok
+Test: quat_getter passed 4 cases ok
+Test: mat_getter passed 4 cases ok
+Test: axis_angle_getter passed ok
+Test: inverse_getter passed ok
+Test: rotate_method passed ok
+Test: slerp_method passed ok
+Test: angle_to_method passed ok
+Test: euler_method passed ok
+Test: systematic passed 216 combos ok
+Passed 12 failed 0

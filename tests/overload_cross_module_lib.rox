@@ -1,0 +1,6 @@
+// Helper module imported by overload_cross_module.rox.
+func g(x :int):
+    print("lib-int:{x}")
+
+func g(x :string):
+    print("lib-str:{x}")

@@ -1,0 +1,8 @@
+# const to mutable type is instance-specific, not accessible via type
+type Foo object:
+    const items: mutable list = [1, 2, 3]
+
+var f = Foo()
+f.items.append(4)
+print(f.items)
+print(Foo.items)

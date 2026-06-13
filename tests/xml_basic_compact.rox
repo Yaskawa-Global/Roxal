@@ -1,0 +1,8 @@
+var doc = from_xml('<robot name="arm"><link name="base"/><link name="tool"><origin xyz="1 2 3"/></link></robot>')
+print(doc.tag)
+print(doc.attrs.name)
+print(len(doc.link))
+print(doc.link[0].tag)
+print(doc.link[0].attrs.name)
+print(doc.link[1].origin.tag)
+print(doc.link[1].origin.attrs.xyz)

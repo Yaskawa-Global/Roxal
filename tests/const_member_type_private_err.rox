@@ -1,0 +1,6 @@
+# private const members are not accessible via the type
+type Foo object:
+    private const secret = "hidden"
+    var x: int
+
+print(Foo.secret)

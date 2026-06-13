@@ -1,0 +1,16 @@
+// Test that passing a value with aliased interior objects to a mutable actor
+// param errors. The root is sole-owner (via move), but an interior object
+// has an external alias, so the graph is not isolated.
+
+type O object:
+    var i: int
+
+type Worker actor:
+    func process(data: mutable list) -> int:
+        return len(data)
+
+var inner = O(10)
+var items = [inner]
+var w = Worker()
+var result = w.process(move(items))
+print(result)

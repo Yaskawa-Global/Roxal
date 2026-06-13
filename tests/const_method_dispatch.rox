@@ -1,0 +1,19 @@
+// Test const method dispatch for user-defined methods
+// Read-only methods on const receivers should work;
+// mutating methods should error.
+
+type Counter object:
+    var count: int
+    func get() -> int:
+        return count
+    proc increment():
+        count = count + 1
+
+var c = Counter(10)
+const cc = c
+
+// Read-only method on const receiver: ok
+print(cc.get())
+
+// Mutating method on const receiver: error
+cc.increment()

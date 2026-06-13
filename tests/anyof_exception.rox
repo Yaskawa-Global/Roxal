@@ -1,0 +1,18 @@
+type W actor:
+  func boom() -> int:
+    wait(ms=5)
+    raise RuntimeException('boom')
+  func slow() -> int:
+    wait(ms=200)
+    return 99
+
+# An actor method that raises propagates through the future. When wired into
+# allof, the exception fires at the slot level, allof short-circuits, and
+# wait(for=...) re-raises on the awaiting thread where try/except catches it.
+w = W()
+try:
+  results = wait(for=allof(w.boom(), w.slow()))
+  print('no exc: '+results)
+except e :RuntimeException:
+  print('caught: '+e)
+print('done')

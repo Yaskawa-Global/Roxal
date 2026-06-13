@@ -1,0 +1,31 @@
+// list + produces a NEW top-level list, but shares element references from
+// BOTH operands (Python-style shallow copy). The LHS is never deep-cloned.
+
+a = [[1,2],[3,4]]
+b = [[5,6]]
+c = a + b
+
+print(c is a)        // false  (new top-level list)
+print(c[0] is a[0])  // true   (LHS element shared)
+print(c[2] is b[0])  // true   (RHS element shared)
+
+// Mutating a nested element via either original is visible through c,
+// because the sublists are shared by reference.
+a[0][0] = 99
+b[0][0] = 88
+print(c)             // [[99, 2], [3, 4], [88, 6]]
+print(a)             // [[99, 2], [3, 4]]
+print(b)             // [[88, 6]]
+
+// list + [x] (single-element concat) shares the LHS element refs too.
+d = [[1,2]]
+e = d + [5]
+print(e[0] is d[0])  // true
+d[0][0] = 7
+print(e)             // [[7, 2], 5]
+
+// Top-level originals are unchanged (operation returns a new list).
+x = [1,2,3]
+y = x + [4]
+print(x)             // [1, 2, 3]
+print(y)             // [1, 2, 3, 4]

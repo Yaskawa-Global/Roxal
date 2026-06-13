@@ -1,0 +1,23 @@
+type I1 interface:
+    func ping()
+
+type I2 interface:
+    func pong()
+
+type Parent object implements I1:
+    func ping():
+        print("parent ping")
+
+type Child object extends Parent implements I2:
+    func pong():
+        print("child pong")
+
+var c = Child()
+c.ping()
+c.pong()
+print(c is I1)
+print(c is I2)
+print(c is Parent)
+print(Child is I1)
+print(Child is I2)
+print(Child is Parent)

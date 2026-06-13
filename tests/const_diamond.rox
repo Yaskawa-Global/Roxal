@@ -1,0 +1,22 @@
+// Test const snapshot of diamond-shaped object graph
+// Two paths lead to the same shared object
+
+type N object:
+    var name: string
+    var left
+    var right
+
+var shared = N("shared", nil, nil)
+var root = N("root", shared, shared)
+
+const cr = root
+
+// Both paths reach the same frozen clone (identity preserved)
+print(cr.left.name)   // shared
+print(cr.right.name)  // shared
+print(cr.left is cr.right)  // true
+
+// Mutate original — snapshot unaffected
+shared.name = "changed"
+print(cr.left.name)   // shared (still original)
+print(cr.right.name)  // shared (still original)

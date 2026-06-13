@@ -1,0 +1,43 @@
+import math
+
+# Range properties
+var r = range(1..10)
+print("start=" + r.start + " stop=" + r.stop + " step=" + r.step + " closed=" + r.closed)
+print("first=" + r.first + " last=" + r.last)
+
+var r2 = range(1..<10)
+print("start=" + r2.start + " stop=" + r2.stop + " closed=" + r2.closed)
+print("first=" + r2.first + " last=" + r2.last)
+
+var r3 = range(10..0 by -2)
+print("start=" + r3.start + " stop=" + r3.stop + " step=" + r3.step)
+print("first=" + r3.first + " last=" + r3.last)
+
+# clamp int
+print(math.clamp(5, range(0..10)))
+print(math.clamp(-3, range(0..10)))
+print(math.clamp(15, range(0..10)))
+print(math.clamp(0, range(0..10)))
+print(math.clamp(10, range(0..10)))
+
+# clamp real
+print(math.clamp(5.5, range(0..10)))
+print(math.clamp(-1.5, range(0..10)))
+print(math.clamp(12.3, range(0..10)))
+
+# clamp with half-open range
+print(math.clamp(15, range(0..<10)))
+
+# clamp with negative range
+print(math.clamp(0, range(-5..5)))
+print(math.clamp(-10, range(-5..5)))
+print(math.clamp(10, range(-5..5)))
+
+# clamp string->real cast
+print(math.clamp("3.5", range(0..10)))
+
+# clamp with indeterminate ranges (one-sided)
+print(math.clamp(100, range(..10)))
+print(math.clamp(-100, range(0..)))
+print(math.clamp(5, range(..10)))
+print(math.clamp(5, range(0..)))

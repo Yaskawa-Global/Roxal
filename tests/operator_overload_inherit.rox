@@ -1,0 +1,20 @@
+// Test operator method inheritance from parent type
+
+type Base object:
+  var v :int = 0
+
+  proc init(v :int):
+    this.v = v
+
+  func operator+(other :Base) -> Base:
+    return Base(v + other.v)
+
+type Derived object extends Base:
+
+  proc init(v :int):
+    super.init(v)
+
+var a = Derived(10)
+var b = Derived(20)
+var c = a + b
+print(c.v)

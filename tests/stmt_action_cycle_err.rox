@@ -1,0 +1,11 @@
+// Same-instance cycle detection: a statement-action method that returns
+// `this` is an infinite loop bug; the VM should raise a clear runtime error
+// instead of spinning to the iteration cap.
+
+type SelfReturn object:
+  statement action func loop():
+    print("loop")
+    return this
+
+SelfReturn()
+print("not reached")

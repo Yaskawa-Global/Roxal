@@ -1,6 +1,8 @@
 
 #include <typeinfo>
 #include <vector>
+#include <charconv>
+#include <system_error>
 
 #include "ASTGenerator.h"
 
@@ -44,6 +46,18 @@ protected:
 };
 
 std::stack<std::pair<std::string,std::string>> ParseTracer::parseStack {};
+
+
+void ASTGenerator::reportError(antlr4::Token* token, const std::string& message)
+{
+    hadError = true;
+    if (token) {
+        compileError(std::to_string(token->getLine()) + ":" +
+                     std::to_string(token->getCharPositionInLine()) + " - " + message);
+    } else {
+        compileError(message);
+    }
+}
 
 
 
@@ -104,6 +118,46 @@ UnicodeString ASTGenerator::identifierFromContext(antlr4::ParserRuleContext* con
     if (!context)
         return {};
     return normalizeIdentifier(context->getText());
+}
+
+UnicodeString ASTGenerator::operatorNameFromContext(RoxalParser::Operator_nameContext* context)
+{
+    // Conversion operator: "operator->string", "operator->int", "operator->MyType", etc.
+    if (context->conversion_target()) {
+        auto ct = context->conversion_target();
+        UnicodeString target;
+        if (ct->builtin_type())
+            target = toUnicodeString(ct->builtin_type()->getText());
+        else if (ct->type_name()) {
+            TypeName components;
+            for (auto* ident : ct->type_name()->IDENTIFIER())
+                components.push_back(identifierFromTerminal(ident));
+            target = joinTypeName(components);
+        }
+        return UnicodeString("operator->") + target;
+    }
+
+    // Build canonical operator method name: "operator+", "loperator*", "roperator/", etc.
+    UnicodeString prefix;
+    if (context->OPERATOR()) prefix = "operator";
+    else if (context->LOPERATOR()) prefix = "loperator";
+    else if (context->ROPERATOR()) prefix = "roperator";
+
+    auto sym = context->operator_symbol();
+    UnicodeString symbol;
+    if (sym->PLUS()) symbol = "+";
+    else if (sym->MINUS()) symbol = "-";
+    else if (sym->STAR() || sym->MULT()) symbol = "*";
+    else if (sym->DIV()) symbol = "/";
+    else if (sym->REM()) symbol = "rem";
+    else if (sym->ISEQUAL()) symbol = "==";
+    else if (sym->ISNOTEQUALS()) symbol = "!=";
+    else if (sym->LESS_THAN()) symbol = "<";
+    else if (sym->GREATER_THAN()) symbol = ">";
+    else if (sym->LT_EQ()) symbol = "<=";
+    else if (sym->GT_EQ()) symbol = ">=";
+
+    return prefix + symbol;
 }
 
 
@@ -446,6 +500,8 @@ ptr<T> as(const std::any& a) {
 
 ptr<AST> ASTGenerator::ast(std::istream& source, const std::string& name)
 {
+    hadError = false;
+
     // store entire source string
     this->source = make_ptr<std::string>(std::string(std::istreambuf_iterator<char>(source), {}));
     source.seekg(0);
@@ -521,6 +577,9 @@ ptr<AST> ASTGenerator::ast(std::istream& source, const std::string& name)
             throw e;
         }
     }
+
+    if (hadError)
+        ast = nullptr;
 
     this->source = nullptr;
     this->sourceName.clear();
@@ -716,16 +775,35 @@ std::any ASTGenerator::visitStatement(RoxalParser::StatementContext *context)
     ptr<Statement> stmt { nullptr };
 
     if (context->expr_stmt()) {
-        auto expr = visitExpr_stmt(context->expr_stmt());
+        auto exprStmtCtx = context->expr_stmt();
+        auto expr = visitExpr_stmt(exprStmtCtx);
         assertType<Expression>(expr);
         auto exprStmt = make_ptr<ExpressionStatement>();
         exprStmt->expr = as<Expression>(expr);
+
+        // Handle optional 'at <host-expr>' clause
+        if (exprStmtCtx->at_clause()) {
+            auto hostExpr = visitExpression(exprStmtCtx->at_clause()->expression());
+            assertType<Expression>(hostExpr);
+            exprStmt->atHost = as<Expression>(hostExpr);
+        }
+
         stmt = std::move(exprStmt);
     }
     else if (context->compound_stmt()) {
         auto compound = visitCompound_stmt(context->compound_stmt());
         if (is<ReturnStatement>(compound)) {
             stmt = as<ReturnStatement>(compound);
+        }
+        else if (is<BreakStatement>(compound)) {
+            stmt = as<BreakStatement>(compound);
+        }
+        else if (is<ContinueStatement>(compound)) {
+            stmt = as<ContinueStatement>(compound);
+        }
+        else if (is<AdheringIfStatement>(compound)) {
+            // break/continue with `if` clause are wrapped in AdheringIfStatement by their visitors.
+            stmt = as<AdheringIfStatement>(compound);
         }
         else if (is<WhileStatement>(compound)) {
             stmt = as<WhileStatement>(compound);
@@ -763,6 +841,7 @@ std::any ASTGenerator::visitStatement(RoxalParser::StatementContext *context)
     else
         throw std::runtime_error("unhandled statement parse alternative");
 
+    // Grammar admits at most one of `if_clause` or `until_clause` per statement.
     if (context->until_clause()) {
         auto ucExpr = as<Expression>(visitExpression(context->until_clause()->expression()));
         ptr<UntilStatement> untilStmt = make_ptr<UntilStatement>();
@@ -770,6 +849,14 @@ std::any ASTGenerator::visitStatement(RoxalParser::StatementContext *context)
         untilStmt->stmt = stmt;
         untilStmt->condition = ucExpr;
         stmt = untilStmt;
+    }
+    else if (context->if_clause()) {
+        auto cond = as<Expression>(visitExpression(context->if_clause()->expression()));
+        ptr<AdheringIfStatement> ifStmt = make_ptr<AdheringIfStatement>();
+        setSourceInfo(ifStmt, context->if_clause());
+        ifStmt->stmt = stmt;
+        ifStmt->condition = cond;
+        stmt = ifStmt;
     }
 
     setSourceInfo(stmt, context);
@@ -811,6 +898,10 @@ std::any ASTGenerator::visitCompound_stmt(RoxalParser::Compound_stmtContext *con
 
     if (context->return_stmt())
         return visitReturn_stmt(context->return_stmt());
+    else if (context->break_stmt())
+        return visitBreak_stmt(context->break_stmt());
+    else if (context->continue_stmt())
+        return visitContinue_stmt(context->continue_stmt());
     else if (context->block_stmt())
         return visitBlock_stmt(context->block_stmt());
     else if (context->if_stmt())
@@ -858,6 +949,50 @@ std::any ASTGenerator::visitReturn_stmt(RoxalParser::Return_stmtContext *context
         returnStmt->expr = as<Expression>(visitExpression(context->expression()));
 
     return typeValue(returnStmt);
+    visitEnd();
+}
+
+
+
+std::any ASTGenerator::visitBreak_stmt(RoxalParser::Break_stmtContext *context)
+{
+    visitStart();
+
+    ptr<BreakStatement> breakStmt = make_ptr<BreakStatement>();
+    setSourceInfo(breakStmt, context);
+
+    if (context->if_clause()) {
+        auto cond = as<Expression>(visitExpression(context->if_clause()->expression()));
+        ptr<AdheringIfStatement> ifStmt = make_ptr<AdheringIfStatement>();
+        setSourceInfo(ifStmt, context->if_clause());
+        ifStmt->stmt = breakStmt;
+        ifStmt->condition = cond;
+        return typeValue(ifStmt);
+    }
+
+    return typeValue(breakStmt);
+    visitEnd();
+}
+
+
+
+std::any ASTGenerator::visitContinue_stmt(RoxalParser::Continue_stmtContext *context)
+{
+    visitStart();
+
+    ptr<ContinueStatement> continueStmt = make_ptr<ContinueStatement>();
+    setSourceInfo(continueStmt, context);
+
+    if (context->if_clause()) {
+        auto cond = as<Expression>(visitExpression(context->if_clause()->expression()));
+        ptr<AdheringIfStatement> ifStmt = make_ptr<AdheringIfStatement>();
+        setSourceInfo(ifStmt, context->if_clause());
+        ifStmt->stmt = continueStmt;
+        ifStmt->condition = cond;
+        return typeValue(ifStmt);
+    }
+
+    return typeValue(continueStmt);
     visitEnd();
 }
 
@@ -929,7 +1064,7 @@ std::any ASTGenerator::visitFor_stmt(RoxalParser::For_stmtContext *context)
         if (std::holds_alternative<BuiltinType>(ident_opt_type.second))
             vardecl->varType = std::get<BuiltinType>(ident_opt_type.second);
         if (std::holds_alternative<icu::UnicodeString>(ident_opt_type.second))
-            vardecl->varType = std::get<icu::UnicodeString>(ident_opt_type.second);
+            vardecl->varType = TypeName{std::get<icu::UnicodeString>(ident_opt_type.second)};
 
         forStmt->targetList.push_back(vardecl);
     }
@@ -1166,6 +1301,26 @@ std::any ASTGenerator::visitUntil_clause(RoxalParser::Until_clauseContext *conte
     visitEnd();
 }
 
+std::any ASTGenerator::visitIf_clause(RoxalParser::If_clauseContext *context)
+{
+    visitStart();
+
+    auto expr = visitExpression(context->expression());
+    return expr;
+
+    visitEnd();
+}
+
+std::any ASTGenerator::visitAt_clause(RoxalParser::At_clauseContext *context)
+{
+    visitStart();
+
+    auto expr = visitExpression(context->expression());
+    return expr;
+
+    visitEnd();
+}
+
 
 
 
@@ -1173,7 +1328,7 @@ std::any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
 {
     visitStart();
 
-    UnicodeString ident { identifierFromTerminal(context->IDENTIFIER().at(0)) };
+    UnicodeString ident { identifierFromTerminal(context->IDENTIFIER()) };
 
     ptr<VarDecl> vardecl = make_ptr<VarDecl>();
     setSourceInfo(vardecl,context);
@@ -1195,18 +1350,32 @@ std::any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
     }
 
     if (context->COLON()) { // type specified
+        if (context->const_qualifier()) {
+            if (context->const_qualifier()->CONST())
+                vardecl->isTypeConst = true;
+            else if (context->const_qualifier()->MUTABLE())
+                vardecl->isTypeMutable = true;
+        }
         if (context->builtin_type()) {
             auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
             vardecl->varType = builtinType;
         }
-        else if (context->IDENTIFIER().size()>1) {
-            auto typeIdent { identifierFromTerminal(context->IDENTIFIER().at(1)) };
-            vardecl->varType = typeIdent;
+        else if (context->type_name()) {
+            TypeName components;
+            for (auto* ident : context->type_name()->IDENTIFIER())
+                components.push_back(identifierFromTerminal(ident));
+            vardecl->varType = components;
         }
     }
 
     if (context->EQUALS())
         vardecl->initializer = as<Expression>(visitExpression(context->expression()));
+
+    if (context->at_clause()) {
+        auto hostExpr = visitExpression(context->at_clause()->expression());
+        assertType<Expression>(hostExpr);
+        vardecl->atHost = as<Expression>(hostExpr);
+    }
 
     return typeValue(vardecl);
     visitEnd();
@@ -1217,15 +1386,18 @@ std::any ASTGenerator::visitIdent_opt_type(RoxalParser::Ident_opt_typeContext *c
 {
     visitStart();
 
-    auto ident { identifierFromTerminal(context->IDENTIFIER().at(0)) };
+    auto ident { identifierFromTerminal(context->IDENTIFIER()) };
 
     if (context->COLON()) { // type specified
         if (context->builtin_type())
             return std::make_pair(ident, std::variant<std::monostate,BuiltinType,icu::UnicodeString>(anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()))));
-        else {
-            auto identType { identifierFromTerminal(context->IDENTIFIER().at(1)) };
-
-            return std::make_pair(ident, std::variant<std::monostate,BuiltinType,icu::UnicodeString>(identType));
+        else if (context->type_name()) {
+            // For ident_opt_type, join dotted type name into single string
+            // (consumed by visitFor_stmt which wraps it in TypeName)
+            TypeName components;
+            for (auto* id : context->type_name()->IDENTIFIER())
+                components.push_back(identifierFromTerminal(id));
+            return std::make_pair(ident, std::variant<std::monostate,BuiltinType,icu::UnicodeString>(joinTypeName(components)));
         }
     }
     else
@@ -1303,7 +1475,12 @@ std::any ASTGenerator::visitFunc_sig(RoxalParser::Func_sigContext *context)
 {
     visitStart();
 
-    auto ident { identifierFromTerminal(context->IDENTIFIER()) };
+    icu::UnicodeString ident;
+    if (context->IDENTIFIER()) {
+        ident = identifierFromTerminal(context->IDENTIFIER());
+    } else if (context->operator_name()) {
+        ident = operatorNameFromContext(context->operator_name());
+    }
 
     ptr<Function> func = make_ptr<Function>();
     setSourceInfo(func,context);
@@ -1317,8 +1494,10 @@ std::any ASTGenerator::visitFunc_sig(RoxalParser::Func_sigContext *context)
 
     // return types (optional)
     if (context->return_type()) {
-        auto returnTypeVector = anyas<std::vector<std::variant<BuiltinType,icu::UnicodeString>>>(visitReturn_type(context->return_type()));
-        func->returnTypes = returnTypeVector;
+        using ReturnInfo = std::pair<std::vector<VarType>, std::vector<bool>>;
+        auto info = anyas<ReturnInfo>(visitReturn_type(context->return_type()));
+        func->returnTypes = info.first;
+        func->returnTypeConst = info.second;
     }
 
     if (func->returnTypes.has_value() && func->isProc)
@@ -1347,6 +1526,13 @@ std::any ASTGenerator::visitParameters(RoxalParser::ParametersContext *context)
         }
     }
 
+    // Validate: `*` (star) sole-param sugar must be the sole parameter
+    for(size_t i=0; i<params->size(); i++) {
+        if ((*params)[i]->isStar && params->size() != 1) {
+            throw std::runtime_error("`*` parameter must be the sole parameter of `proc init(*)`");
+        }
+    }
+
     return params;
     visitEnd();
 }
@@ -1356,10 +1542,18 @@ std::any ASTGenerator::visitParameters(RoxalParser::ParametersContext *context)
 std::any ASTGenerator::visitParameter(RoxalParser::ParameterContext *context)
 {
     visitStart();
+    ptr<Parameter> param = make_ptr<Parameter>();
+
+    // `*` sole-param sugar for `proc init(*)` — no name, no type, no default
+    if (context->STAR() && !context->identifier_word()) {
+        setSourceInfo(param, context);
+        param->isStar = true;
+        return typeValue(param);
+    }
+
     auto nameCtx = context->identifier_word();
     auto ident { identifierFromContext(nameCtx) };
 
-    ptr<Parameter> param = make_ptr<Parameter>();
     setSourceInfo(param, nameCtx);
     param->name = ident;
 
@@ -1382,13 +1576,22 @@ std::any ASTGenerator::visitParameter(RoxalParser::ParameterContext *context)
         }
     }
 
+    if (context->const_qualifier()) {
+        if (context->const_qualifier()->CONST())
+            param->isConst = true;
+        else if (context->const_qualifier()->MUTABLE())
+            param->isMutable = true;
+    }
+
     if (context->builtin_type()) {
         auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
         param->type = builtinType;
     }
-    else if (auto typeIdentNode = context->IDENTIFIER()) {
-        auto typeIdent { identifierFromTerminal(typeIdentNode) };
-        param->type = typeIdent;
+    else if (context->type_name()) {
+        TypeName components;
+        for (auto* ident : context->type_name()->IDENTIFIER())
+            components.push_back(identifierFromTerminal(ident));
+        param->type = components;
     }
     else {} // type is optional
 
@@ -1464,20 +1667,30 @@ std::any ASTGenerator::visitObject_type_decl(RoxalParser::Object_type_declContex
             typeDecl->annotations.push_back(annotation);
         }
 
-        size_t identIndex = 0;
-        typeDecl->name = identifierFromTerminal(context->IDENTIFIER().at(identIndex++));
+        typeDecl->name = identifierFromTerminal(context->IDENTIFIER());
+
+        auto typeNames = context->type_name();
+        size_t tnIndex = 0;
 
         if (context->EXTENDS()) {
-            if (identIndex >= context->IDENTIFIER().size())
+            if (tnIndex >= typeNames.size())
                 throw std::runtime_error("type extends clause missing identifier");
-            typeDecl->extends = identifierFromTerminal(context->IDENTIFIER().at(identIndex++));
+            TypeName components;
+            for (auto* ident : typeNames[tnIndex++]->IDENTIFIER())
+                components.push_back(identifierFromTerminal(ident));
+            typeDecl->extends = components;
         }
 
-        while (identIndex < context->IDENTIFIER().size())
-            typeDecl->implements.push_back(identifierFromTerminal(context->IDENTIFIER().at(identIndex++)));
+        while (tnIndex < typeNames.size()) {
+            TypeName components;
+            for (auto* ident : typeNames[tnIndex++]->IDENTIFIER())
+                components.push_back(identifierFromTerminal(ident));
+            typeDecl->implements.push_back(components);
+        }
 
-        if (isInterface && !typeDecl->implements.empty())
-            throw std::runtime_error("Interface "+toUTF8StdString(typeDecl->name)+" cannot implement, use extends instead");
+        // Note: validation that an interface cannot have `implements` clauses
+        // is performed in RoxalCompiler::visit(TypeDecl) using the standard
+        // `error()` mechanism, which produces a single clean diagnostic.
 
         if (context->str()) {
             auto strVal = as<Str>(visitStr(context->str()));
@@ -1507,6 +1720,13 @@ std::any ASTGenerator::visitObject_type_decl(RoxalParser::Object_type_declContex
             typeDecl->methods.push_back(as<Function>(func));
         }
 
+        // Nested type declarations
+        for (auto* nestedCtx : context->nested_type_decl()) {
+            auto nested = as<TypeDecl>(visitType_decl(nestedCtx->type_decl()));
+            nested->access = nestedCtx->PRIVATE() ? Access::Private : Access::Public;
+            typeDecl->nestedTypes.push_back(nested);
+        }
+
     return typeValue(typeDecl);
 
     visitEnd();
@@ -1529,15 +1749,23 @@ std::any ASTGenerator::visitEnum_type_decl(RoxalParser::Enum_type_declContext *c
             typeDecl->annotations.push_back(annotation);
         }
 
-        size_t identIndex = 0;
-        typeDecl->name = identifierFromTerminal(context->IDENTIFIER().at(identIndex++));
+        typeDecl->name = identifierFromTerminal(context->IDENTIFIER());
 
         if (context->EXTENDS()) {
-            if (identIndex >= context->IDENTIFIER().size())
-                throw std::runtime_error("enum extends clause missing identifier");
-            typeDecl->extends = identifierFromTerminal(context->IDENTIFIER().at(identIndex++));
+            icu::UnicodeString extendsName;
+            if (context->BYTE())
+                extendsName = "byte";
+            else if (context->INT())
+                extendsName = "int";
+            else if (context->type_name()) {
+                TypeName components;
+                for (auto* id : context->type_name()->IDENTIFIER())
+                    components.push_back(identifierFromTerminal(id));
+                extendsName = joinTypeName(components);
+            }
+            typeDecl->extends = TypeName{extendsName};
 
-            if (typeDecl->extends != UnicodeString("byte") && typeDecl->extends != UnicodeString("int"))
+            if (extendsName != UnicodeString("byte") && extendsName != UnicodeString("int"))
                 throw std::runtime_error("Enum(eration) "+toUTF8StdString(typeDecl->name)+" can only extend byte or int");
         }
 
@@ -1568,13 +1796,13 @@ std::any ASTGenerator::visitEvent_type_decl(RoxalParser::Event_type_declContext 
             typeDecl->annotations.push_back(annotation);
         }
 
-        size_t identIndex = 0;
-        typeDecl->name = identifierFromTerminal(context->IDENTIFIER().at(identIndex++));
+        typeDecl->name = identifierFromTerminal(context->IDENTIFIER());
 
-        if (context->EXTENDS()) {
-            if (identIndex >= context->IDENTIFIER().size())
-                throw std::runtime_error("event extends clause missing identifier");
-            typeDecl->extends = identifierFromTerminal(context->IDENTIFIER().at(identIndex++));
+        if (context->EXTENDS() && context->type_name()) {
+            TypeName components;
+            for (auto* ident : context->type_name()->IDENTIFIER())
+                components.push_back(identifierFromTerminal(ident));
+            typeDecl->extends = components;
         }
 
         if (context->str()) {
@@ -1608,6 +1836,11 @@ std::any ASTGenerator::visitMethod(RoxalParser::MethodContext *context)
 
     auto function = as<Function>(func);
     function->access = (context->PRIVATE()!=nullptr) ? Access::Private : Access::Public;
+    function->methodModifiers = 0;
+    if (context->implicit_kw()!=nullptr)
+        setModifier(function->methodModifiers, MethodModifier::Implicit);
+    if (context->stmt_action_kw()!=nullptr)
+        setModifier(function->methodModifiers, MethodModifier::StatementAction);
 
     // has body suite?
     if (context->COLON()) {
@@ -1672,7 +1905,7 @@ std::any ASTGenerator::visitMember_var(RoxalParser::Member_varContext *context)
 
         propAccessor->access = (context->PRIVATE() != nullptr) ? Access::Private : Access::Public;
         propAccessor->isConst = (context->CONST() != nullptr);
-        propAccessor->name = identifierFromTerminal(context->IDENTIFIER().at(0));
+        propAccessor->name = identifierFromTerminal(context->IDENTIFIER());
 
         // Get annotations
         for (auto* annotCtx : context->annotation()) {
@@ -1683,14 +1916,19 @@ std::any ASTGenerator::visitMember_var(RoxalParser::Member_varContext *context)
             propAccessor->annotations.push_back(annotation);
         }
 
+        // Get const qualifier on type (parsed but not yet used for PropertyAccessor)
+        // if (context->const_qualifier()) { ... }
+
         // Get type
         if (context->builtin_type()) {
             auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
             propAccessor->propType = builtinType;
         }
-        else if (context->IDENTIFIER().size() > 1) {
-            auto typeIdent { identifierFromTerminal(context->IDENTIFIER(1)) };
-            propAccessor->propType = typeIdent;
+        else if (context->type_name()) {
+            TypeName components;
+            for (auto* ident : context->type_name()->IDENTIFIER())
+                components.push_back(identifierFromTerminal(ident));
+            propAccessor->propType = components;
         }
 
         // Get initializer
@@ -1701,13 +1939,13 @@ std::any ASTGenerator::visitMember_var(RoxalParser::Member_varContext *context)
 
         // Get getter (if present)
         for (auto* getterCtx : context->property_getter()) {
-            propAccessor->getter = std::any_cast<std::variant<ptr<Suite>, ptr<Statement>>>(
+            propAccessor->getter = std::any_cast<std::variant<ptr<Suite>, ptr<Statement>, std::monostate>>(
                 visitProperty_getter(getterCtx));
         }
 
         // Get setter (if present)
         for (auto* setterCtx : context->property_setter()) {
-            propAccessor->setter = std::any_cast<std::variant<ptr<Suite>, ptr<Statement>>>(
+            propAccessor->setter = std::any_cast<std::variant<ptr<Suite>, ptr<Statement>, std::monostate>>(
                 visitProperty_setter(setterCtx));
         }
 
@@ -1724,10 +1962,11 @@ std::any ASTGenerator::visitMember_var(RoxalParser::Member_varContext *context)
     else {
         // Regular var declaration without accessors
         ptr<VarDecl> varDecl = make_ptr<VarDecl>();
+        setSourceInfo(varDecl, context);
 
         varDecl->access = (context->PRIVATE()!=nullptr) ? Access::Private : Access::Public;
         varDecl->isConst = (context->CONST() != nullptr);
-        varDecl->name = identifierFromTerminal(context->IDENTIFIER().at(0));
+        varDecl->name = identifierFromTerminal(context->IDENTIFIER());
 
         for (auto* annotCtx : context->annotation()) {
             auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(annotCtx));
@@ -1737,13 +1976,22 @@ std::any ASTGenerator::visitMember_var(RoxalParser::Member_varContext *context)
             varDecl->annotations.push_back(annotation);
         }
 
+        if (context->const_qualifier()) {
+            if (context->const_qualifier()->CONST())
+                varDecl->isTypeConst = true;
+            else if (context->const_qualifier()->MUTABLE())
+                varDecl->isTypeMutable = true;
+        }
+
         if (context->builtin_type()) {
             auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
             varDecl->varType = builtinType;
         }
-        else if (context->IDENTIFIER().size()>1) {
-            auto typeIdent { identifierFromTerminal(context->IDENTIFIER().at(1)) };
-            varDecl->varType = typeIdent;
+        else if (context->type_name()) {
+            TypeName components;
+            for (auto* ident : context->type_name()->IDENTIFIER())
+                components.push_back(identifierFromTerminal(ident));
+            varDecl->varType = components;
         }
         else {} // type is optional
 
@@ -1780,9 +2028,8 @@ std::any ASTGenerator::visitProperty_getter(RoxalParser::Property_getterContext 
 {
     visitStart();
 
-    std::variant<ptr<Suite>, ptr<Statement>> result;
+    std::variant<ptr<Suite>, ptr<Statement>, std::monostate> result;
 
-    // Check if it's 'compound_stmt' or 'suite'
     if (context->suite()) {
         // Block form: get: <newline> <indent> ... <dedent>
         auto suite = visitSuite(context->suite());
@@ -1792,7 +2039,9 @@ std::any ASTGenerator::visitProperty_getter(RoxalParser::Property_getterContext 
         auto stmt = visitCompound_stmt(context->compound_stmt());
         result = as<Statement>(stmt);
     } else {
-        throw std::runtime_error("Property getter must be a Suite or compound statement (e.g., return)");
+        // body-less form: `get<NEWLINE>` -- abstract (only valid in interfaces;
+        // enforced later in RoxalCompiler)
+        result = std::monostate{};
     }
 
     return result;
@@ -1804,9 +2053,8 @@ std::any ASTGenerator::visitProperty_setter(RoxalParser::Property_setterContext 
 {
     visitStart();
 
-    std::variant<ptr<Suite>, ptr<Statement>> result;
+    std::variant<ptr<Suite>, ptr<Statement>, std::monostate> result;
 
-    // Check if it's 'statement' or 'suite'
     if (context->suite()) {
         // Block form: set: <newline> <indent> ... <dedent>
         auto suite = visitSuite(context->suite());
@@ -1817,13 +2065,13 @@ std::any ASTGenerator::visitProperty_setter(RoxalParser::Property_setterContext 
         result = as<Statement>(stmt);
     } else if (context->expr_stmt()) {
         // One-liner expression statement form (e.g., _b = value)
-        // visitExpr_stmt returns an Expression, so wrap it in an ExpressionStatement
         auto expr = visitExpr_stmt(context->expr_stmt());
         auto exprStmt = make_ptr<ExpressionStatement>();
         exprStmt->expr = as<Expression>(expr);
         result = std::move(exprStmt);
     } else {
-        throw std::runtime_error("Property setter must be a Suite or Statement");
+        // body-less form: `set<NEWLINE>` -- abstract (only valid in interfaces)
+        result = std::monostate{};
     }
 
     return result;
@@ -1885,8 +2133,10 @@ std::any ASTGenerator::visitLambda_func(RoxalParser::Lambda_funcContext *context
 
     // return types (optional)
     if (context->return_type()) {
-        auto returnTypeVector = anyas<std::vector<std::variant<BuiltinType,icu::UnicodeString>>>(visitReturn_type(context->return_type()));
-        func->returnTypes = returnTypeVector;
+        using ReturnInfo = std::pair<std::vector<VarType>, std::vector<bool>>;
+        auto info = anyas<ReturnInfo>(visitReturn_type(context->return_type()));
+        func->returnTypes = info.first;
+        func->returnTypeConst = info.second;
     }
 
     if (context->suite()) {
@@ -1992,6 +2242,12 @@ std::any ASTGenerator::visitAssignment(RoxalParser::AssignmentContext *context)
         }
 
         assign->rhs = as<Expression>(visitAssignment(context->assignment()));
+
+        if (context->at_clause()) {
+            auto hostExpr = visitExpression(context->at_clause()->expression());
+            assertType<Expression>(hostExpr);
+            assign->atHost = as<Expression>(hostExpr);
+        }
 
         return typeValue(assign);
     }
@@ -2304,7 +2560,7 @@ std::any ASTGenerator::visitMultdiv(RoxalParser::MultdivContext *context)
         op->op = BinaryOp::Multiply;
     else if (context->DIV())
         op->op = BinaryOp::Divide;
-    else if (context->MOD())
+    else if (context->REM())
         op->op = BinaryOp::Modulo;
     else
         throw std::runtime_error("unhandled multidiv alternative");
@@ -2323,6 +2579,45 @@ std::any ASTGenerator::visitUnary(RoxalParser::UnaryContext *context)
     visitStart();
 
     if (context->unary()) {
+        if (context->MINUS()) {
+            auto inner = context->unary();
+            if (inner && inner->call()) {
+                auto call = inner->call();
+                if (call->args_or_index_or_accessor().empty()) {
+                    auto primary = call->primary();
+                    if (primary && primary->num() && primary->num()->integer()) {
+                        auto intContext = primary->num()->integer();
+                        std::string text = intContext->getText();
+                        int base = 10;
+                        std::string digits = text;
+                        if (text.size() > 2 && text[0] == '0') {
+                            if (text[1] == 'x' || text[1] == 'X') {
+                                base = 16;
+                                digits = text.substr(2);
+                            } else if (text[1] == 'b' || text[1] == 'B') {
+                                base = 2;
+                                digits = text.substr(2);
+                            } else if (text[1] == 'o' || text[1] == 'O') {
+                                base = 8;
+                                digits = text.substr(2);
+                            }
+                        }
+                        if (!digits.empty()) {
+                            uint64_t value = 0;
+                            auto result = std::from_chars(digits.data(), digits.data() + digits.size(), value, base);
+                            if (result.ec == std::errc() && result.ptr == digits.data() + digits.size()) {
+                                if (value == static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) + 1ULL) {
+                                    ptr<Num> num = make_ptr<Num>();
+                                    num->num = std::numeric_limits<int64_t>::min();
+                                    setSourceInfo(num, intContext);
+                                    return typeValue(num);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         auto arg = visitUnary(context->unary());
 
@@ -2335,14 +2630,26 @@ std::any ASTGenerator::visitUnary(RoxalParser::UnaryContext *context)
         }
         else if (context->MINUS() && isa<Num>(arg)) {
             auto numarg = as<Num>(arg);
-            if (std::holds_alternative<int32_t>(numarg->num))
-                numarg->num = -std::get<int32_t>(numarg->num);
-            else if (std::holds_alternative<int64_t>(numarg->num))
-                numarg->num = -std::get<int64_t>(numarg->num);
-            else if (std::holds_alternative<double>(numarg->num))
+            if (std::holds_alternative<int32_t>(numarg->num)) {
+                int64_t val = std::get<int32_t>(numarg->num);
+                int64_t neg = -val;
+                if (neg < std::numeric_limits<int32_t>::min() || neg > std::numeric_limits<int32_t>::max())
+                    numarg->num = static_cast<int64_t>(neg);
+                else
+                    numarg->num = static_cast<int32_t>(neg);
+            }
+            else if (std::holds_alternative<int64_t>(numarg->num)) {
+                int64_t val = std::get<int64_t>(numarg->num);
+                if (val == std::numeric_limits<int64_t>::min())
+                    throw std::runtime_error("integer negation overflow");
+                numarg->num = -val;
+            }
+            else if (std::holds_alternative<double>(numarg->num)) {
                 numarg->num = -std::get<double>(numarg->num);
-            else
+            }
+            else {
                 throw std::runtime_error("unhandled Num type");
+            }
             return typeValue(numarg);
         }
 
@@ -2690,24 +2997,44 @@ std::any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
 }
 
 
-// returns BuiltinType enum value
+// returns pair of {return types, mutable flags}
 std::any ASTGenerator::visitReturn_type(RoxalParser::Return_typeContext *context)
 {
     visitStart();
 
-    std::vector<std::variant<BuiltinType,icu::UnicodeString>> returnTypes;
+    using ReturnInfo = std::pair<std::vector<VarType>, std::vector<bool>>;
+    std::vector<VarType> returnTypes;
+    std::vector<bool> constFlags;
 
-    // Process all type_spec nodes in order
-    for (auto* typeSpecCtx : context->type_spec()) {
-        auto typeSpec = anyas<std::variant<BuiltinType,icu::UnicodeString>>(visitType_spec(typeSpecCtx));
+    // Walk children in order to pair const_qualifier with following type_spec
+    auto typeSpecs = context->type_spec();
+    auto qualifiers = context->const_qualifier();
+    size_t qi = 0; // qualifier index
+
+    for (size_t ti = 0; ti < typeSpecs.size(); ti++) {
+        auto typeSpec = anyas<VarType>(visitType_spec(typeSpecs[ti]));
         returnTypes.push_back(typeSpec);
+
+        // Check if there's a const_qualifier preceding this type_spec
+        bool isConst = false;
+        if (qi < qualifiers.size()) {
+            // A qualifier precedes this type_spec if its token position is before the type_spec's
+            auto qualStart = qualifiers[qi]->getStart()->getTokenIndex();
+            auto typeStart = typeSpecs[ti]->getStart()->getTokenIndex();
+            if (qualStart < typeStart) {
+                if (qualifiers[qi]->CONST())
+                    isConst = true;
+                qi++;
+            }
+        }
+        constFlags.push_back(isConst);
     }
 
     if (returnTypes.empty()) {
         throw std::runtime_error("Invalid return type specification - no types found.");
     }
 
-    return returnTypes;
+    return ReturnInfo{returnTypes, constFlags};
 
     visitEnd();
 }
@@ -2718,11 +3045,13 @@ std::any ASTGenerator::visitType_spec(RoxalParser::Type_specContext *context)
 
     if (context->builtin_type()) {
         auto builtinType = anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()));
-        return std::variant<BuiltinType,icu::UnicodeString>(builtinType);
+        return VarType(builtinType);
     }
-    else if (context->IDENTIFIER()) {
-        auto typeIdent = identifierFromTerminal(context->IDENTIFIER());
-        return std::variant<BuiltinType,icu::UnicodeString>(typeIdent);
+    else if (context->type_name()) {
+        TypeName components;
+        for (auto* ident : context->type_name()->IDENTIFIER())
+            components.push_back(identifierFromTerminal(ident));
+        return VarType(components);
     }
     else {
         throw std::runtime_error("Invalid type specification.");
@@ -2779,6 +3108,13 @@ std::any ASTGenerator::visitBuiltin_type(RoxalParser::Builtin_typeContext *conte
 
 
 
+std::any ASTGenerator::visitConst_qualifier(RoxalParser::Const_qualifierContext *context)
+{
+    // Handled directly in visitParameter / visitVar_decl / visitReturn_type
+    return {};
+}
+
+
 std::any ASTGenerator::visitList(RoxalParser::ListContext *context)
 {
     visitStart();
@@ -2797,10 +3133,31 @@ std::any ASTGenerator::visitVector(RoxalParser::VectorContext *context)
 {
     visitStart();
 
+    // Ambiguity guard: '[a -b -c ...]' (every trailing element is a bare MINUS-prefixed
+    // signed_num) is matched by both the vector rule and the list rule (single subtraction
+    // expression a - b - c ...). Vector wins via alternative ordering, but the user may
+    // have intended subtraction. Force them to disambiguate. A parenthesized element
+    // ('(' expression ')') is explicit and never triggers the guard.
+    auto elems = context->vec_elem();
+    if (elems.size() >= 2) {
+        bool allTrailingBareNegative = true;
+        for (size_t i = 1; i < elems.size(); ++i) {
+            auto* sn = elems[i]->signed_num();
+            if (!sn || !sn->MINUS()) { allTrailingBareNegative = false; break; }
+        }
+        if (allTrailingBareNegative) {
+            reportError(context->start,
+                "ambiguous bracket literal: could be a vector or a subtraction expression. "
+                "Disambiguate as: [a (-b) (-c) ...] or vector([a, -b, ...]) for a vector, "
+                "[a, -b, ...] for a list, "
+                "or [(a - b - ...)] for a list of one subtraction expression.");
+        }
+    }
+
     ptr<Vector> vec = make_ptr<Vector>();
     setSourceInfo(vec,context);
-    for(int i=0; i<context->signed_num().size(); ++i)
-        vec->elements.push_back(as<Num>(visitSigned_num(context->signed_num().at(i))));
+    for(int i=0; i<context->vec_elem().size(); ++i)
+        vec->elements.push_back(as<Expression>(visitVec_elem(context->vec_elem().at(i))));
 
     return typeValue(vec);
     visitEnd();
@@ -2825,10 +3182,21 @@ std::any ASTGenerator::visitRow(RoxalParser::RowContext *context)
 
     ptr<Vector> vec = make_ptr<Vector>();
     setSourceInfo(vec,context);
-    for(int i=0; i<context->signed_num().size(); ++i)
-        vec->elements.push_back(as<Num>(visitSigned_num(context->signed_num().at(i))));
+    for(int i=0; i<context->vec_elem().size(); ++i)
+        vec->elements.push_back(as<Expression>(visitVec_elem(context->vec_elem().at(i))));
 
     return typeValue(vec);
+    visitEnd();
+}
+
+std::any ASTGenerator::visitVec_elem(RoxalParser::Vec_elemContext *context)
+{
+    visitStart();
+
+    if (context->signed_num())
+        return visitSigned_num(context->signed_num());
+    return visitExpression(context->expression());
+
     visitEnd();
 }
 
@@ -2836,7 +3204,22 @@ std::any ASTGenerator::visitSigned_num(RoxalParser::Signed_numContext *context)
 {
     visitStart();
 
-    auto num = as<Num>(visitNum(context->num()));
+    auto result = visitNum(context->num());
+    if (isa<SuffixedNum>(result)) {
+        // Suffixed number (e.g. 90deg, 3.14m) — negate the numeric part
+        auto snum = as<SuffixedNum>(result);
+        if (context->MINUS()) {
+            if (std::holds_alternative<int32_t>(snum->num))
+                snum->num = -std::get<int32_t>(snum->num);
+            else if (std::holds_alternative<int64_t>(snum->num))
+                snum->num = -std::get<int64_t>(snum->num);
+            else
+                snum->num = -std::get<double>(snum->num);
+        }
+        return typeValue(snum);
+    }
+    // Plain Num
+    auto num = as<Num>(result);
     if (context->MINUS()) {
         if (std::holds_alternative<int32_t>(num->num))
             num->num = -std::get<int32_t>(num->num);
@@ -2871,9 +3254,167 @@ std::any ASTGenerator::visitDict(RoxalParser::DictContext *context)
 
 
 
+// Split a suffixed token into its value part and suffix string.
+// For braced form "10{m/s}", returns {"10", "m/s", true}.
+// For bare form "10m", returns {"10", "m", false}.
+// isString: if true, the value part ends at the closing quote char.
+static std::tuple<std::string, std::string, bool>
+splitSuffixFromToken(const std::string& text, bool isString, char quoteChar = '\'')
+{
+    std::string valuePart;
+    std::string suffixPart;
+    bool braced = false;
+
+    if (isString) {
+        // Find the closing quote (skip escaped quotes)
+        size_t i = 1; // skip opening quote
+        while (i < text.size()) {
+            if (text[i] == '\\' && i+1 < text.size()) {
+                i += 2; // skip escape sequence
+            } else if (text[i] == quoteChar) {
+                // Found closing quote
+                valuePart = text.substr(0, i+1); // include quotes
+                std::string after = text.substr(i+1);
+                if (!after.empty() && after[0] == '{') {
+                    braced = true;
+                    suffixPart = after.substr(1, after.size()-2); // strip { }
+                } else {
+                    suffixPart = after;
+                }
+                break;
+            } else {
+                i++;
+            }
+        }
+    } else {
+        // Numeric: find where the suffix starts
+        // digits, '.', 'e/E' (in exponents), '+', '-' are numeric; first alpha or '{' starts suffix.
+        // A trailing standalone '%' is also recognized as a one-char suffix (percent literals).
+        size_t suffixStart = text.size();
+        for (size_t i = 0; i < text.size(); i++) {
+            unsigned char c = text[i];
+            if (c == '{') {
+                suffixStart = i;
+                braced = true;
+                break;
+            }
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+                // 'e'/'E' might be part of scientific notation (e.g. 1e3)
+                if ((c == 'e' || c == 'E') && i > 0) {
+                    unsigned char prev = text[i-1];
+                    if ((prev >= '0' && prev <= '9') || prev == '.') {
+                        if (i+1 < text.size()) {
+                            unsigned char next = text[i+1];
+                            if (next == '+' || next == '-' || (next >= '0' && next <= '9'))
+                                continue; // part of exponent, skip
+                        }
+                    }
+                }
+                suffixStart = i;
+                break;
+            }
+            // '%' is permitted only as a standalone trailing suffix.
+            if (c == '%') {
+                suffixStart = i;
+                break;
+            }
+            // Non-ASCII byte: start of Unicode letter suffix
+            if (c >= 0x80) {
+                suffixStart = i;
+                break;
+            }
+        }
+        valuePart = text.substr(0, suffixStart);
+        if (braced) {
+            std::string bracedContent = text.substr(suffixStart+1);
+            if (!bracedContent.empty() && bracedContent.back() == '}')
+                bracedContent.pop_back();
+            suffixPart = bracedContent;
+        } else {
+            suffixPart = text.substr(suffixStart);
+        }
+    }
+    return {valuePart, suffixPart, braced};
+}
+
+// Validate a bare (non-braced) suffix string for structural constraints.
+// Returns empty string if valid, or an error message if invalid.
+static std::string validateBareSuffix(const std::string& suffix)
+{
+    if (suffix.empty())
+        return "suffix is empty";
+
+    // Standalone '%' is a permitted one-char numeric suffix (percent literals).
+    if (suffix == "%")
+        return "";
+
+    // Count UTF-8 characters (non-continuation bytes)
+    int charCount = 0;
+    for (unsigned char c : suffix)
+        if ((c & 0xC0) != 0x80) charCount++;
+    if (charCount > 8)
+        return "bare suffix exceeds maximum length of 8 characters (use {braces} for longer suffixes)";
+
+    int slashCount = 0;
+    bool prevWasMiddleDot = false;
+    for (size_t i = 0; i < suffix.size(); i++) {
+        unsigned char c = suffix[i];
+        if (c == '/') {
+            slashCount++;
+            if (slashCount > 1)
+                return "bare suffix may contain at most one '/'";
+            if (i+1 >= suffix.size())
+                return "suffix '/' must be followed by a letter";
+            prevWasMiddleDot = false;
+        }
+        // Middle dot · (U+00B7 = 0xC2 0xB7 in UTF-8)
+        else if (c == 0xC2 && i+1 < suffix.size() && (unsigned char)suffix[i+1] == 0xB7) {
+            if (prevWasMiddleDot)
+                return "suffix may not contain consecutive '··'";
+            if (i+2 >= suffix.size())
+                return "suffix '·' must be followed by a letter";
+            prevWasMiddleDot = true;
+        } else {
+            prevWasMiddleDot = false;
+        }
+    }
+    return ""; // valid
+}
+
+
 std::any ASTGenerator::visitStr(RoxalParser::StrContext *context)
 {
     visitStart();
+
+    // Handle suffixed strings first
+    if (context->SUFFIXED_SINGLE_STRING() || context->SUFFIXED_DOUBLE_STRING()) {
+        bool isDouble = context->SUFFIXED_DOUBLE_STRING() != nullptr;
+        auto token = isDouble ? context->SUFFIXED_DOUBLE_STRING() : context->SUFFIXED_SINGLE_STRING();
+        std::string fullText = token->getText();
+        char quoteChar = isDouble ? '"' : '\'';
+
+        auto [valuePart, suffixPart, braced] = splitSuffixFromToken(fullText, true, quoteChar);
+
+        if (!braced) {
+            auto err = validateBareSuffix(suffixPart);
+            if (!err.empty())
+                reportError(token->getSymbol(),
+                           "invalid literal suffix '" + suffixPart + "': " + err);
+        }
+
+        // Strip enclosing quotes from valuePart
+        std::string strContent = valuePart.substr(1, valuePart.size()-2);
+
+        // TODO: for suffixed double-quoted strings, interpolation is not yet supported.
+        // The string is treated as a plain string for now.
+
+        ptr<SuffixedStr> sstr = make_ptr<SuffixedStr>();
+        setSourceInfo(sstr, token);
+        sstr->str = toUnicodeString(strContent).unescape();
+        sstr->suffix = toUnicodeString(suffixPart);
+        return typeValue(sstr);
+    }
+
     std::string text;
     bool isDouble = false;
     bool isTriple = false;
@@ -2964,6 +3505,62 @@ std::any ASTGenerator::visitNum(RoxalParser::NumContext *context)
     if (context->integer())
         return visitInteger(context->integer());
 
+    // Suffixed float: e.g. "3.14m" or "10.0{m/s}"
+    if (context->SUFFIXED_FLOAT()) {
+        std::string text = context->SUFFIXED_FLOAT()->getText();
+        auto [valuePart, suffixPart, braced] = splitSuffixFromToken(text, false);
+
+        if (!braced) {
+            auto err = validateBareSuffix(suffixPart);
+            if (!err.empty())
+                reportError(context->SUFFIXED_FLOAT()->getSymbol(),
+                           "invalid literal suffix '" + suffixPart + "': " + err);
+        }
+
+        double real {0.0};
+        try {
+            real = std::stod(valuePart);
+        } catch (std::invalid_argument&) {
+            throw std::runtime_error("invalid number \""+valuePart+"\"");
+        }
+        ptr<SuffixedNum> snum = make_ptr<SuffixedNum>();
+        setSourceInfo(snum, context->SUFFIXED_FLOAT());
+        snum->num = real;
+        snum->suffix = toUnicodeString(suffixPart);
+        return typeValue(snum);
+    }
+
+    // Suffixed decimal integer: e.g. "10m" or "100{mm/s}"
+    if (context->SUFFIXED_DECIMAL_INTEGER()) {
+        std::string text = context->SUFFIXED_DECIMAL_INTEGER()->getText();
+        auto [valuePart, suffixPart, braced] = splitSuffixFromToken(text, false);
+
+        if (!braced) {
+            auto err = validateBareSuffix(suffixPart);
+            if (!err.empty())
+                reportError(context->SUFFIXED_DECIMAL_INTEGER()->getSymbol(),
+                           "invalid literal suffix '" + suffixPart + "': " + err);
+        }
+
+        uint64_t value = 0;
+        auto result = std::from_chars(valuePart.data(), valuePart.data() + valuePart.size(), value, 10);
+        ptr<SuffixedNum> snum = make_ptr<SuffixedNum>();
+        setSourceInfo(snum, context->SUFFIXED_DECIMAL_INTEGER());
+        if (result.ec == std::errc::result_out_of_range ||
+            value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+            reportError(context->start, "integer literal out of range for int64: " + valuePart);
+            snum->num = int32_t(0);
+        } else {
+            int64_t signedVal = static_cast<int64_t>(value);
+            if (signedVal >= std::numeric_limits<int32_t>::min() && signedVal <= std::numeric_limits<int32_t>::max())
+                snum->num = static_cast<int32_t>(signedVal);
+            else
+                snum->num = signedVal;
+        }
+        snum->suffix = toUnicodeString(suffixPart);
+        return typeValue(snum);
+    }
+
     // real/float
     // TODO: do we need to consider Unicode here?
     std::string realStr = context->FLOAT_NUMBER()->getText();
@@ -2988,60 +3585,55 @@ std::any ASTGenerator::visitInteger(RoxalParser::IntegerContext *context)
 
     ptr<Num> num = make_ptr<Num>();
 
-    long long integer {0};
     auto fitsInt32 = [](long long v) {
         return v >= std::numeric_limits<int32_t>::min() && v <= std::numeric_limits<int32_t>::max();
     };
+    auto assignValue = [&](uint64_t value) {
+        int64_t signedVal = static_cast<int64_t>(value);
+        if (!fitsInt32(signedVal))
+            num->num = signedVal;
+        else
+            num->num = static_cast<int32_t>(signedVal);
+    };
+    auto invalidLiteral = [&](const std::string& message) {
+        reportError(context->start, message);
+        num->num = int32_t(0);
+    };
+    auto parseLiteral = [&](const std::string& digits, int base, const std::string& invalidMsg) -> bool {
+        uint64_t value = 0;
+        auto result = std::from_chars(digits.data(), digits.data() + digits.size(), value, base);
+        if (result.ec == std::errc::result_out_of_range ||
+            value > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+            invalidLiteral("integer literal out of range for int64: " + context->getText());
+            return false;
+        }
+        if (result.ec != std::errc() || result.ptr != digits.data() + digits.size()) {
+            invalidLiteral(invalidMsg);
+            return false;
+        }
+        assignValue(value);
+        return true;
+    };
     if (context->DECIMAL_INTEGER()) {
-        try {
-            integer = std::stoll(context->getText());
-        } catch (...) {
-            throw std::runtime_error("Invalid integer literal");
-        }
-        if (!fitsInt32(integer)) {
-            num->num = int64_t(integer);
-        } else {
-            num->num = int32_t(integer);
-        }
+        parseLiteral(context->getText(), 10, "Invalid integer literal");
         setSourceInfo(num,context->DECIMAL_INTEGER());
     }
     else if (context->HEX_INTEGER()) {
-        char *p_end;
-        integer = std::strtoll(context->getText().c_str()+2, &p_end, 16);
-        if (errno == ERANGE)
-            throw std::runtime_error("Invalid hexadecimal integer literal");
+        std::string digits = context->getText().substr(2);
+        parseLiteral(digits, 16, "Invalid hexadecimal integer literal");
         // TODO: accept unsigned range and convert to twos-compliment
-        if (!fitsInt32(integer)) {
-            num->num = int64_t(integer);
-        } else {
-            num->num = int32_t(integer);
-        }
         setSourceInfo(num,context->HEX_INTEGER());
     }
     else if (context->OCT_INTEGER()) {
-        char *p_end;
-        integer = std::strtoll(context->getText().c_str()+2, &p_end, 8);
-        if (errno == ERANGE)
-            throw std::runtime_error("Invalid octal integer literal");
+        std::string digits = context->getText().substr(2);
+        parseLiteral(digits, 8, "Invalid octal integer literal");
         // TODO: accept unsigned range and convert to twos-compliment
-        if (!fitsInt32(integer)) {
-            num->num = int64_t(integer);
-        } else {
-            num->num = int32_t(integer);
-        }
         setSourceInfo(num,context->OCT_INTEGER());
     }
     else if (context->BIN_INTEGER()) {
-        char *p_end;
-        integer = std::strtoll(context->getText().c_str()+2, &p_end, 2);
-        if (errno == ERANGE)
-            throw std::runtime_error("Invalid binary integer literal");
+        std::string digits = context->getText().substr(2);
+        parseLiteral(digits, 2, "Invalid binary integer literal");
         // TODO: accept unsigned range and convert to twos-compliment
-        if (!fitsInt32(integer)) {
-            num->num = int64_t(integer);
-        } else {
-            num->num = int32_t(integer);
-        }
         setSourceInfo(num,context->BIN_INTEGER());
     }
     else

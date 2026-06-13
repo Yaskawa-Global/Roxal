@@ -339,6 +339,16 @@ std::any ASTEditor::visit(ptr<ast::ReturnStatement> ast)
     return {};
 }
 
+std::any ASTEditor::visit(ptr<ast::BreakStatement> ast)
+{
+    return {};
+}
+
+std::any ASTEditor::visit(ptr<ast::ContinueStatement> ast)
+{
+    return {};
+}
+
 std::any ASTEditor::visit(ptr<ast::IfStatement> ast)
 {
     //need to handle expressions in conditionalSuites
@@ -514,6 +524,16 @@ std::any ASTEditor::visit(ptr<ast::Type> ast)
 std::any ASTEditor::visit(ptr<ast::Num> ast)
 {
     //std::variant<int32_t,double> num;
+    return {};
+}
+
+std::any ASTEditor::visit(ptr<ast::SuffixedNum> ast)
+{
+    return {};
+}
+
+std::any ASTEditor::visit(ptr<ast::SuffixedStr> ast)
+{
     return {};
 }
 

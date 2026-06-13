@@ -1,0 +1,20 @@
+// End-to-end JSON5 round-trip: comments, trailing commas, unquoted keys,
+// single quotes, mixed numbers.
+var src = """
+{
+  // a config-like document
+  name: 'roxal',
+  version: 0.5,
+  flags: [+1, .5, 0xff,],
+  /* nested */
+  nested: {
+    enabled: true,
+    notes: 'multi\\nline',
+  },
+}
+"""
+
+var v = from_json(src)
+// Dict order must match source for JSON5 round-trip.
+print(to_json(v, false, true))
+print(to_json(v, true, true))

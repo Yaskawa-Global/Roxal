@@ -1,0 +1,17 @@
+type IA interface:
+    type IB interface:
+        type IC interface:
+            var x :int
+
+type AImpl object implements IA:
+    type BImpl object implements IA.IB:
+        type CImpl object implements IA.IB.IC:
+            var x :int = 7
+
+var c = AImpl.BImpl.CImpl()
+print(c.x)
+print(c is IA.IB.IC)
+print(AImpl.BImpl.CImpl is IA.IB.IC)
+print(AImpl.BImpl is IA.IB)
+print(AImpl is IA)
+print("ok")

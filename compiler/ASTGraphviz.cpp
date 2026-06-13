@@ -198,6 +198,9 @@ std::any ASTGraphviz::visit(ptr<ast::TypeDecl> ast)
     for(int i=0; i<ast->methods.size();i++)
         addLink(name, stackPop());
 
+    for(int i=0; i<ast->nestedTypes.size();i++)
+        addLink(name, stackPop());
+
     std::string kindLabel;
     switch (ast->kind) {
         case TypeDecl::Object: kindLabel = "object"; break;
@@ -210,7 +213,7 @@ std::any ASTGraphviz::visit(ptr<ast::TypeDecl> ast)
 
     std::string details = toUTF8StdString(ast->name);
     if (ast->extends.has_value())
-        details += " : " + toUTF8StdString(ast->extends.value());
+        details += " : " + toUTF8StdString(joinTypeName(ast->extends.value()));
 
     nodes[name] = node(name,
                        std::string("TypeDecl ") + kindLabel,
@@ -319,6 +322,28 @@ std::any ASTGraphviz::visit(ptr<ast::ReturnStatement> ast)
 }
 
 
+std::any ASTGraphviz::visit(ptr<ast::BreakStatement> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+    nodes[name] = node(name,"Break");
+    stackPush(name);
+    endVisit();
+    return {};
+}
+
+
+std::any ASTGraphviz::visit(ptr<ast::ContinueStatement> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+    nodes[name] = node(name,"Continue");
+    stackPush(name);
+    endVisit();
+    return {};
+}
+
+
 std::any ASTGraphviz::visit(ptr<ast::IfStatement> ast)
 {
     startVisit();
@@ -412,6 +437,20 @@ std::any ASTGraphviz::visit(ptr<ast::UntilStatement> ast)
     return {};
 }
 
+std::any ASTGraphviz::visit(ptr<ast::AdheringIfStatement> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+
+    addLink(name, stackPop(), "condition");
+    addLink(name, stackPop(), "stmt");
+    nodes[name] = node(name, "if-suffix");
+    stackPush(name);
+
+    endVisit();
+    return {};
+}
+
 std::any ASTGraphviz::visit(ptr<ast::TryStatement> ast)
 {
     startVisit();
@@ -490,8 +529,8 @@ std::any ASTGraphviz::visit(ptr<ast::Function> ast)
             if (std::holds_alternative<BuiltinType>(returnTypes[0])) {
                 nameReturn += to_string(std::get<BuiltinType>(returnTypes[0]));
             }
-            else if (std::holds_alternative<icu::UnicodeString>(returnTypes[0])){
-                nameReturn += toUTF8StdString(std::get<icu::UnicodeString>(returnTypes[0]));
+            else if (std::holds_alternative<TypeName>(returnTypes[0])){
+                nameReturn += toUTF8StdString(joinTypeName(std::get<TypeName>(returnTypes[0])));
             }
         } else {
             // Multiple return types
@@ -501,8 +540,8 @@ std::any ASTGraphviz::visit(ptr<ast::Function> ast)
                 if (std::holds_alternative<BuiltinType>(returnTypes[i])) {
                     nameReturn += to_string(std::get<BuiltinType>(returnTypes[i]));
                 }
-                else if (std::holds_alternative<icu::UnicodeString>(returnTypes[i])){
-                    nameReturn += toUTF8StdString(std::get<icu::UnicodeString>(returnTypes[i]));
+                else if (std::holds_alternative<TypeName>(returnTypes[i])){
+                    nameReturn += toUTF8StdString(joinTypeName(std::get<TypeName>(returnTypes[i])));
                 }
             }
             nameReturn += "]";
@@ -530,8 +569,8 @@ std::any ASTGraphviz::visit(ptr<ast::Parameter> ast)
         if (std::holds_alternative<BuiltinType>(ast->type.value())) {
             nametype += " : "+to_string(std::get<BuiltinType>(ast->type.value()));
         }
-        else if (std::holds_alternative<icu::UnicodeString>(ast->type.value())){
-            nametype += " : "+toUTF8StdString(std::get<icu::UnicodeString>(ast->type.value()));
+        else if (std::holds_alternative<TypeName>(ast->type.value())){
+            nametype += " : "+toUTF8StdString(joinTypeName(std::get<TypeName>(ast->type.value())));
         }
      }
 
@@ -735,6 +774,40 @@ std::any ASTGraphviz::visit(ptr<ast::Num> ast)
     else
         throw std::runtime_error("unhandled Num type");
 
+    stackPush(name);
+    endVisit();
+    return {};
+}
+
+
+std::any ASTGraphviz::visit(ptr<ast::SuffixedNum> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+    std::string label;
+    if (std::holds_alternative<double>(ast->num)) {
+        std::stringstream ss;
+        ss << std::fixed << std::setprecision(3) << std::get<double>(ast->num);
+        label = ss.str();
+    } else if (std::holds_alternative<int32_t>(ast->num)) {
+        label = std::to_string(std::get<int32_t>(ast->num));
+    } else if (std::holds_alternative<int64_t>(ast->num)) {
+        label = std::to_string(std::get<int64_t>(ast->num));
+    }
+    std::string suf; ast->suffix.toUTF8String(suf);
+    nodes[name] = node(name, "suffixed_num", label + suf);
+    stackPush(name);
+    endVisit();
+    return {};
+}
+
+std::any ASTGraphviz::visit(ptr<ast::SuffixedStr> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+    std::string s; ast->str.toUTF8String(s);
+    std::string suf; ast->suffix.toUTF8String(suf);
+    nodes[name] = node(name, "suffixed_str", "\\\"" + s + "\\\"" + suf);
     stackPush(name);
     endVisit();
     return {};

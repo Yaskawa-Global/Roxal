@@ -1,0 +1,30 @@
+// Test multiple snapshots at different epochs
+// Verifies that each snapshot captures the state at its creation time
+
+type P object:
+    var x: int
+    var y: int
+
+var p = P(1, 2)
+
+const s1 = p    // snapshot at epoch E1
+
+p.x = 10
+p.y = 20
+
+const s2 = p    // snapshot at epoch E2
+
+p.x = 100
+p.y = 200
+
+// s1 should reflect state at E1
+print(s1.x)  // 1
+print(s1.y)  // 2
+
+// s2 should reflect state at E2
+print(s2.x)  // 10
+print(s2.y)  // 20
+
+// current mutable state
+print(p.x)   // 100
+print(p.y)   // 200

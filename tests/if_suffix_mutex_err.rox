@@ -1,0 +1,3 @@
+// Grammar disallows combining `until` and `if` suffixes on one statement.
+var done :event
+print('hi') until done if true

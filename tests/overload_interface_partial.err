@@ -1,0 +1,1 @@
+.*does not satisfy interface 'Handler'.*missing method overload 'handle\(x :string\)'.*

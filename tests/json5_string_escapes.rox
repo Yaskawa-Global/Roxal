@@ -1,0 +1,7 @@
+// JSON5 string escape extensions: \xNN hex byte, line continuation, NonEscapeCharacter.
+print(from_json("['\\x41', '\\x7a']"))  // A, z
+print(from_json("['\\x48\\x69']"))      // Hi
+// Line continuation: backslash followed by newline skips the newline.
+print(from_json("['foo\\\nbar']"))
+// NonEscapeCharacter: \q -> q
+print(from_json("['\\q\\z']"))

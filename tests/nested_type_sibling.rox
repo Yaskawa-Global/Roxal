@@ -1,0 +1,10 @@
+# sibling nested types can reference each other by short name
+type Outer object:
+    type Color enum: red, green, blue
+    type Widget object:
+        var color: Color
+        var label: string
+
+var w = Outer.Widget(Outer.Color.red, "button")
+print(w.color)
+print(w.label)

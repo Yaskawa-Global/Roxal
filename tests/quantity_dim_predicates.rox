@@ -1,0 +1,53 @@
+// Quantity dimension introspection predicates
+
+// is_dimensionless
+print((50%).is_dimensionless)
+print((1m).is_dimensionless)
+
+// is_length
+print((1m).is_length)
+print((1mm).is_length)
+print((1in).is_length)
+print((1s).is_length)
+
+// is_time
+print((1s).is_time)
+print((1ms).is_time)
+print((1m).is_time)
+
+// is_mass
+print((1kg).is_mass)
+print((1g).is_mass)
+print((1m).is_mass)
+
+// is_angle
+print((1rad).is_angle)
+print((90deg).is_angle)
+print((1m).is_angle)
+
+// is_linear_velocity
+print((1m/s).is_linear_velocity)
+print((1mm/s).is_linear_velocity)
+print((1rad/s).is_linear_velocity)
+
+// is_angular_velocity
+print((1rad/s).is_angular_velocity)
+print((1deg/s).is_angular_velocity)
+print((1m/s).is_angular_velocity)
+
+// is_linear_acceleration
+print((1m/s^2).is_linear_acceleration)
+print((1rad/s^2).is_linear_acceleration)
+
+// is_angular_acceleration
+print((1rad/s^2).is_angular_acceleration)
+print((1deg/s^2).is_angular_acceleration)
+print((1m/s^2).is_angular_acceleration)
+
+// is_force
+print((1N).is_force)
+print((1kg).is_force)
+
+// is_torque
+print((1Nm).is_torque)
+print((1N).is_torque)

@@ -45,7 +45,7 @@ declaration
  ;
 
 statement
- : expr_stmt until_clause? NEWLINE
+ : expr_stmt (if_clause | until_clause)? NEWLINE
  | compound_stmt
  ;
 
@@ -53,15 +53,24 @@ until_clause
  : UNTIL expression
  ;
 
+if_clause
+ : IF expression
+ ;
+
+at_clause
+ : {_input->LT(1)->getText() == "at"}? IDENTIFIER expression
+ ;
 
 expr_stmt
- : expression
+ : expression at_clause?
  ;
 
 
 compound_stmt
  : block_stmt
  | return_stmt
+ | break_stmt
+ | continue_stmt
  | if_stmt
  | while_stmt
  | for_stmt
@@ -80,6 +89,16 @@ block_stmt
 
 return_stmt
  : RETURN expression?
+ ;
+
+
+break_stmt
+ : BREAK if_clause?
+ ;
+
+
+continue_stmt
+ : CONTINUE if_clause?
  ;
 
 
@@ -150,11 +169,11 @@ with_stmt
 
 
 var_decl // FIXME: use ident_opt_type
- : annotation* (VAR | CONST) IDENTIFIER (':' (builtin_type | IDENTIFIER))? (EQUALS expression)?
+ : annotation* (VAR | CONST) IDENTIFIER (':' const_qualifier? (builtin_type | type_name))? (EQUALS expression at_clause?)?
  ;
 
 ident_opt_type
- : IDENTIFIER (':' builtin_type | IDENTIFIER)?
+ : IDENTIFIER (':' (builtin_type | type_name))?
  ;
 
 func_decl
@@ -167,16 +186,38 @@ function
  ;
 
 func_sig
- : (FUNC | PROC) IDENTIFIER '(' parameters? ')' (YIELDS return_type)?
+ : (FUNC | PROC) (IDENTIFIER | operator_name) '(' parameters? ')' (YIELDS return_type)?
+ ;
+
+operator_name
+ : (OPERATOR | LOPERATOR | ROPERATOR) operator_symbol
+ | OPERATOR conversion_target
+ ;
+
+conversion_target
+ : builtin_type
+ | type_name
+ ;
+
+operator_symbol
+ : PLUS | MINUS | STAR | MULT | DIV | REM
+ | ISEQUAL | ISNOTEQUALS
+ | LESS_THAN | GREATER_THAN | LT_EQ | GT_EQ
  ;
 
 parameters
- : parameter (',' parameter)*
+ : NEWLINE* parameter ( (COMMA | NEWLINE) NEWLINE* parameter )* COMMA? NEWLINE*
  ;
 
 parameter
- : annotation* DOTDOT identifier_word (':' (builtin_type | IDENTIFIER) )?  // variadic ...rest param (no default allowed)
- | annotation* identifier_word (':' (builtin_type | IDENTIFIER) )? (EQUALS expression)?
+ : annotation* DOTDOT identifier_word (':' const_qualifier? (builtin_type | type_name) )?  // variadic ...rest param (no default allowed)
+ | annotation* identifier_word (':' const_qualifier? (builtin_type | type_name) )? (EQUALS expression)?
+ | STAR  // sole-param sugar for `proc init(*)` — synthesizes one param per public property
+ ;
+
+const_qualifier
+ : CONST
+ | MUTABLE
  ;
 
 
@@ -194,16 +235,20 @@ type_decl
 
 object_type_decl
  : annotation* TYPE IDENTIFIER (OBJECT | ACTOR | INTERFACE)
-    (EXTENDS IDENTIFIER)? (IMPLEMENTS IDENTIFIER (',' IDENTIFIER)*)?
-    (   (':' NEWLINE INDENT (str NEWLINE)? (member_var|method)* DEDENT)
+    (EXTENDS type_name)? (IMPLEMENTS type_name (',' type_name)*)?
+    (   (':' NEWLINE INDENT (str NEWLINE)? (member_var|method|nested_type_decl)* DEDENT)
       | NEWLINE
     )
+ ;
+
+nested_type_decl
+ : PRIVATE? type_decl
  ;
 
 enum_type_decl
  : annotation* TYPE IDENTIFIER ENUM
     // only enum can extend byte or int
-    (EXTENDS (IDENTIFIER | BYTE | INT))?
+    (EXTENDS (type_name | BYTE | INT))?
     // for enums, allow mixture of comma & line separated labels
     (   (':' NEWLINE INDENT (enum_label (NEWLINE|COMMA) )* DEDENT)
       | (':' (enum_label COMMA)* enum_label NEWLINE)
@@ -212,31 +257,49 @@ enum_type_decl
  ;
 
 event_type_decl
- : annotation* TYPE IDENTIFIER EVENT (EXTENDS IDENTIFIER)?
+ : annotation* TYPE IDENTIFIER EVENT (EXTENDS type_name)?
     (   (':' NEWLINE INDENT (str NEWLINE)? member_var* DEDENT)
       | NEWLINE
     )
  ;
 
 method
- : annotation* PRIVATE? 
+ : annotation* PRIVATE? implicit_kw? stmt_action_kw?
    func_sig
    ((':' suite) | NEWLINE)  // abstract methods have no body
  ;
 
+implicit_kw
+ : {_input->LT(1)->getText() == "implicit"}? IDENTIFIER
+ ;
+
+// Two-word soft keyword: 'statement action'.  Recognised only as a
+// method modifier; ordinary identifiers named 'statement' or 'action'
+// elsewhere are unaffected.
+stmt_action_kw
+ : {_input->LT(1)->getText() == "statement" && _input->LT(2)->getText() == "action"}?
+   IDENTIFIER IDENTIFIER
+ ;
+
 member_var
- : annotation* PRIVATE? (VAR | CONST) IDENTIFIER (':' (builtin_type | IDENTIFIER))? (EQUALS expression)?
+ : annotation* PRIVATE? (VAR | CONST) IDENTIFIER (':' const_qualifier? (builtin_type | type_name))? (EQUALS expression)?
    ( NEWLINE
    | ':' NEWLINE INDENT (property_getter | property_setter)+ DEDENT
    )
  ;
 
 property_getter
- : {_input->LT(1)->getText() == "get"}? IDENTIFIER ':' ( compound_stmt NEWLINE | suite )
+ : {_input->LT(1)->getText() == "get"}? IDENTIFIER
+   ( ':' ( compound_stmt NEWLINE | suite )
+   | NEWLINE
+   )
  ;
 
 property_setter
- : {_input->LT(1)->getText() == "set"}? IDENTIFIER ':' ( (compound_stmt | expr_stmt) NEWLINE | suite )
+ : {_input->LT(1)->getText() == "set"}? IDENTIFIER
+   ( ':' ( (compound_stmt | expr_stmt) NEWLINE | suite )
+   | NEWLINE
+   )
  ;
 
 enum_label
@@ -271,8 +334,8 @@ expression
  : assignment ;
 
 assignment
- : ( call DOT )? IDENTIFIER (EQUALS | COPYINTO) assignment
- | call (EQUALS | COPYINTO) assignment
+ : ( call DOT )? IDENTIFIER (EQUALS | COPYINTO) assignment at_clause?
+ | call (EQUALS | COPYINTO) assignment at_clause?
  | logic_or
  ;
 
@@ -330,7 +393,7 @@ factor
 multdiv
  : ( MULT | STAR ) unary
  | DIV unary
- | MOD unary
+ | REM unary
  ;
 
 
@@ -391,9 +454,9 @@ primary
  | THIS
  | str   // str+ ?
  | RANGE '(' range ')'
- | list
  | vector
  | matrix
+ | list
  | dict
  | IDENTIFIER
  | OPEN_PAREN expression CLOSE_PAREN
@@ -405,13 +468,17 @@ primary
 
 
 return_type
- : type_spec                                                            // single type
- | '[' type_spec (',' type_spec)* ']'                                   // multiple types
+ : const_qualifier? type_spec                                            // single type
+ | '[' const_qualifier? type_spec (',' const_qualifier? type_spec)* ']'  // multiple types
  ;
 
 type_spec
  : builtin_type
- | IDENTIFIER
+ | type_name
+ ;
+
+type_name
+ : IDENTIFIER (DOT IDENTIFIER)*
  ;
 
 
@@ -430,7 +497,7 @@ list
  ;
 
 vector
- : '[' signed_num signed_num (signed_num)* ']'
+ : '[' vec_elem vec_elem (vec_elem)* ']'
  ;
 
 matrix
@@ -438,8 +505,13 @@ matrix
 ;
 
 row
- : signed_num (signed_num)*
+ : vec_elem (vec_elem)*
 ;
+
+vec_elem
+ : signed_num
+ | '(' expression ')'
+ ;
 
 signed_num
  : MINUS? num
@@ -459,8 +531,8 @@ dict
 TYPE: 'type';
 VAR : 'var';
 CONST : 'const';
+MUTABLE : 'mutable';
 PRIVATE: 'private';
-LET : 'let';
 FUNC: 'func';
 PROC: 'proc';
 WHEN: 'when';
@@ -519,6 +591,8 @@ UNTIL: 'until';
 MATCH: 'match';
 CASE: 'case';
 DEFAULT: 'default';
+BREAK: 'break';
+CONTINUE: 'continue';
 
 
 NEWLINE : ( '\r'? '\n' | '\r' | '\f' ) SPACES?;
@@ -534,7 +608,7 @@ PLUS : '+';
 MINUS : '-';
 MULT: '\u00D7'; // ×
 DIV : '/';
-MOD : '%';
+REM : 'rem';
 AT: '@';
 OR: 'or';
 AND: 'and';
@@ -569,20 +643,24 @@ CLOSE_BRACE : '}';
  * Literals
  */
 
-LTRUE : 'True'|'true'|'ON'|'On';
-LFALSE : 'False'|'false'|'OFF'|'Off'|'off';
+LTRUE : 'true';
+LFALSE : 'false';
 LNIL: 'nil';
 
  str
  : SINGLE_STRING
  | DOUBLE_STRING
  | TRIPLE_STRING
+ | SUFFIXED_SINGLE_STRING
+ | SUFFIXED_DOUBLE_STRING
  ;
 
 
 num
  : integer
  | FLOAT_NUMBER
+ | SUFFIXED_FLOAT
+ | SUFFIXED_DECIMAL_INTEGER
  ;
 
 
@@ -592,6 +670,30 @@ integer
  | HEX_INTEGER
  | BIN_INTEGER
  ;
+
+// Suffixed literal tokens — must appear before plain numeric/string tokens
+// so that ANTLR4 longest-match picks the suffixed variant when a suffix is present.
+// Bare suffix: starts with alpha, continues with alpha/digit/·/²³¹⁻/^//
+// Braced suffix: {contents} — allows alpha, digits, ·, ², ³, ¹, ⁻, ^, /, spaces
+// Standalone '%': numeric-only carve-out for percent literals (e.g. 50%, 0.5%).
+// '%' is only a percent suffix in Roxal — there is no '%' modulo operator
+// (use the 'rem' keyword instead).
+SUFFIXED_FLOAT
+ : ( POINT_FLOAT | EXPONENT_FLOAT ) ( BRACED_SUFFIX | BARE_SUFFIX | '%' )
+ ;
+
+SUFFIXED_DECIMAL_INTEGER
+ : ( NON_ZERO_DIGIT DIGIT* | '0'+ ) ( BRACED_SUFFIX | BARE_SUFFIX | '%' )
+ ;
+
+SUFFIXED_SINGLE_STRING
+ : '\'' ( STRING_ESCAPE_SEQ | ~[\\\r\n\f'] )* '\'' ( BRACED_SUFFIX | BARE_SUFFIX )
+ ;
+
+SUFFIXED_DOUBLE_STRING
+ : '"' ( STRING_ESCAPE_SEQ | ~[\\\r\n\f"] )* '"' ( BRACED_SUFFIX | BARE_SUFFIX )
+ ;
+
 
 DECIMAL_INTEGER
  : NON_ZERO_DIGIT DIGIT*
@@ -628,6 +730,10 @@ DOUBLE_STRING
  : '"' ( STRING_ESCAPE_SEQ | ~[\\\r\n\f"] )* '"'
  ;
 
+
+OPERATOR: 'operator';
+LOPERATOR: 'loperator';
+ROPERATOR: 'roperator';
 
 // this must be below keywords so they're not matched as identifiers
 IDENTIFIER
@@ -714,6 +820,42 @@ fragment FRACTION
 
  fragment STRING_ESCAPE_SEQ
  : '\\' .
+ ;
+
+// Literal suffix fragments
+// Bare suffix: starts with a letter, continues with letters, digits, and select
+// unit-notation characters. The ASTGenerator validates further constraints
+// (max 8 chars, at most one '/', no consecutive '··', etc.)
+fragment SUFFIX_START
+ : [\p{Letter}]
+ ;
+
+fragment SUFFIX_CONTINUE
+ : [\p{Letter}\p{Decimal_Number}]
+ | '\u00B7'                          // · middle dot (unit multiplication, e.g. N·m)
+ | [\u00B2\u00B3\u00B9]              // ² ³ ¹ superscript digits
+ | '\u207B'                          // ⁻ superscript minus
+ | '^'
+ | '/'
+ ;
+
+fragment BARE_SUFFIX
+ : SUFFIX_START SUFFIX_CONTINUE*
+ ;
+
+// Braced suffix: {contents} for expert use, allows longer/complex suffixes.
+// Restricted to letters, digits, unit-notation chars, and spaces.
+// Disallows quotes, braces, parens, brackets, backslash, control chars.
+fragment BRACED_SUFFIX
+ : '{' BRACED_SUFFIX_CHAR+ '}'
+ ;
+
+fragment BRACED_SUFFIX_CHAR
+ : [\p{Letter}\p{Decimal_Number}]
+ | '\u00B7'                          // · middle dot
+ | [\u00B2\u00B3\u00B9]              // ² ³ ¹
+ | '\u207B'                          // ⁻
+ | '^' | '/' | ' ' | '_' | '-'
  ;
 
 fragment SPACES

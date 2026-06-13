@@ -1,0 +1,19 @@
+// Test const on lists: snapshot isolation
+
+// 1. Basic snapshot isolation
+var a = [1, 2, 3]
+const ca = a
+a.append(4)
+a[0] = 99
+print(ca)       // [1, 2, 3] - snapshot preserved
+print(a)        // [99, 2, 3, 4] - mutable version changed
+print(len(ca))  // 3
+
+// 2. Read access works
+print(ca[0])   // 1
+print(ca[1])   // 2
+print(ca[2])   // 3
+
+// 3. typeof
+print(typeof(ca))  // <type const list>
+print(typeof(a))   // <type list>

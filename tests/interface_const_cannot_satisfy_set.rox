@@ -1,0 +1,9 @@
+type I interface:
+    var name :string:
+        get
+        set
+
+type Bad object implements I:
+    const name :string = "fixed"
+
+var b = Bad()

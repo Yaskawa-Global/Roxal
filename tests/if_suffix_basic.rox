@@ -1,0 +1,11 @@
+// Adhering `if` suffix on expression-statements.
+print('a') if true
+print('b') if false
+print('c') if 1 == 1
+print('d') if 1 == 2
+
+var x = 5
+print('high') if x > 3
+print('low')  if x < 3
+
+print('done')

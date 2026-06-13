@@ -1,0 +1,23 @@
+# Test: math.relu function
+import math
+
+# Scalar tests
+print(math.relu(5.0))      # positive stays positive
+print(math.relu(0.0-3.0))  # negative becomes 0
+print(math.relu(0.0))      # zero stays zero
+
+# Vector test
+var v = vector([0.0-2.0, 0.0-1.0, 0.0, 1.0, 2.0])
+print(math.relu(v))
+
+# Matrix test
+var m = matrix([[0.0-1.0, 2.0], [3.0, 0.0-4.0]])
+print(math.relu(m))
+
+# Tensor test
+var t = tensor(3, data=[0.0-1.0, 0.0, 1.0])
+var rt = math.relu(t)
+print(rt)
+print(rt[0])  # -1 -> 0
+print(rt[1])  # 0 -> 0
+print(rt[2])  # 1 -> 1

@@ -1,0 +1,18 @@
+// Overloaded init constructors.
+
+type Box object:
+    var v :int = 0
+    var s :string = ""
+
+    proc init(x :int):
+        this.v = x
+        this.s = "from-int"
+
+    proc init(x :string):
+        this.s = x
+        this.v = 0
+
+var a = Box(5)
+var b = Box("hi")
+print("a:{a.v},{a.s}")
+print("b:{b.v},{b.s}")

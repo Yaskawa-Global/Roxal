@@ -1,1 +1,1 @@
-error: DDS string field 'name' exceeds bound 5
+.*Uncaught exception:.*DDS string field 'name' exceeds bound 5.*

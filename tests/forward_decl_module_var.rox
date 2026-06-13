@@ -1,0 +1,9 @@
+// Module-level var with a forward type annotation.
+var glob :Box = nil
+
+type Box object:
+  var k :int = 0
+
+glob = Box()
+glob.k = 100
+print(glob.k)

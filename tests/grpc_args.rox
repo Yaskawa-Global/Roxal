@@ -1,0 +1,9 @@
+import roxal_examples.*
+
+var svc = EverythingService("127.0.0.1:50051", { 'timeout_ms': 2000 })
+
+// Empty request type: no args (auto-constructed)
+print(svc.Ping())
+
+// Empty request type: explicit request object (backwards compat)
+print(svc.Ping(PingRequest()))

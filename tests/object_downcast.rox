@@ -1,0 +1,49 @@
+
+type Animal object:
+
+  var name :string
+
+  proc init(name :string):
+    this.name = name
+
+
+type Mammal object extends Animal:
+
+  var has_vernix :bool = false
+
+  proc init(name :string):
+    super.init(name)
+
+  proc speak():
+    print(name + " makes a sound.")
+
+
+type Sealion object extends Mammal:
+
+  proc init(name :string):
+    super.init(name)
+    has_vernix = true
+
+  proc speak():
+    print(name + " says Aaarf Aaarf!")
+
+
+type Human object extends Mammal:
+
+  const greeting :string = "G'Day"
+
+  proc init(name :string):
+    super.init(name)
+    has_vernix = true
+
+  proc speak():
+    print(name + " says {greeting}!")
+
+var h : Human = Human("Alice")
+var m : Mammal = h
+var h2 : Human = m
+h2.speak()
+
+var m2 : Mammal = Mammal("Bob")
+var h3 : Human = m2
+h3.speak()

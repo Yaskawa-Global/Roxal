@@ -540,10 +540,8 @@ void ModuleUI::callInit(const Value& instance, const Value& typeObj)
     ObjString* initString = asStringObj(Value::stringVal(UnicodeString("init")));
 
     while (tInit != nullptr && initMethod == nullptr) {
-        auto it = tInit->methods.find(initString->hash);
-        if (it != tInit->methods.end())
-            initMethod = &it->second;
-        else
+        initMethod = tInit->firstOverload(initString->hash);
+        if (initMethod == nullptr)
             tInit = tInit->superType.isNil() ? nullptr : asObjectType(tInit->superType);
     }
 
@@ -570,7 +568,7 @@ void ModuleUI::callInit(const Value& instance, const Value& typeObj)
         auto result = vm().execute();
 
         // Check for errors
-        if (result.first != InterpretResult::OK) {
+        if (result.first != ExecutionStatus::OK) {
             // An error occurred during init execution
             // The VM will have already handled the error reporting
             return;
@@ -2552,7 +2550,7 @@ void ModuleUI::layout_remove(ArgsView args)
     if (isList(children)) {
         auto list = asList(children);
         // Erase by value
-        list->elts.erase(child);
+        list->removeValue(child);
     }
 
     // Note: We don't delete the LVGL object here - it may be re-parented

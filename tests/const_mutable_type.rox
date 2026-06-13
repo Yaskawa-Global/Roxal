@@ -1,0 +1,7 @@
+// Test const x: mutable T - variable is const (can't reassign) but value is mutable
+type O object:
+    var i: int
+
+const x: mutable O = O(42)
+x.i = 99
+print(x.i)

@@ -1,0 +1,25 @@
+type I interface:
+    const VERSION :string = "1.0"
+    const MAX :int = 100
+    type Status enum: ready, busy
+    func ping()
+
+type T object implements I:
+    func ping():
+        print("ping " + this.VERSION)
+
+# Access via interface
+print(I.VERSION)
+print(I.MAX)
+print(I.Status.ready)
+
+# Access via implementer (Java-style inherited)
+print(T.VERSION)
+print(T.MAX)
+print(T.Status.ready)
+
+# Instance access
+var t = T()
+t.ping()
+print(t.VERSION)
+print(t is I)

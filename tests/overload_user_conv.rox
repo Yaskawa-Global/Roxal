@@ -1,0 +1,21 @@
+// User-defined implicit conversion via `implicit init`. With
+// f(s :string) and f(c :Complex), and a real argument, the string
+// overload wins (rank 4 non-strict implicit beats rank 5 user-def).
+// With only f(c :Complex), the real arg flows in via Complex's
+// implicit init at runtime.
+
+type Complex object:
+    var re :real = 0.0
+    implicit proc init(r :real):
+        this.re = r
+    func operator string() -> string:
+        return "complex({this.re})"
+
+func g(c :Complex):
+    print("g:{c.re}")
+
+g(1.5)
+
+// Exact-match Complex still wins over Complex-via-conv from real.
+var c = Complex(2.5)
+g(c)

@@ -333,6 +333,8 @@ void DataflowEngine::clear()
     m_tickPeriod = TimeDuration::zero();
     m_runStart = TimePoint::zero();
     m_tickNumber = 0;
+    // Reset yield state to avoid stale references to cleared funcs
+    m_yieldState = YieldState{};
 }
 
 void DataflowEngine::stop()
@@ -564,44 +566,6 @@ void DataflowEngine::refreshDerivedSignals(const NetworkIsland& island, TimePoin
     }
 }
 
-void DataflowEngine::evaluateIsland(const NetworkIsland& island, TimePoint evaluationTime)
-{
-    if (island.funcs.empty())
-        return;
-
-    refreshDerivedSignals(island, evaluationTime);
-
-    uint64_t functionsExecuted;
-    int32_t iterations = 0;
-
-    do {
-        functionsExecuted = 0;
-
-        auto executeFuncIfinputsAvailable = [&](const ptr<FuncNode>& func) {
-            if (func->inputsAvailableAt(evaluationTime)) {
-                if (func->conditionallyExecute(evaluationTime)) {
-                    functionsExecuted++;
-
-                    for(auto& output : func->m_outputs)
-                        updateSignalConsumerInputAvailability(output.signal, evaluationTime);
-                }
-            }
-        };
-
-        for(const auto& periodFuncs : island.executionOrders) {
-            const auto& funcsForPeriod { periodFuncs.second };
-            for(auto func : funcsForPeriod) {
-                executeFuncIfinputsAvailable(func);
-            }
-        }
-
-        iterations++;
-        if (iterations > island.funcs.size()*100)
-            throw std::runtime_error("DataflowEngine: func execution didn't terminate - check for signal dependency cycles");
-
-    } while (functionsExecuted > 0);
-}
-
 void DataflowEngine::evaluateNetwork(TimePoint evaluationTime)
 {
     std::vector<NetworkIsland> islandsCopy;
@@ -615,6 +579,217 @@ void DataflowEngine::evaluateNetwork(TimePoint evaluationTime)
         evaluateIsland(island, islandTime);
     }
 }
+
+
+DataflowEngine::TickResult DataflowEngine::tickFor(TimeDuration budget)
+{
+    auto deadline = TimePoint::currentTime() + budget;
+
+    // If we have yielded work, check for overrun then resume
+    if (m_yieldState.active) {
+        // Check if we've overrun the tick period
+        auto elapsed = TimePoint::currentTime() - m_yieldState.tickTime;
+        if (m_tickPeriod > TimeDuration::zero() && elapsed >= m_tickPeriod) {
+            // Tick has exceeded its period - overrun error
+            m_yieldState.active = false;
+            return TickResult::Overrun;
+        }
+        return resumeTickEvaluation(deadline);
+    }
+
+    // Start a new tick
+    if (m_networkModified)
+        buildNetworkCacheData();
+
+    if (m_tickPeriod == TimeDuration::zero())
+        return TickResult::Complete;
+
+    if (m_runStart == TimePoint::zero())
+        m_runStart = nextPeriodOnPeriodBoundary(m_tickPeriod);
+
+    m_tickStart = m_runStart + m_tickPeriod * m_tickNumber;
+
+    // Tick all source signals that need it on this tick
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        for (const auto& signal : signals) {
+            if (signal->isSourceSignal()) {
+                if (signal->period() == TimeDuration::zero())
+                    continue;
+
+                // Should this source tick now?
+                if ((m_tickStart.load() % signal->period()) == TimeDuration::zero()) {
+                    signal->tick(m_tickStart);
+                    updateSignalConsumerInputAvailability(signal, m_tickStart);
+                }
+            }
+        }
+    }
+
+    // Evaluate islands with deadline support
+    std::vector<NetworkIsland> islandsCopy;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        islandsCopy = m_networkIslands;
+    }
+
+    for (size_t i = 0; i < islandsCopy.size(); ++i) {
+        TimePoint islandTime = resolveEvaluationTime(islandsCopy[i], m_tickStart);
+        auto result = evaluateIsland(islandsCopy[i], islandTime, deadline);
+
+        if (result == TickResult::Yielded) {
+            m_yieldState.active = true;
+            m_yieldState.islandIndex = i;
+            m_yieldState.tickTime = m_tickStart;
+            return TickResult::Yielded;
+        }
+
+        if (result == TickResult::Error)
+            return TickResult::Error;
+    }
+
+    invokeTickCallbacks();
+    m_tickNumber++;
+    return TickResult::Complete;
+}
+
+
+DataflowEngine::TickResult DataflowEngine::resumeTickEvaluation(TimePoint deadline)
+{
+    if (!m_yieldState.active)
+        return TickResult::Error;
+
+    if (m_networkModified) {
+        // Network changed - cannot safely resume
+        m_yieldState.active = false;
+        return TickResult::Error;
+    }
+
+    std::vector<NetworkIsland> islandsCopy;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        islandsCopy = m_networkIslands;
+    }
+
+    // If a func was mid-execution, resume it first
+    if (m_yieldState.funcWasExecuting && m_yieldState.yieldedFunc) {
+        auto result = m_yieldState.yieldedFunc->resumeExecution(deadline);
+        if (result == FuncExecResult::Yielded)
+            return TickResult::Yielded;
+
+        if (result == FuncExecResult::Error) {
+            m_yieldState.active = false;
+            return TickResult::Error;
+        }
+
+        // Func completed - update outputs and continue
+        m_yieldState.funcWasExecuting = false;
+        for (auto& output : m_yieldState.yieldedFunc->m_outputs)
+            updateSignalConsumerInputAvailability(output.signal, m_yieldState.tickTime);
+        m_yieldState.funcIndex++;
+        m_yieldState.yieldedFunc = nullptr;
+    }
+
+    // Continue evaluating from saved position
+    for (size_t i = m_yieldState.islandIndex; i < islandsCopy.size(); ++i) {
+        size_t startPeriodIndex = (i == m_yieldState.islandIndex) ? m_yieldState.periodIndex : 0;
+        size_t startFuncIndex = (i == m_yieldState.islandIndex) ? m_yieldState.funcIndex : 0;
+
+        TimePoint islandTime = resolveEvaluationTime(islandsCopy[i], m_yieldState.tickTime);
+        auto result = evaluateIsland(
+            islandsCopy[i], islandTime, deadline, startPeriodIndex, startFuncIndex);
+
+        if (result == TickResult::Yielded) {
+            m_yieldState.islandIndex = i;
+            return TickResult::Yielded;
+        }
+
+        if (result == TickResult::Error) {
+            m_yieldState.active = false;
+            return TickResult::Error;
+        }
+
+        // Reset indices for next island
+        m_yieldState.funcIndex = 0;
+        m_yieldState.periodIndex = 0;
+    }
+
+    m_yieldState.active = false;
+    invokeTickCallbacks();
+    m_tickNumber++;
+    return TickResult::Complete;
+}
+
+
+DataflowEngine::TickResult DataflowEngine::evaluateIsland(
+    const NetworkIsland& island,
+    TimePoint evaluationTime,
+    TimePoint deadline,
+    size_t startPeriodIndex,
+    size_t startFuncIndex)
+{
+    if (island.funcs.empty())
+        return TickResult::Complete;
+
+    // Only refresh derived signals on first entry (not resume)
+    if (startPeriodIndex == 0 && startFuncIndex == 0)
+        refreshDerivedSignals(island, evaluationTime);
+
+    // Convert executionOrders map to a vector for indexed access
+    std::vector<std::pair<TimeDuration, std::vector<ptr<FuncNode>>>> orderedPeriods(
+        island.executionOrders.begin(), island.executionOrders.end());
+
+    uint64_t functionsExecuted;
+    int32_t iterations = 0;
+
+    do {
+        functionsExecuted = 0;
+
+        for (size_t periodIdx = startPeriodIndex; periodIdx < orderedPeriods.size(); ++periodIdx) {
+            const auto& funcsForPeriod = orderedPeriods[periodIdx].second;
+            size_t funcStart = (periodIdx == startPeriodIndex) ? startFuncIndex : 0;
+
+            for (size_t funcIdx = funcStart; funcIdx < funcsForPeriod.size(); ++funcIdx) {
+                const auto& func = funcsForPeriod[funcIdx];
+
+                if (!func->inputsAvailableAt(evaluationTime))
+                    continue;
+
+                auto result = func->conditionallyExecute(evaluationTime, deadline);
+
+                if (result == FuncExecResult::Completed) {
+                    functionsExecuted++;
+                    for (auto& output : func->m_outputs)
+                        updateSignalConsumerInputAvailability(output.signal, evaluationTime);
+                }
+                else if (result == FuncExecResult::Yielded) {
+                    // Save position for resume
+                    m_yieldState.periodIndex = periodIdx;
+                    m_yieldState.funcIndex = funcIdx;
+                    m_yieldState.funcWasExecuting = true;
+                    m_yieldState.yieldedFunc = func;
+                    return TickResult::Yielded;
+                }
+                else if (result == FuncExecResult::Error) {
+                    return TickResult::Error;
+                }
+                // FuncExecResult::NotExecuted - continue to next func
+            }
+        }
+
+        // After first full pass, reset start indices
+        startPeriodIndex = 0;
+        startFuncIndex = 0;
+
+        iterations++;
+        if (iterations > island.funcs.size() * 100)
+            throw std::runtime_error("DataflowEngine: func execution didn't terminate - check for signal dependency cycles");
+
+    } while (functionsExecuted > 0);
+
+    return TickResult::Complete;
+}
+
 
 TimePoint DataflowEngine::resolveEvaluationTime(const NetworkIsland& island, TimePoint candidate) const
 {

@@ -1,0 +1,1 @@
+.*error: Undefined property 'x' for type 'Foo'. Only nested types and public const members are accessible on type values.*

@@ -1,0 +1,18 @@
+type Greeter interface:
+    var name :string:
+        get
+        set
+    func greet()
+
+type Hello object implements Greeter:
+    var name :string
+    func greet():
+        print("hi, " + this.name)
+
+var h = Hello("world")
+h.greet()
+print(h is Greeter)
+print(Hello is Greeter)
+h.name = "there"
+h.greet()
+print(h.name)

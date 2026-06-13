@@ -1,0 +1,31 @@
+type Outer object:
+    type Inner object:
+        var y: int
+    type Color enum: red, green, blue
+
+# dotted type in variable declaration
+var item: Outer.Inner = Outer.Inner(42)
+print(item.y)
+
+# dotted type in function parameter
+func show(item: Outer.Inner):
+    print(item.y)
+show(Outer.Inner(99))
+
+# dotted type in member variable
+type Container object:
+    var item: Outer.Inner
+var c = Container(Outer.Inner(7))
+print(c.item.y)
+
+# dotted type in return type
+func make() -> Outer.Inner:
+    return Outer.Inner(55)
+print(make().y)
+
+# dotted type in extends
+type Derived object extends Outer.Inner:
+    var z: int
+var d = Derived(10, 20)
+print(d.y)
+print(d.z)

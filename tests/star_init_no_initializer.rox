@@ -1,0 +1,44 @@
+// init(*) treats every synthesized param as optional. When the source
+// property has no explicit initializer, the param falls back to the same
+// implicit default the type-construction loop uses: builtin types get
+// their type's zero, user object types and untyped fields get nil.
+// This mirrors the legacy no-init auto-construct path, so adding
+// `proc init(*)` doesn't suddenly make previously-valid `Type()` calls fail.
+
+type Engine object:
+  var hp :int = 0
+  proc init(*):
+    _
+
+type Car object:
+  var year :int                // typed builtin, no init → defaults to 0
+  var name :string             // typed builtin, no init → defaults to ""
+  var live :bool               // typed builtin, no init → defaults to false
+  var engine :Engine           // user-defined type, no init → defaults to nil
+  var note                     // untyped, no init → defaults to nil
+
+  proc init(*):
+    print("car init")
+
+// All defaults flow:
+var c1 = Car()
+print(c1.year)
+print("[" + c1.name + "]")
+print(c1.live)
+print(c1.engine is nil)
+print(c1.note is nil)
+
+// Mixed: supply some, default the rest:
+var c2 = Car(year=2026, engine=Engine(hp=400))
+print(c2.year)
+print("[" + c2.name + "]")          // still default ""
+print(c2.engine.hp)
+print(c2.note is nil)               // still default nil
+
+// All explicit:
+var c3 = Car(year=2020, name="cx", live=true, engine=Engine(hp=200), note="hi")
+print(c3.year)
+print(c3.name)
+print(c3.live)
+print(c3.engine.hp)
+print(c3.note)

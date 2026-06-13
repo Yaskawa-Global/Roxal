@@ -1,0 +1,8 @@
+type Worker actor:
+  func sample(s: signal) -> int:
+    return int(s.value)
+
+var worker = Worker() at "__COMPUTE_TEST_ADDR__"
+var s = signal(10, 7)
+var result = worker.sample(s)
+wait(for=result)

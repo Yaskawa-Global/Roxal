@@ -1,0 +1,55 @@
+# Tensor/Matrix/Vector type conversion tests
+
+# === tensor(vector) → 1D tensor ===
+var v1 = vector([1, 2, 3, 4])
+var t1 = tensor(v1)
+print(len(t1))
+print(t1[0])
+print(t1[3])
+
+# === tensor(matrix) → 2D tensor ===
+var m1 = matrix([[1, 2, 3], [4, 5, 6]])
+var t2 = tensor(m1)
+print(len(t2))
+print(t2[0, 0])
+print(t2[1, 2])
+
+# === vector(tensor) with 1D tensor ===
+var t3 = tensor(4, data=[10, 20, 30, 40])
+var v2 = vector(t3)
+print(len(v2))
+print(v2[0])
+print(v2[3])
+
+# === matrix(tensor) with 2D tensor ===
+var t4 = tensor(2, 3, data=[1, 2, 3, 4, 5, 6])
+var m2 = matrix(t4)
+print(m2)
+
+# === matrix(tensor) with 1D tensor → 1-row matrix ===
+var t5 = tensor(3, data=[7, 8, 9])
+var m3 = matrix(t5)
+print(m3)
+
+# === vector(matrix) with 1-row matrix ===
+var m4 = matrix([[1, 2, 3, 4]])
+var v3 = vector(m4)
+print(len(v3))
+print(v3[0])
+print(v3[3])
+
+# === vector(matrix) with 1-col matrix ===
+var m5 = matrix([[10], [20], [30]])
+var v4 = vector(m5)
+print(len(v4))
+print(v4[0])
+print(v4[2])
+
+# === matrix[i] returns 1-row matrix (not vector) ===
+var m6 = matrix([[1, 2, 3], [4, 5, 6]])
+var row = m6[0]
+print(row)
+# Convert to vector explicitly
+var rowVec = vector(row)
+print(len(rowVec))
+print(rowVec[2])

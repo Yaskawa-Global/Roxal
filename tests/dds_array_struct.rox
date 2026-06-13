@@ -1,0 +1,20 @@
+import ArrayNested
+import dds
+
+p = dds.create_participant()
+t = dds.create_topic(p, "ArrayStructTopic", ArrayNested.Msg)
+w = dds.create_writer(p, t)
+r = dds.create_reader(p, t)
+
+m = ArrayNested.Msg()
+m.colors = [ArrayNested.Color.Red, ArrayNested.Color.Blue]
+var i0 = ArrayNested.Inner()
+i0.id = 10
+var i1 = ArrayNested.Inner()
+i1.id = 20
+m.inners = [i0, i1]
+
+wait(for=dds.write(w, m))
+recv = dds.read(r)
+print("{recv.colors}")
+print("{recv.inners[0].id} {recv.inners[1].id}")

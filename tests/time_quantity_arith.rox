@@ -1,0 +1,105 @@
+// Test Time, TimeSpan and quantity interconversions and arithmetic
+// with various literal suffixes
+
+// --- TimeSpan construction from quantity with different suffixes ---
+
+var span_us = TimeSpan(500us)
+print(span_us.total_micros())
+
+var span_ms = TimeSpan(250ms)
+print(span_ms.total_millis())
+
+var span_s = TimeSpan(10s)
+print(span_s.total_seconds())
+
+var span_min = TimeSpan(2min)
+print(span_min.total_minutes())
+
+var span_hr = TimeSpan(3hr)
+print(span_hr.total_hours())
+
+// --- quantity construction from TimeSpan ---
+
+var q_from_span = quantity(TimeSpan(seconds=90))
+print(q_from_span)
+
+var q_from_span2 = quantity(TimeSpan(hours=1, minutes=30))
+print(q_from_span2)
+
+// --- TimeSpan arithmetic with different quantity suffixes ---
+
+var base_span = TimeSpan(seconds=60)
+print((base_span + 30s).total_seconds())
+print((base_span + 500ms).total_millis())
+print((base_span - 10s).total_seconds())
+print((base_span + 1min).total_seconds())
+print((base_span + 1hr).total_seconds())
+
+// --- Time arithmetic with different quantity suffixes ---
+
+var t = Time.from_parts(seconds=86400, micros=0, kind='wall')
+
+var t_plus_s = t + 30s
+print(t_plus_s.seconds())
+
+var t_plus_ms = t + 500ms
+print(t_plus_ms.seconds())
+print(t_plus_ms.microseconds())
+
+var t_plus_min = t + 45min
+print(t_plus_min.seconds())
+
+var t_plus_hr = t + 2hr
+print(t_plus_hr.seconds())
+
+var t_minus_s = t - 10s
+print(t_minus_s.seconds())
+
+var t_minus_hr = t - 1hr
+print(t_minus_hr.seconds())
+
+// --- Time arithmetic with TimeSpan ---
+
+var t2 = t + TimeSpan(hours=1, minutes=30, seconds=45)
+print(t2.seconds())
+print((t2 - t).total_seconds())
+
+// --- quantity comparison with TimeSpan ---
+
+print(60s == TimeSpan(seconds=60))
+print(1min == TimeSpan(seconds=60))
+print(1hr == TimeSpan(minutes=60))
+print(500ms < TimeSpan(seconds=1))
+print(2hr > TimeSpan(minutes=30))
+
+// --- TimeSpan comparison with quantity ---
+
+print(TimeSpan(seconds=60) == 1min)
+print(TimeSpan(hours=2) > 30min)
+print(TimeSpan(millis=100) < 1s)
+
+// --- Round-trip conversions ---
+
+// quantity -> TimeSpan -> quantity
+var q1 = 45min
+var span_rt = TimeSpan(q1)
+var q_rt = quantity(span_rt)
+print(q_rt)
+
+// TimeSpan -> quantity -> TimeSpan
+var span1 = TimeSpan(hours=2, seconds=30)
+var q2 = quantity(span1)
+var span_back = TimeSpan(q2)
+print(span_back.total_seconds())
+print(span_back.human())
+
+// --- Mixed arithmetic returning quantity ---
+
+print((5s + TimeSpan(seconds=3)).seconds)
+print((1hr - TimeSpan(minutes=15)).minutes)
+
+// --- Negation ---
+
+var neg_span = -TimeSpan(seconds=5)
+print(neg_span.total_seconds())
+print((-10s).seconds)

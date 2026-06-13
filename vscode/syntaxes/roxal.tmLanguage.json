@@ -35,7 +35,7 @@
       "patterns": [
         {
           "name": "constant.language.boolean.roxal",
-          "match": "\\b(?:True|False|true|false|ON|On|OFF|Off|off)\\b"
+          "match": "\\b(?:true|false)\\b"
         },
         {
           "name": "constant.language.nil.roxal",
@@ -58,7 +58,7 @@
       "patterns": [
         {
           "name": "keyword.control.roxal",
-          "match": "\\b(?:if|else|elseif|while|for|match|case|default|try|except|finally|raise|return|until|when|where|emit|scope|with)\\b"
+          "match": "\\b(?:if|else|elseif|while|for|break|continue|match|case|default|try|except|finally|raise|return|until|when|becomes|changes|occurs|where|emit|scope|with)\\b"
         },
         {
           "name": "keyword.control.import.roxal",
@@ -66,7 +66,7 @@
         },
         {
           "name": "storage.type.modifier.roxal",
-          "match": "\\b(?:var|const|let|func|proc|type|enum|event)\\b"
+          "match": "\\b(?:var|const|mutable|private|implicit|func|proc|type|enum|event|operator|loperator|roperator)\\b"
         },
         {
           "name": "storage.type.class.roxal",
@@ -74,7 +74,7 @@
         },
         {
           "name": "keyword.other.roxal",
-          "match": "\\b(?:implements|extends|as|by|in|changed)\\b"
+          "match": "\\b(?:implements|extends|as|by|in)\\b"
         },
         {
           "name": "variable.language.special.roxal",
@@ -114,15 +114,15 @@
       "patterns": [
         {
           "name": "keyword.operator.assignment.roxal",
-          "match": "<-|="
+          "match": "<-|\\u2190|="
         },
         {
           "name": "keyword.operator.comparison.roxal",
-          "match": "==|!=|<>|<=|>=|<|>"
+          "match": "==|!=|<>|<=|>=|<|>|\\u225F|\\u2260|\\u2264|\\u2A7D|\\u2265|\\u2A7E"
         },
         {
           "name": "keyword.operator.arrow.roxal",
-          "match": "->"
+          "match": "->|\\u2192"
         },
         {
           "name": "keyword.operator.range.roxal",
@@ -134,7 +134,7 @@
         },
         {
           "name": "keyword.operator.arithmetic.roxal",
-          "match": "[+\\-*/%]"
+          "match": "[+\\-*/%\\u00D7]"
         },
         {
           "name": "keyword.operator.bitwise.roxal",

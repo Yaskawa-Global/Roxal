@@ -1,0 +1,4 @@
+// '%' is the percent suffix; no digit may immediately follow a percent
+// literal. '10%' lexes here as a percent literal, leaving '3' dangling.
+// (For remainder use the 'rem' keyword, e.g. '10 rem 3'.)
+print(10%3)

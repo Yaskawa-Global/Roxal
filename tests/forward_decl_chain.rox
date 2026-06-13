@@ -1,0 +1,38 @@
+// Forward refs across multiple shapes: extends, return type, param type,
+// actor field type, enum field type, event extends.
+
+type Child object extends Parent:
+  var x :int = 0
+type Parent object:
+  var y :int = 1
+
+func make() -> E:
+  return E()
+proc consume(e :E):
+  print(e.label)
+type E object:
+  var label :string = "made"
+
+type Worker actor:
+  private var color :Color
+  proc init(c :Color):
+    color = c
+  func currentColor() -> Color:
+    return color
+type Color enum:
+  red
+  green
+  blue
+
+var c = Child()
+c.x = 7
+c.y = 9
+print(c.x)
+print(c.y)
+print(c is Parent)
+
+var e = make()
+consume(e)
+
+var w = Worker(Color.green)
+print(w.currentColor())

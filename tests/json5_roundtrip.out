@@ -1,0 +1,14 @@
+{name: "roxal", version: 0.5, flags: [1, 0.5, 255], nested: {enabled: true, notes: "multi\nline"}}
+{
+  name: "roxal",
+  version: 0.5,
+  flags: [
+    1,
+    0.5,
+    255
+  ],
+  nested: {
+    enabled: true,
+    notes: "multi\nline"
+  }
+}

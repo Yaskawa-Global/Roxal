@@ -1,0 +1,17 @@
+# nested type shadows module-level type with same name
+type Color enum: a, b
+
+type Outer object:
+    type Color enum: red, green, blue
+    type Widget object:
+        var color: Color
+
+# module-level Color unchanged
+print(Color.a)
+
+# Outer.Color is the nested one
+print(Outer.Color.red)
+
+# Widget.color uses the nested Color (shadowed)
+var w = Outer.Widget(Outer.Color.green)
+print(w.color)

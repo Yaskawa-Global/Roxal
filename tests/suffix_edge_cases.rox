@@ -1,0 +1,64 @@
+// Edge case tests for literal suffixes
+
+// --- Braced suffix with special chars ---
+@suffix("kg·m/s²")
+func _suf_kgms2(v):
+  return 'force:' + string(v)
+
+print(10{kg·m/s²})
+print(3.14{kg·m/s²})
+
+// --- Braced suffix allowing longer names ---
+@suffix("my long unit")
+func _suf_longunit(v):
+  return 'long:' + string(v)
+
+print(42{my long unit})
+
+// --- Scientific notation with suffix ---
+@suffix("xx")
+func _suf_xx(v):
+  return v
+
+// 1e3 = 1000.0 with suffix "xx"
+print(1e3xx)
+// 1.5e2 = 150.0 with suffix "xx"
+print(1.5e2xx)
+// 2.5e-1 = 0.25 with suffix "xx"
+print(2.5e-1xx)
+
+// --- Whitespace disambiguation ---
+// Suffix "xx" on 10, then divided by a function call result
+func scale():
+  return 2
+
+// 10xx / scale() — suffix "xx" gives 10, then / 2 = 5
+print(10xx / scale())
+
+// 10 * variable named xx (not suffix - space separates)
+var xx = 7
+print(10 * xx)
+
+// --- Suffix on zero ---
+print(0xx)
+print(0.0xx)
+
+// --- Braced suffix on strings ---
+@suffix("locale")
+func _suf_locale(s):
+  return 'LOCALE:' + s
+
+print('hello'{locale})
+print("world"{locale})
+
+// --- Braced vs bare: same suffix both ways ---
+@suffix("zz")
+func _suf_zz(v):
+  return v * 10
+
+print(5zz)
+print(5{zz})
+
+// --- Multiple suffixed literals in one expression ---
+print(10xx + 20xx)
+print(100xx - 30xx)

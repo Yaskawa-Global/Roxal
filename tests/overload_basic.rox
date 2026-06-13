@@ -1,0 +1,8 @@
+func f(x :int):
+    print("int:{x}")
+
+func f(x :string):
+    print("str:{x}")
+
+f(5)
+f("hello")

@@ -1,0 +1,3 @@
+// In JSON mode (json5=false), non-finite numbers raise a runtime error.
+var v = from_json('[NaN]')
+print(to_json(v, false, false))

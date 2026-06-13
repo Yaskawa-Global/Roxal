@@ -1,0 +1,22 @@
+// A get-only accessor (`:get:` with no `:set:`) is read-only on the public
+// surface, so init(*) deliberately EXCLUDES it from the synthesized
+// parameter list — even though the backing field still exists, surfacing
+// it as a settable named arg would contradict the read-only contract.
+
+type Box object:
+  var name :string = "?"         // plain var — included
+  var label :string = "unset":   // get-only — EXCLUDED from init(*)
+    get:
+      return _label
+
+  proc init(*):
+    print("init")
+
+// init(*) takes only `name`; `label` keeps its declared default.
+var b1 = Box("hi")
+print(b1.name)
+print(b1.label)
+
+var b2 = Box(name="world")
+print(b2.name)
+print(b2.label)

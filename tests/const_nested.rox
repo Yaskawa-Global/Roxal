@@ -1,0 +1,50 @@
+// Test transitive constness through nested structures
+
+type Item object:
+    var name :string
+    var value :int
+
+// 1. List of objects - transitive const
+var items = [Item("a", 1), Item("b", 2)]
+const citems = items
+
+// Mutate through mutable alias
+items[0].value = 99
+items.append(Item("c", 3))
+
+// Const snapshot preserved
+print(len(citems))        // 2
+print(citems[0].value)    // 1
+print(citems[1].value)    // 2
+
+// 2. Dict of objects - snapshot isolation
+var d = {"item": Item("x", 10)}
+const cd = d
+d["item"].value = 77
+
+print(cd["item"].value)  // 10 - snapshot isolation
+
+// 3. Object containing list
+type Container object:
+    var data
+
+var c = Container([1, 2, 3])
+const cc = c
+c.data.append(4)
+
+print(cc.data)       // [1, 2, 3] - transitive snapshot
+print(len(cc.data))  // 3
+
+// 4. Deeply nested: object -> object -> value
+type Inner object:
+    var n :int
+
+type Wrapper object:
+    var inner
+
+var w = Wrapper(Inner(42))
+const cw = w
+w.inner.n = 100
+
+print(cw.inner.n)   // 42 - snapshot preserved at depth 2
+print(w.inner.n)     // 100 - mutable sees mutation

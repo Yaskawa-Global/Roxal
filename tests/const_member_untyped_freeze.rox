@@ -1,0 +1,7 @@
+# untyped const list member should be frozen (implicitly const type)
+type Foo object:
+    const items = [1, 2, 3]
+
+var f = Foo()
+print(f.items)
+f.items.append(4)

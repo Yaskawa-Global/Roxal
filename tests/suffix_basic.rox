@@ -1,0 +1,25 @@
+// Basic literal suffix test
+
+@suffix("px")
+func pixels(v):
+  return v * 1000  // scale for testing
+
+@suffix("pct")
+func percent(v):
+  return v
+
+// integer suffix
+print(10px)
+
+// real suffix
+print(3.14px)
+
+// another suffix
+print(90pct)
+
+// suffix in expression
+print(10px + 5px)
+
+// whitespace disambiguates: 10 * variable px, not suffix
+var px = 7
+print(10 * px)

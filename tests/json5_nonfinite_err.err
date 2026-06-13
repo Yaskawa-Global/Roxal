@@ -1,0 +1,1 @@
+.*Uncaught exception:.*to_json: non-finite number requires json5=true.*

@@ -1,0 +1,11 @@
+// Test actor method params cannot be mutated (implicitly const)
+type O object:
+    var i: int
+
+type Worker actor:
+    func process(o: O) -> int:
+        o.i = 99
+        return o.i
+
+var w = Worker()
+print(w.process(O(42)))

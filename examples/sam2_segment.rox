@@ -1,0 +1,249 @@
+# SAM2 Segment Anything (Segment Anything Model 2)
+# Loads an image, runs SAM2 encoder+decoder, segments object at a point.
+# SAM2 is a promptable segmentation model — give it a point or box,
+# and it returns pixel-level masks.
+#
+# Models (SAM2 Tiny, ~150MB total):
+#   wget -O sam2_hiera_tiny_encoder.onnx \
+#     "https://huggingface.co/vietanhdev/segment-anything-2-onnx-models/resolve/main/sam2_hiera_tiny.encoder.onnx"
+#   wget -O sam2_hiera_tiny_decoder.onnx \
+#     "https://huggingface.co/vietanhdev/segment-anything-2-onnx-models/resolve/main/sam2_hiera_tiny.decoder.onnx"
+#
+# Other variants (small, base_plus, large):
+#   https://huggingface.co/vietanhdev/segment-anything-2-onnx-models
+#
+# Usage:
+#   roxal examples/sam2_segment.rox <image.jpg> <point_x> <point_y> [encoder.onnx] [decoder.onnx]
+#
+# The point (x,y) is in original image pixel coordinates.
+
+import media
+import ai.nn
+import math
+
+# ============================================================
+# Parse arguments
+# ============================================================
+
+if len(args) < 3:
+  print("Usage: roxal examples/sam2_segment.rox <image> <point_x> <point_y> [encoder.onnx] [decoder.onnx]")
+  print("  point_x, point_y: click coordinates in original image pixels")
+  exit(1)
+
+var image_path = args[0]
+var click_x = real(args[1])
+var click_y = real(args[2])
+var encoder_path = "sam2_hiera_tiny_encoder.onnx"
+var decoder_path = "sam2_hiera_tiny_decoder.onnx"
+if len(args) >= 4:
+  encoder_path = args[3]
+if len(args) >= 5:
+  decoder_path = args[4]
+
+var INPUT_SIZE = 1024
+
+# ============================================================
+# Load image and preprocess for SAM2
+# ============================================================
+
+print("Loading image: {image_path}")
+var img = media.Image(image_path)
+var orig_w = img.width()
+var orig_h = img.height()
+print("  Original size: {orig_w}x{orig_h}")
+print("  Click point: ({click_x}, {click_y})")
+
+# Resize longest side to 1024, preserving aspect ratio
+var scale = real(INPUT_SIZE) / math.fmax(real(orig_w), real(orig_h))
+var new_w = int(real(orig_w) * scale)
+var new_h = int(real(orig_h) * scale)
+img.resize(new_w, new_h)
+print("  Resized: {new_w}x{new_h} (scale={scale})")
+
+# Pad to 1024x1024 square with zeros
+img.pad(INPUT_SIZE, INPUT_SIZE)
+
+# Convert to tensor with ImageNet normalization
+var input = img.to_tensor(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+
+# ============================================================
+# Run encoder (heavy ViT backbone, once per image)
+# ============================================================
+
+print("Loading encoder: {encoder_path}")
+var encoder = ai.nn.Model(encoder_path)
+print("  Device: {encoder.device()}")
+
+print("Running encoder...")
+var enc_result = encoder.predict(input)
+# Encoder outputs (order from model):
+#   enc_result[0] = high_res_feats_0  [1, 32, 256, 256]
+#   enc_result[1] = high_res_feats_1  [1, 64, 128, 128]
+#   enc_result[2] = image_embed       [1, 256, 64, 64]
+var high_res_0  = enc_result[0]
+var high_res_1  = enc_result[1]
+var image_embed = enc_result[2]
+print("  Encoder done.")
+encoder.close()
+
+# ============================================================
+# Build point prompt
+# ============================================================
+
+# Transform click coordinates to 1024-space
+var px = click_x * scale
+var py = click_y * scale
+
+# point_coords: [1, num_points, 2] — one foreground point + one padding point
+var point_coords = tensor(1, 2, 2, dtype='float32')
+point_coords[0, 0, 0] = px
+point_coords[0, 0, 1] = py
+point_coords[0, 1, 0] = 0.0
+point_coords[0, 1, 1] = 0.0
+
+# point_labels: [1, num_points] — 1=foreground, -1=padding
+var point_labels = tensor(1, 2, dtype='float32')
+point_labels[0, 0] = 1.0
+point_labels[0, 1] = -1.0
+
+# mask_input: [1, 1, 256, 256] — no prior mask (zeros)
+var mask_input = tensor(1, 1, 256, 256, dtype='float32')
+
+# has_mask_input: [1] — 0 means no prior mask
+var has_mask_input = tensor(1, dtype='float32')
+
+print("  Point in 1024-space: ({px}, {py})")
+
+# ============================================================
+# Run decoder (lightweight, per prompt)
+# ============================================================
+
+print("Loading decoder: {decoder_path}")
+var decoder = ai.nn.Model(decoder_path)
+
+print("Running decoder...")
+var dec_result = decoder.predict({
+  'image_embed': image_embed,
+  'high_res_feats_0': high_res_0,
+  'high_res_feats_1': high_res_1,
+  'point_coords': point_coords,
+  'point_labels': point_labels,
+  'mask_input': mask_input,
+  'has_mask_input': has_mask_input
+})
+
+# Decoder outputs:
+#   dec_result[0] = masks          [1, num_masks, 256, 256] (logits)
+#   dec_result[1] = iou_predictions [1, num_masks]
+var masks    = dec_result[0]
+var iou_preds = dec_result[1]
+print("  Decoder done.")
+decoder.close()
+
+# ============================================================
+# Select best mask (highest IoU score)
+# ============================================================
+
+var num_masks = 3
+var best_idx = 0
+var best_iou = iou_preds[0, 0]
+var mi = 1
+while mi < num_masks:
+  if iou_preds[0, mi] > best_iou:
+    best_iou = iou_preds[0, mi]
+    best_idx = mi
+  mi = mi + 1
+
+print("")
+print("Mask IoU scores:")
+var pi = 0
+while pi < num_masks:
+  var iou = iou_preds[0, pi]
+  var marker = ""
+  if pi == best_idx:
+    marker = " <-- best"
+  print("  Mask {pi}: IoU = {iou}{marker}")
+  pi = pi + 1
+
+# ============================================================
+# Analyze mask: count positive pixels, compute bounding box
+# ============================================================
+
+var mask_h = 256
+var mask_w = 256
+var pos_count = 0
+var min_x = mask_w
+var min_y = mask_h
+var max_x = 0
+var max_y = 0
+
+var my = 0
+while my < mask_h:
+  var mx = 0
+  while mx < mask_w:
+    if masks[0, best_idx, my, mx] > 0.0:
+      pos_count = pos_count + 1
+      if mx < min_x:
+        min_x = mx
+      if mx > max_x:
+        max_x = mx
+      if my < min_y:
+        min_y = my
+      if my > max_y:
+        max_y = my
+    mx = mx + 1
+  my = my + 1
+
+var total_pixels = mask_h * mask_w
+var coverage = real(pos_count) / real(total_pixels) * 100.0
+var coverage_pct = int(coverage)
+
+print("")
+print("Best mask ({best_idx}):")
+print("  Positive pixels: {pos_count} / {total_pixels} ({coverage_pct}%)")
+
+if pos_count > 0:
+  # Scale mask bounding box back to original image coordinates
+  # Mask is 256x256 over the 1024x1024 padded input
+  var mask_scale = real(INPUT_SIZE) / real(mask_w)
+  var box_x1 = int(real(min_x) * mask_scale / scale)
+  var box_y1 = int(real(min_y) * mask_scale / scale)
+  var box_x2 = int(real(max_x) * mask_scale / scale)
+  var box_y2 = int(real(max_y) * mask_scale / scale)
+
+  # Clamp to original image bounds
+  if box_x1 < 0:
+    box_x1 = 0
+  if box_y1 < 0:
+    box_y1 = 0
+  if box_x2 >= orig_w:
+    box_x2 = orig_w - 1
+  if box_y2 >= orig_h:
+    box_y2 = orig_h - 1
+
+  print("  Bounding box (original coords): [{box_x1}, {box_y1}, {box_x2}, {box_y2}]")
+else:
+  print("  No positive pixels — try a different point.")
+
+# ============================================================
+# Save mask as image (optional)
+# ============================================================
+
+# Create a grayscale mask image from logits > 0
+var mask_data = tensor(mask_h, mask_w, 1, dtype='uint8')
+var sy = 0
+while sy < mask_h:
+  var sx = 0
+  while sx < mask_w:
+    if masks[0, best_idx, sy, sx] > 0.0:
+      mask_data[sy, sx, 0] = 255
+    sx = sx + 1
+  sy = sy + 1
+
+var mask_img = media.Image(source=mask_data)
+mask_img.resize(orig_w, orig_h)
+
+var out_path = "sam2_mask_output.png"
+mask_img.write(out_path)
+print("")
+print("Mask saved to: {out_path}")

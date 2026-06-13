@@ -1,0 +1,12 @@
+type Foo object:
+    var x: int
+    type Color enum: red, green, blue
+
+# access via type
+print(Foo.Color.red)
+print(Foo.Color.green)
+print(Foo.Color.blue)
+
+# access via instance
+var f = Foo(42)
+print(f.Color.red)

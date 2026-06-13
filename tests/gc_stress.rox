@@ -136,7 +136,7 @@ func link_payloads(items):
   var nxt = nil
   while idx < count:
     current = items[idx]
-    nxt = items[(idx + 1) % count]
+    nxt = items[(idx + 1) rem count]
     current.next = nxt
     idx = idx + 1
   current = nil

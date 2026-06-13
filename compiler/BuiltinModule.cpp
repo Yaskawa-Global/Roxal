@@ -86,5 +86,20 @@ void BuiltinModule::setModuleSourceSignalValue(const roxal::ptr<df::Signal>& sig
     signal->set(value);
 }
 
+Value BuiltinModule::resolveConstChildValue(const Value& parent, const Value& child)
+{
+    if (!parent.isConst()) return child;
+    if (!child.isObj() || child.isConst()) return child;
+
+    Obj* parentObj = parent.asObj();
+    if (!parentObj || !parentObj->control) return child.constRef();
+
+    auto* token = parentObj->control->snapshotToken;
+    if (!token)
+        return child.constRef(); // transitive const, no MVCC snapshot
+
+    return resolveConstChild(child, token);
+}
+
 } // namespace roxal
 

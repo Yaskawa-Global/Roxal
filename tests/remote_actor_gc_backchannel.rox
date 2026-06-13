@@ -1,0 +1,28 @@
+type GcLogger actor:
+  private var log: string = ""
+
+  proc append(msg: string):
+    wait(ms=120)
+    this.log = this.log + msg
+
+  func getLog() -> string:
+    return this.log
+
+type GcWorker actor:
+  proc run(logger: mutable GcLogger):
+    wait(for=logger.append("remote:"))
+
+func trigger_gc():
+  wait(ms=20)
+  gc()
+
+var logger = GcLogger()
+var worker = GcWorker() at "__COMPUTE_TEST_ADDR__"
+
+var gcThread = fork(trigger_gc)
+wait(for=worker.run(logger))
+join(gcThread)
+
+var result = logger.getLog()
+wait(for=result)
+print(result)

@@ -1,0 +1,8 @@
+// Actor types don't yet support `proc init(*)` — actors' properties are
+// always private (no public surface), so the synthesized signature would
+// be empty and useless. Rejected with a clear error for now.
+
+type A actor:
+  private var x :int = 0
+  proc init(*):
+    print("never")

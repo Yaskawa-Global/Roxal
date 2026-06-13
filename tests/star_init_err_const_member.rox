@@ -1,0 +1,9 @@
+// v1 of `proc init(*)` rejects types with const properties — const
+// initialization via init(*) needs a follow-up path; users with const
+// members should write an explicit init.
+
+type Stamp object:
+  const code :int = 7
+  var n :int = 0
+  proc init(*):
+    print("never")

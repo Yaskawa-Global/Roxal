@@ -1,0 +1,5 @@
+var doc = from_xml('<p>hello <b>robot</b> world</p>')
+print(doc.tag)
+print(doc.text)
+print(doc.b.tag)
+print(doc.b.text)

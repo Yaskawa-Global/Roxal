@@ -26,6 +26,10 @@ Value types:
   * `real` - IEEE 64bit float (aka C double)
   * `decimal` - (unimplemented) fixed point (designed for no roundoff error for fractions in base 10)
   * `enum` - enumerated int labelled (similar to C)
+  * `vector` - [number number number] - arbitrary n dim real scalar elements (accepts quantity elements, extracting SI values)
+  * `matrix` - [num num num; num num num] - arbitrary n x m dim real scalar elements (can use newline between rows in literals)
+  * `orient` - 3D orientation (backed by unit quaternion; see orient section below)
+  * `tensor` - multi-dimensional array with arbitrary shape (see tensor section below)
 
 Reference types:
   * `string` - Unicode (UTF-8) (literals are interned)
@@ -34,8 +38,6 @@ Reference types:
   * `list` - [list, of, values] - heterogeneous
   * `dict` - {key:value,key2:value2} - heterogeneous (hash, map)
     * insertion order preserved
-  * `vector` - [number number number] - arbitrary n dim real scalar elements
-  * `matrix` - [num num num; num num num] - arbitrary n x m dim real scalar elements (can use newline between rows in literals)
   * `object` - user-defined object type (aka class)
   * `actor` - user-defined actor type (similar to object type)
 
@@ -55,6 +57,15 @@ Some non-strict automatic conversions: (see conversions.md for details):
 
 Function body scope is strict by default.  To convert types in strict context, casting/constructor syntax is required. e.g. `byte(5)`, `string(6)`.  Most automatic convenience conversions available in non-strict context can be used with explicit construction in strict context.
 (strict vs non-strict can be controlled via annotations)
+
+**User-defined conversions** can be declared via `operator <type>()` methods on object types (see Operator Overloading section).  By default, user-defined conversions require explicit invocation (e.g., `string(obj)`).  Mark the method with the `implicit` modifier (placed inline before `func`/`proc`, after `private` if present) to allow implicit invocation:
+
+| Form | Non-strict | Strict |
+|------|-----------|--------|
+| *(none)* | Explicit only | Explicit only |
+| `implicit` | Implicit OK | Implicit OK |
+
+**Constructor auto-conversion:** When a typed variable expects type `T` and receives a value of type `S`, if `T` has an `implicit` constructor (`init`) with exactly one required parameter, `T(value)` is called automatically.  Constructors are explicit by default — mark with `implicit` to enable auto-conversion.
 
 ## Variables
 
@@ -119,7 +130,7 @@ call_and_print(func (a): a+1, 5) // print 6
 
 ### Assignments
 
-Like most programming languages, `=` is used for assignment (unlike in mathematics, where is means equality).
+Like most programming languages, `=` is used for assignment (unlike in mathematics, where it means equality).
 This works as you'd expect for value types.  For reference types, the references are usually being assigned.
 
 ```php
@@ -170,6 +181,8 @@ print( f(1) )   // "a is 1 and b is 3"
 print( f(b=7, a=2) ) // // "a is 2 and b is 7"
 ```
 
+Parameters are immutable bindings — they cannot be reassigned within the function body. To work with a mutable copy, shadow the parameter with a new local (e.g., `var x = clamp(x, range(0..100))`).
+
 ### Variadic Parameters
 
 Functions can accept a variable number of arguments using the `...` prefix on the last parameter. The variadic arguments are collected into a list:
@@ -205,7 +218,9 @@ print( format(sep=" | ", "a", "b", "c") ) // "a | b | c"
 
 ## Operators
 
-The operators +, -, \*, / and % work how you'd expect on builtin numeric types.  Vectors and Matrices also support +, - and \*, performing matrix multiplication, vector*matrix multiplication and dot products (two vectors).
+The operators `+`, `-`, `*`, `/` work how you'd expect on builtin numeric types.  The remainder operator is the `rem` keyword (sign of the dividend — e.g. `-7 rem 3` is `-1`).  Vectors and Matrices also support `+`, `-` and `*`, performing matrix multiplication, vector*matrix multiplication and dot products (two vectors).
+
+Note: `%` is *not* a binary operator in Roxal — it is reserved for the percent literal suffix (e.g. `50%`).  Use `rem` for the remainder operation.
 
 ```php
 m = [1 2
@@ -216,7 +231,7 @@ print(m*v) // [5 11]
 
 In addition, + can also be used for:
   * string concatenation (when the left-hand-side is a string) - "hello "+"world".  This also directly converts most types into strings: "hello "+5 → "hello 5"
-  * list concatenation: [1,2,3]+[4,5,6] → [1,2,3,4,5,6]
+  * list concatenation: [1,2,3]+[4,5,6] → [1,2,3,4,5,6].  Both sides must be lists (like vector and dict operators); `list + non-list` is an error.  To add a single element, use `list.append(x)` (or `list + [x]` for a non-mutating concatenation).
 
 Boolean operators `and`, `or` and `not` work on the bool type.  `(true and true and not false)` → `true`
 
@@ -308,6 +323,171 @@ m = [1 2 3            // 2x3 matrix
 print( m[0..1,0..1] ) // [1 2; 4 5] submatrix
 ```
 
+## Vectors, Matrices & Tensors
+
+Roxal provides three types for numerical arrays: `vector` (1D), `matrix` (2D), and `tensor` (arbitrary dimensions).
+
+### Vector and Matrix Literals
+
+```php
+var v = [1.0 2.0 3.0]      // 3-element vector (space-separated)
+var m = [1 2 3; 4 5 6]     // 2x3 matrix (semicolon separates rows)
+var m2 = [1 2              // can also use newlines between rows
+          3 4]
+```
+
+Quantity literals are accepted as elements and converted to their SI scalar at construction time.
+
+```php
+var pose = [10mm 20mm 30mm 0deg 45deg 90deg]   // mixed dims OK
+var rates = [1m/s 0.5rad/s]                    // also OK
+// var bad = [10mm 20]                          // error: bare non-zero with quantity
+```
+
+### Tensor Creation
+
+Tensors are created using the `tensor()` constructor:
+
+```php
+var t1 = tensor(10)                           // 1D tensor with 10 elements (zeros)
+var t2 = tensor(2, 3, 4)                      // 3D tensor with shape [2, 3, 4]
+var t3 = tensor(3, data=[1.0, 2.0, 3.0])      // 1D tensor with initial data
+var t4 = tensor(2, 3, dtype='float32')        // specify data type
+```
+
+Supported `dtype` values: `'float16'`, `'float32'`, `'float64'` (default), `'int8'`, `'int16'`, `'int32'`, `'int64'`, `'uint8'`, `'bool'`
+
+### Tensor Indexing and Properties
+
+```php
+var t = tensor(2, 3, data=[1,2,3,4,5,6])
+print(t[0, 1])       // element at row 0, col 1
+t[1, 2] = 99         // assign element
+print(t.shape())     // [2, 3]
+print(t.rank())      // 2
+print(len(t))        // 6 (total elements)
+print(t.dtype())     // 'float64'
+```
+
+### Value Semantics
+
+Unlike `list` and `dict`, the mathematical types `vector`, `matrix`, and `tensor` have *value semantics*. Assignment creates an independent copy, matching mathematical intuition:
+
+```php
+var v = [1.0 2.0 3.0]
+var v2 = v           // v2 is an independent copy
+v2[0] = 99
+print(v[0])          // 1 (original unchanged)
+print(v2[0])         // 99
+
+var t = tensor(3, data=[1.0, 2.0, 3.0])
+var t2 = t           // t2 is an independent copy
+t2[0] = 99
+print(t[0])          // 1 (original unchanged)
+```
+
+### Type Methods
+
+Vectors, matrices, and tensors have built-in methods:
+
+```php
+var v = [3.0 1.0 4.0 1.0 5.0]
+print(v.sum())        // 14
+print(v.min())        // 1
+print(v.max())        // 5
+print(v.norm())       // Euclidean norm
+print(v.normalized()) // unit vector
+print(v.dot([1.0 0.0 0.0 0.0 0.0]))  // 3
+
+var m = [1 2; 3 4]
+print(m.sum())        // 10
+print(m.min())        // 1
+print(m.max())        // 4
+print(m.rows())       // 2
+print(m.cols())       // 2
+print(m.transpose())  // [1 3; 2 4]
+print(m.determinant()) // -2
+print(m.trace())      // 5
+print(m.norm())       // Frobenius norm
+
+var t = tensor(2, 3, data=[3.0, 1.0, 4.0, 1.0, 5.0, 9.0])
+print(t.sum())        // 23
+print(t.min())        // 1
+print(t.max())        // 9
+print(t.shape())      // [2, 3]
+print(t.rank())       // 2
+print(t.dtype())      // 'float64'
+```
+
+### Arithmetic Operations
+
+Element-wise arithmetic works with +, -, *, / for same-shaped tensors. Vectors and matrices also support matrix multiplication:
+
+```php
+var v1 = [1.0 2.0 3.0]
+var v2 = [4.0 5.0 6.0]
+print(v1 + v2)       // [5 7 9]
+print(v1 * v2)       // dot product: 32
+
+var t1 = tensor(3, data=[1.0, 2.0, 3.0])
+var t2 = tensor(3, data=[1.0, 1.0, 1.0])
+print(t1 + t2)       // element-wise addition
+```
+
+## Orient
+
+The `orient` type represents a 3D orientation (backed by a unit quaternion). It has value semantics (like vector and matrix).
+
+### Construction
+
+All construction uses named parameters. Exactly one parameter group may be specified (or none for identity):
+
+```php
+var o = orient()                                   // identity (no rotation)
+var o = orient(r=0deg, p=45deg, y=90deg)           // roll, pitch, yaw
+var o = orient(rpy=[0deg 45deg 90deg])             // RPY as vector or list
+var o = orient(axis=[0 0 1], angle=90deg)          // axis + angle
+var o = orient(quat=[0 0 0.707 0.707])             // quaternion [x y z w]
+var o = orient(mat=m)                              // 3x3 rotation matrix
+var o = orient(euler=[30deg 45deg 60deg], axes="ZXZ")  // Euler angles
+```
+
+Angle arguments require `sys.quantity` with angle dimension (e.g., `45deg` or `0.785rad`). Bare zeros are accepted.
+
+RPY convention: Roll about X, Pitch about Y, Yaw about Z (intrinsic XYZ / extrinsic ZYX, aerospace convention).
+
+### Properties (read-only)
+
+```php
+var o = orient(r=0deg, p=0deg, y=90deg)
+o.r              // -> 0°  (roll as quantity)
+o.p              // -> 0°  (pitch as quantity)
+o.y              // -> 90° (yaw as quantity)
+o.rpy            // -> [0°, 0°, 90°] (list of 3 quantities)
+o.quat           // -> [0 0 0.707107 0.707107] (vector [x y z w])
+o.mat            // -> 3x3 rotation matrix
+o.axis           // -> [0 0 1] (unit rotation axis vector)
+o.angle          // -> 90° (rotation angle as quantity)
+o.inverse        // -> orient (inverse rotation)
+```
+
+### Operators
+
+```php
+var o2 = o1 * o2          // composition (Hamilton product)
+var v = o * [1 0 0]       // rotate a 3D vector
+print(o1 == o2)           // equality (handles q/-q equivalence)
+```
+
+### Methods
+
+```php
+o.rotate([1 0 0])         // rotate a vector (same as o * v)
+o1.slerp(o2, 0.5)         // spherical linear interpolation at t=0.5
+o1.angle_to(o2)           // angular distance as quantity
+o.euler("ZXZ")            // Euler angles for given axis convention
+```
+
 ## Control Statements
 
 Common control statements, `if`, `for`, `while`.  For can iterate over ranges, lists and dicts.
@@ -334,6 +514,20 @@ for k in d: // keys of dict d
 for [k,v] in d:  // keys and values of dict d
   print("k={k} v={v})
 ```
+
+Inside a loop body, `break` exits the loop and `continue` skips to the next iteration. Both compose with the `if` modifier:
+
+```php
+for i in range(..<10):
+  break if i == 5     // stop the loop
+  print(i)            // prints 0..4
+
+for n in nums:
+  continue if n < 0     // skip negatives
+  process(n)
+```
+
+`break` and `continue` always target the innermost enclosing loop. They are not valid outside a loop.
 
 ### Match Statement
 
@@ -539,7 +733,6 @@ print(child is MyObjType)        // true
 print(ChildObjType is MyObjType) // true
 ```
 
-(`interface` is not fully implemented, but it'll be possible to inherit from multiple interfaces and one object type)
 
 ### Property Accessors
 
@@ -588,6 +781,351 @@ w.depth = 30       // Calls the setter (write-only)
 - For `const` properties, the backing field is also marked as const (and the getter should only return a constant expression)
 
 
+### Interfaces
+
+An object or actor type can declare conformance to one or more interfaces with `implements`:
+
+```php
+type Showable interface:
+  func show()
+  var label :string         // abstract: requires get + set on implementer
+
+type Widget object implements Showable:
+  var label :string         // a plain `var` satisfies the abstract get/set
+  func show():
+    print(this.label)
+
+w = Widget("hi")
+w.show()
+print(w is Showable)        // true
+print(Widget is Showable)   // true
+```
+
+**What an interface can declare**
+
+| Form | Meaning |
+|---|---|
+| `func foo()` | abstract method — implementer must provide a body |
+| `var X :T` | abstract get + set requirement (sugar for the verbose form below) |
+| `var X :T:` followed by abstract `get` and/or `set` | abstract read-only / write-only / read-write |
+| `const X :T = literal` | concrete static const — inherited by implementers as `Impl.X` |
+| `type Inner ...` | nested type — inherited by implementers as `Impl.Inner` |
+
+
+**Conformance**
+
+For each abstract requirement, the implementer must supply a satisfying declaration:
+
+| Interface declares | Plain `var X` | Plain `const X = lit` | Explicit `get` only | Explicit `set` only | Explicit `get` + `set` |
+|---|---|---|---|---|---|
+| Abstract `get` only (`var X :T:` `get`) | ✅ | ✅ | ✅ | ❌ | ✅ |
+| Abstract `set` only (`var X :T:` `set`) | ✅ | ❌ | ❌ | ✅ | ✅ |
+| Abstract `get` + `set` (`var X :T`) | ✅ | ❌ | ❌ | ❌ | ✅ |
+
+
+**Inheritance**
+
+Concrete interface members (consts and nested types) are inherited by implementers, so `Impl.X`, `Impl.Inner`, and instance access (`inst.X`, `inst.Inner`) all work. The implementer's own declaration takes precedence over an inherited one with the same name; among multiple `implements` clauses, the first listed wins.
+
+An interface may `extends` another interface (single inheritance, interface→interface only). An object/actor type may `extends` one parent type and `implements` any number of interfaces — `is` walks both relationships, so `inst is I` is true whether `I` is reached via `extends` or `implements`. Interfaces themselves cannot be instantiated.
+
+
+### Overloading
+
+A name function or method can be declared multiple times in the same scope when the parameter signatures distinguish each declaration. The compiler picks the best match at the call site:
+
+```php
+func handle(x :int):
+  print("int " + x)
+
+func handle(x :string):
+  print("str " + x)
+
+handle(5)        // → "int 5"
+handle("hello")  // → "str hello"
+```
+
+The same applies to methods on object/actor types and to `init` constructors:
+
+```php
+type Box object:
+  var v :int = 0
+  var s :string = ""
+
+  proc init(x :int):
+    this.v = x
+
+  proc init(x :string):
+    this.s = x
+
+  func handle(x :int): print("int " + x)
+  func handle(x :string): print("str " + x)
+
+var a = Box(5)       // picks init(int)
+var b = Box("hi")    // picks init(string)
+b.handle(42)         // → "int 42"
+```
+
+
+### `proc init(*)` — auto-init from public properties
+
+When a type's `init` should just take a value for each of its public properties (the same shape the no-init auto-construct already provides), write `proc init(*)`. The single `*` parameter is sugar for one synthesized named parameter per public, writable property, in the **order they appear in the type body**. Each synthesized parameter takes the corresponding property's declared type. At entry, the params are auto-assigned to the corresponding members; the body then runs as a post-action.
+
+**Every synthesized param has a default**, so calls can omit any/all args. The default is either:
+
+* The property's explicit initializer expression (`var x :int = 5` → default `5`), or
+* When no initializer is present, the same implicit default the type-construction layer would use for an uninitialized property — `0` / `0.0` / `false` / `""` / etc. for builtin value types, **`nil`** for user-defined object/actor types and for fully untyped fields (`var x` with no type).
+
+The synthesized param set follows the type's public, settable surface:
+
+* Plain `var` (no accessor block) — included.
+* Accessor `var X :T: get: … set: …` (with at least a `set:`) — included; `init(*)` writes the value **directly to the synthetic `_<name>` backing field**, bypassing the user setter. Setters often assume the object is already fully constructed, so running them mid-prologue is a footgun. If you want setter validation during init, write the init out explicitly.
+* Accessor `var X :T: get: …` (no `set:`) — **excluded**. A get-only accessor declares "computed / read-only on the public surface"; surfacing it as an init(*) named arg would let callers write through what was meant to be immutable. Calling `Type(<getOnlyField>=…)` therefore errors as an unknown parameter. To set the backing field at construction, write the init out explicitly.
+* `const` properties are **excluded**.
+
+```php
+type Point object:
+  var x :int = 0
+  var y :int = 0
+
+  proc init(*):                // ≡ proc init(x :int = 0, y :int = 0): this.x=x; this.y=y
+    if x < 0: this.x = 0       // body adjusts AFTER auto-assignment
+
+var a = Point(3, 4)            // x=3, y=4
+var b = Point(y=5)             // x=0 (default), y=5
+var c = Point(1, y=2)          // x=1, y=2 (mixed positional/named)
+var d = Point()                // x=0, y=0 (both default)
+```
+
+`proc init(*)` is a regular overload candidate — it coexists with other `init` signatures and overload resolution picks the best match per call site:
+
+```php
+type Point object:
+  var x :int = 0
+  var y :int = 0
+
+  proc init(*):                // member-by-member
+  proc init(s :string):        // parse "x,y"
+    var parts = s.split(",")
+    this.x = int(parts[0]); this.y = int(parts[1])
+
+Point(1, 2)        // → init(*)
+Point("3,4")       // → init(string)
+```
+
+Dict-form construction (`Point({x:1, y:2})`) is routed by ordinary overload resolution — declare an explicit `init(d :dict)` if you want that call form alongside `init(*)`.
+
+**Note:**
+
+* Only the type's *own* public properties become synthesized params. Inherited public properties keep their declared defaults; they are not reachable via `init(*)` named args (this may relax in a later version).
+
+**Resolution rules** (best to worst):
+
+1. **Exact** type match
+2. **Subtype** match (object/actor `extends` or `implements` chain)
+3. **Strict-implicit conversion** — safe widening (`byte → int`, `int → real`, etc.) — works in any context
+4. **Untyped wildcard** — a parameter with no declared type matches anything
+5. **Non-strict-only implicit conversion** — lossy or surprising conversions like `string → int`, only allowed when the call site is non-strict (e.g., module-scope code) — ranked below untyped so a wildcard catches the conversion before it silently fires
+6. **User-defined implicit conversion** — `implicit operator T()` on the source or `implicit init(S)` on the target
+7. **Variadic absorption** — args consumed by a `...args` variadic param
+
+A candidate's score is the sum of its per-arg ranks. The lowest-summed candidate wins. Ties are broken by "fewer params filled by their default value." If a tie still remains, the call is **ambiguous** and reported as an error — at compile time when all argument types are known statically, otherwise at runtime, with the conflicting overloads listed.
+
+**First-class references** preserve overloading. Assigning `g = foo` (where `foo` is overloaded) binds `g` to the whole overload set; calling `g(...)` still dispatches to the right overload. Same for `g = obj.method`:
+
+```php
+g = handle
+g(5)        // → "int 5"
+g("world")  // → "str world"
+```
+
+**Interfaces** can declare multiple abstract overloads of a name. An implementer must satisfy each abstract overload signature with a matching concrete one (same parameter types, return type same or a subtype):
+
+```php
+type Handler interface:
+  func handle(x :int)
+  func handle(x :string)
+
+type Box object implements Handler:
+  func handle(x :int):    print("int")
+  func handle(x :string): print("str")
+```
+
+**Limitations.** Overloading does **not** apply to operator methods (`operator+`, etc.) — a type still has at most one `operator+`. Statement-action methods are also single-overload per name.
+
+
+
+### Operator Overloading
+
+Object types can define custom behavior for operators by declaring specially named methods.  The naming convention uses the `operator` prefix followed by the operator symbol:
+
+```php
+import math.*  // math.complex is a pure-Roxal type using operator overloading
+
+var a = complex(3.0, 4.0)
+var b = complex(1.0, -2.0)
+var c = a + b          // calls a.operator+(b)
+print(c.re)            // 4
+print(c.im)            // 2
+print( (a * 2.0).re )  // 6  (commutative: complex * real)
+print( (2.0 * a).re )  // 6  (commutative: real * complex)
+print( (-a).re )        // -3  (unary negation)
+print( a == complex(3.0, 4.0) ) // true
+```
+
+To define operators on your own types:
+
+```php
+type Score object:
+  var v :int = 0
+  proc init(v :int):
+    this.v = v
+
+  func operator+(other :Score) -> Score:
+    return Score(v + other.v)
+
+  func operator<(other :Score) -> bool:
+    return v < other.v
+
+  func operator-() -> Score:  // unary negation (0 params)
+    return Score(-v)
+```
+
+Supported operators: `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `>`, `<=`, `>=`, and unary `-`.  Unicode equivalents (e.g., `≤`, `≥`, `≟`, `≠`, `×`) also work.
+
+**Commutative vs asymmetric dispatch:**
+
+When `operator*` is defined alone, it is used for both `obj * x` and `x * obj` (arguments are swapped as needed).  For operators where the left and right sides should behave differently, use `loperator` and `roperator` (which must be defined as a pair):
+
+```php
+type Wrapper object:
+  var v :real = 0.0
+  proc init(v :real):
+    this.v = v
+
+  func loperator/(other :real) -> Wrapper:   // Wrapper / real
+    return Wrapper(v / other)
+
+  func roperator/(other :real) -> Wrapper:   // real / Wrapper
+    return Wrapper(other / v)
+
+var w = Wrapper(10.0)
+print( (w / 2.0).v )   // 5  (loperator/)
+print( (20.0 / w).v )  // 2  (roperator/)
+```
+
+**Rules:**
+- Binary operators take exactly 1 parameter; unary `-` takes 0
+- A type must define either `operator<sym>` **or** `loperator<sym>`/`roperator<sym>`, not both
+- Comparison operators (`==`, `!=`, `<`, `>`, `<=`, `>=`) do not support l/r variants
+
+
+### Statement Action
+
+A method on an object or actor type can be marked `statement action` to make it run automatically whenever an instance of the type appears as a discarded expression-statement. This lets a type combine cheap, side-effect-free *construction* with a separate *execution* phase that the language triggers at the right moment — useful for builders that should "do their thing" once they're written as a statement.
+
+```php
+type Motion object:
+  var dist :real = 0.0
+  proc init(dist):
+    this.dist = dist
+
+  // Composition: build composite Motion via operator+
+  func operator+(other :Motion) -> Motion:
+    return Motion(dist + other.dist)   // illustrative
+
+  // The 'statement action' modifier
+  //  The method takes no parameters.
+  statement action func execute() -> Motion:
+    print("executing motion of " + string(dist))
+    return nil    // nil terminates statement-action chaining
+
+// As a statement: execute() runs automatically.
+Motion(10.0)
+
+// As an expression: just constructs; nothing runs.
+var m = Motion(20.0) + Motion(5.0)
+
+// Explicit invocation still works.
+m.execute()
+```
+
+**Triggering:** the action only runs when the *whole expression-statement* is the instance — *not* on `var` RHS, function arguments, condition contexts, or operator operands. So `Motion(10) + Motion(5)` as a statement runs `execute()` on the *composite* Motion (the result of `+`), not on the operands.
+
+**Chaining:** if the action method returns another value of an action-bearing type, that returned value also runs (until a non-action value or `nil` is reached).
+
+**`ignore(value)`:** if you have an expression that *would* trigger a statement-action and want to suppress that triggering at the call site, wrap it with the `ignore(...)` builtin. Acceptable arguments are: futures, instances of types with a `statement action` method, and `nil` (the latter accepted silently to be tolerant of `proc` calls). For other types `ignore()` raises a runtime error — wrapping a value that has no auto-trigger behaviour is almost always a bug.
+
+```php
+// suppress the auto-execute() on the discarded composite Motion
+ignore(Motion(10.0) + Motion(5.0))
+```
+
+
+### Literal Suffixes
+
+Numeric and string literals can have a *suffix* glued directly after them (no whitespace).  A suffix is resolved to a call to a function annotated with `@suffix`:
+
+```php
+@suffix("px")
+func pixels(v) -> int:
+  return int(v)
+
+var width = 100px    // equivalent to pixels(100)
+var height = 50.5px  // equivalent to pixels(50.5)
+print(width)         // 100
+```
+
+Whitespace disambiguates: `10px` is a suffixed literal, while `10 * px` is multiplication by a variable named `px`.
+
+**Suffix character rules (bare form):**
+- Must start with a letter
+- Can contain letters, digits, `/` (at most one), `·` (middle dot, for unit multiplication), superscripts (`²`, `³`, `⁻¹`), and `^`
+- Maximum 8 characters
+
+**Standalone `%`** is also accepted as a one-character suffix directly after a numeric literal (e.g. `50%`, `0.5%`).  It does not combine with other suffix characters — `5kg%` and `5%kg` are not suffixed literals, and no character (digit or otherwise) may immediately follow a percent literal (`10%3` is a parse error).  A `@suffix("...")` registration whose string contains `%` other than the standalone `"%"` is rejected at compile time.  `%` is *not* a binary operator in Roxal — use the `rem` keyword for remainder.
+
+**Braced form** `{}` allows arbitrary length and additional characters (spaces, hyphens, underscores):
+
+```php
+@suffix("m/s²")
+func accel(v):
+  return v
+
+var a = 9.81{m/s²}  // braced: allows special chars
+var b = 9.81m/s^2    // bare: also valid (^ instead of ²)
+```
+
+**String suffixes** work similarly:
+
+```php
+@suffix("i18n")
+func translate(s :string) -> string:
+  // look up translation...
+  return s
+
+print("hello"i18n)
+print('world'{i18n})  // braced form also works
+```
+
+**Defining suffix functions:**
+- Annotate with `@suffix("suffix_string")`
+- Function must accept exactly one parameter (the literal value)
+- Multiple suffixes can map to the same return type (e.g., `"mm"`, `"cm"`, `"m"` all returning a `quantity`)
+- Suffixes are scoped to the module that defines them; the `sys` module's suffixes are globally available
+
+The `sys` module defines suffixes for physical units — see the `quantity` type below.
+
+**Examples:**
+
+```php
+var d = 10m + 500mm       // 10.5m  (auto-converts to common unit)
+var speed = 100m / 4s     // 25m/s  (derived dimension)
+var force = 5kg * 9.81m/s^2  // 49.05N (Force = Mass × Acceleration)
+var angle = 90deg         // 90°  (stored as radians internally)
+print(d.inches)           // 413.386  (property getter converts from SI)
+```
+
 ## Actors
 
 Actors are similar to objects, with a key difference - each actor instance has its *own associated execution thread*.  That is the only thread that executes the actor's methods.
@@ -596,7 +1134,22 @@ This is an ideal way to achieve concurrency, because actors don't share any stat
 
 The syntax for declaring an actor is similar to an object, except it cannot have any non-private member variables.  You can think of calling a method on an actor instance as being more like sending it a message to execute that method.
 
-Note that the caller is not blocked when calling an actor method - instead the call returns immediately with a 'future' for the return value (sometimes called a promise).  This behaves just like the actual return value, but won't be useable until the actor method completes and provides the value.  An attempt to use the return value future before it is ready will block the using thead (- though you can pass futures to other functions, store them etc.).  A future value is always implicitly convertible to the value it is promising.
+Note that the caller is not blocked when calling an actor method - instead the call returns immediately with a 'future' for the return value (sometimes called a promise).  This behaves just like the actual return value, but won't be useable until the actor method completes and provides the value.  An attempt to use the return value future before it is ready will block the using thread (- though you can pass futures to other functions, store them etc.).  A future value is always implicitly convertible to the value it is promising.
+
+**Future resolution rules:**
+
+A future carries the type of the value it promises (derived from the actor method's return type annotation).  Futures are resolved (awaited) automatically when the concrete value is needed:
+
+* **Typed function parameters:** A future passes through without resolution if its promised type matches the parameter type (including subtypes via inheritance).  If the types don't match, the future is resolved first, then converted.
+* **Untyped parameters:** Futures always pass through as-is.
+* **Operators** (`+`, `*`, `>`, etc.): Both operands are resolved before the operation.
+* **`for..in`:** The iterable is resolved before iteration begins.
+* **Conditions** (`if`, `while`): The condition is resolved before evaluation.
+* **Property access/assignment:** The receiver (and assigned value) are resolved.
+* **Explicit cast:** `real(future_real)` resolves the future (similar to how `real(signal)` samples a signal).
+* **Variable assignment with type:** `var x:int = future_real` resolves and converts.
+
+In short: futures flow through untyped and type-matching boundaries, and are resolved at the point of first use that requires a concrete value.
 
 ```php
 type Worker actor:
@@ -605,10 +1158,10 @@ type Worker actor:
 
   proc addto(r :real):
     amount = amount + r
-    wait(ms=200)  // 'sleep' for a bit
+    wait(200ms)  // 'sleep' for a bit
 
   func currentAmount() -> real:
-    wait(ms=300)
+    wait(300ms)
     return amount
 
 w = Worker()
@@ -622,7 +1175,52 @@ amt = w.currentAmount()  // also doesn't block (amt is a 'future real')
 print( real(amt) ) // 3
 ```
 
-(Note: the VM doesn't currently prohibit accessing/mutating any module scope vars from an actor, but in future it will prohibit mutating all module scope variables and prohibit access to non-const or reference module variable.  So, for now, only 'read' value-type module variables that are not modified elsewhere (i.e. logical 'constants'))
+### Awaiting multiple things: `allof` and `anyof`
+
+`wait(for=fut)` awaits a single future. To await several at once, the `sys` module provides two combinators:
+
+* `allof(...items)` — returns a future that resolves when **all** input items resolve. The resolved value is a list of values in argument order.
+* `anyof(...items)` — returns a future that resolves when **the first** input resolves. The resolved value is a dict `{"index": i, "value": v}` where `i` is the position of the winning slot.
+
+Each input may be a future, an event type, or a bool signal expression (e.g. `c > 20`). Different kinds may be mixed in the same call. Each positional argument can be a single awaitable or a list of awaitables (lists are flattened one level).
+
+Because both return a future, the combinators compose — the output of one can be fed into another.
+
+```php
+type W actor:
+  func compute(n :int) -> int:
+    wait(ms=10)
+    return n * 10
+
+w1 = W()
+w2 = W()
+
+# Wait for ALL — get values in argument order
+results = wait(for=allof(w1.compute(1), w1.compute(2), w2.compute(3)))
+print(results)             # [10, 20, 30]
+
+# Wait for FIRST — w2 is a separate actor, so it can race ahead
+got = wait(for=anyof(w1.compute(1), w2.compute(2)))
+print(got.index, got.value)
+
+# Mix kinds: future + event + bool signal — useful for cancellation
+type AbortRequested event
+c = clock(20)
+c.run()
+got = wait(for=anyof(w1.compute(99), AbortRequested, c > 50))
+
+# A list arg is flattened one level
+results = wait(for=allof([w1.compute(1), w1.compute(2)], w1.compute(3)))
+
+# Combinators nest naturally — both return real futures
+nested = wait(for=allof(anyof(w1.compute(7), w1.compute(8)), w2.compute(9)))
+```
+
+Edge cases:
+
+* `allof()` with zero awaitables resolves immediately to `[]`.
+* `anyof()` with zero awaitables raises (it would deadlock).
+* For event/signal slots, the slot's resolved value is the event instance / the signal value at the moment its predicate became true.
 
 ## Exceptions
 
@@ -732,7 +1330,7 @@ when c changes as evt:
   print('tick='+evt.value)
 
 c.run()    // start the clock counting
-wait(s=1)  // keep the script running so we can see ~10 prints
+wait(1s)  // keep the script running so we can see ~10 prints
 ```
 
 Use `changes` to run a handler on any update. Supplying `as evt` binds the automatically-generated event instance that contains the sampled signal value (`evt.value`), a steady-clock duration since the engine started (`evt.timestamp`, a `sys.TimeSpan`), and the signal's own tick count (`evt.tick`). To fire only when a signal hits a specific value, use the `becomes` form:
@@ -763,10 +1361,10 @@ s2.run()
 
 // change them
 s.set([1.0 3.0 3.0])  // handler above will print dp=16 on next 10Hz boundary
-wait(ms=100)
+wait(100ms)
 s2.set([2.0 1.0 0.5]) // handler above will print dp=6.5 on next 10Hz boundary
 
-wait(ms=500)  // don't exit until after next tick & handler runs
+wait(500ms)  // don't exit until after next tick & handler runs
 print('done')
 ```
 
@@ -778,24 +1376,24 @@ The until condition can be an event or a boolean valued signal.
 
 ```php
 
-var e :event
+type E event
 
 func take_a_while():
   wait(s=10)  // do nothing for 10s
 
 type MyWorker actor:
-  proc triggerEventAfterDelay(e :event, aftersecs :int):
-    wait(s=aftersecs)
-    emit e()
+  proc triggerEventAfterDelay(secs :int):
+    wait(s=secs)
+    emit E()
 
 worker = MyWorker()
-worker.triggerEventAfterDelay(e,5) // async (immediate return)
+worker.triggerEventAfterDelay(5) // async (immediate return)
 
-// this will execute take_a_while for ~5s until interrupted by e triggered by worker
-take_a_while() until e
+// this will execute take_a_while for ~5s until interrupted by E from worker
+take_a_while() until E
 
 
-c = clock(freq=10)  # 10Hz clock signal
+c = clock(10)  // 10Hz clock signal
 c.run()
 
 // this will execute take_a_while for ~2s
@@ -803,6 +1401,62 @@ c.run()
 take_a_while() until c > 20
 
 ```
+
+
+## Adhering `if`
+
+The `if` modifier can be used as a suffix for simple statements - to gate execution on a condition.
+
+```php
+var ready = true
+move(p1) if ready              // runs because ready is true
+
+var speed = 120
+print('high') if speed > 130   // doesn't print
+
+x = compute() if cond          // assignment is gated; if cond is false, x is unchanged
+```
+
+`if` and `until` cannot be used together on the same statement.
+
+
+## Advanced: Compute Server
+
+When built with the `server` feature, `roxal --server` starts a TCP compute server for remote actors. A client can then instantiate an actor on that process with `MyActor() at "host[:port]"`.
+
+Useful options:
+
+* `--server` start server mode instead of running a script
+* `--port N` listen on port `N` (default `26925`)
+
+The server hosts actor instances and executes remote method calls. `print()` output from those calls is routed back to the originating client by default unless `here=true` is used.
+
+For example, on a remote machine (say, 192.168.1.10):
+```bash
+$ roxal --server
+```
+
+With script `remote-example.rox`:
+```php
+
+type A actor:
+  func sayHi(name: string) -> bool:
+    print("Hello {name}")
+    return true
+
+var a = A() at '192.168.1.10' // instantiate on the remote server
+wait(for=a.sayHi('Client'))   // runs sayHi on the remote
+```
+
+Then on a local machine:
+```bash
+$ roxal remote-example.rox
+Hello Client
+```
+
+While the `sayHi()` method executed on the remote machine, the output was routed back to the client terminal.  (`sys.print()` also accepts a `here=true` param to cause output wherever the actor is running instead - the remote machine in this case)
+
+Note that actor instances can be passed to actor methods as args to allow remote actors to make method calls to instances on other remote machines or whereever they were instantiated and are running (e.g. on the original client)
 
 
 ## Advanced: Using gRPC Protos
@@ -883,7 +1537,7 @@ if responseSignal.running:
     print("Stream still open")
 
 // Wait for stream to end
-wait(ms=1000)
+wait(1s)
 ```
 
 The RPC returns a future that resolves to a signal. Each server message updates the signal's value, triggering `when ... changes` handlers. When the server closes the stream, the signal's `.running` property becomes `false`.
@@ -926,7 +1580,7 @@ inputSignal.set(StreamRequest(value=10))
 inputSignal.stop()  // Done sending
 
 // Wait for server to finish
-wait(ms=500)
+wait(500ms)
 ```
 
 **Signal properties for streaming**:
@@ -1015,6 +1669,340 @@ t = dds.create_topic(p, "QoSTopic", HelloWorldData.Msg, qos)
 
 
 
+## Advanced: Image Processing (media)
+
+When Roxal is built with `ROXAL_ENABLE_MEDIA=ON`, the `media` module provides image loading, manipulation, and conversion for use with neural network inference pipelines or general image processing.
+
+### Loading and Saving Images
+
+```roxal
+import media
+
+var img = media.Image("photo.jpg")
+print(img.width())     // e.g. 640
+print(img.height())    // e.g. 480
+print(img.channels())  // 3 (RGB)
+
+img.write("output.png")             // save as PNG
+img.write("output.jpg", quality=90) // save as JPEG (quality 1-100)
+```
+
+Image format (PNG or JPEG) is detected from the file extension. Internally, images are stored as tensors with shape `[H, W, C]` in uint8 (0-255) or float32 (0.0-1.0) format.
+
+### Creating Images from Tensors
+
+You can create an image from a tensor (e.g. to save a neural network output as an image):
+
+```roxal
+import media
+
+// Create a 256x256 grayscale mask
+var mask_data = tensor(256, 256, 1, dtype='uint8')
+// ... fill in pixel values ...
+
+var mask_img = media.Image(source=mask_data)
+mask_img.write("mask.png")
+```
+
+### Geometric Transforms
+
+All transforms modify the image in-place:
+
+```roxal
+import media
+
+var img = media.Image("photo.jpg")
+
+img.resize(320, 240)        // resize to 320x240 (bilinear interpolation)
+img.crop(10, 20, 100, 100)  // crop 100x100 region from (10, 20)
+img.pad(1024, 1024)         // pad with zeros (black) to 1024x1024, original at top-left
+
+img.flip_horizontal()       // mirror left-right
+img.flip_vertical()         // mirror top-bottom
+img.rotate90()              // rotate 90 degrees clockwise
+img.rotate180()
+img.rotate270()
+```
+
+The `pad()` method is useful for neural networks that require fixed-size square inputs (e.g. SAM2 requires 1024x1024). Resize the longest side first, then pad to fill the remaining space:
+
+```roxal
+import media
+import math
+
+var img = media.Image("photo.jpg")
+var scale = 1024.0 / math.fmax(real(img.width()), real(img.height()))
+img.resize(int(real(img.width()) * scale), int(real(img.height()) * scale))
+img.pad(1024, 1024)
+```
+
+### Color and Brightness Adjustments
+
+```roxal
+img.grayscale()         // convert to single-channel grayscale
+img.brightness(1.5)     // brighter (>1.0) or darker (<1.0)
+img.contrast(1.2)       // more contrast (>1.0) or less (<1.0)
+img.saturation(0.0)     // desaturate (0=gray, 1=unchanged, >1=vivid)
+```
+
+### Format Conversion and Normalization
+
+```roxal
+img.to_float()           // uint8 (0-255) → float32 (0.0-1.0)
+img.to_uint8()           // float32 (0.0-1.0) → uint8 (0-255)
+img.normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  // ImageNet normalization (must be float32)
+```
+
+### Preparing Images for Neural Networks
+
+The `to_tensor()` method converts an image to the `[1, C, H, W]` tensor format expected by most neural networks, combining uint8→float32 conversion and optional normalization in one step:
+
+```roxal
+import media
+import ai.nn
+
+var img = media.Image("photo.jpg")
+img.resize(224, 224)
+
+// Without normalization (just converts to [1, 3, 224, 224] float32)
+var input = img.to_tensor()
+
+// With ImageNet normalization (common for ResNet, YOLO, DETR, SAM2, etc.)
+var input = img.to_tensor(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+
+var model = ai.nn.Model("classifier.onnx")
+var output = model.predict(input)
+```
+
+### API Reference
+
+#### Image Type
+
+| Method | Description |
+|--------|-------------|
+| `Image(path, source=nil, channels=0)` | Create from file path or source tensor. `channels`: 0=auto, 1=gray, 3=RGB, 4=RGBA. |
+| `write(path, quality=95)` | Save to PNG or JPEG (detected from extension). `quality` applies to JPEG. |
+| `width()` | Image width in pixels. |
+| `height()` | Image height in pixels. |
+| `channels()` | Number of channels (1=gray, 3=RGB, 4=RGBA). |
+| `resize(width, height)` | Resize using bilinear interpolation. In-place. |
+| `crop(x, y, width, height)` | Crop rectangular region. `(x,y)` is top-left. In-place. |
+| `pad(width, height)` | Pad with zeros to target size. Original at top-left. In-place. |
+| `flip_horizontal()` | Mirror left-right. In-place. |
+| `flip_vertical()` | Mirror top-bottom. In-place. |
+| `rotate90()` | Rotate 90 degrees clockwise. In-place. |
+| `rotate180()` | Rotate 180 degrees. In-place. |
+| `rotate270()` | Rotate 270 degrees clockwise. In-place. |
+| `grayscale()` | Convert to single-channel grayscale. In-place. |
+| `brightness(factor)` | Adjust brightness (>1 brighter, <1 darker). In-place. |
+| `contrast(factor)` | Adjust contrast (>1 more, <1 less). In-place. |
+| `saturation(factor)` | Adjust saturation (0=gray, 1=unchanged, >1=vivid). In-place. |
+| `to_float()` | Convert uint8 (0-255) to float32 (0.0-1.0). In-place. |
+| `to_uint8()` | Convert float32 (0.0-1.0) to uint8 (0-255). In-place. |
+| `normalize(mean, std)` | Per-channel normalization: `(pixel - mean[c]) / std[c]`. Must be float32. In-place. |
+| `to_tensor(mean=nil, std=nil)` | Return `[1, C, H, W]` float32 tensor for neural network input. Optional `mean`/`std` lists apply per-channel normalization. |
+
+
+## Advanced: Neural Network Inference (ai.nn)
+
+When Roxal is built with `ROXAL_ENABLE_AI_NN=ON` (which implies `ROXAL_ENABLE_ONNX=ON`), the `ai.nn` module provides neural network inference via ONNX Runtime. Models are loaded from `.onnx` files and can run on CPU or GPU (CUDA). Inference is asynchronous — `predict()` returns a future that auto-resolves when results are accessed. Model outputs are tensors that integrate directly with Roxal's signal/dataflow engine, enabling reactive model pipelines.
+
+### Loading and Running a Model
+
+```roxal
+import ai.nn
+
+var model = ai.nn.Model("mnist-8.onnx")
+
+# Inspect the model
+print(model.inputs())   // [{name: "Input3", shape: [1, 1, 28, 28], dtype: "float32"}, ...]
+print(model.outputs())  // [{name: "Plus214_Output_0", shape: [1, 10], dtype: "float32"}, ...]
+print(model.device())   // "cpu" or "cuda"
+
+# Create a 28x28 input image (digit "1": vertical stroke)
+var img = tensor(1, 1, 28, 28, dtype='float32')
+var r = 4
+while r <= 23:
+  img[0, 0, r, 13] = 1.0
+  img[0, 0, r, 14] = 1.0
+  r = r + 1
+
+# Run inference
+var output = model.predict(img)
+
+# output is a tensor with shape [1, 10] — one score per digit
+# Find the predicted digit (argmax)
+var best = 0
+var best_score = output[0, 0]
+var i = 1
+while i < 10:
+  if output[0, i] > best_score:
+    best = i
+    best_score = output[0, i]
+  i = i + 1
+
+print(best)  // 1
+
+model.close()
+```
+
+### Device Selection
+
+By default, `load()` uses GPU (CUDA) when available, falling back to CPU. The `device` parameter overrides this:
+
+```roxal
+var model_gpu = ai.nn.Model("model.onnx")                    // auto (GPU if available)
+var model_cpu = ai.nn.Model("model.onnx", device='cpu')      // force CPU
+var model_cuda = ai.nn.Model("model.onnx", device='cuda')    // request GPU (error if unavailable)
+```
+
+The `warmup` parameter (default `true`) runs an initial dummy inference to warm caches:
+
+```roxal
+var model = ai.nn.Model("model.onnx", device='cpu', warmup=false)  // skip warm-up
+```
+
+### Multi-Input and Multi-Output Models
+
+For models with multiple inputs, pass a dict (by name) or a list (by position):
+
+```roxal
+var model = ai.nn.Model("add-sub.onnx")  // inputs: a, b — outputs: sum_out, diff_out
+
+var a = tensor(1, 3, dtype='float32')
+a[0, 0] = 10.0
+a[0, 1] = 20.0
+
+var b = tensor(1, 3, dtype='float32')
+b[0, 0] = 1.0
+b[0, 1] = 2.0
+
+# Dict-based (by input name)
+var results = model.predict({'a': a, 'b': b})
+print(results[0][0, 0])  // 11 (sum)
+print(results[1][0, 0])  // 9  (diff)
+
+# List-based (by position)
+var results2 = model.predict([a, b])
+```
+
+When a model has multiple outputs, `predict()` returns a list of tensors. For single-output models, it returns a single tensor.
+
+### Chaining Models
+
+Model outputs are tensors that can be passed directly as inputs to another model. When both models run on GPU, intermediate tensors stay in GPU memory with no copies:
+
+```roxal
+var encoder = ai.nn.Model("encoder.onnx")
+var decoder = ai.nn.Model("decoder.onnx")
+
+var input = tensor(1, 10, dtype='float32')
+input[0, 0] = 1.0
+input[0, 3] = 42.0
+
+var mid = encoder.predict(input)     // output tensor (GPU if available)
+var result = decoder.predict(mid)    // GPU→GPU, zero-copy
+
+print(result[0, 0])
+print(result[0, 3])
+
+encoder.close()
+decoder.close()
+```
+
+### Reactive Inference with Signals
+
+The `predict()` method integrates with Roxal's signal/dataflow engine. When called with a signal argument, it creates a derived signal that automatically re-runs inference whenever the input signal changes:
+
+```roxal
+import ai.nn
+
+var model = ai.nn.Model("mnist-8.onnx")
+
+# Create a source signal for input images (10 Hz)
+var empty = tensor(1, 1, 28, 28, dtype='float32')
+var input_sig = signal(10, empty)
+
+# Create a derived prediction signal — re-runs model automatically on input change
+var output_sig = model.predict(input_sig)
+
+# React to new predictions
+var predictions = []
+when output_sig changes as evt:
+  var out = evt.value
+  # ... compute argmax to get predicted digit ...
+  predictions.append(best)
+
+input_sig.run()
+
+# Update the input — the model re-runs automatically
+var img1 = tensor(1, 1, 28, 28, dtype='float32')
+# ... draw digit "1" ...
+input_sig.set(img1)
+wait(500ms)
+
+# Update again — triggers another prediction
+var img0 = tensor(1, 1, 28, 28, dtype='float32')
+# ... draw digit "0" ...
+input_sig.set(img0)
+wait(500ms)
+
+for p in predictions:
+  print(p)  // 1, 0
+```
+
+### Signal-Based Model Chains
+
+Signals chain naturally through multiple models, creating reactive GPU pipelines:
+
+```roxal
+import ai.nn
+
+var model_a = ai.nn.Model("encoder.onnx")
+var model_b = ai.nn.Model("decoder.onnx")
+
+# Build signal chain: input → model_a → model_b
+var initial = tensor(1, 10, dtype='float32')
+var input_sig = signal(10, initial)
+var mid_sig = model_a.predict(input_sig)      // derived signal
+var output_sig = model_b.predict(mid_sig)     // chained derived signal
+
+when output_sig changes as evt:
+  print(evt.value)
+
+input_sig.run()
+
+# Setting input propagates through the entire chain automatically
+var input = tensor(1, 10, dtype='float32')
+input[0, 3] = 42.0
+input_sig.set(input)
+wait(300ms)
+```
+
+When models run on GPU, intermediate tensors stay on GPU throughout the signal chain — no CPU round-trip.
+
+
+### API Reference
+
+#### Module Functions
+
+| Function | Description |
+|----------|-------------|
+| `tensor_device(t)` | Return the device where a tensor resides (`'cpu'` or `'cuda'`). |
+| `memory_info(device='auto')` | Return memory info dict: `{device, total, free, used}` (bytes). |
+
+#### Model Type
+
+| Method | Description |
+|--------|-------------|
+| `Model(path, device='auto', warmup=true)` | Load an ONNX model. Device: `'auto'`, `'cpu'`, or `'cuda'`. Set `warmup=false` to skip initial warm-up inference. |
+| `predict(input)` | Run inference. Input: tensor, dict `{name: tensor}`, list of tensors, or a signal. Returns tensor (or list if multiple outputs). With a signal input, returns a derived signal. |
+| `inputs()` | Return list of input descriptors: `[{name, shape, dtype}, ...]` |
+| `outputs()` | Return list of output descriptors: `[{name, shape, dtype}, ...]` |
+| `device()` | Return execution device string (`'cpu'` or `'cuda'`). |
+| `close()` | Release model session and free resources. |
+
+
 ## Builtin Modules & Functions Reference
 
 The functions in the sys module are always globally available (- as if `import sys.*` were used).  See `sys.rox`.
@@ -1029,15 +2017,37 @@ The functions in the sys module are always globally available (- as if `import s
 * `len(v)` - return the length of `v` if applicable
 * `help(fn)` - return signature and doc string for `fn`
 * `clone(v)` - deep copy `v`
-* `wait(s=0, ms=0, us=0, ns=0, for=nil)` - pause execution for the specified time and optionally await a future or list of futures afterwards
+* `wait(duration=nil, s=0, ms=0, us=0, ns=0, for=nil)` - pause execution for the specified time and optionally await a single future afterwards. Prefer time quantities such as `250ms` or `1s`; numeric seconds such as `0.5` are also accepted. Named-unit arguments are also supported. The function returns `nil` for a pure delay, the resolved value for a future, or the supplied nonfuture value after any delay. Do not mix `duration` with `s/ms/us/ns`.
+* `allof(...items)` - returns a future that resolves when all input items resolve. Resolved value is a list of values in argument order. Each item may be a future, event type, or bool signal; arg can be a single awaitable or a list (flattened one level). Empty input resolves to `[]`.
+* `anyof(...items)` - returns a future that resolves when the first input resolves. Resolved value is a dict `{"index": i, "value": v}`. Same input rules as `allof`. Empty input raises.
 * `stacktrace()` - return the current call stack as a list
 * `serialize(value, protocol='default')` - serialize `value` using protocol
 * `deserialize(bytes, protocol='default')` - deserialize bytes using protocol
-* `to_json(value, indent=true)` - convert value to a JSON string
-* `from_json(json)` - parse JSON string into a value
+* `to_bytes(v, width=0, endian='little')` - reinterpret a scalar as a list of bytes. Source may be `bool` (1 byte), `byte` (1 byte), `int` (width 1/2/4/8 two's-complement; default 8), `real` (width 4 for IEEE float32 downcast, or 8 for IEEE double; default 8), or `string` (UTF-8 bytes; width must be 0). `endian` is `'little'` (default) or `'big'`.
+* `from_bytes(bytes, dtype=real, endian='little', signed=true)` - reinterpret a list of bytes as the requested type. `dtype` is a type value (preferred — `int`, `real`, `bool`, `string`) or the equivalent string (`'int'`, `'real'`, `'bool'`, `'string'`). `int` accepts length 1/2/4/8; result is always Roxal `int`. `real` accepts length 4 (IEEE float32 upcast to double) or length 8 (IEEE double). `bool` reads 1 byte (nonzero → true). `string` UTF-8 decodes. `signed` only applies when `dtype=int` for widths < 8: `signed=true` (default) sign-extends the input; `signed=false` zero-extends — useful for unsigned hardware registers (e.g. a 16-bit register `0xFFFF` reads as `-1` with `signed=true`, `65535` with `signed=false`). `endian` accepts `'little'` / `'big'` (alias `'network'`). Round-trip: `from_bytes(to_bytes(v, width=w), dtype=...)` recovers `v` for valid widths.
+* `bits_to_bytes(bits, msb_first=true)` - pack a list of `bool` (or 0/1) bits into a list of byte. Result length is `ceil(len(bits)/8)` with the final byte zero-padded. `msb_first=true` (default) puts the first bit in each byte's MSB — matching the `byte([8 bits])` constructor convention. `msb_first=false` puts the first bit in the LSB.
+* `bytes_to_bits(bytes, msb_first=true)` - unpack a list of byte into a list of `bool` of length `8 * len(bytes)`. The `msb_first` flag matches `bits_to_bytes`.
+* `lshift(v, n)` - arithmetic left shift; `0 <= n < 64`. Equivalent to `v * 2^n` modulo 2^64.
+* `rshift(v, n)` - arithmetic right shift (sign-preserving); `0 <= n < 64`.
+* `to_json(value, indent=true, json5=false)` - convert value to a JSON string. With `json5=true` emits JSON5: object keys are unquoted when they look like ECMAScript identifiers (`[A-Za-z_$][A-Za-z0-9_$]*`), and non-finite numbers are written as the JSON5 literals `NaN`, `Infinity`, `-Infinity`. Dict insertion order is preserved in the output.
+* `from_json(json)` - parse JSON or JSON5 string into a value (JSON5 is a strict superset of JSON). JSON5 inputs may use `//` and `/* */` comments, trailing commas, unquoted ECMAScript identifier keys, single-quoted strings, `\xNN` and line-continuation string escapes, leading `+`, leading `.5` and trailing `5.` numbers, hex literals (`0xFF`), and `Infinity` / `-Infinity` / `NaN`. Object key order from the source is preserved when round-tripping back through `to_json`. Comment preservation across a round trip is not supported.
+* `to_xml(value, indent=true, mode='auto')` - convert XML-shaped value to an XML string (requires build with `ROXAL_ENABLE_XML=ON`, otherwise raises at runtime)
+* `from_xml(xml, mode='compact', preserve_whitespace=false)` - parse XML string into a value (requires build with `ROXAL_ENABLE_XML=ON`, otherwise raises at runtime)
+  * `mode='compact'` returns element dicts with `tag`, optional `attrs`, optional `text`, and child tags as keys
+  * `mode='raw'` returns `{tag, attrs, children}` where `children` preserves ordered child elements and text nodes
+  * compact XML reserves the keys `tag`, `attrs`, and `text`; use raw mode if those names appear as child elements
+* `list.append(value)` - add `value` to the end as a single element (a list argument is added as one nested element). Mutates in place.
+* `list.extend(other)` - append each element of the list `other` (the in-place counterpart of `list + other`). Mutates in place. `other` must be a list.
+* `list.insert(index, value)` - insert `value` before `index`. Negative indices count from the end; out-of-range indices clamp to the start/end. Mutates in place.
+* `list.remove(value)` - remove the first element equal to `value`. Raises an error if not present (guard with `list.remove(x) if x in list`). Mutates in place.
+* `list.pop(index=-1)` - remove and return the element at `index` (default: the last). Raises an error if the index is out of range. Mutates in place.
 * `filter(items, predicate)` - return a new list containing elements for which `predicate(element)` returns true; predicate can optionally take `(element, index)`. Also a list method: `list.filter(predicate)`
 * `map(items, transform)` - return a new list with `transform(element)` applied to each element; transform can optionally take `(element, index)`. Also a list method: `list.map(transform)`
 * `reduce(items, reducer, initial)` - reduce list to a single value by calling `reducer(accumulator, element)` for each element; reducer can optionally take `(accumulator, element, index)`. Also a list method: `list.reduce(reducer, initial)`
+* `upper(s)` - return `s` with all letters uppercased (Unicode-aware; e.g. `'straße'` → `'STRASSE'`). Also a string method: `s.upper()`
+* `lower(s)` - return `s` with all letters lowercased (Unicode-aware. Also a string method: `s.lower()`
+* `capitalize(s)` - return `s` with the first character uppercased and the rest lowercased (Unicode-aware; matches Python `str.capitalize`). Also a string method: `s.capitalize()`
+* `title(s)` - return `s` with the first letter of each word uppercased and the rest lowercased (Unicode-aware word boundaries; matches Python `str.title`). Also a string method: `s.title()`
 * `Time` - timestamp object; use `Time.wall_now(tz='local')`, `Time.steady_now()`, or `Time.parse(...)` to construct and call instance methods like `format(...)`, `components(...)`, `diff(other)`, `seconds()`, and `microseconds()`
 * `TimeSpan` - duration object; construct via `TimeSpan(...)` or `TimeSpan.from_fields(...)`, query parts with `split()`, `seconds()`, `microseconds()`, and totals such as `total_seconds()` or `human()`
 * `clock(freq)` - create a clock signal at `freq`
@@ -1045,6 +2055,56 @@ The functions in the sys module are always globally available (- as if `import s
 * `typeof(value)` - return the type of `value`
 * `loadlib(path)` - load a native library from `path`
   * relative paths are resolved against the directory of the executing script
+
+#### quantity
+
+A dimensional physical quantity type for type-safe unit handling.  Stores a real value in SI canonical units (meters, kilograms, seconds, radians) with a dimension vector tracking Length, Time, Mass, and Angle exponents.  Arithmetic operators perform automatic dimensional analysis.
+
+**Construction via literal suffixes** (globally available):
+
+| Suffix | Unit | Dimension |
+|--------|------|-----------|
+| `m`, `cm`, `mm`, `um`/`μm` | meters, centimeters, millimeters, micrometers | Length |
+| `in`, `ft`, `mil` | inches, feet, thousandths of an inch | Length |
+| `kg`, `g`, `mg` | kilograms, grams, milligrams | Mass |
+| `lb`, `oz` | pounds, ounces | Mass |
+| `s`, `ms`, `us`/`μs` | seconds, milliseconds, microseconds | Time |
+| `min`, `hr` | minutes, hours | Time |
+| `rad`, `deg`, `°` | radians, degrees | Angle |
+| `m/s`, `cm/s`, `mm/s` | velocity | Length/Time |
+| `m/s^2`, `m/s²` | acceleration | Length/Time² |
+| `m/s^3`, `m/s³`, `mm/s^3`, `mm/s³` | jerk | Length/Time³ |
+| `N` | Newtons | Force |
+| `Nm`, `N·m` | Newton-meters | Torque |
+| `rad/s`, `deg/s` | angular velocity | Angle/Time |
+| `rad/s^2`, `rad/s²`, `deg/s^2`, `deg/s²` | angular acceleration | Angle/Time² |
+| `rad/s^3`, `rad/s³`, `deg/s^3`, `deg/s³` | angular jerk | Angle/Time³ |
+| `%` | dimensionless ratio (stored as 0..1; `50%` → 0.5) | — |
+
+
+**Operators:**
+- `+`, `-`: require matching dimensions; raises exception on mismatch
+- `*`, `/`: between quantities adds/subtracts dimension exponents (e.g., `Dist / Time → Velocity`)
+- `*`, `/`: with a scalar scales the value, preserving dimensions
+- Comparisons (`==`, `!=`, `<`, `>`, `<=`, `>=`): require matching dimensions
+- `real(q)`: explicit conversion to real; raises exception unless dimensionless
+
+**Property getters** — extract the value in a specific unit (raises exception if dimensions don't match):
+
+*Length:* `.meters`, `.centimeters`, `.millimeters`, `.micrometers`, `.inches`, `.feet`, `.mils`
+*Mass:* `.kilograms`, `.grams`, `.milligrams`, `.pounds`, `.ounces`
+*Time:* `.seconds`, `.milliseconds`, `.microseconds`, `.minutes`, `.hours`
+*Angle:* `.radians`, `.degrees`
+
+**Dimension introspection** — read-only boolean properties for classifying a quantity at runtime:
+
+`.is_dimensionless`, `.is_length`, `.is_time`, `.is_mass`, `.is_angle`,
+`.is_linear_velocity`, `.is_angular_velocity`,
+`.is_linear_acceleration`, `.is_angular_acceleration`,
+`.is_linear_jerk`, `.is_angular_jerk`,
+`.is_force`, `.is_torque`
+
+**String display:** `quantity` implicitly converts to string, choosing the most natural unit for the magnitude (e.g., `0.005m` displays as `5mm`). Angles display with the degree symbol (e.g., `90°`). Unknown dimension combinations display using SI unit symbols with Unicode superscript exponents (e.g., `1ms⁻³`).
 
 #### Internal (likely to be removed or renamed)
 * `fork(fn)` - run `fn` in a new thread and return its id
@@ -1114,6 +2174,12 @@ Use `import math` or `import math.*`.  See `math.rox`.
 * `ones(r, c)` - `r` by `c` matrix of ones
 * `dot(a, b)` - dot product of two vectors
 * `cross(a, b)` - cross product of two 3-element vectors
+* `relu(x)` - rectified linear unit: `max(0, x)` applied element-wise (works on scalar, vector, matrix, or tensor)
+* `softmax(x)` - softmax function: `exp(x_i) / sum(exp(x_j))` (works on vector or 1D tensor)
+* `argmax(x)` - index of maximum element (works on vector or 1D tensor)
+* `min(x)` - minimum element value (works on vector, matrix, tensor, or list)
+* `max(x)` - maximum element value (works on vector, matrix, tensor, or list)
+* `sum(x)` - sum of all elements (works on vector, matrix, tensor, or list)
 
 ### fileio
 
@@ -1141,6 +2207,9 @@ Use `import fileio` or `import fileio.*`.  See `fileio.sys`.
 * `file_without_extension(path)` - path without the extension
 * `delete_file(path)` - delete a file, returning true if it existed
 * `delete_dir(path, recurse=false)` - delete a directory, optionally recursively
+
+**Note:** `read`, `read_line`, `read_file`, and `write` do not block, but return futures that are automatically resolved when used.
+
 
 ### regex
 
@@ -1197,7 +2266,12 @@ print(mNamed['named'])  // {"year": "2024", "month": "03"}
 
 #### String Methods
 
-When the regex module is enabled, strings gain the following methods that accept either a `Regex` object or a plain string pattern (which is auto-compiled):
+* `upper()` - return the string with all letters uppercased (Unicode-aware; e.g. `'straße'.upper()` → `'STRASSE'`)
+* `lower()` - return the string with all letters lowercased (Unicode-aware)
+* `capitalize()` - return the string with the first character uppercased and the rest lowercased (Unicode-aware; matches Python `str.capitalize`)
+* `title()` - return the string with the first letter of each word uppercased and the rest lowercased (Unicode-aware word boundaries; matches Python `str.title`)
+
+When the regex module is enabled, strings additionally gain the following methods that accept either a `Regex` object or a plain string pattern (which is auto-compiled):
 
 * `match(pattern)` - find matches and return a list, or `nil` if no match
 * `search(pattern)` - return the index of the first match, or `-1` if not found

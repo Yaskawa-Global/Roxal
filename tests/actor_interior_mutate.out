@@ -1,0 +1,8 @@
+A initialized l=[1, object O, 3]
+extractL: moving l out of A
+l=[1, object O, 3] o.i=42
+mutateO: mutating o in A
+mutateO: l=nil o.i=100
+l=[1, object O, 3] o.i=42
+showO(): o.i=100
+done

@@ -1,3 +1,7 @@
+// byte([8 bits]) is the supported bit-list constructor (MSB-first per byte).
 print(byte([0,1,0,0,0,0,0,0]))
-print(int([byte(0), byte(0), byte(1), byte(0)]))
-print(int([byte(128), byte(0), byte(0), byte(0)]))
+
+// The int([4 bytes]) and int([32 bits]) constructor overloads were removed;
+// use sys.from_bytes for byte-list -> int conversion (explicit width, endian, sign).
+print(from_bytes([byte(0), byte(0), byte(1), byte(0)], dtype=int, signed=false))
+print(from_bytes([byte(128), byte(0), byte(0), byte(0)], dtype=int, signed=false))

@@ -1,0 +1,3 @@
+// All trailing elements MINUS-prefixed: ambiguous between vector and
+// subtraction expression. Parser must reject.
+print([0.0073 -0.0049 -0.0412])

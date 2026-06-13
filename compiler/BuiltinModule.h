@@ -6,6 +6,9 @@
 #include <core/types.h>
 #include <optional>
 #include <algorithm>
+#ifdef DEBUG_BUILTINS
+#include <cstdio>
+#endif
 #include <string>
 #include <vector>
 
@@ -66,13 +69,17 @@ protected:
 
     // Attach C++ implementation to function declared in builtin .rox module
     void link(const std::string& name, NativeFn fn,
-              std::vector<Value> defaults = {});
+              std::vector<Value> defaults = {},
+              uint32_t resolveArgMask = 0);
 
     // Attach C++ implementation to object method declared in builtin .rox module
     void linkMethod(const std::string& typeName,
                     const std::string& methodName,
                     NativeFn fn,
-                    std::vector<Value> defaults = {});
+                    std::vector<Value> defaults = {}, // default arg values (if not in .rox file)
+                    uint32_t resolveArgMask = 0,// bitmask of argument indices (0-based) that should be passed as resolved values (not futures)
+                    bool noMutateSelf = false,  // does this method modify instance state?
+                    uint32_t noMutateArgs = 0); // bitmask of argument indices (0-based) that are not mutated by this method (for optimization)
 
     // Fetch a module-level source signal declared in the builtin .rox file.
     // If \p required is false, returns nullptr when the signal cannot be found.
@@ -87,6 +94,16 @@ protected:
                                     const std::string& signalName = "");
 
     static void destroyModuleType(Value& moduleTypeValue);
+
+    /// Resolve a child value extracted from a const parent for correct MVCC
+    /// snapshot access.  Call this when native code reads a reference-type child
+    /// (e.g. list element, dict value, object property) from a const argument
+    /// and needs to see the value as it was at snapshot time rather than the
+    /// current (possibly mutated) state.
+    ///
+    /// If the parent is not const or has no snapshot token, this simply returns
+    /// the child with transitive const propagation (no MVCC overhead).
+    static Value resolveConstChildValue(const Value& parent, const Value& child);
 
     void setVM(VM& vm) { vm_ = vm; }
 
@@ -165,41 +182,101 @@ BuiltinModule::makeFuncType(const std::vector<std::pair<std::string,
 }
 
 inline void BuiltinModule::link(const std::string& name, NativeFn fn,
-                                std::vector<Value> defaults)
+                                std::vector<Value> defaults,
+                                uint32_t resolveArgMask)
 {
     auto val = asModuleType(moduleType())->vars.load(toUnicodeString(name));
     if (val.has_value() && isClosure(val.value())) {
         ObjClosure* cl = asClosure(val.value());
-        asFunction(cl->function)->nativeImpl = fn;
-        asFunction(cl->function)->nativeDefaults = std::move(defaults);
+        asFunction(cl->function)->builtinInfo = make_ptr<BuiltinFuncInfo>(
+            fn, std::move(defaults), resolveArgMask);
+#ifdef DEBUG_BUILTINS
+        std::string modName;
+        asModuleType(moduleType())->name.toUTF8String(modName);
+        std::fprintf(stderr, "[builtins] linked %s.%s\n",
+                     modName.c_str(), name.c_str());
+#endif
     }
 }
 
 inline void BuiltinModule::linkMethod(const std::string& typeName,
                                       const std::string& methodName,
                                       NativeFn fn,
-                                      std::vector<Value> defaults)
+                                      std::vector<Value> defaults,
+                                      uint32_t resolveArgMask,
+                                      bool noMutateSelf,
+                                      uint32_t noMutateArgs)
 {
-    auto typeVal = asModuleType(moduleType())->vars.load(toUnicodeString(typeName));
-    if (typeVal.has_value() && isObjectType(typeVal.value())) {
-        ObjObjectType* type = asObjectType(typeVal.value());
-        auto it = type->methods.find(toUnicodeString(methodName).hashCode());
-        if (it != type->methods.end()) {
-            Value val = it->second.closure;
-            if (isClosure(val)) {
-                ObjClosure* cl = asClosure(val);
-                asFunction(cl->function)->nativeImpl = fn;
-                asFunction(cl->function)->nativeDefaults = std::move(defaults);
+    // Resolve `typeName` as either a flat module-level type (e.g. "Foo") or a
+    // dotted path to a nested type (e.g. "Outer.Inner.Innermost"). The first
+    // segment is looked up in the module's `vars`; each subsequent segment is
+    // looked up in the preceding type's `nestedTypes` map.
+    //
+    // Same logic shape as the runtime walker at VM.cpp (GetProp on object
+    // types), but with explicit per-segment error messages so misconfigured
+    // builtin link calls fail fast at registration time.
+    auto splitDotted = [](const std::string& s) {
+        std::vector<std::string> out;
+        size_t start = 0;
+        for (size_t i = 0; i <= s.size(); ++i) {
+            if (i == s.size() || s[i] == '.') {
+                out.emplace_back(s.substr(start, i - start));
+                start = i + 1;
             }
         }
-        else {
-            throw std::runtime_error("BuiltinModule::linkMethod: Method '" + methodName +
-                                     "' not found in type '" + typeName + "'.");
+        return out;
+    };
+
+    std::vector<std::string> segments = splitDotted(typeName);
+    if (segments.empty() || segments.front().empty()) {
+        throw std::runtime_error("BuiltinModule::linkMethod: Empty type name.");
+    }
+
+    auto firstVal = asModuleType(moduleType())->vars.load(toUnicodeString(segments[0]));
+    if (!firstVal.has_value() || !isObjectType(firstVal.value())) {
+        throw std::runtime_error("BuiltinModule::linkMethod: Type '" + segments[0] +
+                                 "' not found or not an object type.");
+    }
+    ObjObjectType* type = asObjectType(firstVal.value());
+
+    // Walk nested-type segments. After the loop, `type` is the final type that
+    // should own `methodName`. `consumedPath` accumulates the resolved path for
+    // error messages so unmatched segments cite the partial prefix.
+    std::string consumedPath = segments[0];
+    for (size_t i = 1; i < segments.size(); ++i) {
+        if (segments[i].empty()) {
+            throw std::runtime_error("BuiltinModule::linkMethod: Empty segment in dotted type name '" +
+                                     typeName + "'.");
+        }
+        int32_t segHash = toUnicodeString(segments[i]).hashCode();
+        auto nit = type->nestedTypes.find(segHash);
+        if (nit == type->nestedTypes.end() || !isObjectType(nit->second.type)) {
+            throw std::runtime_error("BuiltinModule::linkMethod: Nested type '" + segments[i] +
+                                     "' not found in '" + consumedPath + "'.");
+        }
+        type = asObjectType(nit->second.type);
+        consumedPath += "." + segments[i];
+    }
+
+    auto it = type->methods.find(toUnicodeString(methodName).hashCode());
+    // Builtin modules register methods one-by-one — never overloaded.
+    if (it != type->methods.end() && it->second.overloads.size() == 1) {
+        Value val = it->second.overloads[0].closure;
+        if (isClosure(val)) {
+            ObjClosure* cl = asClosure(val);
+            asFunction(cl->function)->builtinInfo = make_ptr<BuiltinFuncInfo>(
+                fn, std::move(defaults), resolveArgMask, noMutateSelf, noMutateArgs);
+#ifdef DEBUG_BUILTINS
+            std::string modName;
+            asModuleType(moduleType())->name.toUTF8String(modName);
+            std::fprintf(stderr, "[builtins] linked %s.%s.%s\n",
+                         modName.c_str(), typeName.c_str(), methodName.c_str());
+#endif
         }
     }
     else {
-        throw std::runtime_error("BuiltinModule::linkMethod: Type '" + typeName +
-                                 "' not found or not an object type.");
+        throw std::runtime_error("BuiltinModule::linkMethod: Method '" + methodName +
+                                 "' not found in type '" + typeName + "'.");
     }
 }
 

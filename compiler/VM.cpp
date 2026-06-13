@@ -21,7 +21,7 @@
 #include <ffi.h>
 #include <dlfcn.h>
 
-#include <core/json11.h>
+#include <core/json5.h>
 
 
 #include "ASTGenerator.h"
@@ -34,6 +34,10 @@
 #include <core/TimePoint.h>
 #include "VM.h"
 #include "Object.h"
+#include "OverloadResolver.h"
+#ifdef ROXAL_COMPUTE_SERVER
+#include "ComputeConnection.h"
+#endif
 #include "FFI.h"
 #include "ModuleMath.h"
 #include "ModuleSys.h"
@@ -47,6 +51,7 @@
 #include "RegexWrapper.h"
 #endif
 #include "SimpleMarkSweepGC.h"
+#include "RTCallbackManager.h"
 #include <Eigen/Dense>
 #include <core/types.h>
 #include <core/common.h>
@@ -58,6 +63,22 @@
 #include <atomic>
 
 using namespace roxal;
+
+// Static thread_local definitions for native call timing instrumentation
+thread_local TimePoint VM::nativeCallDeadline_ { TimePoint::max() };
+thread_local UnicodeString VM::nativeCallContext_;
+thread_local std::string VM::nativeCallOverrun_;
+thread_local bool VM::onDataflowThread_ { false };
+#ifdef ROXAL_COMPUTE_SERVER
+thread_local VM::PrintTarget VM::currentPrintTarget_ {};
+#endif
+
+std::string VM::consumeNativeCallOverrun()
+{
+    std::string result;
+    result.swap(nativeCallOverrun_);
+    return result;
+}
 
 namespace {
 
@@ -71,6 +92,10 @@ std::atomic<bool> vmConstructed{false};
 std::atomic<VM::CacheMode> configuredCacheMode{VM::CacheMode::Normal};
 std::mutex configuredModulePathsMutex;
 std::vector<std::string> configuredModulePaths;
+
+
+Value resolveCanonicalRuntimeObjectType(const Value& typeVal);
+bool isCompatibleRuntimeObjectArg(const Value& slot, const Value& expectedType);
 
 void appendUnique(std::vector<std::string>& target, const std::vector<std::string>& additions)
 {
@@ -199,7 +224,101 @@ std::string VM::versionString()
     return fullVersion;
 }
 
-static ValueType builtinToValueType(type::BuiltinType bt)
+std::vector<std::string> VM::featureStrings()
+{
+    std::vector<std::string> features;
+#ifdef ROXAL_ENABLE_FILEIO
+    features.push_back("fileio");
+#endif
+#ifdef ROXAL_ENABLE_GRPC
+    features.push_back("grpc");
+#endif
+#ifdef ROXAL_ENABLE_DDS
+    features.push_back("dds");
+#endif
+#ifdef ROXAL_ENABLE_REGEX
+    features.push_back("regex");
+#endif
+#ifdef ROXAL_ENABLE_XML
+    features.push_back("xml");
+#endif
+#ifdef ROXAL_ENABLE_SOCKET
+    features.push_back("socket");
+#endif
+#ifdef ROXAL_COMPUTE_SERVER
+    features.push_back("server");
+#endif
+#ifdef ROXAL_ENABLE_AI_NN
+    features.push_back("nn");
+#endif
+#ifdef ROXAL_ENABLE_MEDIA
+    features.push_back("media");
+#endif
+#if ENABLE_UI
+    features.push_back("ui");
+#endif
+    return features;
+}
+
+std::string VM::featureString()
+{
+    const auto features = featureStrings();
+    if (features.empty())
+        return {};
+
+    std::ostringstream out;
+    out << "[";
+    for (size_t i = 0; i < features.size(); ++i) {
+        if (i > 0)
+            out << ",";
+        out << features[i];
+    }
+    out << "]";
+    return out.str();
+}
+
+#ifdef ROXAL_COMPUTE_SERVER
+VM::ScopedPrintTarget::ScopedPrintTarget(const PrintTarget& target)
+    : previous(currentPrintTarget_)
+{
+    currentPrintTarget_ = target;
+}
+
+VM::ScopedPrintTarget::~ScopedPrintTarget()
+{
+    currentPrintTarget_ = previous;
+}
+
+const VM::PrintTarget& VM::currentPrintTarget()
+{
+    return currentPrintTarget_;
+}
+
+void VM::emitPrintOutput(const std::string& text, bool flush, bool here)
+{
+    if (here || !currentPrintTarget_.routesRemotely()) {
+        std::cout << text;
+        if (flush)
+            std::cout << std::flush;
+        return;
+    }
+
+    auto conn = currentPrintTarget_.remoteConn.lock();
+    if (!conn) {
+        std::cout << text;
+        if (flush)
+            std::cout << std::flush;
+        return;
+    }
+
+    conn->sendPrintOutput(currentPrintTarget_.remoteCallId, text, flush);
+}
+#endif
+
+// Map BuiltinType to ValueType for automatic type conversion at call sites.
+// Returns nullopt for types that don't support automatic conversion (e.g.
+// Object, Actor — these are user-defined types where toType() doesn't apply).
+static std::optional<ValueType> builtinToValueType(type::BuiltinType bt)
 {
     switch (bt) {
         case type::BuiltinType::Nil:     return ValueType::Nil;
@@ -217,8 +336,10 @@ static ValueType builtinToValueType(type::BuiltinType bt)
         case type::BuiltinType::Tensor:  return ValueType::Tensor;
         case type::BuiltinType::Orient:  return ValueType::Orient;
         case type::BuiltinType::Event:   return ValueType::Event;
+        case type::BuiltinType::Signal:  return ValueType::Signal;
+        case type::BuiltinType::Enum:    return ValueType::Enum;
         default:
-            throw std::runtime_error("unhandled builtin type");
+            return std::nullopt; // Object, Actor, Func, Type — no auto-conversion
     }
 }
 
@@ -240,9 +361,123 @@ static ptr<type::Type> builtinConstructorType(ValueType t)
             }
             return sigType;
         }
+        case ValueType::Tensor: {
+            static ptr<type::Type> tensorType;
+            if (!tensorType) {
+                tensorType = make_ptr<type::Type>(type::BuiltinType::Func);
+                tensorType->func = type::Type::FuncType();
+                PT pShape(toUnicodeString("shape"));
+                pShape.type = make_ptr<type::Type>(type::BuiltinType::List);
+                pShape.hasDefault = false;
+                PT pData(toUnicodeString("data"));
+                pData.type = make_ptr<type::Type>(type::BuiltinType::List);
+                pData.hasDefault = true;
+                PT pDtype(toUnicodeString("dtype"));
+                pDtype.type = make_ptr<type::Type>(type::BuiltinType::String);
+                pDtype.hasDefault = true;
+                tensorType->func->params = {pShape, pData, pDtype};
+            }
+            return tensorType;
+        }
+        case ValueType::Orient: {
+            static ptr<type::Type> orientType;
+            if (!orientType) {
+                orientType = make_ptr<type::Type>(type::BuiltinType::Func);
+                orientType->func = type::Type::FuncType();
+                PT pRpy(toUnicodeString("rpy"));    pRpy.hasDefault = true;
+                PT pR(toUnicodeString("r"));        pR.hasDefault = true;
+                PT pP(toUnicodeString("p"));        pP.hasDefault = true;
+                PT pY(toUnicodeString("y"));        pY.hasDefault = true;
+                PT pEuler(toUnicodeString("euler")); pEuler.hasDefault = true;
+                PT pAxes(toUnicodeString("axes"));  pAxes.hasDefault = true;
+                PT pQuat(toUnicodeString("quat"));  pQuat.hasDefault = true;
+                PT pMat(toUnicodeString("mat"));    pMat.hasDefault = true;
+                PT pAxis(toUnicodeString("axis"));  pAxis.hasDefault = true;
+                PT pAngle(toUnicodeString("angle")); pAngle.hasDefault = true;
+                orientType->func->params = {pRpy, pR, pP, pY, pEuler, pAxes, pQuat, pMat, pAxis, pAngle};
+            }
+            return orientType;
+        }
         default:
             return nullptr;
     }
+}
+
+
+// Orient constructor helpers
+
+static std::array<int,3> parseEulerAxes(const std::string& axes)
+{
+    if (axes.size() != 3)
+        throw std::runtime_error("orient euler axes must be 3 characters (e.g., 'ZXZ', 'XYZ'), got '" + axes + "'");
+    std::array<int,3> result;
+    for (int i = 0; i < 3; ++i) {
+        switch (axes[i]) {
+            case 'X': case 'x': result[i] = 0; break;
+            case 'Y': case 'y': result[i] = 1; break;
+            case 'Z': case 'z': result[i] = 2; break;
+            default: throw std::runtime_error("orient euler axes must be X, Y, or Z, got '" + std::string(1, axes[i]) + "'");
+        }
+    }
+    return result;
+}
+
+static Eigen::Vector3d axisVector(int axisIndex)
+{
+    switch (axisIndex) {
+        case 0: return Eigen::Vector3d::UnitX();
+        case 1: return Eigen::Vector3d::UnitY();
+        case 2: return Eigen::Vector3d::UnitZ();
+        default: throw std::runtime_error("invalid axis index");
+    }
+}
+
+// Extract angle in radians from a Value that is either a sys.quantity with angle dimension
+// or a bare zero. Non-zero bare reals are rejected.
+static double extractAngleRadians(const Value& v)
+{
+    if (v.isNumber()) {
+        double val = v.isReal() ? v.asReal() : static_cast<double>(v.asInt());
+        if (val == 0.0) return 0.0;
+        throw std::runtime_error("orient angle arguments must be quantity (e.g. 45deg or 0.785rad), not bare numbers");
+    }
+    if (!isObjectInstance(v))
+        throw std::runtime_error("orient angle arguments must be quantity (e.g. 45deg or 0.785rad)");
+
+    ObjectInstance* inst = asObjectInstance(v);
+    Value dVal = inst->getProperty("_d");
+    if (!isList(dVal) || asList(dVal)->length() != 4)
+        throw std::runtime_error("orient angle argument is not a valid quantity");
+
+    ObjList* dList = asList(dVal);
+    // Verify angle dimension [0,0,0,1]
+    if (dList->getElement(0).asInt() != 0 || dList->getElement(1).asInt() != 0 ||
+        dList->getElement(2).asInt() != 0 || dList->getElement(3).asInt() != 1)
+        throw std::runtime_error("orient angle argument must have angle dimension (e.g. deg or rad)");
+
+    Value vVal = inst->getProperty("_v");
+    return vVal.isReal() ? vVal.asReal() : static_cast<double>(vVal.asInt());
+}
+
+// Extract 3 angle radians from a vector (already quantity-extracted to SI) or a list of 3 quantities
+static Eigen::Vector3d extractAngleVector3(const Value& v)
+{
+    if (isVector(v)) {
+        auto* vec = asVector(v);
+        if (vec->length() != 3)
+            throw std::runtime_error("orient angle vector must have 3 elements");
+        return Eigen::Vector3d(vec->vec()[0], vec->vec()[1], vec->vec()[2]);
+    }
+    if (isList(v)) {
+        auto* lst = asList(v);
+        if (lst->length() != 3)
+            throw std::runtime_error("orient angle list must have 3 elements");
+        return Eigen::Vector3d(
+            extractAngleRadians(lst->getElement(0)),
+            extractAngleRadians(lst->getElement(1)),
+            extractAngleRadians(lst->getElement(2)));
+    }
+    throw std::runtime_error("orient expects a vector or list of 3 angles");
 }
 
 
@@ -303,6 +538,84 @@ void VM::setStackLimits(size_t stackSize, size_t callFrameLimitValue)
 }
 
 
+// Identifies which param indices require closure default evaluation.
+// Returns vector of param indices that need closure evaluation (empty if none).
+std::vector<size_t> VM::getClosureDefaultParamIndices(
+    ptr<type::Type> funcType,
+    const std::vector<Value>& defaults,
+    const CallSpec& callSpec,
+    const std::map<int32_t, Value>& paramDefaultFuncs)
+{
+    std::vector<size_t> indices;
+    const auto& params = funcType->func.value().params;
+    auto paramPositions = callSpec.paramPositions(funcType, true);
+
+    for (size_t pi = 0; pi < params.size(); ++pi) {
+        int pos = paramPositions[pi];
+        // If arg is supplied explicitly (pos >= 0) or has static default (pi < defaults.size()),
+        // no closure evaluation needed
+        if (pos >= 0 || pi < defaults.size())
+            continue;
+        // Check if this param has a closure default
+        auto it = paramDefaultFuncs.find(params[pi]->nameHashCode);
+        if (it != paramDefaultFuncs.end())
+            indices.push_back(pi);
+    }
+    return indices;
+}
+
+// Marshal args without evaluating closure defaults.
+// For params that need closure evaluation, stores nilVal() placeholder.
+size_t VM::marshalArgsPartial(ptr<type::Type> funcType,
+                              const std::vector<Value>& defaults,
+                              const CallSpec& callSpec,
+                              Value* out,
+                              bool includeReceiver,
+                              const Value& receiver,
+                              const std::map<int32_t, Value>& paramDefaultFuncs)
+{
+    const auto& params = funcType->func.value().params;
+    auto paramPositions = callSpec.paramPositions(funcType, true);
+
+    size_t idx = 0;
+    if (includeReceiver)
+        out[idx++] = receiver;
+
+    for (size_t pi = 0; pi < params.size(); ++pi) {
+        Value arg;
+        bool needsClosureDefault = false;
+        int pos = paramPositions[pi];
+        if (pos >= 0)
+            arg = *(&(*thread->stackTop) - callSpec.argCount + pos);
+        else if (pi < defaults.size())
+            arg = defaults[pi];
+        else {
+            // Check if this param has a closure default
+            auto it = paramDefaultFuncs.find(params[pi]->nameHashCode);
+            if (it != paramDefaultFuncs.end()) {
+                // Closure default - store placeholder (will be filled by continuation)
+                arg = Value::nilVal();
+                needsClosureDefault = true;
+            } else {
+                arg = Value::nilVal();
+            }
+        }
+
+        // Skip type conversion for params that will be filled by closure evaluation
+        if (!needsClosureDefault && params[pi].has_value() && params[pi]->type.has_value()) {
+            auto vt = builtinToValueType(params[pi]->type.value()->builtin);
+            if (vt.has_value()) {
+                bool strictConv = false;
+                if (thread->frames.size() >= 1)
+                    strictConv = (thread->frames.end()-1)->strict;
+                arg = toType(vt.value(), arg, strictConv);
+            }
+        }
+        out[idx++] = arg;
+    }
+    return idx;
+}
+
 size_t VM::marshalArgs(ptr<type::Type> funcType,
                        const std::vector<Value>& defaults,
                        const CallSpec& callSpec,
@@ -326,25 +639,26 @@ size_t VM::marshalArgs(ptr<type::Type> funcType,
         else if (pi < defaults.size())
             arg = defaults[pi];
         else {
+            // Closure defaults are handled via continuation mechanism in callNativeFn()
+            // before marshalArgs() is called. If we reach here with a closure default,
+            // something is wrong.
             auto it = paramDefaultFuncs.find(params[pi]->nameHashCode);
-            if (it != paramDefaultFuncs.end()) {
-                Value defFunc = it->second;
-                Value defClosure = Value::closureVal(defFunc);
-                auto res = callAndExec(asClosure(defClosure), {});
-                if (res.first != InterpretResult::OK)
-                    throw std::runtime_error("failed to evaluate default parameter");
-                arg = res.second;
-            } else {
-                arg = Value::nilVal();
-            }
+            assert(it == paramDefaultFuncs.end() &&
+                   "Closure default params should be handled via continuation, not marshalArgs");
+            arg = Value::nilVal();
         }
 
         if (params[pi].has_value() && params[pi]->type.has_value()) {
-            ValueType vt = builtinToValueType(params[pi]->type.value()->builtin);
-            bool strictConv = false;
-            if (thread->frames.size() >= 1)
-                strictConv = (thread->frames.end()-1)->strict;
-            arg = toType(vt, arg, strictConv);
+            // Skip conversion for futures whose promised type matches the param type
+            auto vt = builtinToValueType(params[pi]->type.value()->builtin);
+            if (isFuture(arg) && vt.has_value() && isFutureAssignableTo(arg, vt.value())) {
+                // pass future through as-is
+            } else if (vt.has_value()) {
+                bool strictConv = false;
+                if (thread->frames.size() >= 1)
+                    strictConv = (thread->frames.end()-1)->strict;
+                arg = toType(vt.value(), arg, strictConv);
+            }
         }
         out[idx++] = arg;
     }
@@ -356,9 +670,12 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                       const CallSpec& callSpec,
                       bool includeReceiver,
                       const Value& receiver,
-                      const Value& declFunction)
+                      const Value& declFunction,
+                      uint32_t resolveArgMask)
 {
     Thread* currentThread = thread.get();
+    if (currentThread)
+        currentThread->lastNativeCallRaised = false;
     auto stackDepthBefore = thread ? static_cast<size_t>(thread->stackTop - thread->stack.begin()) : 0;
     auto frameDepthBefore = thread ? thread->frames.size() : 0;
     struct NativeCallGuard {
@@ -376,6 +693,142 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
     try {
         if (funcType) {
             size_t paramCount = funcType->func.value().params.size() + (includeReceiver ? 1 : 0);
+            static const std::map<int32_t, Value> emptyDefaults;
+            const auto& paramDefaults = declFunction.isNonNil() ? asFunction(declFunction)->paramDefaultFunc : emptyDefaults;
+
+            // Check if any params need closure default evaluation
+            auto closureIndices = getClosureDefaultParamIndices(funcType, defaults, callSpec, paramDefaults);
+
+            if (!closureIndices.empty()) {
+                // Defer native call: set up state and push first closure default frame
+                auto& state = thread->pushNativeDefaultParam();
+                state.nativeFunc = fn;
+                state.funcType = funcType;
+                state.staticDefaults = defaults;
+                state.callSpec = callSpec;
+                state.includeReceiver = includeReceiver;
+                state.receiver = receiver;
+                state.declFunction = declFunction;
+                state.resolveArgMask = resolveArgMask;
+                state.closureParamIndices = std::move(closureIndices);
+                state.nextClosureIndex = 0;
+                state.paramDefaultFuncs = paramDefaults;
+                state.originalArgCount = callSpec.argCount;
+
+                // Partially marshal args (without evaluating closure defaults)
+                state.argsBuffer.resize(paramCount);
+                marshalArgsPartial(funcType, defaults, callSpec, state.argsBuffer.data(),
+                                   includeReceiver, receiver, paramDefaults);
+
+                // Push first closure default frame
+                size_t paramIdx = state.closureParamIndices[0];
+                const auto& params = funcType->func.value().params;
+                auto it = paramDefaults.find(params[paramIdx]->nameHashCode);
+                Value defFunc = it->second;
+                Value defClosure = Value::closureVal(defFunc);
+
+                // Check for captured variables (not allowed in default params)
+                if (asClosure(defClosure)->upvalues.size() > 0) {
+                    thread->popNativeDefaultParam();
+                    auto paramName = params[paramIdx]->name;
+                    runtimeError("Captured variables in default parameter '" + toUTF8StdString(paramName) +
+                                "' value expressions are not allowed.");
+                    return false;
+                }
+
+                // Set up continuation callback that will process each default value
+                auto& cont = thread->pushContinuation();
+                cont.state = Value::nilVal();  // State is in nativeDefaultParamState
+                cont.resultSlotIndex = -1;     // We handle stack cleanup ourselves
+                cont.onComplete = [](VM& vm, Value defaultValue) -> bool {
+                    return vm.processNativeDefaultParamDispatch(defaultValue);
+                };
+
+                // Push closure and call it using continuation mechanism
+                push(defClosure);
+                if (!call(asClosure(defClosure), CallSpec(0))) {
+                    thread->popNativeDefaultParam();
+                    thread->popContinuation();
+                    return false;
+                }
+                thread->frames.back().isContinuationCallback = true;
+                if (thread->hasContinuation())
+                    thread->currentContinuation().callbackFrameDepth = thread->frames.size();
+                return true;  // Deferred - execute() will continue with closure frame
+            }
+
+            // Check if any params need async user-defined conversion (operator->T or constructor)
+            {
+                const auto& params = funcType->func.value().params;
+                auto paramPositions = callSpec.paramPositions(funcType, true);
+                std::vector<size_t> asyncConvIndices;
+                for (size_t pi = 0; pi < params.size(); ++pi) {
+                    if (!params[pi].has_value() || !params[pi]->type.has_value())
+                        continue;
+                    int pos = paramPositions[pi];
+                    if (pos < 0) continue; // default or missing — sync path handles it
+                    Value arg = *(&(*thread->stackTop) - callSpec.argCount + pos);
+                    bool nativeStrictCtx = !thread->frames.empty() && (thread->frames.end()-1)->strict;
+                    if (needsAsyncConversion(arg, params[pi]->type.value(), nativeStrictCtx))
+                        asyncConvIndices.push_back(pi);
+                }
+
+                if (!asyncConvIndices.empty()) {
+                    // Defer: marshal args without converting async params, then push conversion frames
+                    auto& state = thread->pushNativeParamConversion();
+                    state.nativeFunc = fn;
+                    state.funcType = funcType;
+                    state.callSpec = callSpec;
+                    state.includeReceiver = includeReceiver;
+                    state.receiver = receiver;
+                    state.declFunction = declFunction;
+                    state.resolveArgMask = resolveArgMask;
+                    state.originalArgCount = callSpec.argCount;
+
+                    // Marshal args — sync conversions happen here; async params get default
+                    // toType result (e.g. "<object Foo>" for string) which we'll overwrite
+                    state.argsBuffer.resize(paramCount);
+                    // For async params, store original value (skip toType which may throw)
+                    // Use marshalArgsPartial which handles defaults but still does toType;
+                    // override async param slots with original values afterward
+                    marshalArgsPartial(funcType, defaults, callSpec, state.argsBuffer.data(),
+                                       includeReceiver, receiver, paramDefaults);
+                    // Overwrite async param slots with original (unconverted) values
+                    for (size_t pi : asyncConvIndices) {
+                        int pos = paramPositions[pi];
+                        if (pos >= 0) {
+                            Value arg = *(&(*thread->stackTop) - callSpec.argCount + pos);
+                            state.argsBuffer[pi + (includeReceiver ? 1 : 0)] = arg;
+                        }
+                    }
+
+                    state.conversionParamIndices = std::move(asyncConvIndices);
+                    state.nextConversionIndex = 0;
+
+                    // Set up continuation
+                    auto& cont = thread->pushContinuation();
+                    cont.state = Value::nilVal();
+                    cont.resultSlotIndex = -1;
+                    cont.onComplete = [](VM& vm, Value convertedValue) -> bool {
+                        return vm.processNativeParamConversion(convertedValue);
+                    };
+
+                    // Push first conversion frame
+                    size_t firstParamIdx = state.conversionParamIndices[0];
+                    size_t firstBufIdx = firstParamIdx + (includeReceiver ? 1 : 0);
+                    const auto& firstParamType = params[firstParamIdx]->type.value();
+                    bool nativeStrictCtx2 = !thread->frames.empty() && (thread->frames.end()-1)->strict;
+                    if (!pushParamConversionFrame(state.argsBuffer[firstBufIdx], firstParamType, nativeStrictCtx2)) {
+                        thread->popNativeParamConversion();
+                        thread->popContinuation();
+                        runtimeError("Failed to set up parameter conversion");
+                        return false;
+                    }
+                    return true;  // Deferred — execute() continues with conversion frame
+                }
+            }
+
+            // No async conversions needed - proceed with immediate call (original code path)
             constexpr size_t Small = 8;
             Value stackArgs[Small];
             std::vector<Value> heapArgs;
@@ -384,36 +837,147 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                 heapArgs.resize(paramCount);
                 buf = heapArgs.data();
             }
-            static const std::map<int32_t, Value> emptyDefaults;
-            const auto& paramDefaults = declFunction.isNonNil() ? asFunction(declFunction)->paramDefaultFunc : emptyDefaults;
             size_t actual = marshalArgs(funcType, defaults, callSpec, buf, includeReceiver, receiver, paramDefaults);
+
+            // Non-blocking resolution of future args indicated by mask
+            if (resolveArgMask) {
+                for (size_t i = 0; i < actual && resolveArgMask >> i; ++i) {
+                    if ((resolveArgMask & (1u << i)) && isFuture(buf[i])) {
+                        auto s = buf[i].tryResolveFuture();
+                        if (s == FutureStatus::Pending) {
+                            thread->awaitedFuture = buf[i];
+                            return true;
+                        }
+                        if (s == FutureStatus::Error) return false;
+                    }
+                }
+            }
+
             ArgsView view{buf, actual};
-            Value result { fn(*this, view) };
+            Value result;
+            if (nativeCallTimingEnabled_ && nativeCallDeadline_ != TimePoint::max()) {
+                auto before = TimePoint::currentTime();
+                result = fn(*this, view);
+                auto elapsed = TimePoint::currentTime() - before;
+                auto remaining = nativeCallDeadline_ - before;
+                if (elapsed > remaining) {
+                    auto name = toUTF8StdString(nativeCallContext_);
+                    nativeCallOverrun_ = "'" + name + "' took "
+                        + std::to_string((long)elapsed.microSecs()) + "us (budget "
+                        + std::to_string((long)remaining.microSecs()) + "us)";
+                }
+            } else {
+                result = fn(*this, view);
+            }
             bool unwound = false;
             if (thread) {
                 auto stackDepthAfter = static_cast<size_t>(thread->stackTop - thread->stack.begin());
                 auto frameDepthAfter = thread->frames.size();
                 unwound = stackDepthAfter < stackDepthBefore || frameDepthAfter < frameDepthBefore;
             }
+            // Skip stack cleanup only when THIS native call pushed frames (set up a
+            // continuation or deferred call). Frame depth increase distinguishes this from
+            // nested native calls during an outer continuation (e.g., len() inside
+            // operator->string called via print()'s continuation — len should clean up normally).
+            bool thisCallPushedFrames = thread && thread->frames.size() > frameDepthBefore;
             if (currentThread && (currentThread->exceptionJumpPending.load(std::memory_order_relaxed) || unwound)) {
                 currentThread->exceptionJumpPending.store(false, std::memory_order_relaxed);
                 return true;
+            }
+            if (thisCallPushedFrames) {
+                // Native set up a continuation — ensure resultSlot/stackBase are set
+                // so processContinuationDispatch (or unwindFrame on exception) can
+                // clean up the original callee+args area.
+                if (thread->hasContinuation() && thread->currentContinuation().resultSlotIndex < 0) {
+                    auto& cont = thread->currentContinuation();
+                    ptrdiff_t calleePos = static_cast<ptrdiff_t>(stackDepthBefore - callSpec.argCount - 1);
+                    cont.resultSlotIndex = calleePos;
+                    cont.stackBaseIndex = calleePos + 1;
+                }
+                return true;
+            }
+            auto& waitSusp = thread->waitSuspension;
+            if (waitSusp.active && !waitSusp.resultSlot) {
+                size_t calleePos = stackDepthBefore - callSpec.argCount - 1;
+                waitSusp.resultSlot = &*(thread->stack.begin() + calleePos);
+                waitSusp.stackBase = thread->stack.begin() + calleePos + 1;
+                waitSusp.frameDepth = thread->frames.size();
+                return true;
+            }
+            // If resolveReturn is set and result is a future, trigger non-blocking
+            // resolution — the dispatch loop will await and replace the result.
+            if (isFuture(result) && declFunction.isNonNil() && isFunction(declFunction)) {
+                auto* funcObj = asFunction(declFunction);
+                if (funcObj->builtinInfo && funcObj->builtinInfo->resolveReturn) {
+                    thread->awaitedFuture = result;
+                    // Store the future as the result — it will be resolved in-place
+                    // by the dispatch loop's awaitedFuture handler before the next
+                    // instruction reads it.
+                }
             }
             *(thread->stackTop - callSpec.argCount - 1) = result;
             popN(callSpec.argCount);
             return true;
         } else {
             Value* base = &(*thread->stackTop) - callSpec.argCount - (includeReceiver ? 1 : 0);
-            ArgsView view{base, static_cast<size_t>(callSpec.argCount + (includeReceiver ? 1 : 0))};
-            Value result { fn(*this, view) };
+            size_t actual = static_cast<size_t>(callSpec.argCount + (includeReceiver ? 1 : 0));
+
+            // Non-blocking resolution of future args indicated by mask
+            if (resolveArgMask) {
+                for (size_t i = 0; i < actual && resolveArgMask >> i; ++i) {
+                    if ((resolveArgMask & (1u << i)) && isFuture(base[i])) {
+                        auto s = base[i].tryResolveFuture();
+                        if (s == FutureStatus::Pending) {
+                            thread->awaitedFuture = base[i];
+                            return true;
+                        }
+                        if (s == FutureStatus::Error) return false;
+                    }
+                }
+            }
+
+            ArgsView view{base, actual};
+            Value result;
+            if (nativeCallTimingEnabled_ && nativeCallDeadline_ != TimePoint::max()) {
+                auto before = TimePoint::currentTime();
+                result = fn(*this, view);
+                auto elapsed = TimePoint::currentTime() - before;
+                auto remaining = nativeCallDeadline_ - before;
+                if (elapsed > remaining) {
+                    auto name = toUTF8StdString(nativeCallContext_);
+                    nativeCallOverrun_ = "'" + name + "' took "
+                        + std::to_string((long)elapsed.microSecs()) + "us (budget "
+                        + std::to_string((long)remaining.microSecs()) + "us)";
+                }
+            } else {
+                result = fn(*this, view);
+            }
             bool unwound = false;
             if (thread) {
                 auto stackDepthAfter = static_cast<size_t>(thread->stackTop - thread->stack.begin());
                 auto frameDepthAfter = thread->frames.size();
                 unwound = stackDepthAfter < stackDepthBefore || frameDepthAfter < frameDepthBefore;
             }
+            bool thisCallPushedFrames2 = thread && thread->frames.size() > frameDepthBefore;
             if (currentThread && (currentThread->exceptionJumpPending.load(std::memory_order_relaxed) || unwound)) {
                 currentThread->exceptionJumpPending.store(false, std::memory_order_relaxed);
+                return true;
+            }
+            if (thisCallPushedFrames2) {
+                if (thread->hasContinuation() && thread->currentContinuation().resultSlotIndex < 0) {
+                    auto& cont = thread->currentContinuation();
+                    ptrdiff_t calleePos = static_cast<ptrdiff_t>(stackDepthBefore - callSpec.argCount - 1);
+                    cont.resultSlotIndex = calleePos;
+                    cont.stackBaseIndex = calleePos + 1;
+                }
+                return true;
+            }
+            auto& waitSusp = thread->waitSuspension;
+            if (waitSusp.active && !waitSusp.resultSlot) {
+                size_t calleePos = stackDepthBefore - callSpec.argCount - 1;
+                waitSusp.resultSlot = &*(thread->stack.begin() + calleePos);
+                waitSusp.stackBase = thread->stack.begin() + calleePos + 1;
+                waitSusp.frameDepth = thread->frames.size();
                 return true;
             }
             *(thread->stackTop - callSpec.argCount - 1) = result;
@@ -421,8 +985,23 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
             return true;
         }
     } catch (std::exception& e) {
-        runtimeError(e.what());
-        return false;
+        // Convert the C++ exception into a Roxal exception so user code can
+        // catch it via try/except. raiseException() jumps to the nearest
+        // handler frame; if no handler exists on the call stack, it falls
+        // through to runtimeError with an "Uncaught exception" message
+        // (instead of letting the C++ exception escape and abort the VM).
+        Value exc = Value::exceptionVal(Value::stringVal(toUnicodeString(e.what())));
+        raiseException(exc);
+        if (currentThread) {
+            // Mirror the success-path flag clearing so the next native call's
+            // pending-check doesn't see a stale flag.
+            currentThread->exceptionJumpPending.store(false, std::memory_order_relaxed);
+            // Signal to callers that an exception was raised, so they skip
+            // success-path post-processing (e.g. construction overwriting the
+            // result slot with the new instance).
+            currentThread->lastNativeCallRaised = true;
+        }
+        return true;
     }
 }
 
@@ -540,6 +1119,28 @@ VM::VM()
     thread = nullptr;
     initString = Value::stringVal(UnicodeString("init"));
 
+    // Pre-hash operator method names for fast dispatch
+    auto makeOpHashes = [](const char* sym) -> OperatorHashes {
+        return {
+            (UnicodeString("operator") + sym).hashCode(),
+            (UnicodeString("loperator") + sym).hashCode(),
+            (UnicodeString("roperator") + sym).hashCode()
+        };
+    };
+    opHashAdd = makeOpHashes("+");
+    opHashSub = makeOpHashes("-");
+    opHashMul = makeOpHashes("*");
+    opHashDiv = makeOpHashes("/");
+    opHashMod = makeOpHashes("%");
+    opHashEq  = makeOpHashes("==");
+    opHashNe  = makeOpHashes("!=");
+    opHashLt  = makeOpHashes("<");
+    opHashGt  = makeOpHashes(">");
+    opHashLe  = makeOpHashes("<=");
+    opHashGe  = makeOpHashes(">=");
+    opHashNeg = UnicodeString("uoperator-").hashCode();
+    opHashConvString = UnicodeString("operator->string").hashCode();
+
     // Eagerly load sys & math modules
     registerBuiltinModule(make_ptr<ModuleSys>());
     registerBuiltinModule(make_ptr<ModuleMath>());
@@ -561,6 +1162,12 @@ VM::VM()
     #ifdef ROXAL_ENABLE_SOCKET
     lazyModuleRegistry.registerFactory("socket", []{ return make_ptr<ModuleSocket>(); });
     #endif
+    #ifdef ROXAL_ENABLE_AI_NN
+    lazyModuleRegistry.registerFactory("ai.nn", []{ return make_ptr<ModuleNN>(); });
+    #endif
+    #ifdef ROXAL_ENABLE_MEDIA
+    lazyModuleRegistry.registerFactory("media", []{ return make_ptr<ModuleMedia>(); });
+    #endif
 
     #if ENABLE_UI
     lazyModuleRegistry.registerFactory("ui", []{ return make_ptr<ModuleUI>(); });
@@ -579,6 +1186,48 @@ VM::VM()
     ptr<Thread> initThread = make_ptr<Thread>();
     thread = initThread;
     executeBuiltinModuleScript("sys.rox", getBuiltinModuleType(toUnicodeString("sys")));
+
+    // Export pure Roxal functions from sys module to globals
+    // (sys predates the module system and registers symbols directly as globals)
+    {
+        Value sysModule = getBuiltinModuleType(toUnicodeString("sys"));
+        auto& sysVars = asModuleType(sysModule)->vars;
+        for (const char* name : {"filter", "map", "reduce"}) {
+            auto maybeFunc = sysVars.load(toUnicodeString(name));
+            if (maybeFunc.has_value() && isClosure(maybeFunc.value())) {
+                globals.storeGlobal(toUnicodeString(name), maybeFunc.value());
+            }
+        }
+        // Export suffix functions and types from sys to globals.
+        // If registeredSuffixes is empty (module loaded from cache), rebuild
+        // it by scanning function annotations for @suffix.
+        ObjModuleType* sysMod = asModuleType(sysModule);
+        if (sysMod->registeredSuffixes.empty()) {
+            sysVars.forEach([&](const VariablesMap::NameValue& nv) {
+                if (isClosure(nv.second)) {
+                    ObjFunction* fn = asFunction(asClosure(nv.second)->function);
+                    for (const auto& annot : fn->annotations) {
+                        if (annot->name == "suffix" && annot->args.size() == 1) {
+                            if (auto s = dynamic_ptr_cast<ast::Str>(annot->args[0].second))
+                                sysMod->registeredSuffixes[s->str] = nv.first;
+                        }
+                    }
+                }
+            });
+        }
+        for (const auto& [suffix, funcName] : sysMod->registeredSuffixes) {
+            auto maybeFunc = sysVars.load(funcName);
+            if (maybeFunc.has_value())
+                globals.storeGlobal(funcName, maybeFunc.value());
+        }
+        // Also export quantity and _dimension types
+        for (const char* name : {"quantity", "_dimension"}) {
+            auto maybeType = sysVars.load(toUnicodeString(name));
+            if (maybeType.has_value())
+                globals.storeGlobal(toUnicodeString(name), maybeType.value());
+        }
+    }
+
     executeBuiltinModuleScript("math.rox", getBuiltinModuleType(toUnicodeString("math")));
     thread = nullptr;
 
@@ -663,6 +1312,21 @@ VM::VM()
         globals.storeGlobal(toUnicodeString("__conditional_interrupt"), conditionalInterruptClosure);
     }
 
+    // Sentinel function for sys.allof / sys.anyof slot wakeups. Each slot
+    // registration creates a fresh ObjClosure wrapping this function — see
+    // sys.allof/anyof builtin. Dispatch recognises the sentinel by checking
+    // closure->function identity. The function body is never executed.
+    {
+        Value fn { Value::functionVal(toUnicodeString("__combinator_relay"),
+                                      toUnicodeString("sys"), toUnicodeString("__internal"), toUnicodeString("internal")) };
+        ObjFunction* fnObj = asFunction(fn);
+        fnObj->arity = 1;
+        fnObj->upvalueCount = 0;
+        fnObj->chunk->write(OpCode::ConstNil, 0, 0);
+        fnObj->chunk->write(OpCode::Return, 0, 0);
+        combinatorRelayFunction = fn;
+    }
+
     vmConstructed.store(true, std::memory_order_release);
 
     //CallSpec::testParamPositions();
@@ -691,6 +1355,12 @@ void VM::ensureDataflowEngineStopped()
 
 VM::~VM()
 {
+    // Signal all actor threads to exit the dispatch loop and wait for them
+    // before tearing down any state.  Without this, dropReferences() can clear
+    // module vars while actor threads are mid-opcode, causing use-after-free.
+    // requestExit also stops the dataflow engine and joins all threads.
+    requestExit(0);
+
     SimpleMarkSweepGC::instance().setVM(nullptr);
 
     for (auto moduleTypeVal : ObjModuleType::allModules.get()) {
@@ -701,18 +1371,12 @@ VM::~VM()
     }
     ObjModuleType::allModules.clear();
 
-    // Clean up dataflow engine resources before globals cleanup. Signal the
-    // engine to exit cooperatively before waiting on the actor thread so the
-    // join cannot block inside the run loop.
-    ensureDataflowEngineStopped();
+    // Clean up dataflow engine actor (engine already stopped by requestExit)
     if (dataflowEngineThread) {
         dataflowEngineThread->join();
         dataflowEngineThread.reset();
     }
-    dataflowEngineActor = Value::nilVal();  // This will call decRef() via Value destructor
-
-    // join any remaining threads to prevent leak reports
-    joinAllThreads();
+    dataflowEngineActor = Value::nilVal();
 
 
     globals.forEach([](const VariablesMap::NameValue& nv) {
@@ -749,6 +1413,22 @@ VM::~VM()
     lazyModuleRegistry.clear();
 
     conditionalInterruptClosure = Value::nilVal();
+    combinatorRelayFunction = Value::nilVal();
+    replModuleValue = Value::nilVal();
+    pendingRTClosure_ = Value::nilVal();
+
+    // Drop the cross-compiler user-module registry's strong Value refs before
+    // freeObjects(). Otherwise its destructor runs after VM destruction has
+    // already freed the underlying ObjModuleType objects, and ~Value() decRefs
+    // freed memory.
+    {
+        std::lock_guard<std::mutex> guard(userModuleRegistryMutex);
+        userModuleRegistry.clear();
+    }
+
+    // Same concern for the shared REPL compiler — its importedModules map
+    // holds strong Value refs. Destroy it before freeObjects().
+    replCompiler_.reset();
 
     if (dataflowEngine)
         dataflowEngine->clear();
@@ -841,11 +1521,146 @@ bool VM::cacheWritesEnabled() const
 
 
 
-InterpretResult VM::interpret(std::istream& source, const std::string& name)
+ExecutionStatus VM::runWithImports(std::istream& source, const std::string& name,
+                                    const std::vector<Value>& imports)
+{
+    // Same shape as run(), but routes through the setup() overload that
+    // pre-populates the script's module type with vars from `imports`.
+    ExecutionStatus setupResult = setup(source, name, imports);
+    if (setupResult != ExecutionStatus::OK)
+        return setupResult;
+
+    auto& rtMgr = RTCallbackManager::instance();
+    if (!rtMgr.isMainThreadSet()) {
+        rtMgr.setMainThread();
+    }
+
+    ExecutionStatus result = ExecutionStatus::OK;
+    inSynchronousExecution_.store(true, std::memory_order_release);
+    try {
+        auto [execResult, value] = execute();
+        result = execResult;
+    } catch (...) {
+        inSynchronousExecution_.store(false, std::memory_order_release);
+        joinAllThreads();
+        thread.reset();
+        freeObjects();
+        throw;
+    }
+    inSynchronousExecution_.store(false, std::memory_order_release);
+
+    ExecutionStatus joinResult = joinAllThreads();
+    if (joinResult != ExecutionStatus::OK || runtimeErrorFlag.load())
+        result = ExecutionStatus::RuntimeError;
+
+    if (exitRequested.load())
+        result = ExecutionStatus::OK;
+
+    thread.reset();
+    freeObjects();
+    return result;
+}
+
+
+ExecutionStatus VM::run(std::istream& source, const std::string& name)
+{
+    // Setup: compile and prepare the initial call frame
+    ExecutionStatus setupResult = setup(source, name);
+    if (setupResult != ExecutionStatus::OK)
+        return setupResult;
+
+    // Establish RT main thread for script mode (runs on current C++ thread, not spawned)
+    auto& rtMgr = RTCallbackManager::instance();
+    if (!rtMgr.isMainThreadSet()) {
+        rtMgr.setMainThread();
+    }
+
+    // Execute directly on the host thread
+    ExecutionStatus result = ExecutionStatus::OK;
+    inSynchronousExecution_.store(true, std::memory_order_release);
+    try {
+        auto [execResult, value] = execute();
+        result = execResult;
+    } catch (...) {
+        // Ensure cleanup runs even if execute() throws (e.g. from queueCall
+        // runtime errors).  Without this, joinAllThreads/thread.reset are
+        // skipped, causing static/thread_local destruction order issues.
+        inSynchronousExecution_.store(false, std::memory_order_release);
+        joinAllThreads();
+        thread.reset();
+        freeObjects();
+        throw;
+    }
+    inSynchronousExecution_.store(false, std::memory_order_release);
+
+    // Join any other threads spawned during execution (actors, etc.)
+    ExecutionStatus joinResult = joinAllThreads();
+
+    if (joinResult != ExecutionStatus::OK || runtimeErrorFlag.load())
+        result = ExecutionStatus::RuntimeError;
+
+    if (exitRequested.load())
+        result = ExecutionStatus::OK;
+
+    #if defined(DEBUG_TRACE_EXECUTION)
+    // globals dump disabled (VariablesMap API changed)
+    #endif
+
+    thread.reset();
+    freeObjects();
+
+    return result;
+}
+
+
+ExecutionStatus VM::setup(std::istream& source, const std::string& name)
+{
+    return setup(source, name, /*imports=*/{});
+}
+
+ExecutionStatus VM::setup(std::istream& source, const std::string& name,
+                          const std::vector<Value>& imports)
 {
     Value function { Value::nilVal() }; // ObjFunction
 
     runtimeErrorFlag = false;
+
+    // If the caller wants imports pre-populated, create the script's
+    // ObjModuleType up front and copy each import's vars in.  This is
+    // threaded through `compiler.compile(..., existingModule=...)` so
+    // unqualified names like `movj` resolve against the pre-populated
+    // vars during compilation.  We disable file-cache lookup in this
+    // mode because cached closures embed a reference to a frozen
+    // ObjModuleType that wasn't pre-populated.
+    Value existingModule = Value::nilVal();
+    if (!imports.empty()) {
+        std::filesystem::path namePath(name);
+        icu::UnicodeString moduleName = toUnicodeString(
+            namePath.stem().filename().string());
+        auto modObj = newModuleTypeObj(moduleName);
+        ObjModuleType* modPtr = modObj.get();
+        existingModule = Value::objVal(std::move(modObj));
+
+        // Register in the global module list so the type outlives this
+        // function -- the compiled top-level closure only holds a weak
+        // ref to its module (RoxalCompiler.cpp:596).  Without this push,
+        // the strong ref count drops to 0 when existingModule goes out of
+        // scope below and execute() then segfaults loading vars on a
+        // freed module.  Modules created via enterModuleScope's normal
+        // path get pushed here too (RoxalCompiler.cpp:706).
+        ObjModuleType::allModules.push_back(existingModule);
+
+        for (const auto& imp : imports) {
+            if (!isModuleType(imp)) continue;
+            asModuleType(imp)->vars.forEach(
+                [&](const VariablesMap::NameValue& nv) {
+                    // overwrite=false: a name the script imports/declares
+                    // for itself wins (matches `import X.*` precedence).
+                    modPtr->vars.store(nv.first.hashCode(), nv.first,
+                                       nv.second, /*overwrite=*/false);
+                });
+        }
+    }
 
     try {
         RoxalCompiler compiler {};
@@ -856,7 +1671,7 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
         compiler.setModuleResolverVM(this);
 
         std::filesystem::path cacheSourcePath;
-        if (!name.empty()) {
+        if (!name.empty() && existingModule.isNil()) {
             try {
                 std::filesystem::path namePath(name);
                 if (namePath.has_extension() && namePath.extension() == ".rox")
@@ -876,57 +1691,128 @@ InterpretResult VM::interpret(std::istream& source, const std::string& name)
         }
 
         if (!loadedFromCache) {
-            function = compiler.compile(source, name);
+            function = compiler.compile(source, name, existingModule);
             if (!function.isNil() && !cacheSourcePath.empty())
                 compiler.storeFileCache(cacheSourcePath, function);
         }
 
     } catch (std::exception& e) {
-        return InterpretResult::CompileError;
+        return ExecutionStatus::CompileError;
     }
 
     if (function.isNil())
-        return InterpretResult::CompileError;
+        return ExecutionStatus::CompileError;
 
     Value closureValue { Value::closureVal(function) };
 
-    ptr<Thread> firstThread = make_ptr<Thread>();
-    threads.store(firstThread->id(), firstThread);
+    ptr<Thread> mainThread = make_ptr<Thread>();
+    threads.store(mainThread->id(), mainThread);
+    thread = mainThread;
 
-    // go
-    firstThread->spawn(closureValue);
+    resetStack();
+    push(closureValue);
+    if (!call(asClosure(closureValue), CallSpec(0)))
+        return ExecutionStatus::RuntimeError;
 
-    // Transfer execution ownership to the spawned thread. Drop our local strong
-    // references so they cannot outlive the running closure and get collected
-    // out from underneath us.
-    closureValue = Value::nilVal();
-    function = Value::nilVal();
-
-    // join all threads (they may spawn additional threads while running)
-    InterpretResult joinResult = joinAllThreads();
-    InterpretResult result = firstThread->result;
-
-    if (joinResult != InterpretResult::OK || runtimeErrorFlag.load())
-        result = InterpretResult::RuntimeError;
-
-    if (exitRequested.load())
-        result = InterpretResult::OK;
-
-    #if defined(DEBUG_TRACE_EXECUTION)
-    if (globals.size() > 0) {
-        std::cout << std::endl << "== globals ==" << std::endl;
-        for(const auto& global : globals.get())
-            std::cout << toUTF8StdString(global.second.first) << " = " << toString(global.second.second.value) << std::endl;
-    }
-    #endif
-
-    freeObjects();
-
-    return result;
+    return ExecutionStatus::OK;
 }
 
 
-InterpretResult VM::interpretLine(std::istream& linestream,
+std::pair<ExecutionStatus, Value> VM::runFor(TimeDuration duration)
+{
+    // Guard: if run()/runLine() is executing synchronously (e.g. --setup script),
+    // don't enter execute() — the synchronous path already owns the VM.
+    if (inSynchronousExecution_.load(std::memory_order_acquire))
+        return { ExecutionStatus::OK, Value::nilVal() };
+
+    // Check for pending closure from setupLine()
+    auto state = rtState_.load(std::memory_order_acquire);
+
+    if (state == RTState::Ready) {
+        // Pick up the compiled closure
+        Value closure;
+        {
+            std::lock_guard<std::mutex> lk(rtMutex_);
+            closure = pendingRTClosure_;
+            pendingRTClosure_ = Value::nilVal();
+        }
+
+        // Use persistent REPL thread
+        if (!replThread)
+            replThread = make_ptr<Thread>();
+        thread = replThread;
+
+        auto& rtMgr = RTCallbackManager::instance();
+        if (!rtMgr.isMainThreadSet())
+            rtMgr.setMainThread();
+
+        resetStack();
+        push(closure);
+        if (!call(asClosure(closure), CallSpec(0))) {
+            rtState_.store(RTState::Idle, std::memory_order_release);
+            rtCondVar_.notify_one();
+            return { ExecutionStatus::RuntimeError, Value::nilVal() };
+        }
+        rtState_.store(RTState::Executing, std::memory_order_release);
+
+    } else if (state == RTState::Executing || state == RTState::Yielded) {
+        // Resume previous work
+        thread = replThread;
+
+    } else {
+        // Idle — fall through to check setup() path
+    }
+
+    // If no setupLine work, check for setup() path (existing behavior)
+    if (state == RTState::Idle) {
+        if (!hasMoreWork())
+            return { ExecutionStatus::OK, Value::nilVal() };
+        // thread is already set by setup()
+    }
+
+    // Execute with time budget
+    auto deadline = TimePoint::currentTime() + duration;
+    auto [status, value] = execute(deadline);
+
+    // Only manage RT state if we're in the setupLine path
+    if (state != RTState::Idle) {
+        if (status == ExecutionStatus::Yielded) {
+            rtState_.store(RTState::Yielded, std::memory_order_release);
+        } else {
+            // Completed or error — transition to Idle and wake setupLine()
+            rtState_.store(RTState::Idle, std::memory_order_release);
+            rtCondVar_.notify_one();
+        }
+    }
+
+    if (runtimeErrorFlag.load())
+        return { ExecutionStatus::RuntimeError, Value::nilVal() };
+
+    return { status, value };
+}
+
+bool VM::hasMoreWork() const
+{
+    if (!thread) return false;
+    if (thread->frames.empty()) return false;
+    return true;
+}
+
+bool VM::isBlocked() const
+{
+    if (!thread) return false;
+    return thread->threadSleep.load() || thread->awaitedFuture.isNonNil();
+}
+
+TimePoint VM::blockedUntil() const
+{
+    if (!thread) return TimePoint::max();
+    if (thread->threadSleep.load()) return thread->threadSleepUntil.load();
+    return TimePoint::max();  // future-blocked has no known deadline
+}
+
+
+ExecutionStatus VM::runLine(std::istream& linestream,
                                   bool replMode,
                                   const std::string& sourceNameOverride)
 {
@@ -934,7 +1820,9 @@ InterpretResult VM::interpretLine(std::istream& linestream,
 
     runtimeErrorFlag = false;
 
-    static RoxalCompiler compiler {};
+    if (!replCompiler_)
+        replCompiler_ = std::make_unique<RoxalCompiler>();
+    RoxalCompiler& compiler = *replCompiler_;
     compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
     compiler.setCacheReadEnabled(cacheReadsEnabled());
     compiler.setCacheWriteEnabled(cacheWritesEnabled());
@@ -946,11 +1834,11 @@ InterpretResult VM::interpretLine(std::istream& linestream,
         function = compiler.compile(linestream, "cli", replModuleValue, sourceNameOverride);
 
     } catch (std::exception& e) {
-        return InterpretResult::CompileError;
+        return ExecutionStatus::CompileError;
     }
 
     if (function.isNil())
-        return InterpretResult::CompileError;
+        return ExecutionStatus::CompileError;
 
     if (replModuleValue.isNil())
         replModuleValue = asFunction(function)->moduleType.strongRef();
@@ -966,19 +1854,25 @@ InterpretResult VM::interpretLine(std::istream& linestream,
     }
 
     thread = replThread;
+
+    // Establish RT main thread for REPL mode (runs on current C++ thread, not spawned)
+    auto& rtMgr = RTCallbackManager::instance();
+    if (!rtMgr.isMainThreadSet()) {
+        rtMgr.setMainThread();
+    }
+
     resetStack();
 
-    auto resultPair = callAndExec(asClosure(closure), {});
-    InterpretResult result = resultPair.first;
+    inSynchronousExecution_.store(true, std::memory_order_release);
+    auto resultPair = invokeClosure(asClosure(closure), {});
+    inSynchronousExecution_.store(false, std::memory_order_release);
+
+    ExecutionStatus result = resultPair.first;
     if (runtimeErrorFlag.load())
-        result = InterpretResult::RuntimeError;
+        result = ExecutionStatus::RuntimeError;
 
     #if defined(DEBUG_TRACE_EXECUTION)
-    if (globals.size() > 0) {
-        std::cout << std::endl << "== globals ==" << std::endl;
-        for(const auto& global : globals.get())
-            std::cout << toUTF8StdString(global.second.first) << " = " << toString(global.second.second.value) << std::endl;
-    }
+    // globals dump disabled (VariablesMap API changed)
     #endif
 
     thread.reset();
@@ -986,11 +1880,126 @@ InterpretResult VM::interpretLine(std::istream& linestream,
     return result;
 }
 
+ExecutionStatus VM::setupLine(std::istream& linestream,
+                              bool replMode,
+                              const std::string& sourceNameOverride)
+{
+    // Shared compiler with runLine() — same persistent state (imported
+    // modules, type deducer, suffix registry) carries across both entry
+    // points.
+    if (!replCompiler_)
+        replCompiler_ = std::make_unique<RoxalCompiler>();
+    RoxalCompiler& compiler = *replCompiler_;
+    compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
+    compiler.setCacheReadEnabled(cacheReadsEnabled());
+    compiler.setCacheWriteEnabled(cacheWritesEnabled());
+    compiler.setModulePaths(modulePaths);
+    compiler.setReplMode(replMode);
+    compiler.setModuleResolverVM(this);
+
+    Value function { Value::nilVal() };
+    runtimeErrorFlag = false;
+
+    try {
+        function = compiler.compile(linestream, "cli", replModuleValue, sourceNameOverride);
+    } catch (std::exception& e) {
+        return ExecutionStatus::CompileError;
+    }
+
+    if (function.isNil())
+        return ExecutionStatus::CompileError;
+
+    if (replModuleValue.isNil())
+        replModuleValue = asFunction(function)->moduleType.strongRef();
+
+    compiler.setReplMode(false);
+
+    Value closure = Value::closureVal(function);
+
+    // Hand off to RT thread
+    {
+        std::unique_lock<std::mutex> lk(rtMutex_);
+        // Wait for previous work to finish
+        rtCondVar_.wait(lk, [this]{
+            return rtState_.load(std::memory_order_acquire) == RTState::Idle;
+        });
+        pendingRTClosure_ = closure;
+        rtState_.store(RTState::Ready, std::memory_order_release);
+    }
+    rtCondVar_.notify_one();
+
+    return ExecutionStatus::OK;
+}
+
+void VM::waitForRTCompletion()
+{
+    std::unique_lock<std::mutex> lk(rtMutex_);
+    rtCondVar_.wait(lk, [this]{
+        return rtState_.load(std::memory_order_acquire) == RTState::Idle;
+    });
+}
+
 ObjModuleType* VM::replModuleType() const
 {
     if (replModuleValue.isNil())
         return nullptr;
     return asModuleType(replModuleValue);
+}
+
+ObjModuleType* VM::ensureReplModule()
+{
+    if (replModuleValue.isNil()) {
+        // The compiler normally creates the REPL module on the first
+        // runLine()/setupLine() compile (see VM.cpp:1828-1829, 1897-1898).
+        // For embedding flows that need to pre-populate REPL globals
+        // before the user types anything, mint a fresh "cli" module up
+        // front and adopt it.  Subsequent compiles see replModuleValue
+        // already non-nil and reuse it.
+        auto modUP = newModuleTypeObj(toUnicodeString("cli"));
+        replModuleValue = Value::objVal(std::move(modUP));
+    }
+    return asModuleType(replModuleValue);
+}
+
+void VM::importModuleVarsInto(ObjModuleType* target,
+                              const std::vector<Value>& sources)
+{
+    if (target == nullptr)
+        throw std::runtime_error("VM::importModuleVarsInto: target is null");
+
+    // Match OpCode::ImportModuleVars wildcard branch semantics.  Overwrite
+    // when target is the REPL module (so re-imports refresh stale bindings)
+    // and clone OverloadSets so a later local FuncDecl can replace them.
+    const bool replReimport =
+        replModuleValue.isNonNil() &&
+        isModuleType(replModuleValue) &&
+        asModuleType(replModuleValue) == target;
+
+    auto storeImported = [&](int32_t hash, const icu::UnicodeString& name,
+                             const Value& v) {
+        if (v.isObj() && isOverloadSet(v)) {
+            auto cloneObj = newOverloadSetObj(name);
+            auto* src = asOverloadSet(v);
+            cloneObj->closures = src->closures;
+            cloneObj->importedFromModule = true;
+            target->vars.store(hash, name,
+                               Value::objRef(cloneObj.release()),
+                               /*overwrite=*/replReimport);
+        } else {
+            target->vars.store(hash, name, v, /*overwrite=*/replReimport);
+        }
+    };
+
+    for (const Value& srcVal : sources) {
+        if (!isModuleType(srcVal))
+            throw std::runtime_error(
+                "VM::importModuleVarsInto: source is not a module type");
+        auto* srcModule = asModuleType(srcVal);
+        srcModule->vars.forEach(
+            [&](const VariablesMap::NameValue& nv) {
+                storeImported(nv.first.hashCode(), nv.first, nv.second);
+            });
+    }
 }
 
 thread_local ptr<Thread> VM::thread;
@@ -1174,6 +2183,7 @@ bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
     callframe.startIp = callframe.ip = asFunction(closure->function)->chunk->code.begin();
     callframe.slots = &(*(thread->stackTop - argCount - 1));
     callframe.strict = asFunction(closure->function)->strict;
+    callframe.callerStrict = !thread->frames.empty() && (thread->frames.end()-1)->strict;
     thread->pushFrame(callframe);
     thread->frameStart = true;
 
@@ -1216,6 +2226,275 @@ bool VM::call(ValueType builtinType, const CallSpec& callSpec)
     auto argBegin = thread->stackTop - callSpec.argCount;
     auto argEnd = thread->stackTop;
     try {
+        // Orient constructor with named parameters
+        if (builtinType == ValueType::Orient && callSpec.argCount > 0) {
+            static const uint16_t rpyHash   = toUnicodeString("rpy").hashCode() & 0x7fff;
+            static const uint16_t rHash     = toUnicodeString("r").hashCode() & 0x7fff;
+            static const uint16_t pHash     = toUnicodeString("p").hashCode() & 0x7fff;
+            static const uint16_t yHash     = toUnicodeString("y").hashCode() & 0x7fff;
+            static const uint16_t eulerHash = toUnicodeString("euler").hashCode() & 0x7fff;
+            static const uint16_t axesHash  = toUnicodeString("axes").hashCode() & 0x7fff;
+            static const uint16_t quatHash  = toUnicodeString("quat").hashCode() & 0x7fff;
+            static const uint16_t matHash   = toUnicodeString("mat").hashCode() & 0x7fff;
+            static const uint16_t axisHash  = toUnicodeString("axis").hashCode() & 0x7fff;
+            static const uint16_t angleHash = toUnicodeString("angle").hashCode() & 0x7fff;
+
+            Value vRpy, vR, vP, vY, vEuler, vAxes, vQuat, vMat, vAxis, vAngle;
+
+            for (size_t i = 0; i < callSpec.argCount; ++i) {
+                Value arg = *(argBegin + i);
+                bool isNamed = !callSpec.allPositional && !callSpec.args[i].positional;
+                if (!isNamed)
+                    throw std::runtime_error("orient constructor requires named parameters (e.g. orient(r=0deg, p=45deg, y=0deg))");
+
+                uint16_t hash = callSpec.args[i].paramNameHash & 0x7fff;
+                if      (hash == rpyHash)   vRpy = arg;
+                else if (hash == rHash)     vR = arg;
+                else if (hash == pHash)     vP = arg;
+                else if (hash == yHash)     vY = arg;
+                else if (hash == eulerHash) vEuler = arg;
+                else if (hash == axesHash)  vAxes = arg;
+                else if (hash == quatHash)  vQuat = arg;
+                else if (hash == matHash)   vMat = arg;
+                else if (hash == axisHash)  vAxis = arg;
+                else if (hash == angleHash) vAngle = arg;
+                else throw std::runtime_error("orient constructor: unknown parameter");
+            }
+
+            Eigen::Quaterniond q = Eigen::Quaterniond::Identity();
+            int groups = 0;
+
+            // Group: r=, p=, y=
+            if (!vR.isNil() || !vP.isNil() || !vY.isNil()) {
+                if (vR.isNil() || vP.isNil() || vY.isNil())
+                    throw std::runtime_error("orient: r=, p=, y= must all be specified together");
+                double roll  = extractAngleRadians(vR);
+                double pitch = extractAngleRadians(vP);
+                double yaw   = extractAngleRadians(vY);
+                q = Eigen::AngleAxisd(yaw, Eigen::Vector3d::UnitZ())
+                  * Eigen::AngleAxisd(pitch, Eigen::Vector3d::UnitY())
+                  * Eigen::AngleAxisd(roll, Eigen::Vector3d::UnitX());
+                groups++;
+            }
+
+            // Group: rpy=
+            if (!vRpy.isNil()) {
+                auto angles = extractAngleVector3(vRpy);
+                q = Eigen::AngleAxisd(angles[2], Eigen::Vector3d::UnitZ())
+                  * Eigen::AngleAxisd(angles[1], Eigen::Vector3d::UnitY())
+                  * Eigen::AngleAxisd(angles[0], Eigen::Vector3d::UnitX());
+                groups++;
+            }
+
+            // Group: euler= + axes=
+            if (!vEuler.isNil()) {
+                if (vAxes.isNil())
+                    throw std::runtime_error("orient: euler= requires axes= (e.g. axes=\"ZXZ\")");
+                if (!isString(vAxes))
+                    throw std::runtime_error("orient: axes= must be a string (e.g. \"ZXZ\")");
+                auto axes = parseEulerAxes(toUTF8StdString(asStringObj(vAxes)->s));
+                auto angles = extractAngleVector3(vEuler);
+                q = Eigen::AngleAxisd(angles[0], axisVector(axes[0]))
+                  * Eigen::AngleAxisd(angles[1], axisVector(axes[1]))
+                  * Eigen::AngleAxisd(angles[2], axisVector(axes[2]));
+                groups++;
+            }
+
+            // Group: quat=
+            if (!vQuat.isNil()) {
+                if (!isVector(vQuat) || asVector(vQuat)->length() != 4)
+                    throw std::runtime_error("orient: quat= must be a vector of 4 elements [x y z w]");
+                auto* vec = asVector(vQuat);
+                q = Eigen::Quaterniond(vec->vec()[3], vec->vec()[0], vec->vec()[1], vec->vec()[2]); // w,x,y,z
+                q.normalize();
+                groups++;
+            }
+
+            // Group: mat=
+            if (!vMat.isNil()) {
+                if (!isMatrix(vMat))
+                    throw std::runtime_error("orient: mat= must be a 3x3 rotation matrix");
+                auto* mat = asMatrix(vMat);
+                if (mat->rows() != 3 || mat->cols() != 3)
+                    throw std::runtime_error("orient: mat= must be a 3x3 rotation matrix");
+                Eigen::Matrix3d m;
+                for (int r = 0; r < 3; ++r)
+                    for (int c = 0; c < 3; ++c)
+                        m(r,c) = mat->mat()(r,c);
+                q = Eigen::Quaterniond(m);
+                q.normalize();
+                groups++;
+            }
+
+            // Group: axis= + angle=
+            if (!vAxis.isNil() || !vAngle.isNil()) {
+                if (vAxis.isNil() || vAngle.isNil())
+                    throw std::runtime_error("orient: axis= and angle= must be specified together");
+                Eigen::Vector3d axis;
+                if (isVector(vAxis)) {
+                    if (asVector(vAxis)->length() != 3)
+                        throw std::runtime_error("orient: axis= must be a 3D vector");
+                    axis = Eigen::Vector3d(asVector(vAxis)->vec()[0], asVector(vAxis)->vec()[1], asVector(vAxis)->vec()[2]);
+                } else if (isList(vAxis)) {
+                    auto* lst = asList(vAxis);
+                    if (lst->length() != 3)
+                        throw std::runtime_error("orient: axis= must have 3 elements");
+                    // Extract values — could be quantities (lengths) or bare reals
+                    std::array<int32_t,4> dims = {0,0,0,0};
+                    bool isDimensioned = false;
+                    for (int i = 0; i < 3; ++i) {
+                        double siVal;
+                        if (!tryExtractQuantity(lst->getElement(i), siVal, dims, isDimensioned)) {
+                            if (lst->getElement(i).isNumber())
+                                siVal = lst->getElement(i).isReal() ? lst->getElement(i).asReal() : static_cast<double>(lst->getElement(i).asInt());
+                            else
+                                throw std::runtime_error("orient: axis= list elements must be numbers or quantities");
+                        }
+                        axis[i] = siVal;
+                    }
+                } else {
+                    throw std::runtime_error("orient: axis= must be a vector or list");
+                }
+                axis.normalize();
+                double angle = extractAngleRadians(vAngle);
+                q = Eigen::Quaterniond(Eigen::AngleAxisd(angle, axis));
+                groups++;
+            }
+
+            if (groups > 1)
+                throw std::runtime_error("orient constructor: specify only one parameter group (rpy, r/p/y, euler+axes, quat, mat, or axis+angle)");
+
+            // Handle stray axes= without euler=
+            if (!vAxes.isNil() && vEuler.isNil())
+                throw std::runtime_error("orient: axes= requires euler=");
+
+            *(thread->stackTop - callSpec.argCount - 1) = Value::orientVal(q);
+            popN(callSpec.argCount);
+            return true;
+        }
+
+        // Special handling for tensor - supports varargs ints + named params
+        if (builtinType == ValueType::Tensor && callSpec.argCount > 0) {
+            // Hash codes for named param lookup
+            static const uint16_t dtypeHash = toUnicodeString("dtype").hashCode() & 0x7fff;
+            static const uint16_t dataHash = toUnicodeString("data").hashCode() & 0x7fff;
+            static const uint16_t shapeHash = toUnicodeString("shape").hashCode() & 0x7fff;
+
+            std::vector<int64_t> shape;
+            std::vector<double> data;
+            TensorDType dtype = TensorDType::Float64;
+            bool hasData = false;
+
+            // Process all arguments
+            for (size_t i = 0; i < callSpec.argCount; ++i) {
+                Value arg = *(argBegin + i);
+                bool isNamed = !callSpec.allPositional && !callSpec.args[i].positional;
+
+                if (isNamed) {
+                    uint16_t hash = callSpec.args[i].paramNameHash & 0x7fff;
+                    if (hash == dtypeHash) {
+                        if (isString(arg))
+                            dtype = tensorDTypeFromString(toUTF8StdString(asStringObj(arg)->s));
+                        else
+                            throw std::runtime_error("tensor dtype must be a string");
+                    } else if (hash == dataHash) {
+                        if (isList(arg)) {
+                            auto dataList = asList(arg)->getElements();
+                            data.reserve(dataList.size());
+                            for (const auto& v : dataList) {
+                                if (!v.isNumber())
+                                    throw std::runtime_error("tensor data elements must be numeric");
+                                data.push_back(v.isInt() ? static_cast<double>(v.asInt()) : v.asReal());
+                            }
+                            hasData = true;
+                        } else {
+                            throw std::runtime_error("tensor data must be a list");
+                        }
+                    } else if (hash == shapeHash) {
+                        if (isList(arg)) {
+                            auto shapeList = asList(arg)->getElements();
+                            shape.reserve(shapeList.size());
+                            for (const auto& v : shapeList) {
+                                if (!v.isInt())
+                                    throw std::runtime_error("tensor shape elements must be integers");
+                                shape.push_back(v.asInt());
+                            }
+                        } else {
+                            throw std::runtime_error("tensor shape must be a list");
+                        }
+                    }
+                    // Ignore unknown named params (or could throw)
+                } else {
+                    // Positional argument
+                    if (arg.isInt()) {
+                        // Int -> shape dimension
+                        shape.push_back(arg.asInt());
+                    } else if (isList(arg) && shape.empty()) {
+                        // First positional list -> shape list
+                        auto shapeList = asList(arg)->getElements();
+                        shape.reserve(shapeList.size());
+                        for (const auto& v : shapeList) {
+                            if (!v.isInt())
+                                throw std::runtime_error("tensor shape elements must be integers");
+                            shape.push_back(v.asInt());
+                        }
+                    } else if (isList(arg)) {
+                        // Subsequent list -> data (backward compat)
+                        auto dataList = asList(arg)->getElements();
+                        data.reserve(dataList.size());
+                        for (const auto& v : dataList) {
+                            if (!v.isNumber())
+                                throw std::runtime_error("tensor data elements must be numeric");
+                            data.push_back(v.isInt() ? static_cast<double>(v.asInt()) : v.asReal());
+                        }
+                        hasData = true;
+                    } else if (isString(arg)) {
+                        // Positional string -> dtype (backward compat)
+                        dtype = tensorDTypeFromString(toUTF8StdString(asStringObj(arg)->s));
+                    } else if (isTensor(arg) && shape.empty()) {
+                        // Copy constructor
+                        *(thread->stackTop - callSpec.argCount - 1) = Value(asTensor(arg)->clone(nullptr));
+                        popN(callSpec.argCount);
+                        return true;
+                    } else if (isVector(arg) && shape.empty()) {
+                        // tensor(vector) → 1D tensor
+                        auto vec = asVector(arg);
+                        std::vector<int64_t> vecShape = { static_cast<int64_t>(vec->length()) };
+                        std::vector<double> vecData(vec->vec().data(), vec->vec().data() + vec->length());
+                        *(thread->stackTop - callSpec.argCount - 1) = Value::tensorVal(vecShape, vecData, TensorDType::Float64);
+                        popN(callSpec.argCount);
+                        return true;
+                    } else if (isMatrix(arg) && shape.empty()) {
+                        // tensor(matrix) → 2D tensor
+                        auto mat = asMatrix(arg);
+                        int64_t rows = mat->mat().rows();
+                        int64_t cols = mat->mat().cols();
+                        std::vector<int64_t> matShape = { rows, cols };
+                        std::vector<double> matData;
+                        matData.reserve(rows * cols);
+                        for (int64_t r = 0; r < rows; ++r)
+                            for (int64_t c = 0; c < cols; ++c)
+                                matData.push_back(mat->mat()(r, c));
+                        *(thread->stackTop - callSpec.argCount - 1) = Value::tensorVal(matShape, matData, TensorDType::Float64);
+                        popN(callSpec.argCount);
+                        return true;
+                    } else {
+                        throw std::runtime_error("tensor constructor: unexpected argument type");
+                    }
+                }
+            }
+
+            if (shape.empty())
+                throw std::runtime_error("tensor constructor requires shape");
+
+            Value result = hasData
+                ? Value::tensorVal(shape, data, dtype)
+                : Value::tensorVal(shape, dtype);
+            *(thread->stackTop - callSpec.argCount - 1) = result;
+            popN(callSpec.argCount);
+            return true;
+        }
+
         if (!callSpec.allPositional) {
             auto ctorType = builtinConstructorType(builtinType);
             if (!ctorType)
@@ -1233,6 +2512,26 @@ bool VM::call(ValueType builtinType, const CallSpec& callSpec)
             *(thread->stackTop - callSpec.argCount - 1) = construct(builtinType, ordered.begin(), ordered.end());
             popN(callSpec.argCount);
             return true;
+        }
+
+        // Check for user-defined conversion operator as fallback before construct()
+        if (callSpec.argCount == 1 && (isObjectInstance(*argBegin) || isActorInstance(*argBegin))) {
+            Value arg = *argBegin;
+            // Remove callee+arg from stack; tryConvertValue manages stack for async
+            popN(callSpec.argCount + 1);
+            auto outcome = tryConvertValue(arg, Value::typeVal(builtinType), false, /*implicitCall=*/false,
+                                           Thread::PendingConversion::Kind::TypeConversion);
+            if (outcome.result == ConversionResult::NeedsAsyncFrame)
+                return true;
+            if (outcome.result == ConversionResult::ConvertedSync) {
+                push(outcome.convertedValue);
+                return true;
+            }
+            // No conversion operator — restore stack and fall through to construct()
+            push(Value::typeVal(builtinType)); // callee placeholder
+            push(arg);
+            argBegin = thread->stackTop - 1;
+            argEnd = thread->stackTop;
         }
 
         *(thread->stackTop - callSpec.argCount - 1) = construct(builtinType, argBegin, argEnd);
@@ -1279,6 +2578,21 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
             }
         }
 
+        // Check closure upvalues for mutable reference type captures.
+        // DF funcs run on the dataflow thread — mutable captures would be
+        // unsafely shared between threads.
+        ObjClosure* cls = asClosure(closureVal);
+        for (size_t i = 0; i < cls->upvalues.size(); ++i) {
+            if (cls->upvalues[i].isNil()) continue;
+            Value captured = *asUpvalue(cls->upvalues[i])->location;
+            if (captured.isObj() && !captured.isConst()) {
+                runtimeError("Dataflow function '" + toUTF8StdString(functionObj->name)
+                    + "' captures a mutable reference variable; "
+                      "captured variables must be const or primitive types.");
+                return false;
+            }
+        }
+
         auto baseName = toUTF8StdString(functionObj->name);
         auto name = df::DataflowEngine::uniqueFuncName(baseName);
         ptr<df::FuncNode> node = roxal::make_ptr<df::FuncNode>(name, closureVal, constArgs, sigArgs);
@@ -1300,17 +2614,104 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
         return true;
     }
 
+    if (callee.isObj() && objType(callee) == ObjType::OverloadSet) {
+        // Runtime overload dispatch: the call survived to runtime because
+        // compile-time information was insufficient (e.g. arg pushed via a
+        // dynamically-typed local). Pick the best-matching overload using the
+        // resolver, then re-dispatch with the chosen closure in place of the
+        // OverloadSet on the stack.
+        auto* set = asOverloadSet(callee);
+
+        std::vector<OverloadResolver::Candidate> cands;
+        cands.reserve(set->closures.size());
+        for (const auto& c : set->closures) {
+            OverloadResolver::Candidate cand;
+            if (c.isObj() && isClosure(c)) {
+                auto* fn = asFunction(asClosure(c)->function);
+                if (fn->funcType.has_value())
+                    cand.funcType = fn->funcType.value();
+            }
+            cand.target = c;
+            cand.isMethod = false;
+            cands.push_back(cand);
+        }
+
+        std::vector<OverloadResolver::ArgInfo> argInfos;
+        argInfos.reserve(callSpec.argCount);
+        for (int i = callSpec.argCount - 1; i >= 0; --i) {
+            OverloadResolver::ArgInfo info;
+            info.type = valueRuntimeType(peek(i));
+            argInfos.push_back(info);
+        }
+
+        OverloadResolver resolver(this);
+        auto rr = resolver.resolve(cands, argInfos,
+                                   /*staticDispatchAttempt=*/false,
+                                   /*strictMode=*/true);
+
+        if (rr.kind == OverloadResolver::ResolveResult::ResolvedUnique) {
+            // Replace the OverloadSet on the stack with the chosen closure
+            // and re-dispatch.
+            peek(callSpec.argCount) = cands[rr.chosenIndex].target;
+            return callValue(cands[rr.chosenIndex].target, callSpec);
+        }
+        if (rr.kind == OverloadResolver::ResolveResult::Ambiguous) {
+            runtimeError(resolver.ambiguityDiagnostic(set->name, cands, rr.tiedIndices, argInfos));
+            return false;
+        }
+        runtimeError(resolver.noMatchDiagnostic(set->name, cands, argInfos));
+        return false;
+    }
+
     if (callee.isObj()) {
         switch (objType(callee)) {
             case ObjType::BoundMethod: {
                 Value boundValue = callee;
                 ObjBoundMethod* boundMethod { asBoundMethod(boundValue) };
 
+                // If the bound method wraps an OverloadSet, resolve here
+                // (we now have call args on the stack) and continue with
+                // the chosen closure. Same routing for object & actor.
+                Value chosenMethodVal = boundMethod->method;
+                if (isOverloadSet(chosenMethodVal)) {
+                    auto* set = asOverloadSet(chosenMethodVal);
+                    std::vector<OverloadResolver::Candidate> cands;
+                    cands.reserve(set->closures.size());
+                    for (const auto& c : set->closures) {
+                        OverloadResolver::Candidate cand;
+                        if (isClosure(c)) {
+                            auto* fn = asFunction(asClosure(c)->function);
+                            if (fn->funcType.has_value()) cand.funcType = fn->funcType.value();
+                        }
+                        cand.target = c;
+                        cand.isMethod = true;
+                        cands.push_back(cand);
+                    }
+                    std::vector<OverloadResolver::ArgInfo> argInfos;
+                    argInfos.reserve(callSpec.argCount);
+                    for (int i = callSpec.argCount - 1; i >= 0; --i) {
+                        OverloadResolver::ArgInfo info;
+                        info.type = valueRuntimeType(peek(i));
+                        argInfos.push_back(info);
+                    }
+                    OverloadResolver resolver(this);
+                    auto rr = resolver.resolve(cands, argInfos, /*staticDispatchAttempt=*/false, true);
+                    if (rr.kind == OverloadResolver::ResolveResult::ResolvedUnique) {
+                        chosenMethodVal = cands[rr.chosenIndex].target;
+                    } else if (rr.kind == OverloadResolver::ResolveResult::Ambiguous) {
+                        runtimeError(resolver.ambiguityDiagnostic(set->name, cands, rr.tiedIndices, argInfos));
+                        return false;
+                    } else {
+                        runtimeError(resolver.noMatchDiagnostic(set->name, cands, argInfos));
+                        return false;
+                    }
+                }
+
                 if (!isActorInstance(boundMethod->receiver)) {
                     thread->currentBoundCall = boundValue;
                     BoundCallGuard guard(thread.get());
                     *(thread->stackTop - callSpec.argCount - 1) = boundMethod->receiver;
-                    return call(asClosure(boundMethod->method), callSpec);
+                    return call(asClosure(chosenMethodVal), callSpec);
                 }
                 else {
                     // call to actor method.
@@ -1325,10 +2726,36 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                         thread->currentBoundCall = boundValue;
                         BoundCallGuard guard(thread.get());
                         *(thread->stackTop - callSpec.argCount - 1) = boundMethod->receiver; // FIXME: or inst??
-                        return call(asClosure(boundMethod->method), callSpec);
+                        return call(asClosure(chosenMethodVal), callSpec);
                     } else {
                         // call to other actor
-                        Value future = inst->queueCall(callee, callSpec, &(*thread->stackTop) );
+                        if (!inst->alive.load(std::memory_order_acquire)) {
+                            auto methodName = isClosure(chosenMethodVal)
+                                ? toUTF8StdString(asFunction(asClosure(chosenMethodVal)->function)->name)
+                                : "<overloaded>";
+                            auto typeName   = toUTF8StdString(asObjectType(inst->instanceType)->name);
+                            runtimeError("method '%s' called on terminated actor of type '%s'",
+                                         methodName.c_str(), typeName.c_str());
+                            return false;
+                        }
+                        // Cross-thread actor invocation: substitute the chosen
+                        // closure into the bound method so queueCall's marshalling
+                        // uses the resolved overload's funcType. (We picked an
+                        // overload above; this just makes the existing queue
+                        // path see the chosen closure.)
+                        if (isOverloadSet(boundMethod->method)) {
+                            boundMethod->method = chosenMethodVal;
+                        }
+                        bool forceCompletionFuture = false;
+#ifdef ROXAL_COMPUTE_SERVER
+                        // Remote actors always need a completion future so that
+                        // wait(for=remoteActor.proc(...)) correctly suspends until
+                        // the network round-trip finishes.
+                        if (inst->isRemote)
+                            forceCompletionFuture = true;
+#endif
+                        Value future = inst->queueCall(callee, callSpec, &(*thread->stackTop),
+                                                       forceCompletionFuture);
 
                         popN(callSpec.argCount + 1); // args & callee
 
@@ -1441,14 +2868,109 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                 ObjTypeSpec* ts = asTypeSpec(callee);
                 if ((ts->typeValue == ValueType::Object) || (ts->typeValue == ValueType::Actor)) {
                     ObjObjectType* type = asObjectType(callee);
+                    if (type->isInterface) {
+                        runtimeError("Cannot instantiate interface '" +
+                                     toUTF8StdString(type->name) + "'");
+                        return false;
+                    }
+                    // Walk the chain to the first level that defines init.
+                    // If that level has multiple init overloads, resolve
+                    // against the constructor call args.
                     ObjObjectType* tInit = type;
-                    const ObjObjectType::Method* initMethod = nullptr;
-                    while (tInit != nullptr && initMethod == nullptr) {
+                    const ObjObjectType::MethodOverloadSet* initSet = nullptr;
+                    while (tInit != nullptr && initSet == nullptr) {
                         auto it = tInit->methods.find(asStringObj(initString)->hash);
-                        if (it != tInit->methods.end())
-                            initMethod = &it->second;
+                        if (it != tInit->methods.end() && !it->second.overloads.empty())
+                            initSet = &it->second;
                         else
                             tInit = tInit->superType.isNil() ? nullptr : asObjectType(tInit->superType);
+                    }
+
+                    const ObjObjectType::Method* initMethod = nullptr;
+                    if (initSet) {
+                        if (initSet->overloads.size() == 1) {
+                            initMethod = &initSet->overloads[0];
+                        } else {
+                            std::vector<OverloadResolver::Candidate> cands;
+                            cands.reserve(initSet->overloads.size());
+                            for (const auto& m : initSet->overloads) {
+                                OverloadResolver::Candidate c;
+                                if (isClosure(m.closure)) {
+                                    auto* fn = asFunction(asClosure(m.closure)->function);
+                                    if (fn->funcType.has_value()) c.funcType = fn->funcType.value();
+                                }
+                                c.target = m.closure;
+                                c.isMethod = true;
+                                cands.push_back(c);
+                            }
+                            std::vector<OverloadResolver::ArgInfo> argInfos;
+                            argInfos.reserve(callSpec.argCount);
+                            for (int i = callSpec.argCount - 1; i >= 0; --i) {
+                                OverloadResolver::ArgInfo info;
+                                info.type = valueRuntimeType(peek(i));
+                                argInfos.push_back(info);
+                            }
+                            OverloadResolver resolver(this);
+                            auto rr = resolver.resolve(cands, argInfos, /*staticDispatchAttempt=*/false, true);
+                            if (rr.kind == OverloadResolver::ResolveResult::ResolvedUnique) {
+                                initMethod = &initSet->overloads[rr.chosenIndex];
+                            } else if (rr.kind == OverloadResolver::ResolveResult::Ambiguous) {
+                                runtimeError(resolver.ambiguityDiagnostic(toUnicodeString("init"),
+                                                                          cands, rr.tiedIndices, argInfos));
+                                return false;
+                            }
+                            // NoMatch: fall through with initMethod==nullptr,
+                            // letting the conversion-operator fallback below handle the case.
+                        }
+                    }
+
+                    // Check for user-defined conversion operator as explicit fallback
+                    // (e.g. Quantity(duration) where Duration has operator Quantity())
+                    // Tried when there is no init, or init can't directly accept the arg type.
+                    if (callSpec.argCount == 1
+                        && (isObjectInstance(peek(0)) || isActorInstance(peek(0)))) {
+                        // Check if init can handle this argument natively
+                        bool initCanHandle = false;
+                        if (initMethod && isClosure(initMethod->closure)) {
+                            ObjFunction* initFunc = asFunction(asClosure(initMethod->closure)->function);
+                            if (initFunc->arity == 1 && initFunc->funcType.has_value()) {
+                                auto ftype = initFunc->funcType.value();
+                                if (ftype->builtin == type::BuiltinType::Func && ftype->func.has_value()) {
+                                    const auto& params = ftype->func.value().params;
+                                    if (!params.empty() && params[0].has_value() && params[0]->type.has_value()) {
+                                        auto paramBuiltin = params[0]->type.value()->builtin;
+                                        // If init expects an object/actor, it can handle obj args
+                                        if (paramBuiltin == type::BuiltinType::Object
+                                            || paramBuiltin == type::BuiltinType::Actor)
+                                            initCanHandle = true;
+                                        // If param is untyped, init can handle anything
+                                    } else {
+                                        // Untyped param — init can handle anything
+                                        initCanHandle = true;
+                                    }
+                                }
+                            }
+                        }
+                        if (!initCanHandle) {
+                        Value arg = peek(0);
+                        Value instType = isObjectInstance(arg)
+                            ? asObjectInstance(arg)->instanceType
+                            : asActorInstance(arg)->instanceType;
+                        UnicodeString convName = UnicodeString("operator->") + type->name;
+                        int32_t convHash = convName.hashCode();
+                        Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/false);
+                        if (!closure.isNil()) {
+                            // Remove callee+arg from stack; set up conversion call
+                            popN(callSpec.argCount + 1);
+                            thread->pendingConversions.push_back({
+                                Thread::PendingConversion::Kind::TypeConversion, Value::nilVal(), arg, thread->frames.size()
+                            });
+                            thread->conversionInProgress.push_back({arg, thread->frames.size()});
+                            push(arg); // push as receiver for method call
+                            call(asClosure(closure), CallSpec(0));
+                            return true;
+                        }
+                        }
                     }
 
                     if (initMethod == nullptr && isExceptionType(type) && callSpec.argCount == 1) {
@@ -1486,7 +3008,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                             if (params.size() == 1) {
                                 if (!params[0].has_value() || !params[0]->type.has_value())
                                     initAcceptsDict = true;
-                                else if (builtinToValueType(params[0]->type.value()->builtin) == ValueType::Dict)
+                                else if (builtinToValueType(params[0]->type.value()->builtin) == std::optional(ValueType::Dict))
                                     initAcceptsDict = true;
                             }
                         }
@@ -1494,32 +3016,44 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 
                     if (initClosureObj != nullptr && !(dictArg && !initAcceptsDict)) {
                         if (!type->isActor) {
-                            bool isNative = initFuncObj != nullptr && initFuncObj->nativeImpl;
+                            bool isNative = initFuncObj != nullptr && initFuncObj->builtinInfo;
                             Value calleeVal;
                             if (isNative) {
-                                NativeFn fn = initFuncObj->nativeImpl;
-                                calleeVal = Value::boundNativeVal(inst, fn,
+                                const auto& info = *initFuncObj->builtinInfo;
+                                calleeVal = Value::boundNativeVal(inst, info.function,
                                                                   initFuncObj->funcType.has_value() &&
                                                                      initFuncObj->funcType.value()->func.has_value() ?
                                                                      initFuncObj->funcType.value()->func->isProc : false,
                                                                   initFuncObj->funcType.has_value() ?
                                                                      initFuncObj->funcType.value() : nullptr,
-                                                                  initFuncObj->nativeDefaults,
+                                                                  info.defaultValues,
                                                                   Value::objRef(initFuncObj));
                             } else {
                                 calleeVal = Value::boundMethodVal(inst, initMethod->closure);
                             }
                             *(thread->stackTop - callSpec.argCount - 1) = calleeVal;
+                            size_t contDepthBefore = thread->nativeContinuationStack.size();
                             bool ok = callValue(calleeVal, callSpec);
-                            if (isNative)
+                            // Skip instance restoration only if THIS callValue pushed a
+                            // new continuation (i.e., the native init was deferred for param
+                            // default/conversion evaluation).  If the stack depth didn't
+                            // change, the native init completed synchronously.
+                            bool deferredByThisCall = thread->nativeContinuationStack.size() > contDepthBefore;
+                            // If the native init raised a Roxal exception (converted from a
+                            // C++ exception by callNativeFn's catch), the exception is now
+                            // sitting in the result slot and the IP has been moved to the
+                            // handler.  Overwriting with `inst` would corrupt the handler's
+                            // bound exception, so skip the restoration in that case.
+                            bool nativeRaised = thread && thread->lastNativeCallRaised;
+                            if (isNative && !deferredByThisCall && !nativeRaised)
                                 *(thread->stackTop - 1) = inst; // native init returns instance
                             return ok;
                         } else {
-                        bool isNativeInit = initFuncObj != nullptr && initFuncObj->nativeImpl;
+                        bool isNativeInit = initFuncObj != nullptr && initFuncObj->builtinInfo;
                         Value calleeVal;
                         if (isNativeInit) {
-                            NativeFn fn = initFuncObj->nativeImpl;
-                            calleeVal = Value::boundNativeVal(inst, fn,
+                            const auto& info = *initFuncObj->builtinInfo;
+                            calleeVal = Value::boundNativeVal(inst, info.function,
                                                               initFuncObj->funcType.has_value() &&
                                                                   initFuncObj->funcType.value()->func.has_value()
                                                                   ? initFuncObj->funcType.value()->func->isProc
@@ -1527,7 +3061,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                                               initFuncObj->funcType.has_value()
                                                                   ? initFuncObj->funcType.value()
                                                                   : nullptr,
-                                                              initFuncObj->nativeDefaults,
+                                                              info.defaultValues,
                                                               Value::objRef(initFuncObj));
                         } else {
                             auto boundInit = newBoundMethodObj(inst, initMethod->closure);
@@ -1563,18 +3097,19 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                 icu::UnicodeString setterName = UnicodeString("__set_") + keyStr->s;
                                 Value setterNameValue = Value::stringVal(setterName);
                                 ObjString* setterNameStr = asStringObj(setterNameValue);
-                                auto setterIt = type->methods.find(setterNameStr->hash);
+                                // __set_<prop> is a synthetic name — never overloaded.
+                                auto* setterMethod = type->findUniqueMethod(setterNameStr->hash);
 
-                                if (setterIt != type->methods.end()) {
+                                if (setterMethod) {
                                     // Property has a setter - queue the call
                                     // Type conversion will be handled by the setter
-                                    const auto& methodInfo = setterIt->second;
-                                    Value setterClosure = methodInfo.closure;
+                                    Value setterClosure = setterMethod->closure;
 
                                     CallFrame setterFrame{};
                                     setterFrame.closure = Value::objRef(asClosure(setterClosure));
                                     setterFrame.startIp = setterFrame.ip = asFunction(asClosure(setterClosure)->function)->chunk->code.begin();
                                     setterFrame.strict = asFunction(asClosure(setterClosure)->function)->strict;
+                                    setterFrame.callerStrict = !thread->frames.empty() && thread->frames.back().strict;
 
                                     setterFrames.push_back(DictSetterCall{setterClosure, kv.second, setterFrame});
                                     continue;
@@ -1600,7 +3135,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                     }
                                 }
                                 // Direct assignment
-                                objInst->properties[hash].assign(val);
+                                objInst->assignProperty(hash, val);
                             }
                             pop();
 
@@ -1738,7 +3273,10 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                             int32_t setterMethodHash = 0;
 
                                             for (const auto& methodPair : type->methods) {
-                                                const auto& method = methodPair.second;
+                                                // __set_<prop> setter methods are synthesized from
+                                                // property names — never overloaded, so .overloads[0] is fine.
+                                                if (methodPair.second.overloads.empty()) continue;
+                                                const auto& method = methodPair.second.overloads[0];
                                                 ObjFunction* func = asFunction(asClosure(method.closure)->function);
                                                 icu::UnicodeString methodName = func->name;
 
@@ -1806,26 +3344,26 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                     icu::UnicodeString setterName = UnicodeString("__set_") + assignment.propertyName;
                                     Value setterNameValue = Value::stringVal(setterName);
                                     ObjString* setterNameStr = asStringObj(setterNameValue);
-                                    auto setterIt = type->methods.find(setterNameStr->hash);
+                                    auto* setterMethod = type->findUniqueMethod(setterNameStr->hash);
 
                                     #ifdef DEBUG_BUILD
-                                    assert(setterIt != type->methods.end());
+                                    assert(setterMethod != nullptr);
                                     #endif
 
-                                    const auto& methodInfo = setterIt->second;
-                                    Value setterClosure = methodInfo.closure;
+                                    Value setterClosure = setterMethod->closure;
 
                                     // Create frame for setter call (similar to default parameter frames)
                                     CallFrame setterFrame{};
                                     setterFrame.closure = Value::objRef(asClosure(setterClosure));
                                     setterFrame.startIp = setterFrame.ip = asFunction(asClosure(setterClosure)->function)->chunk->code.begin();
                                     setterFrame.strict = asFunction(asClosure(setterClosure)->function)->strict;
+                                    setterFrame.callerStrict = !thread->frames.empty() && thread->frames.back().strict;
 
                                     // Save closure, value, and frame for later
                                     setterFrames.push_back(SetterCall{setterClosure, assignment.value, setterFrame});
                                 } else {
                                     // Property without setter - direct assignment to backing field
-                                    objInst->properties[kv.first].assign(assignment.value);
+                                    objInst->assignProperty(kv.first, assignment.value);
                                 }
                             }
 
@@ -1954,13 +3492,16 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
             case ObjType::Closure: {
                 ObjClosure* closure = asClosure(callee);
                 ObjFunction* function = asFunction(closure->function);
-                if (function->nativeImpl) {
-                    NativeFn native = function->nativeImpl;
+                if (function->builtinInfo) {
+                    const auto& info = *function->builtinInfo;
                     ptr<type::Type> funcType = function->funcType.has_value()
                         ? function->funcType.value() : nullptr;
-                    return callNativeFn(native, funcType,
-                                        function->nativeDefaults, callSpec,
-                                        false, Value::nilVal(), closure->function);
+                    if (nativeCallTimingEnabled_)
+                        nativeCallContext_ = function->name;
+                    return callNativeFn(info.function, funcType,
+                                        info.defaultValues, callSpec,
+                                        false, Value::nilVal(), closure->function,
+                                        info.resolveArgMask);
                 } else {
                     bool cfunc = false;
                     for(const auto& annot : function->annotations) {
@@ -1983,13 +3524,31 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
             case ObjType::Native: {
                 ObjNative* nativeObj = asNative(callee);
                 NativeFn native = nativeObj->function;
+                if (nativeCallTimingEnabled_)
+                    nativeCallContext_ = UnicodeString("native");
                 return callNativeFn(native, nativeObj->funcType,
                                     nativeObj->defaultValues, callSpec,
-                                    false, Value::nilVal(), Value::nilVal());
+                                    false, Value::nilVal(), Value::nilVal(),
+                                    nativeObj->resolveArgMask);
             }
             case ObjType::BoundNative: {
                 Value boundValue = callee;
                 ObjBoundNative* bound { asBoundNative(boundValue) };
+
+                // Extract resolveArgMask from declFunction if it has builtinInfo
+                uint32_t resolveMask = 0;
+                if (isFunction(bound->declFunction)) {
+                    ObjFunction* declFunc = asFunction(bound->declFunction);
+                    if (declFunc->builtinInfo)
+                        resolveMask = declFunc->builtinInfo->resolveArgMask;
+                }
+
+                if (nativeCallTimingEnabled_) {
+                    if (isFunction(bound->declFunction))
+                        nativeCallContext_ = asFunction(bound->declFunction)->name;
+                    else
+                        nativeCallContext_ = UnicodeString("bound-native");
+                }
 
                 if (!isActorInstance(bound->receiver)) {
                     thread->currentBoundCall = boundValue;
@@ -1999,7 +3558,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     return callNativeFn(native, bound->funcType,
                                         bound->defaultValues, callSpec,
                                         true, bound->receiver,
-                                        bound->declFunction);
+                                        bound->declFunction, resolveMask);
                 }
                 else {
                     // call to actor native method.
@@ -2018,9 +3577,15 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                         return callNativeFn(native, bound->funcType,
                                             bound->defaultValues, callSpec,
                                             true, bound->receiver,
-                                            bound->declFunction);
+                                            bound->declFunction, resolveMask);
                     } else {
                         // call to other actor
+                        if (!inst->alive.load(std::memory_order_acquire)) {
+                            auto typeName = toUTF8StdString(asObjectType(inst->instanceType)->name);
+                            runtimeError("native method called on terminated actor of type '%s'",
+                                         typeName.c_str());
+                            return false;
+                        }
                         Value future = inst->queueCall(callee, callSpec, &(*thread->stackTop) );
 
                         popN(callSpec.argCount + 1); // args & callee
@@ -2050,18 +3615,39 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
     return false;
 }
 
-std::pair<InterpretResult,Value> VM::callAndExec(ObjClosure* closure, const std::vector<Value>& args)
+std::pair<ExecutionStatus,Value> VM::invokeClosure(ObjClosure* closure,
+                                                    const std::vector<Value>& args,
+                                                    TimePoint deadline)
 {
     // Push closure first, then arguments (to match OpCode::Call stack layout)
     push(Value::objRef(closure));
     for(const auto& a : args)
         push(a);
     CallSpec spec(args.size());
-    if(!call(closure, spec)) {
-        return { InterpretResult::RuntimeError, Value::nilVal() };
+
+    // Native closures (builtinInfo) must go through callNativeFn, not call(),
+    // because call() sets up a bytecode frame but native closures have no bytecodes.
+    ObjFunction* function = asFunction(closure->function);
+    if (function->builtinInfo) {
+        const auto& info = *function->builtinInfo;
+        ptr<type::Type> funcType = function->funcType.has_value()
+            ? function->funcType.value() : nullptr;
+        if (nativeCallTimingEnabled_)
+            nativeCallContext_ = function->name;
+        if (!callNativeFn(info.function, funcType, info.defaultValues, spec,
+                          false, Value::nilVal(), closure->function))
+            return { ExecutionStatus::RuntimeError, Value::nilVal() };
+        // callNativeFn stores result in the closure slot and pops args.
+        // The result is now at the top of the stack.
+        Value result = peek(0);
+        pop();
+        return { ExecutionStatus::OK, result };
     }
 
-    auto result = execute();
+    if(!call(closure, spec))
+        return { ExecutionStatus::RuntimeError, Value::nilVal() };
+
+    auto result = execute(deadline);  // Pass deadline to execute()
 
     // Note: execute() should have handled the cleanup when the function returned,
     // but for safety in nested calls, we don't need additional cleanup here
@@ -2072,21 +3658,67 @@ std::pair<InterpretResult,Value> VM::callAndExec(ObjClosure* closure, const std:
 
 
 
-bool VM::invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& callSpec)
+bool VM::invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& callSpec,
+                        const Value& receiver)
 {
+    // Walk the inheritance chain to find the FIRST level that declares the
+    // method name. Subclass declarations shadow parent declarations entirely
+    // (Roxal does not merge overload sets across inheritance levels — match
+    // existing single-method override semantics).
     ObjObjectType* t = type;
-    const ObjObjectType::Method* methodPtr = nullptr;
-    while (t != nullptr && methodPtr == nullptr) {
+    const ObjObjectType::MethodOverloadSet* setPtr = nullptr;
+    while (t != nullptr && setPtr == nullptr) {
         auto it = t->methods.find(name->hash);
-        if (it != t->methods.end())
-            methodPtr = &it->second;
+        if (it != t->methods.end() && !it->second.overloads.empty())
+            setPtr = &it->second;
         else
             t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
     }
 
-    if (methodPtr == nullptr) {
+    if (setPtr == nullptr) {
         runtimeError("Undefined property '%s'", toUTF8StdString(name->s).c_str());
         return false;
+    }
+
+    // Pick the matching overload. With a single overload, fast path. With
+    // multiple, run OverloadResolver against the call args on the stack.
+    const ObjObjectType::Method* methodPtr = nullptr;
+    if (setPtr->overloads.size() == 1) {
+        methodPtr = &setPtr->overloads[0];
+    } else {
+        std::vector<OverloadResolver::Candidate> cands;
+        cands.reserve(setPtr->overloads.size());
+        for (const auto& m : setPtr->overloads) {
+            OverloadResolver::Candidate c;
+            if (isClosure(m.closure)) {
+                auto* fn = asFunction(asClosure(m.closure)->function);
+                if (fn->funcType.has_value())
+                    c.funcType = fn->funcType.value();
+            }
+            c.target = m.closure;
+            c.isMethod = true;
+            cands.push_back(c);
+        }
+        std::vector<OverloadResolver::ArgInfo> argInfos;
+        argInfos.reserve(callSpec.argCount);
+        for (int i = callSpec.argCount - 1; i >= 0; --i) {
+            OverloadResolver::ArgInfo info;
+            info.type = valueRuntimeType(peek(i));
+            argInfos.push_back(info);
+        }
+        OverloadResolver resolver(this);
+        auto rr = resolver.resolve(cands, argInfos,
+                                   /*staticDispatchAttempt=*/false,
+                                   /*strictMode=*/true);
+        if (rr.kind == OverloadResolver::ResolveResult::ResolvedUnique) {
+            methodPtr = &setPtr->overloads[rr.chosenIndex];
+        } else if (rr.kind == OverloadResolver::ResolveResult::Ambiguous) {
+            runtimeError(resolver.ambiguityDiagnostic(name->s, cands, rr.tiedIndices, argInfos));
+            return false;
+        } else {
+            runtimeError(resolver.noMatchDiagnostic(name->s, cands, argInfos));
+            return false;
+        }
     }
     const auto& methodInfo = *methodPtr;
     if (!isAccessAllowed(methodInfo.ownerType, methodInfo.access)) {
@@ -2094,9 +3726,391 @@ bool VM::invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& ca
         return false;
     }
     Value method { methodInfo.closure };
+
+    // Const enforcement for linkMethod-registered native methods
+    if (receiver.isConst()) {
+        ObjFunction* func = asFunction(asClosure(method)->function);
+        if (func->builtinInfo && !func->builtinInfo->noMutateSelf) {
+            runtimeError("Cannot call mutating method '%s' on const value.",
+                         toUTF8StdString(name->s).c_str());
+            return false;
+        }
+    }
+
     return call(asClosure(method), callSpec);
 }
 
+
+Value VM::findOperatorMethod(ObjObjectType* type, int32_t hash)
+{
+    // Operator method dispatch is single-overload by design (the existing
+    // tryDispatchBinaryOperator path does its own arg-type compatibility
+    // check). We pick the first overload at the deepest matching level.
+    ObjObjectType* t = type;
+    while (t) {
+        if (auto* m = t->firstOverload(hash))
+            return m->closure;
+        t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
+    }
+    return Value::nilVal();
+}
+
+
+static bool isImplicitMethod(const Value& closureVal)
+{
+    return ast::hasModifier(asFunction(asClosure(closureVal)->function)->methodModifiers,
+                            ast::MethodModifier::Implicit);
+}
+
+Value VM::findConversionMethod(const Value& instanceType, int32_t hash, bool implicitCall)
+{
+    Value closure = findOperatorMethod(asObjectType(instanceType), hash);
+    if (closure.isNil())
+        return Value::nilVal();
+
+    if (implicitCall && !isImplicitMethod(closure))
+        return Value::nilVal();  // not implicit — require explicit conversion
+
+    return closure;
+}
+
+
+bool VM::canConvertToType(const Value& val, const Value& targetTypeSpec, bool implicitCall) const
+{
+    // 1. Already the target type?
+    if (val.is(targetTypeSpec))
+        return true;
+
+    if (!isTypeSpec(targetTypeSpec))
+        return false;
+
+    ObjTypeSpec* ts = asTypeSpec(targetTypeSpec);
+
+    // 2. For builtin target types, check if the source can convert via builtin rules
+    if (ts->typeValue != ValueType::Object && ts->typeValue != ValueType::Actor
+        && ts->typeValue != ValueType::Nil) {
+
+        // Builtin-to-builtin: these generally succeed (int→real, etc.)
+        if (!val.isObj() || isString(val))
+            return true;
+
+        // Object/actor → builtin: check for user-defined conversion operator
+        if (isObjectInstance(val) || isActorInstance(val)) {
+            Value instType = isObjectInstance(val)
+                ? asObjectInstance(val)->instanceType
+                : asActorInstance(val)->instanceType;
+            UnicodeString convName = UnicodeString("operator->") + toUnicodeString(to_string(ts->typeValue));
+            int32_t convHash = convName.hashCode();
+            Value closure = const_cast<VM*>(this)->findConversionMethod(instType, convHash, implicitCall);
+            if (!closure.isNil())
+                return true;
+        }
+        return false;
+    }
+
+    // 3. For object/actor target types: check constructor-based auto-conversion
+    if (ts->typeValue == ValueType::Object || ts->typeValue == ValueType::Actor) {
+        ObjObjectType* targetType = asObjectType(targetTypeSpec);
+
+        // Find init method on target type. With overloads, scan all overloads
+        // at each level for a single-arg implicit init that accepts our source.
+        ObjObjectType* tInit = targetType;
+        bool foundImplicitInit = false;
+        while (tInit != nullptr && !foundImplicitInit) {
+            auto it = tInit->methods.find(asStringObj(initString)->hash);
+            if (it != tInit->methods.end()) {
+                for (const auto& m : it->second.overloads) {
+                    if (!isClosure(m.closure)) continue;
+                    ObjFunction* initFunc = asFunction(asClosure(m.closure)->function);
+                    if (initFunc->arity == 1 &&
+                        ast::hasModifier(initFunc->methodModifiers, ast::MethodModifier::Implicit)) {
+                        foundImplicitInit = true;
+                        break;
+                    }
+                }
+                if (foundImplicitInit) break;
+                // No matching overload at this level; init declared here
+                // shadows any in supertypes — stop walking.
+                break;
+            }
+            tInit = tInit->superType.isNil() ? nullptr : asObjectType(tInit->superType);
+        }
+        if (foundImplicitInit)
+            return true;
+
+        // 3b. Fall through: check for user-defined conversion operator on source (object → object)
+        if (isObjectInstance(val) || isActorInstance(val)) {
+            Value instType = isObjectInstance(val)
+                ? asObjectInstance(val)->instanceType
+                : asActorInstance(val)->instanceType;
+            UnicodeString convName = UnicodeString("operator->") + targetType->name;
+            int32_t convHash = convName.hashCode();
+            Value closure = const_cast<VM*>(this)->findConversionMethod(instType, convHash, implicitCall);
+            if (!closure.isNil())
+                return true;
+        }
+    }
+
+    return false;
+}
+
+
+VM::ConversionOutcome VM::tryConvertValue(
+    const Value& val,
+    const Value& targetTypeSpec,
+    bool strict,
+    bool implicitCall,
+    Thread::PendingConversion::Kind pendingKind,
+    const Value& savedContext)
+{
+    // 1. Already the target type?
+    if (val.is(targetTypeSpec))
+        return { ConversionResult::AlreadyCorrectType, Value::nilVal() };
+
+    // Resolve target type: accept both ObjTypeSpec and inline type tags
+    ValueType targetVT = ValueType::Nil;
+    if (isTypeSpec(targetTypeSpec)) {
+        targetVT = asTypeSpec(targetTypeSpec)->typeValue;
+    } else if (targetTypeSpec.isType()) {
+        targetVT = targetTypeSpec.asType();
+    } else {
+        return { ConversionResult::Failed, Value::nilVal() };
+    }
+
+    ObjTypeSpec* ts = isTypeSpec(targetTypeSpec) ? asTypeSpec(targetTypeSpec) : nullptr;
+
+    // 1b. nil flows into any reference-identity target type. Must come before
+    //     the implicit-init constructor branch — otherwise nil would be passed
+    //     as the argument to a 1-arg @implicit init, which is never the intent.
+    if (val.isNil() && isNilAcceptableTargetType(targetVT))
+        return { ConversionResult::ConvertedSync, val };
+
+    // 2. Constructor auto-conversion for Object/Actor target types.
+    //    Takes precedence over conversion operators.
+    //    Eligible when target type has init with arity==1 and @implicit.
+    if (ts && (targetVT == ValueType::Object || targetVT == ValueType::Actor)) {
+        ObjObjectType* targetType = asObjectType(targetTypeSpec);
+        ObjObjectType* tInit = targetType;
+        const ObjObjectType::Method* initMethod = nullptr;
+        while (tInit && !initMethod) {
+            initMethod = tInit->firstOverload(asStringObj(initString)->hash);
+            if (!initMethod)
+                tInit = tInit->superType.isNil() ? nullptr : asObjectType(tInit->superType);
+        }
+        if (initMethod && isClosure(initMethod->closure)) {
+            ObjFunction* initFunc = asFunction(asClosure(initMethod->closure)->function);
+            if (initFunc->arity == 1 &&
+                ast::hasModifier(initFunc->methodModifiers, ast::MethodModifier::Implicit)) {
+                // Auto-construct: set up callValue frame
+                push(targetTypeSpec);  // callee (type constructor)
+                push(val);             // argument
+                callValue(targetTypeSpec, CallSpec(1));
+                // The PendingConversion is not needed here because callValue for a
+                // type constructor leaves the constructed instance on the stack when
+                // the init frame returns (the VM's existing constructor machinery
+                // handles this). The caller should treat this like NeedsAsyncFrame.
+                return { ConversionResult::NeedsAsyncFrame, Value::nilVal() };
+            }
+        }
+        // Object/Actor target with no eligible constructor — fall through to
+        // try conversion operators on the source type
+    }
+
+    // 3. User-defined conversion operator (source is Object/Actor)
+    if ((isObjectInstance(val) || isActorInstance(val))
+        && targetVT != ValueType::Nil) {
+        Value instType = isObjectInstance(val)
+            ? asObjectInstance(val)->instanceType
+            : asActorInstance(val)->instanceType;
+        // For object/actor targets, use the specific type name (e.g. "operator->Quantity");
+        // for builtin targets, use the ValueType name (e.g. "operator->string")
+        UnicodeString convName;
+        if (ts && (targetVT == ValueType::Object || targetVT == ValueType::Actor))
+            convName = UnicodeString("operator->") + asObjectType(targetTypeSpec)->name;
+        else
+            convName = UnicodeString("operator->") + toUnicodeString(to_string(targetVT));
+        int32_t convHash = convName.hashCode();
+
+        // Recursion guard
+        bool inProgress = false;
+        for (const auto& g : thread->conversionInProgress)
+            if (g.receiver.is(val, false)) { inProgress = true; break; }
+
+        if (!inProgress) {
+            Value closure = findConversionMethod(instType, convHash, implicitCall);
+            if (!closure.isNil()) {
+                // Set up async conversion call
+                thread->pendingConversions.push_back({
+                    pendingKind, savedContext, val, thread->frames.size()
+                });
+                thread->conversionInProgress.push_back({val, thread->frames.size()});
+                push(val); // push as receiver for method call
+                call(asClosure(closure), CallSpec(0));
+                return { ConversionResult::NeedsAsyncFrame, Value::nilVal() };
+            }
+        }
+    }
+
+    // 4. Builtin conversion fallback
+    try {
+        Value converted = toType(targetTypeSpec, val, strict);
+        return { ConversionResult::ConvertedSync, converted };
+    } catch (std::exception&) {
+        return { ConversionResult::Failed, Value::nilVal() };
+    }
+}
+
+
+bool VM::tryDispatchBinaryOperator(const OperatorHashes& hashes)
+{
+    Value& rhs = peek(0);
+    Value& lhs = peek(1);
+
+    // Fast bail: neither is a user-defined object instance → no overload possible
+    // isObjectInstance checks isObj() then obj->type == ObjType::Instance,
+    // so strings, lists, vectors, etc. are excluded (they have different ObjTypes).
+    if (!isObjectInstance(lhs) && !isObjectInstance(rhs))
+        return false;
+
+    Value methodClosure;
+    bool swapped = false;
+
+    // Try LHS first: operator<sym> or loperator<sym>
+    if (isObjectInstance(lhs)) {
+        auto* type = asObjectType(asObjectInstance(lhs)->instanceType);
+        methodClosure = findOperatorMethod(type, hashes.op);
+        if (methodClosure.isNil())
+            methodClosure = findOperatorMethod(type, hashes.lop);
+    }
+
+    // If LHS didn't have it, try RHS: operator<sym> (commutative, swap) or roperator<sym>
+    if (methodClosure.isNil() && isObjectInstance(rhs)) {
+        auto* type = asObjectType(asObjectInstance(rhs)->instanceType);
+        methodClosure = findOperatorMethod(type, hashes.op);
+        if (!methodClosure.isNil()) {
+            swapped = true;
+        } else {
+            methodClosure = findOperatorMethod(type, hashes.rop);
+            if (!methodClosure.isNil()) swapped = true;
+        }
+    }
+
+    if (methodClosure.isNil())
+        return false;
+
+    // Check parameter type compatibility: if the operator method declares a type
+    // for its parameter, verify the argument is compatible before dispatching.
+    // This prevents e.g. quantity.operator+(other :quantity) from being dispatched
+    // when the other operand is a string.
+    {
+        Value arg = swapped ? lhs : rhs;
+        ObjFunction* fn = asFunction(asClosure(methodClosure)->function);
+        if (fn->funcType.has_value() && fn->funcType.value()->func.has_value()) {
+            auto& params = fn->funcType.value()->func.value().params;
+            if (!params.empty() && params[0].has_value() && params[0]->type.has_value()) {
+                auto& paramType = params[0]->type.value();
+                // For object/actor parameter types, check if arg is that type
+                if (paramType->builtin == type::BuiltinType::Object && paramType->obj.has_value()) {
+                    if (!arg.is(Value::nilVal()) && isObjectInstance(arg)) {
+                        auto* argType = asObjectType(asObjectInstance(arg)->instanceType);
+                        auto& expectedName = paramType->obj.value().name;
+                        // Walk supertype chain for compatibility
+                        bool compatible = false;
+                        auto* t = argType;
+                        while (t) {
+                            if (t->name == expectedName) { compatible = true; break; }
+                            t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
+                        }
+                        if (!compatible)
+                            return false;  // parameter type mismatch — skip this operator
+                    } else if (!isObjectInstance(arg)) {
+                        return false;  // operator expects object type, arg is not an object
+                    }
+                }
+            }
+        }
+    }
+
+    // Set up stack: [receiver, arg]
+    Value r = pop();
+    Value l = pop();
+    if (!swapped) {
+        push(l);  // receiver = lhs
+        push(r);  // arg = rhs
+    } else {
+        push(r);  // receiver = rhs
+        push(l);  // arg = lhs
+    }
+
+    CallSpec callSpec{1};
+    // Even if call() fails, return true to prevent fall-through to built-in dispatch
+    // (the error is already set by call())
+    call(asClosure(methodClosure), callSpec);
+    return true;
+}
+
+
+bool VM::tryDispatchUnaryOperator(int32_t hash)
+{
+    Value& operand = peek(0);
+
+    if (!isObjectInstance(operand))
+        return false;
+
+    auto* type = asObjectType(asObjectInstance(operand)->instanceType);
+    Value methodClosure = findOperatorMethod(type, hash);
+    if (methodClosure.isNil())
+        return false;
+
+    // Stack already has [receiver]. Call with 0 args.
+    CallSpec callSpec{0};
+    call(asClosure(methodClosure), callSpec);
+    return true;
+}
+
+
+bool VM::invokeOverloadAt(ObjString* name, uint16_t overloadIndex, const CallSpec& callSpec)
+{
+    Value receiver { peek(callSpec.argCount) };
+
+    ObjObjectType* type = nullptr;
+    if (isObjectInstance(receiver))
+        type = asObjectType(asObjectInstance(receiver)->instanceType);
+    else if (isActorInstance(receiver))
+        type = asObjectType(asActorInstance(receiver)->instanceType);
+    else {
+        runtimeError("Internal: InvokeOverloadAt receiver is not an object/actor instance");
+        return false;
+    }
+
+    // Walk the chain to the first level that defines this method name.
+    const ObjObjectType::MethodOverloadSet* setPtr = nullptr;
+    for (ObjObjectType* t = type; t; t = t->superType.isNil() ? nullptr : asObjectType(t->superType)) {
+        auto it = t->methods.find(name->hash);
+        if (it != t->methods.end() && !it->second.overloads.empty()) { setPtr = &it->second; break; }
+    }
+    if (!setPtr || overloadIndex >= setPtr->overloads.size()) {
+        runtimeError("Internal: InvokeOverloadAt index %u out of range for method '%s'",
+                     overloadIndex, toUTF8StdString(name->s).c_str());
+        return false;
+    }
+    const auto& methodInfo = setPtr->overloads[overloadIndex];
+    if (!isAccessAllowed(methodInfo.ownerType, methodInfo.access)) {
+        runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
+        return false;
+    }
+
+    // Cross-thread actor call dispatch: if the receiver is on a different
+    // thread, fall back to the regular invoke() path which queues the call
+    // (the queue path needs a BoundMethod-style structure we don't build here).
+    if (isActorInstance(receiver)) {
+        ActorInstance* inst = asActorInstance(receiver);
+        if (std::this_thread::get_id() != inst->thread_id)
+            return invoke(name, callSpec);  // delegate to regular invoke
+    }
+
+    return call(asClosure(methodInfo.closure), callSpec);
+}
 
 
 bool VM::invoke(ObjString* name, const CallSpec& callSpec)
@@ -2108,36 +4122,74 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
         ObjectInstance* instance = asObjectInstance(receiver);
 
         // check to ensure name isn't a prop with a func in it
-        auto it = instance->properties.find(name->hash);
-        if (it != instance->properties.end()) { // it is a prop
-            Value value { it->second.value };
+        auto* prop = instance->findProperty(name->hash);
+        if (prop) { // it is a prop
+            Value value { prop->value };
             *(thread->stackTop - callSpec.argCount - 1) = value;
             return callValue(value, callSpec);
         }
 
-        return invokeFromType(asObjectType(instance->instanceType), name, callSpec);
+        return invokeFromType(asObjectType(instance->instanceType), name, callSpec, receiver);
     }
     else if (isActorInstance(receiver)) {
         ActorInstance* instance = asActorInstance(receiver);
 
         // check to ensure name isn't a prop with a func in it
-        auto propIt = instance->properties.find(name->hash);
-        if (propIt != instance->properties.end()) { // it is a prop
-            Value value { propIt->second.value };
+        auto* prop = instance->findProperty(name->hash);
+        if (prop) { // it is a prop
+            Value value { prop->value };
             *(thread->stackTop - callSpec.argCount - 1) = value;
             return callValue(value, callSpec);
         }
 
-        // Try to invoke from the actor's type (user-defined methods)
+        // Try to invoke from the actor's type (user-defined methods).
         ObjObjectType* type = asObjectType(instance->instanceType);
         auto methodIt = type->methods.find(name->hash);
-        if (methodIt != type->methods.end()) {
-            const auto& methodInfo = methodIt->second;
-            if (!isAccessAllowed(methodInfo.ownerType, methodInfo.access)) {
+        if (methodIt != type->methods.end() && !methodIt->second.overloads.empty()) {
+            const auto& set = methodIt->second;
+            const ObjObjectType::Method* methodInfo = nullptr;
+            if (set.overloads.size() == 1) {
+                methodInfo = &set.overloads[0];
+            } else {
+                std::vector<OverloadResolver::Candidate> cands;
+                cands.reserve(set.overloads.size());
+                for (const auto& m : set.overloads) {
+                    OverloadResolver::Candidate c;
+                    if (isClosure(m.closure)) {
+                        auto* fn = asFunction(asClosure(m.closure)->function);
+                        if (fn->funcType.has_value())
+                            c.funcType = fn->funcType.value();
+                    }
+                    c.target = m.closure;
+                    c.isMethod = true;
+                    cands.push_back(c);
+                }
+                std::vector<OverloadResolver::ArgInfo> argInfos;
+                argInfos.reserve(callSpec.argCount);
+                for (int i = callSpec.argCount - 1; i >= 0; --i) {
+                    OverloadResolver::ArgInfo info;
+                    info.type = valueRuntimeType(peek(i));
+                    argInfos.push_back(info);
+                }
+                OverloadResolver resolver(this);
+                auto rr = resolver.resolve(cands, argInfos,
+                                           /*staticDispatchAttempt=*/false,
+                                           /*strictMode=*/true);
+                if (rr.kind == OverloadResolver::ResolveResult::ResolvedUnique) {
+                    methodInfo = &set.overloads[rr.chosenIndex];
+                } else if (rr.kind == OverloadResolver::ResolveResult::Ambiguous) {
+                    runtimeError(resolver.ambiguityDiagnostic(name->s, cands, rr.tiedIndices, argInfos));
+                    return false;
+                } else {
+                    runtimeError(resolver.noMatchDiagnostic(name->s, cands, argInfos));
+                    return false;
+                }
+            }
+            if (!isAccessAllowed(methodInfo->ownerType, methodInfo->access)) {
                 runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
                 return false;
             }
-            Value method { methodInfo.closure };
+            Value method { methodInfo->closure };
             return call(asClosure(method), callSpec);
         }
 
@@ -2150,18 +4202,36 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
                 const BuiltinMethodInfo& methodInfo = it->second;
                 NativeFn fn = methodInfo.function;
 
+                // Const enforcement: reject mutating methods on const receivers
+                if (receiver.isConst() && !methodInfo.noMutateSelf) {
+                    runtimeError("Cannot call mutating method '%s' on const value.",
+                                 toUTF8StdString(name->s).c_str());
+                    return false;
+                }
+
+                if (nativeCallTimingEnabled_)
+                    nativeCallContext_ = name->s;
+
                 if (std::this_thread::get_id() == instance->thread_id) {
                     // Same thread - call directly
                     if (methodInfo.funcType) {
                         return callNativeFn(fn, methodInfo.funcType,
                                             methodInfo.defaultValues, callSpec,
-                                            true, receiver, methodInfo.declFunction);
+                                            true, receiver, methodInfo.declFunction,
+                                            methodInfo.resolveArgMask);
                     } else {
                         return callNativeFn(fn, nullptr, {}, callSpec,
-                                            true, receiver, methodInfo.declFunction);
+                                            true, receiver, methodInfo.declFunction,
+                                            methodInfo.resolveArgMask);
                     }
                 } else {
                     // Different thread - queue the call
+                    if (!instance->alive.load(std::memory_order_acquire)) {
+                        auto typeName = toUTF8StdString(asObjectType(instance->instanceType)->name);
+                        runtimeError("method '%s' called on terminated actor of type '%s'",
+                                     toUTF8StdString(name->s).c_str(), typeName.c_str());
+                        return false;
+                    }
                     Value callee = Value::boundNativeVal(receiver, fn, methodInfo.isProc,
                                                          methodInfo.funcType, methodInfo.defaultValues,
                                                          methodInfo.declFunction);
@@ -2186,13 +4256,25 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
                 if (it != mit->second.end()) {
                     const BuiltinMethodInfo& methodInfo = it->second;
                     NativeFn fn = methodInfo.function;
+
+                    // Const enforcement: reject mutating methods on const receivers
+                    if (receiver.isConst() && !methodInfo.noMutateSelf) {
+                        runtimeError("Cannot call mutating method '%s' on const value.",
+                                     toUTF8StdString(name->s).c_str());
+                        return false;
+                    }
+
+                    if (nativeCallTimingEnabled_)
+                        nativeCallContext_ = name->s;
                     if (methodInfo.funcType) {
                         return callNativeFn(fn, methodInfo.funcType,
                                             methodInfo.defaultValues, callSpec,
-                                            true, receiver, methodInfo.declFunction);
+                                            true, receiver, methodInfo.declFunction,
+                                            methodInfo.resolveArgMask);
                     } else {
                         return callNativeFn(fn, nullptr, {}, callSpec,
-                                            true, receiver, methodInfo.declFunction);
+                                            true, receiver, methodInfo.declFunction,
+                                            methodInfo.resolveArgMask);
                     }
                 }
             }
@@ -2262,9 +4344,27 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                     return false;
                 }
                 ObjList* list = asList(indexable);
+                bool isConstAccess = indexable.isConst();
                 Value index = pop();
                 try {
                     Value sublist { list->index(index) };
+                    // MVCC: propagate const + resolve snapshot for reference-type elements
+                    if (isConstAccess && sublist.isObj() && !sublist.isConst()) {
+                        auto* token = list->control->snapshotToken;
+                        if (token) {
+                            // For integer indexing, cache the frozen child back into the list element
+                            if (index.isNumber()) {
+                                auto idx = index.asInt();
+                                auto len = list->length();
+                                if (idx < 0) idx = len - (-idx);
+                                sublist = resolveConstChild(sublist, token);
+                                if (idx >= 0 && idx < len)
+                                    list->cacheElement(idx, sublist);
+                            } else {
+                                sublist = resolveConstChild(sublist, token);
+                            }
+                        }
+                    }
                     pop(); // discard indexable
                     push(sublist);
 
@@ -2323,6 +4423,23 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                     return false;
                 }
             }
+            case ObjType::Tensor: {
+                ObjTensor* t = asTensor(indexable);
+                std::vector<Value> indices;
+                indices.reserve(subscriptCount);
+                for (int i = 0; i < subscriptCount; ++i)
+                    indices.push_back(pop());
+                std::reverse(indices.begin(), indices.end());
+                try {
+                    Value elt = t->index(indices);
+                    pop(); // discard indexable
+                    push(elt);
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return false;
+                }
+                return true;
+            }
             case ObjType::Dict: {
                 if (subscriptCount != 1) {
                     runtimeError("Dict lookup requires a single key index.");
@@ -2335,6 +4452,14 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
                     return false;
                 }
                 Value result { dict->at(index) };
+                // MVCC: propagate const + resolve snapshot for reference-type values
+                if (indexable.isConst() && result.isObj() && !result.isConst()) {
+                    auto* token = dict->control->snapshotToken;
+                    if (token) {
+                        result = resolveConstChild(result, token);
+                        dict->cacheValue(index, result);
+                    }
+                }
                 pop(); // discard indexable
                 push(result);
                 return true;
@@ -2378,10 +4503,10 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
             default:
                 break;
         }
-        runtimeError("Only strings, lists, ranges, [vectors, dicts, matrices, tensors - unimplemented], and signals can be indexed, not type "+objTypeName(indexable.asObj())+".");
+        runtimeError("Only strings, lists, ranges, vectors, dicts, matrices, tensors, and signals can be indexed, not type "+objTypeName(indexable.asObj())+".");
         return false;
     }
-    runtimeError("Only strings, lists, ranges,[vectors, dicts, matrices, tensors - unimplemented], and signals can be indexed, not type "+indexable.typeName()+".");
+    runtimeError("Only strings, lists, ranges,vectors, dicts, matrices, tensors, and signals can be indexed, not type "+indexable.typeName()+".");
     return false;
 }
 
@@ -2476,6 +4601,22 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
                     return false;
                 }
             } break;
+            case ObjType::Tensor: {
+                ObjTensor* t = asTensor(indexable);
+                std::vector<Value> indices;
+                indices.reserve(subscriptCount);
+                for (int i = 0; i < subscriptCount; ++i)
+                    indices.push_back(pop());
+                std::reverse(indices.begin(), indices.end());
+                try {
+                    t->setIndex(indices, value);
+                    pop(); // discard indexable
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return false;
+                }
+                return true;
+            } break;
             case ObjType::Dict: {
                 if (subscriptCount != 1) {
                     runtimeError("Dict indexing requires a single index.");
@@ -2495,49 +4636,71 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
             default:
                 break;
         }
-        runtimeError("Only strings, lists, [vectors, dicts, matrices, tensors - unimplemented], and signals can be indexed for assignment, not type "+objTypeName(indexable.asObj())+".");
+        runtimeError("Only strings, lists, vectors, dicts, matrices, tensors, and signals can be indexed for assignment, not type "+objTypeName(indexable.asObj())+".");
         return false;
     }
 
-    runtimeError("Only strings, lists, [vectors, dicts, matrices, tensors - unimplemented], and signals can be indexed for assignment, not type "+indexable.typeName()+".");
+    runtimeError("Only strings, lists, vectors, dicts, matrices, tensors, and signals can be indexed for assignment, not type "+indexable.typeName()+".");
     return false;
 }
 
 
 VM::BindResult VM::bindMethod(ObjObjectType* instanceType, ObjString* name)
 {
+    // Walk the chain to the FIRST level that defines the method name. With
+    // overloads, the BoundMethod wraps the whole MethodOverloadSet (as a
+    // freshly-allocated ObjOverloadSet) so calls through the bound reference
+    // dispatch via callValue's OverloadSet branch.
     ObjObjectType* t = instanceType;
-    const ObjObjectType::Method* methodPtr = nullptr;
-    while (t != nullptr && methodPtr == nullptr) {
+    const ObjObjectType::MethodOverloadSet* setPtr = nullptr;
+    while (t != nullptr && setPtr == nullptr) {
         auto it = t->methods.find(name->hash);
-        if (it != t->methods.end())
-            methodPtr = &it->second;
+        if (it != t->methods.end() && !it->second.overloads.empty())
+            setPtr = &it->second;
         else
             t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
     }
 
-    if (methodPtr == nullptr)
+    if (setPtr == nullptr)
         return BindResult::NotFound;
 
-    const auto& methodInfo = *methodPtr;
+    const auto& methodInfo = setPtr->overloads[0];  // representative for access check
     if (!isAccessAllowed(methodInfo.ownerType, methodInfo.access)) {
         runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
         return BindResult::Private;
     }
 
-    Value method { methodInfo.closure };
+    Value method;
+    if (setPtr->overloads.size() > 1) {
+        // Wrap all overloads in an OverloadSet so a call through the bound
+        // reference can dispatch on the actual runtime arg types.
+        auto setObj = newOverloadSetObj(name->s);
+        for (const auto& m : setPtr->overloads)
+            setObj->add(m.closure);
+        method = Value::objRef(setObj.release());
+    } else {
+        method = methodInfo.closure;
+    }
 
-    if (isClosure(method) && asFunction(asClosure(method)->function)->nativeImpl) {
+    if (isClosure(method) && asFunction(asClosure(method)->function)->builtinInfo) {
         ObjClosure* cl = asClosure(method);
         ObjFunction* func = asFunction(cl->function);
-        NativeFn fn = func->nativeImpl;
-        Value boundNative { Value::boundNativeVal(peek(0), fn,
+        const auto& info = *func->builtinInfo;
+
+        // Const enforcement for linkMethod-registered native methods
+        if (peek(0).isConst() && !info.noMutateSelf) {
+            runtimeError("Cannot call mutating method '%s' on const value.",
+                         toUTF8StdString(name->s).c_str());
+            return BindResult::Private; // reuse error return path
+        }
+
+        Value boundNative { Value::boundNativeVal(peek(0), info.function,
                                                   func->funcType.has_value() &&
                                                       func->funcType.value()->func.has_value() ?
                                                       func->funcType.value()->func->isProc : false,
                                                   func->funcType.has_value() ?
                                                       func->funcType.value() : nullptr,
-                                                  func->nativeDefaults,
+                                                  info.defaultValues,
                                                   cl->function) };
         pop();
         push(boundNative);
@@ -2594,6 +4757,17 @@ Value VM::opReturn()
 {
     auto returningFrame { thread->frames.back() };
 
+
+    // Flag event handler return so processEventDispatch() can advance
+    // to the next handler.
+    if (returningFrame.isEventHandler)
+        thread->eventHandlerJustReturned = true;
+
+    // Flag continuation callback return so processContinuationDispatch() can
+    // process the result and continue iteration or finalize.
+    if (returningFrame.isContinuationCallback)
+        thread->continuationCallbackReturned = true;
+
     Value result = pop();
     closeUpvalues(returningFrame.slots);
 
@@ -2601,6 +4775,7 @@ Value VM::opReturn()
     thread->popFrame();
 
     if (!thread->frames.empty()) {
+        auto slotsOffset = returningFrame.slots - &*thread->stack.begin();
         auto popCount = &(*thread->stackTop) - returningFrame.slots;
         //stackTop -= popCount;
         // loop to ensure stack Values unref'd
@@ -2640,10 +4815,6 @@ void VM::defineProperty(ObjString* name)
         throw std::runtime_error("Can't create property without object or actor type on stack");
     #endif
     ObjObjectType* objType = asObjectType(peek(typeObjOffset));
-    #ifdef DEBUG_BUILD
-    if (objType->isInterface)
-        throw std::runtime_error("Can't create property for an interface");
-    #endif
 
     if (objType->properties.contains(name->hash))
         throw std::runtime_error("Duplicate property '"+name->toStdString()+"' declared in type "+(objType->isActor?"actor":"object")+" "+toUTF8StdString(objType->name));
@@ -2655,6 +4826,15 @@ void VM::defineProperty(ObjString* name)
     bool hasConstFlag = (typeObjOffset == 4);
     if (hasConstFlag)
         constVal = peek(0);
+
+    // Interfaces may declare concrete `const X = literal` (inherited by
+    // implementers); they may NOT declare writable storage.
+    if (objType->isInterface) {
+        bool isConstFlag = (!constVal.isNil() && constVal.isBool() && constVal.asBool());
+        if (!isConstFlag)
+            throw std::runtime_error("Interface '"+toUTF8StdString(objType->name)+
+                                     "' cannot declare writable storage property '"+name->toStdString()+"'");
+    }
 
     if (!propertyInitial.isNil()) {
         // if the property type is specified, convert the initial value (if given) to the declared propType
@@ -2687,6 +4867,11 @@ void VM::defineProperty(ObjString* name)
     ObjObjectType::Property property{};
     property.name = name->s;
     property.type = propertyType;
+    // Freeze initial value for const members with const (or untyped) type,
+    // so the template is safe to share via type-level access
+    if (isConst && (propertyType.isNil() || propertyType.isConst())
+        && propertyInitial.isObj() && !propertyInitial.isConst())
+        propertyInitial = propertyInitial.constRef();
     property.initialValue = propertyInitial;
     property.access = access;
     property.isConst = isConst;
@@ -2782,16 +4967,195 @@ void VM::defineMethod(ObjString* name)
     #endif
     ObjObjectType* type = asObjectType(peek(1));
 
-    if (type->methods.contains(name->hash))
-        throw std::runtime_error("Duplicate method '"+name->toStdString()+"' declared in type "+(type->isActor?"actor":"object")+" '"+toUTF8StdString(type->name)+"'");
-
     ObjClosure* closure = asClosure(method);
     ObjFunction* function = asFunction(closure->function);
     function->ownerType = Value::objRef(type).weakRef();
 
-    type->methods[name->hash] = {name->s, method, function->access,
-                                 Value::objRef(type).weakRef()};
+    // Append to the overload set. Validate that the new method's signature is
+    // distinguishable from existing overloads of the same name — two overloads
+    // with identical parameter types and arity are an error (the resolver
+    // would always tie them).
+    auto& set = type->methods[name->hash];
+    if (function->funcType.has_value()) {
+        auto newFt = function->funcType.value();
+        if (newFt->func.has_value()) {
+            auto& newParams = newFt->func.value().params;
+            for (const auto& existing : set.overloads) {
+                if (!isClosure(existing.closure)) continue;
+                auto* exFn = asFunction(asClosure(existing.closure)->function);
+                if (!exFn->funcType.has_value() || !exFn->funcType.value()->func.has_value()) continue;
+                auto& exParams = exFn->funcType.value()->func.value().params;
+                if (exParams.size() != newParams.size()) continue;
+                bool same = true;
+                for (size_t i = 0; i < exParams.size(); ++i) {
+                    auto& a = exParams[i];
+                    auto& b = newParams[i];
+                    if (a.has_value() != b.has_value()) { same = false; break; }
+                    if (!a.has_value()) continue;
+                    if (a->type.has_value() != b->type.has_value()) { same = false; break; }
+                    if (a->type.has_value() &&
+                        a->type.value()->builtin != b->type.value()->builtin) { same = false; break; }
+                }
+                if (same) {
+                    throw std::runtime_error("Duplicate signature for method '"+name->toStdString()+
+                                             "' on type '"+toUTF8StdString(type->name)+"'");
+                }
+            }
+        }
+    }
+    set.overloads.push_back({name->s, method, function->access, function->methodModifiers,
+                             Value::objRef(type).weakRef()});
+
+    // Cache the statement-action method's name hash for fast lookup at runtime.
+    // Validation: at most one per type.
+    if (ast::hasModifier(function->methodModifiers, ast::MethodModifier::StatementAction)) {
+        if (type->statementActionMethodHash >= 0 &&
+            type->statementActionMethodHash != name->hash) {
+            throw std::runtime_error("Type '"+toUTF8StdString(type->name)+
+                                     "' declares more than one 'statement action' method");
+        }
+        // Statement-action methods must be public — clients of the type trigger them.
+        if (function->access == ast::Access::Private) {
+            throw std::runtime_error("'statement action' method '"+name->toStdString()+
+                                     "' on type '"+toUTF8StdString(type->name)+
+                                     "' may not be private");
+        }
+        // Must take no user-visible parameters beyond self.
+        // (arity counts user params; self is implicit and not included.)
+        if (function->arity != 0) {
+            throw std::runtime_error("'statement action' method '"+name->toStdString()+
+                                     "' on type '"+toUTF8StdString(type->name)+
+                                     "' must take no parameters beyond self");
+        }
+        type->statementActionMethodHash = name->hash;
+    }
     pop();
+}
+
+
+std::string VM::checkInterfaceConformance(ObjObjectType* impl, ObjObjectType* iface)
+{
+    static const icu::UnicodeString getPrefix("__get_");
+    static const icu::UnicodeString setPrefix("__set_");
+
+    auto isAbstract = [](const ObjObjectType::Method& m) {
+        return ast::hasModifier(m.methodModifiers, ast::MethodModifier::Abstract);
+    };
+
+    // Per-overload conformance: for an abstract method `M(sig)` in the
+    // interface, look across the impl chain for a concrete overload of the
+    // same name whose signature is compatible (invariant params + covariant
+    // return). Synthetic accessor methods (__get_X / __set_X) take 0 or 1
+    // params and never have meaningful overload sets, so the legacy "any
+    // concrete overload" check is sufficient for them.
+    auto findConcreteMethodMatching = [&](int32_t hash,
+                                          const ptr<type::Type>& abstractFt) -> bool {
+        for (ObjObjectType* t = impl; t; ) {
+            auto it = t->methods.find(hash);
+            if (it != t->methods.end()) {
+                for (const auto& m : it->second.overloads) {
+                    if (isAbstract(m)) continue;
+                    if (!isClosure(m.closure)) continue;
+                    auto* fn = asFunction(asClosure(m.closure)->function);
+                    if (!fn->funcType.has_value()) continue;
+                    if (OverloadResolver::signatureCompatibleForOverride(
+                            abstractFt, fn->funcType.value()))
+                        return true;
+                }
+            }
+            t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
+        }
+        return false;
+    };
+
+    auto findAnyConcreteMethod = [&](int32_t hash) -> bool {
+        for (ObjObjectType* t = impl; t; ) {
+            auto it = t->methods.find(hash);
+            if (it != t->methods.end()) {
+                for (const auto& m : it->second.overloads) {
+                    if (!isAbstract(m)) return true;
+                }
+            }
+            t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
+        }
+        return false;
+    };
+
+    auto findProperty = [&](int32_t hash, bool* outIsConst) -> bool {
+        // Extend already copies parent properties into the subtype, so the
+        // direct lookup is sufficient. Walking the chain is harmless.
+        for (ObjObjectType* t = impl; t; ) {
+            auto it = t->properties.find(hash);
+            if (it != t->properties.end()) {
+                if (outIsConst) *outIsConst = it->second.isConst;
+                return true;
+            }
+            t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
+        }
+        return false;
+    };
+
+    std::vector<std::string> missing;
+
+    // Walk the interface and any interfaces it extends.
+    for (ObjObjectType* it = iface; it; ) {
+        for (const auto& kv : it->methods) {
+            for (const auto& m : kv.second.overloads) {
+                if (!isAbstract(m)) continue;
+
+                // Accessor synthesis fallback for __get_X / __set_X — a plain
+                // property X on the impl chain satisfies the abstract.
+                if (m.name.startsWith(getPrefix) || m.name.startsWith(setPrefix)) {
+                    if (findAnyConcreteMethod(kv.first)) continue;
+                    icu::UnicodeString plain = m.name.tempSubString(6);
+                    bool propIsConst = false;
+                    if (findProperty(plain.hashCode(), &propIsConst)) {
+                        if (m.name.startsWith(setPrefix) && propIsConst) {
+                            std::string disp = toUTF8StdString(plain);
+                            missing.push_back("setter for property '" + disp +
+                                              "' (implementer's '" + disp + "' is const)");
+                        }
+                        // satisfied (or already reported)
+                        continue;
+                    }
+                    std::string kind = m.name.startsWith(getPrefix) ? "getter" : "setter";
+                    missing.push_back(kind + " for property '" + toUTF8StdString(plain) + "'");
+                    continue;
+                }
+
+                // Regular method overload: require a signature-compatible
+                // concrete impl. If no concrete overload of this name exists
+                // at all, fall back to the simple "missing method 'X'" diag
+                // (matches the pre-overload error message for backwards
+                // compatibility); otherwise list the missing signature.
+                if (!isClosure(m.closure) && !m.closure.isNil()) {
+                    // m.closure is nil for purely-abstract; that's the normal case.
+                }
+                ptr<type::Type> absFt = nullptr;
+                if (isClosure(m.closure)) {
+                    auto* fn = asFunction(asClosure(m.closure)->function);
+                    if (fn->funcType.has_value()) absFt = fn->funcType.value();
+                }
+                if (absFt && findConcreteMethodMatching(kv.first, absFt))
+                    continue;
+
+                if (!findAnyConcreteMethod(kv.first)) {
+                    missing.push_back("method '" + toUTF8StdString(m.name) + "'");
+                } else {
+                    missing.push_back("method overload '" +
+                                      OverloadResolver::signatureToString(m.name, absFt) + "'");
+                }
+            }
+        }
+        it = it->superType.isNil() ? nullptr : asObjectType(it->superType);
+    }
+
+    if (missing.empty()) return "";
+    std::string out = "Type '" + toUTF8StdString(impl->name) +
+        "' does not satisfy interface '" + toUTF8StdString(iface->name) + "':";
+    for (const auto& m : missing)
+        out += "\n  missing " + m;
+    return out;
 }
 
 
@@ -2824,10 +5188,13 @@ void VM::defineEnumLabel(ObjString* name)
 
 void VM::defineNative(const std::string& name, NativeFn function,
                       ptr<type::Type> funcType,
-                      std::vector<Value> defaults)
+                      std::vector<Value> defaults,
+                      uint32_t resolveArgMask)
 {
     UnicodeString uname { toUnicodeString(name) };
     Value funcVal { Value::nativeVal(function, nullptr, funcType, defaults) };
+    if (resolveArgMask)
+        asNative(funcVal)->resolveArgMask = resolveArgMask;
     globals.storeGlobal(uname,funcVal);
 }
 
@@ -2888,8 +5255,7 @@ void VM::enableOpcodeProfiling(std::string filePath)
         std::error_code ec;
         if (std::filesystem::exists(opcodeProfilePath, ec)) {
             if (ec) {
-                std::cerr << "Warning: unable to check opcode profile file '" << opcodeProfilePath
-                          << "': " << ec.message() << std::endl;
+                std::cerr << "Warning: unable to check opcode profile file '" << opcodeProfilePath << "': " << ec.message() << std::endl;
             } else {
                 std::ifstream in(opcodeProfilePath);
                 if (in) {
@@ -2927,17 +5293,14 @@ void VM::enableOpcodeProfiling(std::string filePath)
                             opcodeProfileCounts[opcodeIndex].store(value, std::memory_order_relaxed);
                         }
                     } else if (!err.empty()) {
-                        std::cerr << "Warning: failed to parse opcode profile file '" << opcodeProfilePath
-                                  << "': " << err << std::endl;
+                        std::cerr << "Warning: failed to parse opcode profile file '" << opcodeProfilePath << "': " << err << std::endl;
                     }
                 } else {
-                    std::cerr << "Warning: failed to open opcode profile file '" << opcodeProfilePath
-                              << "' for reading." << std::endl;
+                    std::cerr << "Warning: failed to open opcode profile file '" << opcodeProfilePath << "' for reading" << std::endl;
                 }
             }
         } else if (ec) {
-            std::cerr << "Warning: unable to check opcode profile file '" << opcodeProfilePath
-                      << "': " << ec.message() << std::endl;
+            std::cerr << "Warning: unable to check opcode profile file '" << opcodeProfilePath << "': " << ec.message() << std::endl;
         }
     }
 
@@ -2986,11 +5349,11 @@ void VM::writeOpcodeProfile()
 }
 
 
-std::pair<InterpretResult,Value> VM::execute()
+std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 {
     if (thread->frames.empty() ||
         asFunction(asClosure(thread->frames.back().closure)->function)->chunk->code.size() == 0)
-        return std::make_pair(InterpretResult::OK, Value::nilVal()); // nothing to execute
+        return std::make_pair(ExecutionStatus::OK, Value::nilVal()); // nothing to execute
 
     SimpleMarkSweepGC& valueGC = SimpleMarkSweepGC::instance();
     valueGC.onThreadEnter();
@@ -3006,6 +5369,14 @@ std::pair<InterpretResult,Value> VM::execute()
     // Track execution depth for nested calls
     thread->execute_depth++;
     size_t frame_depth_on_entry = thread->frames.size();
+
+    // Deadline-based yielding support
+    const bool hasDeadline = (deadline != TimePoint::max());
+    auto yieldReturn = std::make_pair(ExecutionStatus::Yielded, Value::nilVal());
+    nativeCallDeadline_ = deadline; // expose to callNativeFn() for timing
+
+    // Reference to RT callback manager for instruction loop callback checks
+    auto& rtMgr = RTCallbackManager::instance();
 
     auto frame { thread->frames.end()-1 };
 
@@ -3075,7 +5446,33 @@ std::pair<InterpretResult,Value> VM::execute()
     std::cout << std::endl << "== executing ==" << std::endl;
     #endif
 
-    auto errorReturn = std::make_pair(InterpretResult::RuntimeError,Value::nilVal());
+    auto errorReturn = std::make_pair(ExecutionStatus::RuntimeError,Value::nilVal());
+
+    auto finalizeWaitSuspension = [&]() {
+        if (!(thread->waitSuspension.active &&
+              thread->waitSuspension.resultSlot &&
+              !thread->threadSleep &&
+              thread->awaitedFuture.isNil() &&
+              thread->pendingWaitFor.isNil() &&
+              thread->frames.size() == thread->waitSuspension.frameDepth))
+            return;
+
+        auto& waitSusp = thread->waitSuspension;
+        Value finalResult = Value::nilVal();
+        switch (waitSusp.resultMode) {
+            case Thread::WaitSuspension::ResultMode::Nil:
+                break;
+            case Thread::WaitSuspension::ResultMode::StoredValue:
+            case Thread::WaitSuspension::ResultMode::PendingWaitTarget:
+                finalResult = waitSusp.storedValue;
+                break;
+        }
+
+        *(waitSusp.resultSlot) = finalResult;
+        size_t itemsToPop = static_cast<size_t>(thread->stackTop - waitSusp.stackBase);
+        popN(itemsToPop);
+        waitSusp.clear();
+    };
 
 
     //
@@ -3083,26 +5480,89 @@ std::pair<InterpretResult,Value> VM::execute()
 
     for(;;) {
 
+        // Local alias for the Thread field so existing handler code can use the
+        // same name.  The Thread field is also accessed by tryAwait* helpers.
+        auto& instructionStart = thread->instructionStart;
+
         if (runtimeErrorFlag.load())
             return errorReturn;
 
         // Constructor setter cleanup: after setter frames execute and return,
-        // clean up their results and push the saved instance
+        // clean up their results and push the saved instance.
+        // Only one nil survives after the cascading setter opReturns: each
+        // returning setter's popCount loop sweeps everything between its slots
+        // pointer and stackTop, which folds in the prior setter's leftover nil.
+        // So we pop exactly one regardless of how many setters ran.
         if (thread->pendingSetterCount > 0 && thread->frames.size() == frame_depth_on_entry) {
-            // All setter frames have returned, clean up
-            popN(thread->pendingSetterCount);
+            pop();
             push(thread->pendingConstructorInstance);
             thread->pendingSetterCount = 0;
             thread->pendingConstructorInstance = Value::nilVal();
         }
 
+        // Pending conversion operator cleanup: after conversion method returns,
+        // complete the deferred operation (e.g. string concatenation)
+        if (!thread->pendingConversions.empty()
+            && thread->frames.size() == thread->pendingConversions.back().frameDepth) {
+            auto pending = thread->pendingConversions.back();
+            thread->pendingConversions.pop_back();
+            Value converted = pop();
+            // Remove receiver from recursion guard
+            auto& inProgress = thread->conversionInProgress;
+            for (auto it = inProgress.begin(); it != inProgress.end(); ++it) {
+                if (it->receiver.is(pending.convReceiver, false)) {
+                    inProgress.erase(it);
+                    break;
+                }
+            }
+            if (pending.kind == Thread::PendingConversion::Kind::Concat) {
+                UnicodeString lhs = asUString(pending.savedLHS);
+                UnicodeString rhs = isString(converted)
+                    ? asUString(converted)
+                    : toUnicodeString(toString(converted));
+                push(Value::stringVal(lhs + rhs));
+            }
+            else if (pending.kind == Thread::PendingConversion::Kind::TypeConversion) {
+                // Conversion method returned the converted value — push it
+                push(converted);
+            }
+        }
+
+        // Clean up stale conversion recursion guards (for explicit TargetType(obj) calls
+        // where there is no PendingConversion to trigger cleanup)
+        if (!thread->conversionInProgress.empty()) {
+            auto& guards = thread->conversionInProgress;
+            guards.erase(
+                std::remove_if(guards.begin(), guards.end(),
+                    [&](const Thread::ConversionGuard& g) {
+                        return thread->frames.size() <= g.frameDepth;
+                    }),
+                guards.end());
+        }
+
         if (exitRequested.load())
-            return std::make_pair(InterpretResult::OK,Value::nilVal());
+            return std::make_pair(ExecutionStatus::OK,Value::nilVal());
 
         // if we're 'sleeping' don't execute any instructions
         //  (we may have been woken up by an event or a spurious wakeup, in which case we'll re-block below)
         if (thread->threadSleep)
            goto postInstructionDispatch;
+
+        // if awaiting a future, check if it resolved; otherwise keep sleeping
+        if (thread->awaitedFuture.isNonNil()) {
+            ObjFuture* fut = asFuture(thread->awaitedFuture);
+            if (fut->future.wait_for(std::chrono::microseconds(0)) != std::future_status::ready)
+                goto postInstructionDispatch; // still pending
+            thread->awaitedFuture = Value::nilVal(); // resolved, clear and proceed
+        }
+
+        // A suspended wait(for=...) is not complete until pendingWaitFor has
+        // been revisited and cleared. Do not execute another opcode while that
+        // handoff is still in flight, even if awaitedFuture just became ready.
+        if (thread->pendingWaitFor.isNonNil())
+            goto postInstructionDispatch;
+
+        finalizeWaitSuspension();
 
 
         #if defined(DEBUG_TRACE_EXECUTION)
@@ -3115,7 +5575,7 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             else {
                 std::cout << "          <end of chunk>" << std::endl;
-                return std::make_pair(InterpretResult::RuntimeError,nilVal());
+                return std::make_pair(ExecutionStatus::RuntimeError,Value::nilVal());
             }
         #endif
 
@@ -3153,29 +5613,119 @@ std::pair<InterpretResult,Value> VM::execute()
                 frame->reorderArgs.clear();
             }
 
-            // convert arguments to parameter types if specified
-            if (asFunction(asClosure(frame->closure)->function)->funcType.has_value()) {
-                const auto& params = asFunction(asClosure(frame->closure)->function)->funcType.value()->func.value().params;
-                bool strictConv = false;
-                if (thread->frames.size() >= 2)
-                    strictConv = (thread->frames.end()-2)->strict;
-                for(size_t pi=0; pi<params.size(); ++pi) {
-                    const auto& paramOpt = params[pi];
-                    if (paramOpt.has_value() && paramOpt->type.has_value()) {
-                        ValueType vt = builtinToValueType(paramOpt->type.value()->builtin);
-                        try {
-                            *(frame->slots + 1 + pi) = toType(vt, *(frame->slots + 1 + pi), strictConv);
-                        } catch(std::exception& e) {
-                            runtimeError(e.what());
-                            return std::make_pair(InterpretResult::RuntimeError,Value::nilVal());
+            // Parameter type conversion: scan funcType params and convert in-place.
+            // Uses frame->callerStrict (caller's lexical strict context) because
+            // argument conversion conceptually happens at the call site.
+            {
+                ObjFunction* func = asFunction(asClosure(frame->closure)->function);
+                if (func->funcType.has_value()) {
+                    auto& ft = func->funcType.value();
+                    if (ft->func.has_value()) {
+                        auto& params = ft->func.value().params;
+                        bool strictCtx = frame->callerStrict;
+                        std::vector<size_t> asyncIndices;
+
+                        for (size_t pi = 0; pi < params.size(); ++pi) {
+                            if (!params[pi].has_value() || !params[pi]->type.has_value())
+                                continue;
+                            if (params[pi]->variadic)
+                                continue;  // skip variadic params
+
+                            Value& slot = *(frame->slots + 1 + pi);
+                            auto& paramType = params[pi]->type.value();
+                            auto targetVT = builtinToValueType(paramType->builtin);
+
+                            // Future pass-through: if promised type matches, no conversion
+                            if (isFuture(slot)) {
+                                if (targetVT.has_value() && isFutureAssignableTo(slot, targetVT.value()))
+                                    continue;
+                                // Non-matching future: try to resolve
+                                auto s = slot.tryResolveFuture();
+                                if (s == FutureStatus::Pending) {
+                                    // Can't convert pending futures in frameStart — fall through
+                                    // to let the function body handle it (or error)
+                                    continue;
+                                }
+                                if (s == FutureStatus::Error) {
+                                    runtimeError("future resolved with error");
+                                    return errorReturn;
+                                }
+                            }
+
+                            // Check if async (user-defined) conversion needed
+                            if (needsAsyncConversion(slot, paramType, strictCtx)) {
+                                asyncIndices.push_back(pi);
+                                continue;
+                            }
+
+                            // Sync builtin conversion
+                            if (targetVT.has_value() && slot.type() != targetVT.value()) {
+                                try {
+                                    slot = toType(targetVT.value(), slot, strictCtx);
+                                } catch (std::runtime_error& e) {
+                                    runtimeError(std::string(e.what()));
+                                    return errorReturn;
+                                }
+                            }
+
+                            // Sync object/actor type check (value.is(typeSpec))
+                            if (!targetVT.has_value()
+                                && (paramType->builtin == type::BuiltinType::Object
+                                    || paramType->builtin == type::BuiltinType::Actor)
+                                && paramType->obj.has_value()) {
+                                auto& typeName = paramType->obj.value().name;
+                                Value moduleTypeVal = func->moduleType;
+                                if (!moduleTypeVal.isNil()) {
+                                    auto found = asModuleType(moduleTypeVal)->vars.load(typeName);
+                                    if (found.has_value()
+                                        && !isCompatibleRuntimeObjectArg(slot, found.value())) {
+                                        runtimeError("unable to convert " + slot.typeName()
+                                                     + " to " + toUTF8StdString(typeName));
+                                        return errorReturn;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Handle async conversions by setting up state and pushing first frame
+                        if (!asyncIndices.empty()) {
+                            auto& state = thread->pushClosureParamConversion();
+                            state.targetFrameDepth = thread->frames.size();
+                            state.conversionParamIndices = std::move(asyncIndices);
+                            state.nextConversionIndex = 0;
+                            state.funcType = ft;
+                            state.moduleType = func->moduleType;
+
+                            size_t firstIdx = state.conversionParamIndices[0];
+                            Value& firstSlot = *(frame->slots + 1 + firstIdx);
+                            if (!pushParamConversionFrame(firstSlot, params[firstIdx]->type.value(), strictCtx)) {
+                                thread->popClosureParamConversion();
+                                runtimeError("Failed to set up parameter conversion");
+                                return errorReturn;
+                            }
+                            frame = thread->frames.end() - 1;
+                        } else {
+                            // No async conversions — freeze const params now
+                            // (async case freezes all const params in processClosureParamConversion)
+                            for (size_t pi = 0; pi < params.size(); ++pi) {
+                                if (!params[pi].has_value() || !params[pi]->type.has_value())
+                                    continue;
+                                if (params[pi]->type.value()->isConst) {
+                                    Value& slot = *(frame->slots + 1 + pi);
+                                    slot = createFrozenSnapshot(slot);
+                                }
+                            }
                         }
                     }
                 }
             }
 
-
         }
 
+
+        // Save IP before reading the opcode so we can rewind if the
+        // instruction needs to wait on an unresolved future.
+        instructionStart = frame->ip;
 
         // Fetch the next instruction OpCode from the Chunk
         //  If it has the DoubleByteArg flag set, clear it and note the OpCode
@@ -3227,16 +5777,19 @@ std::pair<InterpretResult,Value> VM::execute()
                 Value& inst { peek(0) };
                 ObjString* name = readString();
 
-                if (!resolveValue(inst))
-                    return errorReturn;
+                {
+                    auto s = tryAwaitValue(inst);
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
 
                 std::string signalName = toUTF8StdString(name->s);
 
                 if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
                     ObjObjectType* type = asObjectType(objInst->instanceType);
-                    auto it = objInst->properties.find(name->hash);
-                    if (it != objInst->properties.end()) {
+                    auto* prop = objInst->findProperty(name->hash);
+                    if (prop) {
                         ast::Access propAccess = ast::Access::Public;
                         Value ownerT = objInst->instanceType.weakRef();
                         auto pit = type->properties.find(name->hash);
@@ -3249,7 +5802,7 @@ std::pair<InterpretResult,Value> VM::execute()
                             return errorReturn;
                         }
 
-                        Value result = it->second.value;
+                        Value result = prop->value;
                         if (!isSignal(result))
                             result = objInst->ensurePropertySignal(name->hash, signalName);
                         pop();
@@ -3270,8 +5823,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 } else if (isActorInstance(inst)) {
                     ActorInstance* actorInst = asActorInstance(inst);
                     ObjObjectType* type = asObjectType(actorInst->instanceType);
-                    auto it = actorInst->properties.find(name->hash);
-                    if (it != actorInst->properties.end()) {
+                    auto* prop = actorInst->findProperty(name->hash);
+                    if (prop) {
                         ast::Access propAccess = ast::Access::Public;
                         Value ownerT = actorInst->instanceType.weakRef();
                         auto pit = type->properties.find(name->hash);
@@ -3284,7 +5837,7 @@ std::pair<InterpretResult,Value> VM::execute()
                             return errorReturn;
                         }
 
-                        Value result = it->second.value;
+                        Value result = prop->value;
                         if (!isSignal(result))
                             result = actorInst->ensurePropertySignal(name->hash, signalName);
                         pop();
@@ -3318,13 +5871,44 @@ std::pair<InterpretResult,Value> VM::execute()
                 runtimeError("Only object and actor instances have properties (string keys only).");
                 return errorReturn;
             }
+            case OpCode::MoveProp: {
+                if (isFuture(peek(0))) {
+                    auto s = tryAwaitFuture(peek(0));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
+                Value& inst { peek(0) };
+                ObjString* name = readString();
+                inst.resolveSignal();
+                if (runtimeErrorFlag.load()) return errorReturn;
+                VariablesMap::MonitoredValue* prop = nullptr;
+                if (isObjectInstance(inst)) {
+                    prop = asObjectInstance(inst)->findProperty(name->hash);
+                } else if (isActorInstance(inst)) {
+                    prop = asActorInstance(inst)->findProperty(name->hash);
+                } else {
+                    runtimeError("Cannot move property from non-object value");
+                    return errorReturn;
+                }
+                if (!prop) {
+                    runtimeError("Undefined property '"+toUTF8StdString(name->s)+"'");
+                    return errorReturn;
+                }
+                Value value = prop->value;
+                pop();
+                push(value);
+                prop->value = Value::nilVal();
+                break;
+            }
             case OpCode::GetProp: {
                 Value& inst { peek(0) };
                 ObjString* name = readString();
 
                 // Resolve futures first (but NOT signals - we need to check for signal properties)
-                if (!inst.resolveFuture()) {
-                    return errorReturn;
+                {
+                    auto s = tryAwaitFuture(inst);
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
                 }
 
                 // Check for signal properties AFTER resolving futures but BEFORE resolving signals
@@ -3377,6 +5961,12 @@ std::pair<InterpretResult,Value> VM::execute()
                     auto pit = eventInst->payload.find(name->hash);
                     if (pit != eventInst->payload.end()) {
                         Value result = pit->second;
+                        // Propagate const transitively: event payload refs inherit const from event.
+                        // Use constRef() (not createFrozenSnapshot) to preserve object identity
+                        // for 'is' checks while still blocking mutation through const enforcement.
+                        if (inst.isConst() && result.isObj() && !result.isConst()) {
+                            result = result.constRef();
+                        }
                         pop();
                         push(result);
                         break;
@@ -3416,6 +6006,14 @@ std::pair<InterpretResult,Value> VM::execute()
                         } catch (std::exception&) {
                             runtimeError("KeyError: key '" + toString(key) + "' not found in dict.");
                             return errorReturn;
+                        }
+                        // MVCC: propagate const + resolve snapshot for reference-type values
+                        if (inst.isConst() && result.isObj() && !result.isConst()) {
+                            auto* token = dict->control->snapshotToken;
+                            if (token) {
+                                result = resolveConstChild(result, token);
+                                dict->cacheValue(key, result);
+                            }
                         }
                         pop();
                         push(result);
@@ -3448,10 +6046,17 @@ std::pair<InterpretResult,Value> VM::execute()
                     }
 
                     // is it an instance property?
-                    auto it = objInst->properties.find(name->hash);
-                    if (it != objInst->properties.end()) { // exists
+                    auto* prop = objInst->findProperty(name->hash);
+                    if (prop) { // exists
+                        Value result = prop->value;
+                        // MVCC const resolution: materialize frozen clone for reference-type children
+                        if (inst.isConst() && result.isObj() && !result.isConst()) {
+                            auto* token = objInst->control->snapshotToken;
+                            if (token)
+                                result = resolveConstChild(result, token, &prop->value);
+                        }
                         pop();
-                        push(it->second.value);
+                        push(result);
                         break;
                     }
                     else { // no
@@ -3462,15 +6067,33 @@ std::pair<InterpretResult,Value> VM::execute()
                         if (br == BindResult::Private)
                             return errorReturn;
 
+                        // check if it is a nested type on the instance's type
+                        {
+                            ObjObjectType* t = asObjectType(objInst->instanceType);
+                            auto ntIt = t->nestedTypes.find(name->hash);
+                            if (ntIt != t->nestedTypes.end()) {
+                                pop();
+                                push(ntIt->second.type);
+                                break;
+                            }
+                        }
+
                         runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(asObjectType(objInst->instanceType)->name)+"'.");
                         return errorReturn;
                     }
                 } else if (isActorInstance(inst)) {
                     ActorInstance* actorInst = asActorInstance(inst);
-                    auto it = actorInst->properties.find(name->hash);
-                    if (it != actorInst->properties.end()) {
+                    auto* prop = actorInst->findProperty(name->hash);
+                    if (prop) {
+                        Value result = prop->value;
+                        // MVCC const resolution
+                        if (inst.isConst() && result.isObj() && !result.isConst()) {
+                            auto* token = actorInst->control->snapshotToken;
+                            if (token)
+                                result = resolveConstChild(result, token, &prop->value);
+                        }
                         pop();
-                        push(it->second.value);
+                        push(result);
                         break;
                     } else {
                         auto br = bindMethod(asObjectType(actorInst->instanceType), name);
@@ -3496,6 +6119,17 @@ std::pair<InterpretResult,Value> VM::execute()
                             }
                         }
 
+                        // check if it is a nested type on the actor's type
+                        {
+                            ObjObjectType* t = asObjectType(actorInst->instanceType);
+                            auto ntIt = t->nestedTypes.find(name->hash);
+                            if (ntIt != t->nestedTypes.end()) {
+                                pop();
+                                push(ntIt->second.type);
+                                break;
+                            }
+                        }
+
                         runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(asObjectType(actorInst->instanceType)->name)+"'.");
                         return errorReturn;
                     }
@@ -3514,7 +6148,28 @@ std::pair<InterpretResult,Value> VM::execute()
                     runtimeError("Undefined enum label '"+toUTF8StdString(name->s)+"' for enum type '"+toUTF8StdString(enumObjType->name)+"'.");
                     return errorReturn;
                 }
-                else if (isModuleType(inst)) {
+                else if (isObjectType(inst)) {
+                    auto objType = asObjectType(inst);
+                    auto it = objType->nestedTypes.find(name->hash);
+                    if (it != objType->nestedTypes.end()) {
+                        pop();
+                        push(it->second.type);
+                        break;
+                    }
+                    // const properties (to const types) are accessible via the type (like static members);
+                    // excludes 'const x: mutable T' since those are instance-specific
+                    {
+                        auto pit = objType->properties.find(name->hash);
+                        if (pit != objType->properties.end() && pit->second.isConst
+                            && (pit->second.type.isNil() || pit->second.type.isConst())) {
+                            pop();
+                            push(pit->second.initialValue);
+                            break;
+                        }
+                    }
+                    // fall through to builtin methods/properties check below
+                }
+                if (isModuleType(inst)) {
                     auto moduleType = asModuleType(inst);
 
                     auto optValue { moduleType->vars.load(name->hash) };
@@ -3538,6 +6193,12 @@ std::pair<InterpretResult,Value> VM::execute()
                         auto it2 = mit->second.find(name->hash);
                         if (it2 != mit->second.end()) {
                             const BuiltinMethodInfo& methodInfo = it2->second;
+                            // Const enforcement: reject mutating methods on const receivers
+                            if (inst.isConst() && !methodInfo.noMutateSelf) {
+                                runtimeError("Cannot call mutating method '%s' on const value.",
+                                             toUTF8StdString(name->s).c_str());
+                                return errorReturn;
+                            }
                             Value bm { Value::boundNativeVal(inst, methodInfo.function, methodInfo.isProc,
                                                              methodInfo.funcType, methodInfo.defaultValues,
                                                              methodInfo.declFunction) };
@@ -3562,6 +6223,10 @@ std::pair<InterpretResult,Value> VM::execute()
 
                 if (inst.isNil())
                     runtimeError("Attempted member or property access on nil");
+                else if (isObjectType(inst))
+                    runtimeError("Undefined property '"+toUTF8StdString(name->s)+
+                                 "' for type '"+toUTF8StdString(asObjectType(inst)->name)+
+                                 "'. Only nested types and public const members are accessible on type values.");
                 else
                     runtimeError("Only object and actor instances have methods and only object, actor, and dictionary instances have properties (string keys only).");
 #ifdef DEBUG_BUILD
@@ -3577,8 +6242,10 @@ std::pair<InterpretResult,Value> VM::execute()
                 ObjString* name = readString();
 
                 // Resolve futures first (but NOT signals - we need to check for signal properties)
-                if (!inst.resolveFuture()) {
-                    return errorReturn;
+                {
+                    auto s = tryAwaitFuture(inst);
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
                 }
 
                 // Check for signal properties AFTER resolving futures but BEFORE resolving signals
@@ -3631,6 +6298,12 @@ std::pair<InterpretResult,Value> VM::execute()
                     auto pit = eventInst->payload.find(name->hash);
                     if (pit != eventInst->payload.end()) {
                         Value result = pit->second;
+                        // Propagate const transitively: event payload refs inherit const from event.
+                        // Use constRef() (not createFrozenSnapshot) to preserve object identity
+                        // for 'is' checks while still blocking mutation through const enforcement.
+                        if (inst.isConst() && result.isObj() && !result.isConst()) {
+                            result = result.constRef();
+                        }
                         pop();
                         push(result);
                         break;
@@ -3670,6 +6343,14 @@ std::pair<InterpretResult,Value> VM::execute()
                             runtimeError("KeyError: key '" + toString(key) + "' not found in dict.");
                             return errorReturn;
                         }
+                        // MVCC: propagate const + resolve snapshot for reference-type values
+                        if (inst.isConst() && result.isObj() && !result.isConst()) {
+                            auto* token = dict->control->snapshotToken;
+                            if (token) {
+                                result = resolveConstChild(result, token);
+                                dict->cacheValue(key, result);
+                            }
+                        }
                         pop();
                         push(result);
                         break;
@@ -3680,8 +6361,8 @@ std::pair<InterpretResult,Value> VM::execute()
                 } else if (isObjectInstance(inst)) {
                     ObjectInstance* objInst = asObjectInstance(inst);
                     ObjObjectType* t = asObjectType(objInst->instanceType);
-                    auto it = objInst->properties.find(name->hash);
-                    if (it != objInst->properties.end()) {
+                    auto* prop = objInst->findProperty(name->hash);
+                    if (prop) {
                         auto pit = t->properties.find(name->hash);
                         ast::Access propAccess = ast::Access::Public;
                         Value ownerT = objInst->instanceType.weakRef();
@@ -3693,8 +6374,17 @@ std::pair<InterpretResult,Value> VM::execute()
                             runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
                             return errorReturn;
                         }
-                        pop();
-                        push(it->second.value);
+                        {
+                            Value result = prop->value;
+                            // MVCC const resolution
+                            if (inst.isConst() && result.isObj() && !result.isConst()) {
+                                auto* token = objInst->control->snapshotToken;
+                                if (token)
+                                    result = resolveConstChild(result, token, &prop->value);
+                            }
+                            pop();
+                            push(result);
+                        }
                         break;
                     } else {
                         // Check if this property has a getter method
@@ -3717,6 +6407,16 @@ std::pair<InterpretResult,Value> VM::execute()
                         if (br == BindResult::Private)
                             return errorReturn;
 
+                        // check if it is a nested type on the instance's type
+                        {
+                            auto ntIt = t->nestedTypes.find(name->hash);
+                            if (ntIt != t->nestedTypes.end()) {
+                                pop();
+                                push(ntIt->second.type);
+                                break;
+                            }
+                        }
+
                         runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(t->name)+"'.");
                         return errorReturn;
                     }
@@ -3724,8 +6424,8 @@ std::pair<InterpretResult,Value> VM::execute()
                     ActorInstance* actorInst = asActorInstance(inst);
                     ObjObjectType* t = asObjectType(actorInst->instanceType);
                     auto pit = t->properties.find(name->hash);
-                    auto it = actorInst->properties.find(name->hash);
-                    if (it != actorInst->properties.end()) {
+                    auto* prop = actorInst->findProperty(name->hash);
+                    if (prop) {
                         ast::Access propAccess = ast::Access::Public;
                         Value ownerT = actorInst->instanceType.weakRef();
                         if (pit != t->properties.end()) {
@@ -3736,8 +6436,17 @@ std::pair<InterpretResult,Value> VM::execute()
                             runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
                             return errorReturn;
                         }
-                        pop();
-                        push(it->second.value);
+                        {
+                            Value result = prop->value;
+                            // MVCC const resolution
+                            if (inst.isConst() && result.isObj() && !result.isConst()) {
+                                auto* token = actorInst->control->snapshotToken;
+                                if (token)
+                                    result = resolveConstChild(result, token, &prop->value);
+                            }
+                            pop();
+                            push(result);
+                        }
                         break;
                     } else {
                         auto br = bindMethod(t, name);
@@ -3763,6 +6472,16 @@ std::pair<InterpretResult,Value> VM::execute()
                             }
                         }
 
+                        // check if it is a nested type on the actor's type
+                        {
+                            auto ntIt = t->nestedTypes.find(name->hash);
+                            if (ntIt != t->nestedTypes.end()) {
+                                pop();
+                                push(ntIt->second.type);
+                                break;
+                            }
+                        }
+
                         runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+"' for instance type '"+toUTF8StdString(t->name)+"'.");
                         return errorReturn;
                     }
@@ -3778,7 +6497,38 @@ std::pair<InterpretResult,Value> VM::execute()
 
                     runtimeError("Undefined enum label '"+toUTF8StdString(name->s)+"' for enum type '"+toUTF8StdString(enumObjType->name)+"'.");
                     return errorReturn;
-                } else if (isModuleType(inst)) {
+                } else if (isObjectType(inst)) {
+                    auto objType = asObjectType(inst);
+                    auto it = objType->nestedTypes.find(name->hash);
+                    if (it != objType->nestedTypes.end()) {
+                        if (it->second.access == ast::Access::Private &&
+                            !isAccessAllowed(Value::objRef(objType).weakRef(), ast::Access::Private)) {
+                            runtimeError("Cannot access private nested type '%s'", toUTF8StdString(name->s).c_str());
+                            return errorReturn;
+                        }
+                        pop();
+                        push(it->second.type);
+                        break;
+                    }
+                    // const properties (to const types) are accessible via the type (like static members);
+                    // excludes 'const x: mutable T' since those are instance-specific
+                    {
+                        auto pit = objType->properties.find(name->hash);
+                        if (pit != objType->properties.end() && pit->second.isConst
+                            && (pit->second.type.isNil() || pit->second.type.isConst())) {
+                            if (pit->second.access == ast::Access::Private &&
+                                !isAccessAllowed(pit->second.ownerType, ast::Access::Private)) {
+                                runtimeError("Cannot access private member '%s'", toUTF8StdString(name->s).c_str());
+                                return errorReturn;
+                            }
+                            pop();
+                            push(pit->second.initialValue);
+                            break;
+                        }
+                    }
+                    // fall through to builtin methods/properties check below
+                }
+                if (isModuleType(inst)) {
                     auto moduleType = asModuleType(inst);
 
                     auto optValue { moduleType->vars.load(name->hash) };
@@ -3801,6 +6551,12 @@ std::pair<InterpretResult,Value> VM::execute()
                         auto it2 = mit->second.find(name->hash);
                         if (it2 != mit->second.end()) {
                             const BuiltinMethodInfo& methodInfo = it2->second;
+                            // Const enforcement: reject mutating methods on const receivers
+                            if (inst.isConst() && !methodInfo.noMutateSelf) {
+                                runtimeError("Cannot call mutating method '%s' on const value.",
+                                             toUTF8StdString(name->s).c_str());
+                                return errorReturn;
+                            }
                             Value bm { Value::boundNativeVal(inst, methodInfo.function, methodInfo.isProc,
                                                              methodInfo.funcType, methodInfo.defaultValues,
                                                              methodInfo.declFunction) };
@@ -3825,14 +6581,34 @@ std::pair<InterpretResult,Value> VM::execute()
 
                 if (inst.isNil())
                     runtimeError("Attempted member or property access on nil");
+                else if (isObjectType(inst))
+                    runtimeError("Undefined property '"+toUTF8StdString(name->s)+
+                                 "' for type '"+toUTF8StdString(asObjectType(inst)->name)+
+                                 "'. Only nested types and public const members are accessible on type values.");
                 else
                     runtimeError("Only object and actor instances have methods and only object, actor, and dictionary instances have properties (string keys only).");
                 return errorReturn;
                 break;
             }
             case OpCode::SetProp: {
+                // Resolve futures on receiver and assigned value
+                if (isFuture(peek(1))) {
+                    auto s = tryAwaitFuture(peek(1));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
+                if (isFuture(peek(0))) {
+                    auto s = tryAwaitFuture(peek(0));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
                 Value& inst { peek(1) };
                 ObjString* name = readString();
+
+                if (inst.isConst()) {
+                    runtimeError("Cannot mutate const: assignment to '%s'", toUTF8StdString(name->s).c_str());
+                    return errorReturn;
+                }
 
                 if (isSignal(inst)) {
                     auto vt = inst.type();
@@ -3862,8 +6638,11 @@ std::pair<InterpretResult,Value> VM::execute()
                     return errorReturn;
                 }
 
-                if (!resolveValue(inst))
-                    return errorReturn;
+                {
+                    auto s = tryAwaitValue(inst);
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
                 if (isDict(inst)) {
                     ObjDict* dict = asDict(inst);
                     Value value { peek(0) };
@@ -3904,7 +6683,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     }
                     Value value { peek(0) };
 
-                    if (!value.isNil()) {
+                    {
                         bool strictConv = asFunction(asClosure(frame->closure)->function)->strict;
                         // if type object specified the property type in the declaration,
                         //  convert the value to that type (if possible)
@@ -3914,7 +6693,6 @@ std::pair<InterpretResult,Value> VM::execute()
                                 ObjTypeSpec* typeSpec = asTypeSpec(prop.type);
                                 if (typeSpec->typeValue != ValueType::Nil)
                                     try {
-                                        // TODO: implement & use a canConvertToType()
                                         value = toType(prop.type, value, strictConv);
                                     } catch(std::exception& e) {
                                         runtimeError(e.what());
@@ -3925,7 +6703,8 @@ std::pair<InterpretResult,Value> VM::execute()
                     }
 
 
-                    objInst->properties[name->hash].assign(value);
+                    // Clone vector/matrix/tensor for by-value semantics
+                    objInst->assignProperty(name->hash, cloneIfValueSemantics(value));
                     popN(2); // pop original value & instance
                     push(value); // value (possibly converted)
                     break;
@@ -3940,7 +6719,7 @@ std::pair<InterpretResult,Value> VM::execute()
                     }
                     Value value { peek(0) };
 
-                    if (!value.isNil()) {
+                    {
                         bool strictConv = asFunction(asClosure(frame->closure)->function)->strict;
                         if (propertyIt != properties.end()) {
                             const auto& prop { propertyIt->second };
@@ -3957,7 +6736,8 @@ std::pair<InterpretResult,Value> VM::execute()
                         }
                     }
 
-                    actorInst->properties[name->hash].assign(value);
+                    // Clone vector/matrix/tensor for by-value semantics
+                    actorInst->assignProperty(name->hash, cloneIfValueSemantics(value));
                     popN(2);
                     push(value);
                     break;
@@ -3977,7 +6757,8 @@ std::pair<InterpretResult,Value> VM::execute()
                     if (vars.exists(name->hash)) {
                         Value value { peek(0) };
 
-                        vars.store(name->hash, name->s, value, /*overwrite=*/true);
+                        // Clone vector/matrix/tensor for by-value semantics
+                        vars.store(name->hash, name->s, cloneIfValueSemantics(value), /*overwrite=*/true);
                         popN(2); // pop original value & instance
                         push(value); // value (possibly converted)
                     }
@@ -3992,8 +6773,25 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::SetPropCheck: {
+                // Resolve futures on receiver and assigned value
+                if (isFuture(peek(1))) {
+                    auto s = tryAwaitFuture(peek(1));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
+                if (isFuture(peek(0))) {
+                    auto s = tryAwaitFuture(peek(0));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
                 Value& inst { peek(1) };
                 ObjString* name = readString();
+
+                if (inst.isConst()) {
+                    runtimeError("Cannot mutate const: assignment to '%s'", toUTF8StdString(name->s).c_str());
+                    return errorReturn;
+                }
+
                 if (isSignal(inst)) {
                     auto vt = inst.type();
                     auto pit = builtinProperties.find(vt);
@@ -4017,8 +6815,11 @@ std::pair<InterpretResult,Value> VM::execute()
                     return errorReturn;
                 }
 
-                if (!resolveValue(inst))
-                    return errorReturn;
+                {
+                    auto s = tryAwaitValue(inst);
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
                 if (isEventInstance(inst)) {
                     runtimeError("Cannot assign to property '" + toUTF8StdString(name->s) + "' of event instance.");
                     return errorReturn;
@@ -4061,7 +6862,7 @@ std::pair<InterpretResult,Value> VM::execute()
 
                     Value value { peek(0) };
 
-                    if (!value.isNil()) {
+                    {
                         bool strictConv = asFunction(asClosure(frame->closure)->function)->strict;
                         if (propertyIt != properties.end()) {
                             const auto& prop { propertyIt->second };
@@ -4090,7 +6891,8 @@ std::pair<InterpretResult,Value> VM::execute()
                         return errorReturn;
                     }
 
-                    objInst->properties[name->hash].assign(value);
+                    // Clone vector/matrix/tensor for by-value semantics
+                    objInst->assignProperty(name->hash, cloneIfValueSemantics(value));
                     popN(2);
                     push(value);
                     break;
@@ -4106,7 +6908,7 @@ std::pair<InterpretResult,Value> VM::execute()
 
                     Value value { peek(0) };
 
-                    if (!value.isNil()) {
+                    {
                         bool strictConv = asFunction(asClosure(frame->closure)->function)->strict;
                         if (propertyIt != properties.end()) {
                             const auto& prop { propertyIt->second };
@@ -4135,7 +6937,8 @@ std::pair<InterpretResult,Value> VM::execute()
                         return errorReturn;
                     }
 
-                    actorInst->properties[name->hash].assign(value);
+                    // Clone vector/matrix/tensor for by-value semantics
+                    actorInst->assignProperty(name->hash, cloneIfValueSemantics(value));
                     popN(2);
                     push(value);
                     break;
@@ -4152,7 +6955,8 @@ std::pair<InterpretResult,Value> VM::execute()
                     if (vars.exists(name->hash)) {
                         Value value { peek(0) };
 
-                        vars.store(name->hash, name->s, value, /*overwrite=*/true);
+                        // Clone vector/matrix/tensor for by-value semantics
+                        vars.store(name->hash, name->s, cloneIfValueSemantics(value), /*overwrite=*/true);
                         popN(2);
                         push(value);
                     } else {
@@ -4175,13 +6979,18 @@ std::pair<InterpretResult,Value> VM::execute()
                 ObjObjectType* superType = asObjectType(pop());
                 auto br = bindMethod(superType,name);
                 if (br != BindResult::Bound)
-                    return std::make_pair(InterpretResult::RuntimeError,Value::nilVal());
+                    return std::make_pair(ExecutionStatus::RuntimeError,Value::nilVal());
 
                 break;
             }
             case OpCode::Equal: {
-                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
+
+                if (tryDispatchBinaryOperator(opHashEq)) {
+                    frame = thread->frames.end() - 1;
+                    break;
+                }
 
                 try {
                     binaryOp([&](Value a, Value b) -> Value { return equal(a, b, frame->strict); });
@@ -4192,25 +7001,31 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Is: {
+                {
+                    auto s = tryAwaitValues(peek(0), peek(1));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
                 Value b = pop();
                 Value a = pop();
-                if (!resolveValue(a) || !resolveValue(b))
-                    return errorReturn;
                 push(Value::boolVal(a.is(b, frame->strict)));
                 break;
             }
             case OpCode::In: {
+                {
+                    auto s = tryAwaitValues(peek(0), peek(1));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
                 Value container = pop();
                 Value needle = pop();
-                if (!resolveValue(needle) || !resolveValue(container))
-                    return errorReturn;
 
                 bool result = false;
 
                 if (isList(container)) {
                     ObjList* list = asList(container);
                     for (int32_t i = 0; i < list->length(); i++) {
-                        if (needle.equals(list->elts.at(i), frame->strict)) {
+                        if (needle.equals(list->getElement(i), frame->strict)) {
                             result = true;
                             break;
                         }
@@ -4272,8 +7087,13 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Greater: {
-                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
+
+                if (tryDispatchBinaryOperator(opHashGt)) {
+                    frame = thread->frames.end() - 1;
+                    break;
+                }
 
                 try {
                     binaryOp([](Value a, Value b) -> Value { return greater(a,b); });
@@ -4284,8 +7104,13 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Less: {
-                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
+
+                if (tryDispatchBinaryOperator(opHashLt)) {
+                    frame = thread->frames.end() - 1;
+                    break;
+                }
 
                 try {
                     binaryOp([](Value a, Value b) -> Value { return less(a,b); });
@@ -4295,13 +7120,91 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
-            case OpCode::Add: {
-                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+            case OpCode::GreaterEqual: {
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
 
+                if (tryDispatchBinaryOperator(opHashGe)) {
+                    frame = thread->frames.end() - 1;
+                    break;
+                }
+
+                try {
+                    binaryOp([](Value a, Value b) -> Value { return greaterEqual(a,b); });
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                break;
+            }
+            case OpCode::LessEqual: {
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
+
+                if (tryDispatchBinaryOperator(opHashLe)) {
+                    frame = thread->frames.end() - 1;
+                    break;
+                }
+
+                try {
+                    binaryOp([](Value a, Value b) -> Value { return lessEqual(a,b); });
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                break;
+            }
+            case OpCode::NotEqual: {
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
+
+                if (tryDispatchBinaryOperator(opHashNe)) {
+                    frame = thread->frames.end() - 1;
+                    break;
+                }
+
+                try {
+                    binaryOp([&](Value a, Value b) -> Value { return notEqual(a, b, frame->strict); });
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                break;
+            }
+            case OpCode::Add: {
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
+
+                // String concatenation takes priority when LHS is a string
+                // (string behaves as if it has a built-in operator+)
                 if (isString(peek(1))) {
+                    // Check for @implicit operator string() on RHS before falling to concatenate()
+                    if (!isString(peek(0)) && (isObjectInstance(peek(0)) || isActorInstance(peek(0)))) {
+                        Value rhs = pop();
+                        Value lhs = pop();
+                        auto outcome = tryConvertValue(rhs, Value::typeVal(ValueType::String),
+                                                       false, /*implicitCall=*/true,
+                                                       Thread::PendingConversion::Kind::Concat, lhs);
+                        if (outcome.result == ConversionResult::NeedsAsyncFrame) {
+                            frame = thread->frames.end() - 1;
+                            break;
+                        }
+                        if (outcome.result == ConversionResult::ConvertedSync) {
+                            push(Value::stringVal(asUString(lhs) + (isString(outcome.convertedValue)
+                                ? asUString(outcome.convertedValue)
+                                : toUnicodeString(toString(outcome.convertedValue)))));
+                            break;
+                        }
+                        // No conversion — push back and fall through to concatenate()
+                        push(lhs);
+                        push(rhs);
+                    }
                     concatenate();
                 } else {
+                    if (tryDispatchBinaryOperator(opHashAdd)) {
+                        frame = thread->frames.end() - 1;
+                        break;
+                    }
                     try {
                         binaryOp([](Value l, Value r) -> Value { return add(l, r); });
                     } catch (std::exception& e) {
@@ -4312,8 +7215,13 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Subtract: {
-                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
+
+                if (tryDispatchBinaryOperator(opHashSub)) {
+                    frame = thread->frames.end() - 1;
+                    break;
+                }
 
                 try {
                     binaryOp([](Value l, Value r) -> Value { return subtract(l, r); });
@@ -4324,8 +7232,13 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Multiply: {
-                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
+
+                if (tryDispatchBinaryOperator(opHashMul)) {
+                    frame = thread->frames.end() - 1;
+                    break;
+                }
 
                 try {
                     binaryOp([](Value l, Value r) -> Value { return multiply(l, r); });
@@ -4336,8 +7249,13 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Divide: {
-                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
+
+                if (tryDispatchBinaryOperator(opHashDiv)) {
+                    frame = thread->frames.end() - 1;
+                    break;
+                }
 
                 try {
                     binaryOp([](Value l, Value r) -> Value { return divide(l, r); });
@@ -4349,8 +7267,13 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::Negate: {
                 Value& operand { peek(0) };
-                if (!operand.resolveFuture())
+                if (tryAwaitFuture(operand) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
+
+                if (tryDispatchUnaryOperator(opHashNeg)) {
+                    frame = thread->frames.end() - 1;
+                    break;
+                }
 
                 try {
                     push(negate(pop()));
@@ -4362,8 +7285,13 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::Modulo: {
                 // TODO: support decimal
-                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
+
+                if (tryDispatchBinaryOperator(opHashMod)) {
+                    frame = thread->frames.end() - 1;
+                    break;
+                }
 
                 try {
                     binaryOp([](Value a, Value b) -> Value { return mod(a,b); });
@@ -4374,7 +7302,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::And: {
-                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
                 if (!peek(0).isBool() && !isSignal(peek(0))) {
                     runtimeError("Operand of 'and' must be a bool");
@@ -4393,7 +7321,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Or: {
-                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
                 if (!peek(0).isBool() && !isSignal(peek(0))) {
                     runtimeError("Operand of 'or' must be a bool");
@@ -4412,7 +7340,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::BitAnd: {
-                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
                 try {
                     binaryOp([](Value a, Value b) -> Value { return band(a,b); });
@@ -4423,7 +7351,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::BitOr: {
-                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
                 try {
                     binaryOp([](Value a, Value b) -> Value { return bor(a,b); });
@@ -4434,7 +7362,7 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::BitXor: {
-                if (!peek(0).resolveFuture() || !peek(1).resolveFuture())
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
                 try {
                     binaryOp([](Value a, Value b) -> Value { return bxor(a,b); });
@@ -4446,7 +7374,7 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::BitNot: {
                 Value& operand { peek(0) };
-                if (!operand.resolveFuture())
+                if (tryAwaitFuture(operand) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
                 try {
                     push(bnot(pop()));
@@ -4458,6 +7386,128 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::Pop: {
                 pop();
+                break;
+            }
+            case OpCode::StmtAction: {
+                // Expression-statement disposition. Peek the top, dispatch by
+                // runtime type, and loop (via IP rewind) until the value is
+                // popped. Sessions are stacked so nested StmtAction (e.g. an
+                // inner expression-statement inside a called action method)
+                // doesn't clobber the outer session's iter/lastReceiver state.
+                // See plan: i-was-considering-an-whimsical-puzzle.md.
+
+                auto& sessions = thread->stmtActionStack;
+                size_t curDepth = thread->frames.size();
+
+                // Drop stale sessions from inner method calls that errored
+                // before they could pop their own session.
+                while (!sessions.empty() && sessions.back().frameDepth > curDepth)
+                    sessions.pop_back();
+
+                // Identify session: same StmtAction site (same IP) at same
+                // frame depth means we're continuing; otherwise this is a
+                // fresh session.
+                if (sessions.empty()
+                    || sessions.back().ip != instructionStart
+                    || sessions.back().frameDepth != curDepth) {
+                    sessions.push_back({instructionStart, curDepth, 0,
+                                        Value::nilVal()});
+                }
+                auto* session = &sessions.back();
+
+                auto endSession = [&]() {
+                    if (!sessions.empty())
+                        sessions.pop_back();
+                    session = nullptr;
+                };
+
+                if (++session->iters > Thread::kStmtActionIterCap) {
+                    endSession();
+                    runtimeError("statement-action chain exceeded depth limit");
+                    return errorReturn;
+                }
+
+                Value& top = peek(0);
+
+                // Terminal: nil — nothing to do.
+                if (top.isNil()) {
+                    pop();
+                    endSession();
+                    break;
+                }
+
+                // Object/actor instance with a 'statement action' method?
+                ObjObjectType* otype = nullptr;
+                if (isObjectInstance(top))
+                    otype = asObjectType(asObjectInstance(top)->instanceType);
+                else if (isActorInstance(top))
+                    otype = asObjectType(asActorInstance(top)->instanceType);
+
+                int32_t saHash = -1;
+                if (otype) {
+                    // Walk superType chain for an inherited statement-action.
+                    for (ObjObjectType* t = otype; t; ) {
+                        if (t->statementActionMethodHash >= 0) {
+                            saHash = t->statementActionMethodHash;
+                            break;
+                        }
+                        t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
+                    }
+                }
+
+                if (otype && saHash >= 0) {
+                    // Same-instance cycle check: the previous iteration's
+                    // receiver returned reference-equal to itself.
+                    if (session->lastReceiver.isNonNil()
+                        && session->lastReceiver.isObj()
+                        && top.isObj()
+                        && session->lastReceiver.asObj() == top.asObj()) {
+                        endSession();
+                        runtimeError("statement-action method returned the same instance — cycle");
+                        return errorReturn;
+                    }
+                    session->lastReceiver = top;
+
+                    // Resolve the statement-action method's closure (walk
+                    // supertypes). Statement-action is single-method per type
+                    // by validation in defineMethod, so we want any overload
+                    // declared at the deepest matching level.
+                    Value methodClosure = Value::nilVal();
+                    for (ObjObjectType* t = otype; t; ) {
+                        if (auto* m = t->firstOverload(saHash)) {
+                            methodClosure = m->closure;
+                            break;
+                        }
+                        t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
+                    }
+                    if (methodClosure.isNil() || !isClosure(methodClosure)) {
+                        endSession();
+                        runtimeError("statement-action method not found on type");
+                        return errorReturn;
+                    }
+
+                    // Calling convention for methods: the receiver occupies
+                    // peek(argCount) — i.e. the slot that becomes slot 0
+                    // (self) of the new frame. With no extra args (CallSpec(0))
+                    // the receiver is already at peek(0), so we just invoke
+                    // the closure. cf. VM::invokeFromType → call().
+                    //
+                    // Rewind IP first so that when the called frame returns,
+                    // dispatch re-enters this StmtAction opcode and re-inspects
+                    // the new top-of-stack (the action method's return value).
+                    frame->ip = instructionStart;
+                    if (!call(asClosure(methodClosure), CallSpec(0))) {
+                        endSession();
+                        return errorReturn;
+                    }
+                    // Switch to the new (called) frame for the dispatch loop.
+                    frame = thread->frames.end() - 1;
+                    goto postInstructionDispatch;
+                }
+
+                // Terminal: ordinary value with no statement action — discard.
+                pop();
+                endSession();
                 break;
             }
             case OpCode::PopN: {
@@ -4480,9 +7530,18 @@ std::pair<InterpretResult,Value> VM::execute()
                 std::swap(peek(0), peek(1));
                 break;
             }
+            case OpCode::MakeConst: {
+                Value& top = peek(0);
+                top = createFrozenSnapshot(top);
+                break;
+            }
             case OpCode::CopyInto: {
                 Value rhs = pop();
                 Value lhs = pop();
+                if (lhs.isConst()) {
+                    runtimeError("Cannot mutate const: copy-into (<-) on const value");
+                    return errorReturn;
+                }
                 try {
                     copyInto(lhs, rhs);
                 } catch (std::exception& e) {
@@ -4494,16 +7553,22 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::JumpIfFalse: {
                 uint16_t jumpDist = readShort();
-                if (!resolveValue(peek(0)))
-                    return errorReturn;
+                {
+                    auto s = tryAwaitValue(peek(0));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
                 if (isFalsey(peek(0)))
                     frame->ip += jumpDist;
                 break;
             }
             case OpCode::JumpIfTrue: {
                 uint16_t jumpDist = readShort();
-                if (!resolveValue(peek(0)))
-                    return errorReturn;
+                {
+                    auto s = tryAwaitValue(peek(0));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
                 if (isTruthy(peek(0)))
                     frame->ip += jumpDist;
                 break;
@@ -4521,10 +7586,48 @@ std::pair<InterpretResult,Value> VM::execute()
             case OpCode::Call: {
                 CallSpec callSpec{frame->ip};
                 Value& callee { peek(callSpec.argCount) };
-                if (!resolveValue(callee))
-                    return errorReturn;
+                {
+                    auto s = tryAwaitValue(callee);
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
+
+                // Resolve future args for typed parameters (closures only).
+                // Native functions use resolveArgMask; this handles Roxal-implemented
+                // functions whose typed params should implicitly resolve futures.
+                if (isClosure(callee)) {
+                    ObjFunction* fn = asFunction(asClosure(callee)->function);
+                    if (fn->funcType.has_value()) {
+                        auto& ft = fn->funcType.value();
+                        if (ft->func.has_value()) {
+                            auto& params = ft->func->params;
+                            for (size_t i = 0; i < params.size() && i < (size_t)callSpec.argCount; i++) {
+                                if (params[i].has_value() && params[i]->type.has_value()) {
+                                    Value& arg = peek(callSpec.argCount - 1 - i);
+                                    if (isFuture(arg)) {
+                                        // Pass through if promised type matches param type
+                                        auto pvt = builtinToValueType(params[i]->type.value()->builtin);
+                                        if (pvt.has_value() && isFutureAssignableTo(arg, pvt.value()))
+                                            continue;
+                                        auto s = tryAwaitFuture(arg);
+                                        if (s != FutureStatus::Resolved)
+                                            goto postInstructionDispatch;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if (!callValue(callee, callSpec))
                     return errorReturn;
+
+                // Check if a native function needs a future arg resolved
+                if (thread->awaitedFuture.isNonNil()) {
+                    frame->ip = instructionStart;
+                    goto postInstructionDispatch;
+                }
+
                 frame = thread->frames.end()-1;
 
                 // Constructor setter cleanup: if callValue() pushed setter frames,
@@ -4535,9 +7638,62 @@ std::pair<InterpretResult,Value> VM::execute()
 
                 break;
             }
+            case OpCode::RemoteCall: {
+                CallSpec callSpec{frame->ip};
+#ifndef ROXAL_COMPUTE_SERVER
+                runtimeError("Remote actor calls require ROXAL_COMPUTE_SERVER.");
+                return errorReturn;
+#else
+                Value& hostVal { peek(callSpec.argCount) };
+                Value& actorTypeVal { peek(callSpec.argCount + 1) };
+
+                {
+                    auto s = tryAwaitValue(hostVal);
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
+                {
+                    auto s = tryAwaitValue(actorTypeVal);
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
+                for (int i = 0; i < callSpec.argCount; ++i) {
+                    Value& arg = peek(callSpec.argCount - 1 - i);
+                    auto s = tryAwaitValue(arg);
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
+
+                if (!isString(hostVal)) {
+                    runtimeError("Remote actor host must be a string.");
+                    return errorReturn;
+                }
+                if (!isObjectType(actorTypeVal) || !asObjectType(actorTypeVal)->isActor) {
+                    runtimeError("Remote calls require an actor type.");
+                    return errorReturn;
+                }
+
+                std::vector<Value> args;
+                args.reserve(callSpec.argCount);
+                for (int i = 0; i < callSpec.argCount; ++i)
+                    args.push_back(peek(callSpec.argCount - 1 - i));
+
+                try {
+                    std::string hostPort = toUTF8StdString(asStringObj(hostVal)->s);
+                    auto conn = ComputeConnection::connect(hostPort);
+                    Value remoteActor = conn->spawnActor(actorTypeVal, args, callSpec);
+                    *(thread->stackTop - callSpec.argCount - 2) = remoteActor;
+                    popN(callSpec.argCount + 1);
+                } catch (const std::exception& e) {
+                    runtimeError(e.what());
+                    return errorReturn;
+                }
+                break;
+#endif
+            }
             case OpCode::Index: {
                 uint8_t argCount = readByte();
-                if (!peek(argCount).resolveFuture()) // don't resolve signals here
+                if (tryAwaitFuture(peek(argCount)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
                 if (!indexValue(peek(argCount), argCount))
                     return errorReturn;
@@ -4545,11 +7701,49 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             // TODO: reimplement optimization to use Invoke as single step for object.method()
             //  instead of current two step push & call (see original Antlr visitor compiler impl)
+            case OpCode::InvokeOverloadAt: {
+                ObjString* method = readString();
+                uint16_t overloadIdx = readShort();
+                CallSpec callSpec{frame->ip};
+                // Resolve future on receiver before method dispatch
+                {
+                    Value& receiver = peek(callSpec.argCount);
+                    if (isFuture(receiver)) {
+                        auto s = tryAwaitFuture(receiver);
+                        if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                        if (s == FutureStatus::Error) return errorReturn;
+                    }
+                }
+                if (!invokeOverloadAt(method, overloadIdx, callSpec))
+                    return errorReturn;
+                if (thread->awaitedFuture.isNonNil()) {
+                    frame->ip = instructionStart;
+                    goto postInstructionDispatch;
+                }
+                frame = thread->frames.end()-1;
+                break;
+            }
             case OpCode::Invoke: {
                 ObjString* method = readString();
                 CallSpec callSpec{frame->ip};
+                // Resolve future on receiver before method dispatch
+                {
+                    Value& receiver = peek(callSpec.argCount);
+                    if (isFuture(receiver)) {
+                        auto s = tryAwaitFuture(receiver);
+                        if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                        if (s == FutureStatus::Error) return errorReturn;
+                    }
+                }
                 if (!invoke(method, callSpec))
                     return errorReturn;
+
+                // Check if a native function needs a future arg resolved
+                if (thread->awaitedFuture.isNonNil()) {
+                    frame->ip = instructionStart;
+                    goto postInstructionDispatch;
+                }
+
                 frame = thread->frames.end()-1;
                 break;
             }
@@ -4583,7 +7777,6 @@ std::pair<InterpretResult,Value> VM::execute()
 
                 try {
                     Value result = opReturn();
-
                     push(result);
 
                     // For nested execute() calls, only terminate when we return BELOW the entry depth.
@@ -4599,7 +7792,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         }
 
                         if (thread->execute_depth > 0) thread->execute_depth--;
-                        return std::make_pair(InterpretResult::OK,returnVal);
+                        return std::make_pair(ExecutionStatus::OK,returnVal);
                     }
 
                     // For top-level execute(), use original termination logic
@@ -4611,7 +7804,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         }
 
                         if (thread->execute_depth > 0) thread->execute_depth--;
-                        return std::make_pair(InterpretResult::OK,returnVal);
+                        return std::make_pair(ExecutionStatus::OK,returnVal);
                     }
 
                     frame = thread->frames.end() -1;
@@ -4626,7 +7819,6 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::ReturnStore: {
-
                 try {
                     Value result = opReturn();
 
@@ -4638,7 +7830,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         }
 
                         if (thread->execute_depth > 0) thread->execute_depth--;
-                        return std::make_pair(InterpretResult::OK,result);
+                        return std::make_pair(ExecutionStatus::OK,result);
                     }
 
                     // For top-level execute(), use original termination logic
@@ -4648,7 +7840,17 @@ std::pair<InterpretResult,Value> VM::execute()
                         }
 
                         if (thread->execute_depth > 0) thread->execute_depth--;
-                        return std::make_pair(InterpretResult::OK,result);
+                        return std::make_pair(ExecutionStatus::OK,result);
+                    }
+
+                    // For continuation callbacks, push result to stack like OpCode::Return
+                    // so processContinuationDispatch can pop it
+                    if (thread->continuationCallbackReturned) {
+                        push(result);
+                        frame = thread->frames.end() - 1;
+                        if (frame->ip == frame->startIp)
+                            thread->frameStart = true;
+                        break;
                     }
 
                     CallFrames::iterator parentFrame = frame->parent;
@@ -4682,6 +7884,17 @@ std::pair<InterpretResult,Value> VM::execute()
                 push(frame->slots[slot]);
                 break;
             }
+            case OpCode::MoveLocal: {
+                uint16_t slot = singleByteArg ? readByte() : readShort();
+                #ifdef DEBUG_BUILD
+                auto stackIndex = (frame->slots - &thread->stack[0]) + slot;
+                if (stackIndex >= thread->stack.size())
+                    throw std::runtime_error("Stack overflow access");
+                #endif
+                push(frame->slots[slot]);
+                frame->slots[slot] = Value::nilVal();
+                break;
+            }
             case OpCode::SetLocal: {
                 uint16_t slot = singleByteArg ? readByte() : readShort();
                 #ifdef DEBUG_BUILD
@@ -4689,13 +7902,23 @@ std::pair<InterpretResult,Value> VM::execute()
                 if (stackIndex >= thread->stack.size())
                     throw std::runtime_error("Stack overflow access");
                 #endif
-                frame->slots[slot] = peek(0);
+                frame->slots[slot] = cloneIfValueSemantics(peek(0));
                 break;
             }
             case OpCode::SetIndex: {
                 uint8_t argCount = readByte();
-                if (!peek(argCount).resolveFuture()) // don't resolve signals here
+                if (tryAwaitFuture(peek(argCount)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
+                // Resolve future on the value being assigned
+                if (isFuture(peek(argCount+1))) {
+                    auto s = tryAwaitFuture(peek(argCount+1));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
+                if (peek(argCount).isConst()) {
+                    runtimeError("Cannot mutate const: index assignment");
+                    return errorReturn;
+                }
                 try {
                     Value& indexable { peek(argCount) };
                     Value& value { peek(argCount+1) };
@@ -4709,12 +7932,114 @@ std::pair<InterpretResult,Value> VM::execute()
             case OpCode::DefineModuleConst: {
                 ObjString* name = readString();
                 moduleType()->constVars.insert(name->hash);
-                moduleVars().store(name->hash, name->s,pop());
+                // Clone vector/matrix/tensor for by-value semantics
+                moduleVars().store(name->hash, name->s, cloneIfValueSemantics(pop()));
                 break;
             }
             case OpCode::DefineModuleVar: {
                 ObjString* name = readString();
-                moduleVars().store(name->hash, name->s,pop());
+                // Clone vector/matrix/tensor for by-value semantics
+                moduleVars().store(name->hash, name->s, cloneIfValueSemantics(pop()));
+                break;
+            }
+            case OpCode::DefineModuleOverload: {
+                // Pop the closure and append it to (or initialize) an OverloadSet
+                // bound to `name` in the current module's vars.
+                ObjString* name = readString();
+                Value newClosure = pop();
+                auto& vars { moduleVars() };
+                auto existing { vars.load(name->hash) };
+                if (!existing.has_value() || existing->isNil()) {
+                    auto setObj = newOverloadSetObj(name->s);
+                    setObj->add(newClosure);
+                    vars.store(name->hash, name->s, Value::objRef(setObj.release()));
+                } else if (isOverloadSet(existing.value())) {
+                    auto* s = asOverloadSet(existing.value());
+                    if (s->importedFromModule) {
+                        // Local declarations replace any imported overload set.
+                        auto setObj = newOverloadSetObj(name->s);
+                        setObj->add(newClosure);
+                        vars.store(name->hash, name->s, Value::objRef(setObj.release()));
+                    } else {
+                        s->add(newClosure);
+                    }
+                } else if (isClosure(existing.value())) {
+                    // Promote: existing single closure + new closure -> OverloadSet.
+                    auto setObj = newOverloadSetObj(name->s);
+                    setObj->add(existing.value());
+                    setObj->add(newClosure);
+                    vars.store(name->hash, name->s, Value::objRef(setObj.release()));
+                } else {
+                    runtimeError("Name '"+name->toStdString()+"' is not a function and cannot be redeclared as an overload");
+                    return errorReturn;
+                }
+                break;
+            }
+            case OpCode::GetOverloadAt: {
+                // Load the OverloadSet by name from module vars and push the
+                // closure at the given index. Used for compile-time-resolved
+                // overloaded calls — runtime does no dispatch work.
+                ObjString* name = readString();
+                uint16_t overloadIndex = readShort();
+                auto& vars { moduleVars() };
+                auto optValue { vars.load(name->hash) };
+                if (!optValue.has_value()) {
+                    runtimeError("Undefined variable '"+name->toStdString()+"'");
+                    return errorReturn;
+                }
+                Value v = optValue.value();
+                if (!isOverloadSet(v)) {
+                    runtimeError("Internal: GetOverloadAt expected OverloadSet for '"+name->toStdString()+"'");
+                    return errorReturn;
+                }
+                auto* set = asOverloadSet(v);
+                if (overloadIndex >= set->closures.size()) {
+                    runtimeError("Internal: GetOverloadAt index out of range");
+                    return errorReturn;
+                }
+                push(set->closures[overloadIndex]);
+                break;
+            }
+            case OpCode::DefineLocalOverload: {
+                // For the FIRST decl of an overloaded local name, the closure
+                // was just pushed and the slot IS the top of stack — wrap it
+                // in a fresh OverloadSet in place (no pop). For SUBSEQUENT
+                // decls, the slot already holds the OverloadSet at a lower
+                // position and the new closure is at top — pop and append.
+                uint16_t slot = singleByteArg ? readByte() : readShort();
+                Value& topRef = peek(0);
+                Value& slotRef = frame->slots[slot];
+                if (&topRef == &slotRef) {
+                    // First decl: wrap the closure at slot/top in place.
+                    auto setObj = newOverloadSetObj(icu::UnicodeString());
+                    setObj->add(slotRef);
+                    slotRef = Value::objRef(setObj.release());
+                } else {
+                    // Subsequent decl: pop the closure off top, append to the
+                    // OverloadSet at slot.
+                    Value newClosure = pop();
+                    if (!isOverloadSet(slotRef)) {
+                        runtimeError("Internal: DefineLocalOverload expected OverloadSet at slot");
+                        return errorReturn;
+                    }
+                    asOverloadSet(slotRef)->add(newClosure);
+                }
+                break;
+            }
+            case OpCode::GetLocalOverloadAt: {
+                uint16_t slot = singleByteArg ? readByte() : readShort();
+                uint16_t overloadIndex = readShort();
+                Value v = frame->slots[slot];
+                if (!isOverloadSet(v)) {
+                    runtimeError("Internal: GetLocalOverloadAt expected OverloadSet in slot");
+                    return errorReturn;
+                }
+                auto* set = asOverloadSet(v);
+                if (overloadIndex >= set->closures.size()) {
+                    runtimeError("Internal: GetLocalOverloadAt index out of range");
+                    return errorReturn;
+                }
+                push(set->closures[overloadIndex]);
                 break;
             }
             case OpCode::GetModuleVar: {
@@ -4723,12 +8048,30 @@ std::pair<InterpretResult,Value> VM::execute()
                 auto optValue { vars.load(name->hash) };
                 if (optValue.has_value()) {
                     Value value = optValue.value();
+                    if (onDataflowThread_ && value.isObj())
+                        value = value.constRef();
                     push(value);
                 }
                 else {
                     runtimeError("Undefined variable '"+name->toStdString()+"'");
                     return errorReturn;
                 }
+                break;
+            }
+            case OpCode::MoveModuleVar: {
+                ObjString* name = readString();
+                if (onDataflowThread_) {
+                    runtimeError("Cannot modify module variable '" + name->toStdString() + "' from dataflow function");
+                    return errorReturn;
+                }
+                auto& vars { moduleVars() };
+                auto optValue { vars.load(name->hash) };
+                if (!optValue.has_value()) {
+                    runtimeError("Undefined variable '"+name->toStdString()+"'");
+                    return errorReturn;
+                }
+                push(optValue.value());
+                vars.storeIfExists(name->hash, name->s, Value::nilVal());
                 break;
             }
             case OpCode::GetModuleVarSignal: {
@@ -4744,9 +8087,9 @@ std::pair<InterpretResult,Value> VM::execute()
 
                 // If the value is a future that resolves to a signal, resolve it first
                 if (isFuture(value)) {
-                    if (!value.resolveFuture()) {
-                        return errorReturn;
-                    }
+                    auto s = tryAwaitFuture(value);
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
                     // Update the module variable with the resolved value
                     if (isSignal(value)) {
                         vars.store(name->hash, name->s, value);
@@ -4768,13 +8111,18 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::SetModuleVar: {
                 ObjString* name = readString();
+                if (onDataflowThread_) {
+                    runtimeError("Cannot modify module variable '" + name->toStdString() + "' from dataflow function");
+                    return errorReturn;
+                }
                 if (moduleType()->constVars.find(name->hash) != moduleType()->constVars.end()) {
                     runtimeError("Cannot assign to module constant '" + toUTF8StdString(name->s) + "'");
                     return errorReturn;
                 }
                 auto& vars { moduleVars() };
                 // set new value, but leave it on stack (as assignment is an expression)
-                bool stored = vars.storeIfExists(name->hash, name->s,peek(0));
+                // Clone vector/matrix/tensor for by-value semantics
+                bool stored = vars.storeIfExists(name->hash, name->s, cloneIfValueSemantics(peek(0)));
                 if (!stored) { // not stored, since not existing
                     runtimeError("Undefined variable '"+name->toStdString()+"'");
                     return errorReturn;
@@ -4783,6 +8131,10 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::SetNewModuleVar: {
                 ObjString* name = readString();
+                if (onDataflowThread_) {
+                    runtimeError("Cannot modify module variable '" + name->toStdString() + "' from dataflow function");
+                    return errorReturn;
+                }
                 auto& vars { moduleVars() };
 
                 // only automatic declaration of globals on assignment when
@@ -4800,7 +8152,8 @@ std::pair<InterpretResult,Value> VM::execute()
                     return errorReturn;
                 }
 
-                vars.store(name->hash, name->s,peek(0), /*overwrite=*/true);
+                // Clone vector/matrix/tensor for by-value semantics
+                vars.store(name->hash, name->s, cloneIfValueSemantics(peek(0)), /*overwrite=*/true);
 
                 break;
             }
@@ -4811,7 +8164,8 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::SetUpvalue: {
                 uint16_t slot = singleByteArg ? readByte() : readShort();
-                *(asUpvalue(asClosure(frame->closure)->upvalues[slot])->location) = peek(0);
+                // Clone vector/matrix/tensor for by-value semantics
+                *(asUpvalue(asClosure(frame->closure)->upvalues[slot])->location) = cloneIfValueSemantics(peek(0));
                 break;
             }
             case OpCode::NewRange: {
@@ -4854,9 +8208,37 @@ std::pair<InterpretResult,Value> VM::execute()
             case OpCode::NewVector: {
                 int eltCount = readByte();
                 Eigen::VectorXd vals(eltCount);
-                for(int i=0; i<eltCount; i++)
-                    vals[i] = toType(ValueType::Real, peek(eltCount-i-1), false).asReal();
-                for(int i=0; i<eltCount; i++) pop();
+
+                // Check if any element is a quantity; if so, extract SI values
+                bool hasQuantity = false;
+                bool hasBareNonZero = false;
+                for (int i = 0; i < eltCount; i++) {
+                    Value elt = peek(eltCount - i - 1);
+                    if (isObjectInstance(elt))
+                        hasQuantity = true;
+                    else if (elt.isNumber()) {
+                        double v = elt.isReal() ? elt.asReal() : static_cast<double>(elt.asInt());
+                        if (v != 0.0) hasBareNonZero = true;
+                    }
+                }
+
+                if (hasQuantity) {
+                    if (hasBareNonZero)
+                        throw std::runtime_error("vector literal mixes non-zero bare numbers with quantity values");
+                    std::array<int32_t,4> dims = {0,0,0,0};
+                    bool isDimensioned = false;
+                    for (int i = 0; i < eltCount; i++) {
+                        double siVal;
+                        if (!tryExtractQuantity(peek(eltCount - i - 1), siVal, dims, isDimensioned, /*requireMatchingDims=*/false))
+                            throw std::runtime_error("vector literal with quantities: all elements must be quantities or zero");
+                        vals[i] = siVal;
+                    }
+                } else {
+                    for (int i = 0; i < eltCount; i++)
+                        vals[i] = toType(ValueType::Real, peek(eltCount - i - 1), false).asReal();
+                }
+
+                for (int i = 0; i < eltCount; i++) pop();
                 push(Value::vectorVal(vals));
                 break;
             }
@@ -4884,7 +8266,7 @@ std::pair<InterpretResult,Value> VM::execute()
                         return errorReturn;
                     }
                     for(int c=0; c<colCount; ++c)
-                        mat(r,c) = vec->vec[c];
+                        mat(r,c) = vec->vec()[c];
                 }
                 for(int i=0; i<rowCount; ++i) pop();
                 push(Value::matrixVal(mat));
@@ -4893,8 +8275,9 @@ std::pair<InterpretResult,Value> VM::execute()
             case OpCode::IfDictToKeys: {
                 Value& maybeDict = peek(0);
                 if (!isDict(maybeDict)) {
-                    if (!resolveValue(maybeDict))
-                        return errorReturn;
+                    auto s = tryAwaitValue(maybeDict);
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
                 }
                 if (isDict(maybeDict)) {
                     Value d { maybeDict };
@@ -4907,8 +8290,9 @@ std::pair<InterpretResult,Value> VM::execute()
             case OpCode::IfDictToItems: {
                 Value& maybeDict = peek(0);
                 if (!isDict(maybeDict)) {
-                    if (!resolveValue(maybeDict))
-                        return errorReturn;
+                    auto s = tryAwaitValue(maybeDict);
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
                 }
                 if (isDict(maybeDict)) {
                     Value d { maybeDict };
@@ -4917,51 +8301,102 @@ std::pair<InterpretResult,Value> VM::execute()
                     Value listItems { Value::listVal() };
                     for(const auto& item : vecItemPairs) {
                         Value itemList { Value::listVal() };
-                        asList(itemList)->elts.push_back(item.first);
-                        asList(itemList)->elts.push_back(item.second);
-                        asList(listItems)->elts.push_back(itemList);
+                        asList(itemList)->append(item.first);
+                        asList(itemList)->append(item.second);
+                        asList(listItems)->append(itemList);
                     }
                     push(listItems);
                 }
                 break;
             }
-            case OpCode::ToType: {
-                uint8_t typeByte = readByte();
-                try {
-                    peek(0) = toType(ValueType(typeByte), peek(0), /*strict=*/false);
-                } catch (std::exception& e) {
-                    runtimeError(e.what());
-                    return errorReturn;
-                }
-                break;
-            }
+            case OpCode::ToType:
             case OpCode::ToTypeStrict: {
+                bool strict = (instruction == OpCode::ToTypeStrict);
                 uint8_t typeByte = readByte();
-                try {
-                    peek(0) = toType(ValueType(typeByte), peek(0), /*strict=*/true);
-                } catch (std::exception& e) {
-                    runtimeError(e.what());
-                    return errorReturn;
+                ValueType targetVT = ValueType(typeByte);
+                Value val = pop();
+
+                // Future pass-through: if promised type matches target, no resolution needed
+                if (isFuture(val) && isFutureAssignableTo(val, targetVT)) {
+                    push(val);
+                    break;
+                }
+                // Future with mismatched/unknown type: resolve before converting
+                if (isFuture(val)) {
+                    auto s = val.tryResolveFuture();
+                    if (s == FutureStatus::Pending) {
+                        push(val);
+                        frame->ip = instructionStart;
+                        thread->awaitedFuture = val;
+                        goto postInstructionDispatch;
+                    }
+                    if (s == FutureStatus::Error) return errorReturn;
+                    // val is now resolved — fall through to conversion
+                }
+
+                Value typeSpec = Value::typeSpecVal(targetVT);
+                auto outcome = tryConvertValue(val, typeSpec, strict, /*implicitCall=*/true,
+                                               Thread::PendingConversion::Kind::TypeConversion);
+                switch (outcome.result) {
+                    case ConversionResult::AlreadyCorrectType:
+                        push(val);
+                        break;
+                    case ConversionResult::ConvertedSync:
+                        push(outcome.convertedValue);
+                        break;
+                    case ConversionResult::NeedsAsyncFrame:
+                        frame = thread->frames.end() - 1;
+                        break;
+                    case ConversionResult::Failed:
+                        runtimeError("unable to convert " + val.typeName()
+                                     + " to " + to_string(targetVT));
+                        return errorReturn;
                 }
                 break;
             }
-            case OpCode::ToTypeSpec: {
-                Value typeSpec = pop();
-                try {
-                    peek(0) = toType(typeSpec, peek(0), /*strict=*/false);
-                } catch(std::exception& e) {
-                    runtimeError(e.what());
-                    return errorReturn;
-                }
-                break;
-            }
+            case OpCode::ToTypeSpec:
             case OpCode::ToTypeSpecStrict: {
+                bool strict = (instruction == OpCode::ToTypeSpecStrict);
                 Value typeSpec = pop();
-                try {
-                    peek(0) = toType(typeSpec, peek(0), /*strict=*/true);
-                } catch(std::exception& e) {
-                    runtimeError(e.what());
-                    return errorReturn;
+                Value val = pop();
+
+                // Future pass-through: if promised type matches target, no resolution needed
+                if (isFuture(val) && isFutureAssignableTo(val, typeSpec)) {
+                    push(val);
+                    break;
+                }
+                // Future with mismatched/unknown type: resolve before converting
+                if (isFuture(val)) {
+                    auto s = val.tryResolveFuture();
+                    if (s == FutureStatus::Pending) {
+                        // Re-push val then typeSpec (instruction pops typeSpec first, then val)
+                        push(val);
+                        push(typeSpec);
+                        frame->ip = instructionStart;
+                        thread->awaitedFuture = val;
+                        goto postInstructionDispatch;
+                    }
+                    if (s == FutureStatus::Error) return errorReturn;
+                    // val is now resolved — fall through to conversion
+                }
+
+                auto outcome = tryConvertValue(val, typeSpec, strict, /*implicitCall=*/true,
+                                               Thread::PendingConversion::Kind::TypeConversion);
+                switch (outcome.result) {
+                    case ConversionResult::AlreadyCorrectType:
+                        push(val);
+                        break;
+                    case ConversionResult::ConvertedSync:
+                        push(outcome.convertedValue);
+                        break;
+                    case ConversionResult::NeedsAsyncFrame:
+                        // tryConvertValue set up the call frame; result will land on stack
+                        frame = thread->frames.end() - 1;
+                        break;
+                    case ConversionResult::Failed:
+                        runtimeError("unable to convert " + val.typeName()
+                                     + " to " + typeSpec.typeName());
+                        return errorReturn;
                 }
                 break;
             }
@@ -4991,8 +8426,9 @@ std::pair<InterpretResult,Value> VM::execute()
                     }
                     ObjSignal* sigObj = asSignal(eventVal);
                     ev = sigObj->ensureChangeEventType();
+                    Value signalVal = eventVal; // save signal ref before overwriting
                     eventVal = sigObj->changeEventType;
-                    thread->eventToSignal[eventVal.weakRef()] = eventVal.weakRef();
+                    thread->eventToSignal[eventVal.weakRef()] = signalVal.weakRef();
                 } else if (isEventType(eventVal)) {
                     if (matchOnBecomes) {
                         runtimeError("'becomes' is only valid with signals");
@@ -5078,6 +8514,12 @@ std::pair<InterpretResult,Value> VM::execute()
                 break;
             }
             case OpCode::Throw: {
+                // Resolve future before throwing
+                if (isFuture(peek(0))) {
+                    auto s = tryAwaitFuture(peek(0));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
                 Value exc = pop();
                 if (!isException(exc))
                     exc = Value::exceptionVal(exc);
@@ -5086,7 +8528,17 @@ std::pair<InterpretResult,Value> VM::execute()
                     exObj->stackTrace = captureStacktrace();
                 while (true) {
                     if (thread->frames.empty()) {
-                        runtimeError("Uncaught exception: " + objExceptionToString(asException(exc)));
+                        // Forward the exception through actor return future
+                        // when running inside an actor call; otherwise
+                        // surface as a global runtime error (the original
+                        // behaviour for top-level scripts and non-actor threads).
+                        thread->pendingUncaughtException = exc;
+                        bool willForward = thread->isActorThread() && thread->currentActorCall.isNonNil();
+                        if (!willForward) {
+                            runtimeError("Uncaught exception: " + objExceptionToString(asException(exc)));
+                        } else {
+                            resetStack();
+                        }
                         return errorReturn;
                     }
                     auto &cf = thread->frames.back();
@@ -5110,6 +8562,20 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::ObjectType: {
                 ObjString* name = readString();
+                // Forward-decl support: if a placeholder of the same kind was
+                // hoisted to the module slot at module-load top, reuse that
+                // identity so any earlier captured reference (e.g. another
+                // type's property type annotation) sees the populated type.
+                {
+                    auto opt = moduleVars().load(name->hash);
+                    if (opt.has_value() && isObjectType(opt.value())) {
+                        auto t = asObjectType(opt.value());
+                        if (!t->isActor && !t->isInterface && !t->isEnumeration) {
+                            push(opt.value());
+                            break;
+                        }
+                    }
+                }
                 Value tv { Value::objectTypeVal(name->s, false) }; // ObjObjectType
                 if (!thread->frames.empty()) {
                     auto frame = thread->frames.end()-1;
@@ -5126,6 +8592,16 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::ActorType: {
                 ObjString* name = readString();
+                {
+                    auto opt = moduleVars().load(name->hash);
+                    if (opt.has_value() && isObjectType(opt.value())) {
+                        auto t = asObjectType(opt.value());
+                        if (t->isActor) {
+                            push(opt.value());
+                            break;
+                        }
+                    }
+                }
                 Value tv { Value::objectTypeVal(name->s, true) }; // ObjObjectType
                 if (!thread->frames.empty()) {
                     auto frame = thread->frames.end()-1;
@@ -5143,6 +8619,16 @@ std::pair<InterpretResult,Value> VM::execute()
             case OpCode::InterfaceType: {
                 // interface types are represented as object types (but are abstract - all abstract methods)
                 ObjString* name = readString();
+                {
+                    auto opt = moduleVars().load(name->hash);
+                    if (opt.has_value() && isObjectType(opt.value())) {
+                        auto t = asObjectType(opt.value());
+                        if (t->isInterface) {
+                            push(opt.value());
+                            break;
+                        }
+                    }
+                }
                 Value tv { Value::objectTypeVal(name->s, false, true) };
                 if (!thread->frames.empty()) {
                     auto frame = thread->frames.end()-1;
@@ -5159,6 +8645,16 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::EnumerationType: {
                 ObjString* name = readString();
+                {
+                    auto opt = moduleVars().load(name->hash);
+                    if (opt.has_value() && isObjectType(opt.value())) {
+                        auto t = asObjectType(opt.value());
+                        if (t->isEnumeration) {
+                            push(opt.value());
+                            break;
+                        }
+                    }
+                }
                 Value tv { Value::objectTypeVal(name->s, false, false, true) };
                 if (!thread->frames.empty()) {
                     auto frame = thread->frames.end()-1;
@@ -5175,6 +8671,13 @@ std::pair<InterpretResult,Value> VM::execute()
             }
             case OpCode::EventType: {
                 ObjString* name = readString();
+                {
+                    auto opt = moduleVars().load(name->hash);
+                    if (opt.has_value() && isEventType(opt.value())) {
+                        push(opt.value());
+                        break;
+                    }
+                }
                 Value tv { Value::objVal(newEventTypeObj(name->s)) };
                 push(tv);
                 break;
@@ -5225,6 +8728,17 @@ std::pair<InterpretResult,Value> VM::execute()
                 }
                 break;
             }
+            case OpCode::NestedType: {
+                ObjString* name = readString();
+                Value accessVal = peek(0);
+                Value nestedTypeVal = peek(1);
+                ObjObjectType* enclosingType = asObjectType(peek(2));
+                ast::Access access = (accessVal.isBool() && accessVal.asBool())
+                    ? ast::Access::Private : ast::Access::Public;
+                enclosingType->nestedTypes[name->hash] = {name->s, nestedTypeVal, access};
+                popN(2);
+                break;
+            }
             case OpCode::Extend: {
                 if (!isObjectType(peek(1))) {
                     runtimeError("Super type to extend must be an object or actor type");
@@ -5239,13 +8753,83 @@ std::pair<InterpretResult,Value> VM::execute()
                     return errorReturn;
                 }
 
+                // an interface can only extend another interface; a non-interface
+                // can only extend a non-interface.
+                if (subType->isInterface && !superType->isInterface) {
+                    runtimeError("Interface '" + toUTF8StdString(subType->name) +
+                                 "' can only extend another interface, not '" +
+                                 toUTF8StdString(superType->name) + "'");
+                    return errorReturn;
+                }
+                if (!subType->isInterface && superType->isInterface) {
+                    runtimeError("Type '" + toUTF8StdString(subType->name) +
+                                 "' cannot extend interface '" +
+                                 toUTF8StdString(superType->name) + "' (use 'implements' instead)");
+                    return errorReturn;
+                }
+
                 // record inheritance relationship and copy properties
                 subType->superType = Value::objRef(superType);
                 subType->properties.insert(superType->properties.cbegin(), superType->properties.cend());
                 subType->propertyOrder.insert(subType->propertyOrder.end(),
                                              superType->propertyOrder.begin(),
                                              superType->propertyOrder.end());
+                subType->nestedTypes.insert(superType->nestedTypes.cbegin(), superType->nestedTypes.cend());
                 pop();
+                break;
+            }
+            case OpCode::Implements: {
+                // Stack from emitter (top to bottom): implementer, iface, ...
+                if (!isObjectType(peek(0))) {
+                    runtimeError("Implementer must be an object or actor type");
+                    return errorReturn;
+                }
+                if (!isObjectType(peek(1))) {
+                    runtimeError("Implements target must be an interface type");
+                    return errorReturn;
+                }
+                ObjObjectType* implementer = asObjectType(peek(0));
+                ObjObjectType* iface       = asObjectType(peek(1));
+                if (!iface->isInterface) {
+                    runtimeError("Cannot implement non-interface type '" +
+                                 toUTF8StdString(iface->name) + "'");
+                    return errorReturn;
+                }
+                if (implementer->isInterface) {
+                    runtimeError("Interfaces cannot implement (only extend)");
+                    return errorReturn;
+                }
+
+                implementer->implementedInterfaces.push_back(Value::objRef(iface));
+
+                std::string err = checkInterfaceConformance(implementer, iface);
+                if (!err.empty()) {
+                    runtimeError(err);
+                    return errorReturn;
+                }
+
+                // Java-style inheritance of concrete interface members:
+                // copy the interface's concrete properties (only consts at this
+                // point — sugar abstract accessors are stored as methods, not
+                // properties, so they don't appear here) and nested types
+                // into the implementer. `insert` semantics: implementer's own
+                // declarations win on name conflict; among multiple interfaces,
+                // the first listed wins. Mirrors Extend's parent->child copy
+                // (VM.cpp Extend handler).
+                for (const auto& kv : iface->properties) {
+                    if (implementer->properties.find(kv.first) == implementer->properties.end()) {
+                        implementer->properties.insert(kv);
+                        implementer->propertyOrder.push_back(kv.first);
+                    }
+                }
+                for (const auto& kv : iface->nestedTypes) {
+                    implementer->nestedTypes.insert(kv);
+                }
+
+                // Pop both: the duplicate implementer pushed by the emitter,
+                // AND the iface. The original implementer (pushed earlier for
+                // the type body) remains for the trailing OpCode::Pop.
+                popN(2);
                 break;
             }
             case OpCode::ImportModuleVars: {
@@ -5271,18 +8855,46 @@ std::pair<InterpretResult,Value> VM::execute()
                     auto fromModuleType { asModuleType(fromModule) };
                     auto toModuleType { asModuleType(toModule) };
 
+                    // OverloadSets need special handling: clone them on import
+                    // and tag the clone as importedFromModule. This lets a
+                    // subsequent local FuncDecl (DefineModuleOverload) replace
+                    // them rather than appending to imported overloads — local
+                    // declarations take precedence.
+                    // REPL-mode: when re-importing into the REPL's own
+                    // module (e.g. after `reload` + re-run), overwrite stale
+                    // bindings so the freshly-loaded module's values become
+                    // visible. For all other targets, keep prior semantics
+                    // (overwrite=false — first import wins).
+                    const bool replReimport =
+                        replModuleValue.isNonNil() &&
+                        isModuleType(replModuleValue) &&
+                        asModuleType(replModuleValue) == toModuleType;
+
+                    auto storeImported = [&](int32_t hash, const icu::UnicodeString& name, const Value& v) {
+                        if (v.isObj() && isOverloadSet(v)) {
+                            auto cloneObj = newOverloadSetObj(name);
+                            auto* src = asOverloadSet(v);
+                            cloneObj->closures = src->closures;
+                            cloneObj->importedFromModule = true;
+                            toModuleType->vars.store(hash, name,
+                                                     Value::objRef(cloneObj.release()),
+                                                     /*overwrite=*/replReimport);
+                        } else {
+                            toModuleType->vars.store(hash, name, v,
+                                                     /*overwrite=*/replReimport);
+                        }
+                    };
+
                     // special case, if list is just [*], then import all symbols
-                    const auto& firstElement { symbolsListObj->elts.at(0) };
+                    const auto& firstElement { symbolsListObj->getElement(0) };
                     if (isString(firstElement) && asStringObj(firstElement)->s == "*") {
                         fromModuleType->vars.forEach(
                             [&](const VariablesMap::NameValue& nameValue) {
-                                //const icu::UnicodeString& name { nameValue.first };
-                                toModuleType->vars.store(nameValue);
-                                //std::cout << "declaring " << toUTF8StdString(nameValue.first) << " into " << toUTF8StdString(toModuleType->name) << std::endl;
+                                storeImported(nameValue.first.hashCode(), nameValue.first, nameValue.second);
                             });
                     }
                     else { // import the symbols explicitly listed
-                        for(const auto& symbol : symbolsListObj->elts.get()) {
+                        for(const auto& symbol : symbolsListObj->getElements()) {
                             const auto& symbolString { asStringObj(symbol) };
                             auto optValue { fromModuleType->vars.load(symbolString->hash) };
                             const auto& name { symbolString->s };
@@ -5291,8 +8903,7 @@ std::pair<InterpretResult,Value> VM::execute()
                                 runtimeError("Symbol '"+toUTF8StdString(name)+"' not found in imported module "+toUTF8StdString(fromModuleType->name));
                                 return errorReturn;
                             }
-                            toModuleType->vars.store(symbolString->hash, name, optValue.value());
-                            //std::cout << "declaring " << toUTF8StdString(name) << " into " << toUTF8StdString(toModuleType->name) << std::endl;
+                            storeImported(symbolString->hash, name, optValue.value());
                         }
                     }
                 }
@@ -5307,8 +8918,23 @@ std::pair<InterpretResult,Value> VM::execute()
                 #ifdef DEBUG_BUILD
                 runtimeError("Invalid instruction "+std::to_string(int(instruction)));
                 #endif
-                return std::make_pair(InterpretResult::RuntimeError,Value::nilVal());
+                return std::make_pair(ExecutionStatus::RuntimeError,Value::nilVal());
                 break;
+        }
+
+        // RT Callback check and deadline check - after every instruction
+        // mayNeedInvocation() returns false immediately if not main thread or no callbacks
+        if (hasDeadline) {
+            auto now = TimePoint::currentTime();
+            if (rtMgr.mayNeedInvocation()) {
+                rtMgr.checkAndInvokeCallbacks(now);
+            }
+            if (now >= deadline) {
+                if (thread->execute_depth > 0) thread->execute_depth--;
+                return yieldReturn;
+            }
+        } else if (rtMgr.mayNeedInvocation()) {
+            rtMgr.checkAndInvokeCallbacks(TimePoint::currentTime());
         }
 
         postInstructionDispatch:
@@ -5321,17 +8947,34 @@ std::pair<InterpretResult,Value> VM::execute()
         //  or until we get a wakeup signal (for a possible event)
         // if we've slept for long enough, reset the flag and continue execution
         if (thread->threadSleep) {
-            if (TimePoint::currentTime() >= thread->threadSleepUntil) {
+            auto now = TimePoint::currentTime();
+            if (now >= thread->threadSleepUntil) {
                 thread->threadSleep = false;
             }
             else {
-                auto remainingSleepTime = thread->threadSleepUntil - TimePoint::currentTime();
-                int64_t remainingMicros = remainingSleepTime.microSecs();
+                // If deadline-limited, yield instead of blocking
+                if (hasDeadline) {
+                    if (thread->execute_depth > 0) thread->execute_depth--;
+                    return yieldReturn;
+                }
 
-                // If poll callbacks are registered, sleep in chunks and poll between
+                auto sleepTarget = thread->threadSleepUntil.load();
+
+                // If RT callbacks are registered, wake at their deadline instead
+                // so we can service them promptly even while sleeping
+                if (rtMgr.hasCallbacks()) {
+                    auto rtDeadline = rtMgr.nextDeadline();
+                    if (rtDeadline < sleepTarget) {
+                        sleepTarget = rtDeadline;
+                    }
+                }
+
+                int64_t remainingMicros = (sleepTarget - now).microSecs();
+
+                // If UI poll callbacks are registered, sleep in chunks and poll
+                // between each chunk so the UI event loop keeps running while sleeping.
                 int64_t pollInterval = poller.minIntervalMicros();
                 if (pollInterval > 0 && poller.hasCallbacks()) {
-                    // Sleep in chunks, polling between each chunk
                     while (remainingMicros > 0 && thread->threadSleep) {
                         int64_t sleepChunk = std::min(remainingMicros, pollInterval);
                         {
@@ -5341,45 +8984,127 @@ std::pair<InterpretResult,Value> VM::execute()
                         // Poll registered callbacks (e.g., UI event loop)
                         poller.poll();
 
-                        // Process any pending event handlers that were scheduled during polling
+                        // Process any pending event handlers scheduled during polling
                         if (!processPendingEvents())
                             return errorReturn;
 
-                        // Recalculate remaining time
-                        auto now = TimePoint::currentTime();
-                        if (now >= thread->threadSleepUntil) {
-                            thread->threadSleep = false;
+                        // Recalculate remaining time against the (possibly RT-shortened) target
+                        auto pnow = TimePoint::currentTime();
+                        if (pnow >= sleepTarget)
                             break;
-                        }
-                        remainingMicros = (thread->threadSleepUntil - now).microSecs();
+                        remainingMicros = (sleepTarget - pnow).microSecs();
                     }
-                } else {
-                    // No poll callbacks, use original behavior
+                } else if (remainingMicros > 0) {
                     std::unique_lock<std::mutex> lk(thread->sleepMutex);
                     thread->sleepCondVar.wait_for(lk, std::chrono::microseconds(remainingMicros));
                 }
+
+                // Invoke any due RT callbacks after waking
+                if (rtMgr.hasCallbacks()) {
+                    rtMgr.checkAndInvokeCallbacks(TimePoint::currentTime());
+                }
+                // Note: threadSleep stays true if we haven't reached original sleep target
+            }
+        }
+
+        // Sleep while awaiting a future (separate from threadSleep to avoid
+        // interfering with wait() builtin semantics).  The 1ms is a polling
+        // fallback; normally wakeWaiters() → Thread::wake() unblocks sooner.
+        if (thread->awaitedFuture.isNonNil()) {
+            ObjFuture* fut = asFuture(thread->awaitedFuture);
+            if (fut->future.wait_for(std::chrono::microseconds(0)) == std::future_status::ready) {
+                thread->awaitedFuture = Value::nilVal();
+            } else {
+                // If deadline-limited, yield instead of blocking
+                if (hasDeadline) {
+                    if (thread->execute_depth > 0) thread->execute_depth--;
+                    return yieldReturn;
+                }
+                // Keep the UI event loop alive while awaiting a future
+                if (poller.hasCallbacks())
+                    poller.poll();
+                std::unique_lock<std::mutex> lk(thread->sleepMutex);
+                thread->sleepCondVar.wait_for(lk, std::chrono::milliseconds(1));
             }
         }
 
         if (thread->pendingWaitFor.isNonNil()) {
-            Value waitTarget = thread->pendingWaitFor;
-            thread->pendingWaitFor = Value::nilVal();
-            if (isList(waitTarget)) {
+            Value& waitTarget = thread->pendingWaitFor;
+            /*if (isList(waitTarget)) {
                 ObjList* list = asList(waitTarget);
-                for (auto& element : list->elts.get())
-                    if (!resolveValue(element))
+                bool allResolved = true;
+                for (auto& element : list->getElements()) {
+                    auto s = tryResolveValue(element);
+                    if (s == FutureStatus::Error)
                         return errorReturn;
-            } else if (isFuture(waitTarget)) {
-                if (!resolveValue(waitTarget))
-                    return errorReturn;
+                    if (s == FutureStatus::Pending) {
+                        thread->awaitedFuture = element;
+                        allResolved = false;
+                        break;
+                    }
+                }
+                if (allResolved)
+                    thread->pendingWaitFor = Value::nilVal();
+            } else*/
+            if (isFuture(waitTarget)) {
+                auto s = tryResolveValue(waitTarget);
+                if (s == FutureStatus::Error) {
+                    // tryResolveValue called raiseException, which has either
+                    // set up an exception handler in a Roxal frame (and we
+                    // should let execute() continue at that handler) or
+                    // escalated to runtimeError (which sets the global flag,
+                    // caught at the top of the next loop iteration).
+                    thread->waitSuspension.clear();
+                    thread->pendingWaitFor = Value::nilVal();
+                    thread->awaitedFuture = Value::nilVal();
+                    if (runtimeErrorFlag.load())
+                        return errorReturn;
+                    // Refresh frame pointer; raiseException may have unwound.
+                    if (!thread->frames.empty())
+                        frame = thread->frames.end()-1;
+                    goto postInstructionDispatch;
+                }
+                if (s == FutureStatus::Pending) {
+                    thread->awaitedFuture = waitTarget;
+                } else {
+                    if (thread->waitSuspension.active &&
+                        thread->waitSuspension.resultMode ==
+                            Thread::WaitSuspension::ResultMode::PendingWaitTarget) {
+                        thread->waitSuspension.storedValue = waitTarget;
+                    }
+                    thread->pendingWaitFor = Value::nilVal();
+                }
+            } else {
+                thread->pendingWaitFor = Value::nilVal();
             }
         }
 
-        if (!processPendingEvents())
+        // pendingWaitFor may have promoted a future into awaitedFuture above,
+        // so gate on it again before executing another opcode.
+        if (thread->awaitedFuture.isNonNil()) {
+            ObjFuture* fut = asFuture(thread->awaitedFuture);
+            if (fut->future.wait_for(std::chrono::microseconds(0)) == std::future_status::ready) {
+                thread->awaitedFuture = Value::nilVal();
+            } else {
+                if (hasDeadline) {
+                    if (thread->execute_depth > 0) thread->execute_depth--;
+                    return yieldReturn;
+                }
+                std::unique_lock<std::mutex> lk(thread->sleepMutex);
+                thread->sleepCondVar.wait_for(lk, std::chrono::milliseconds(1));
+            }
+        }
+
+        if (!processEventDispatch())
             return errorReturn;
 
-        // Refresh frame pointer after processing events, as nested execute() calls
-        // from event handlers may have modified the frame stack
+        if (!processContinuationDispatch())
+            return errorReturn;
+
+        finalizeWaitSuspension();
+
+        // Refresh frame pointer after processing events/continuations, as
+        // frames may have been pushed onto or popped from the frame stack
         if (!thread->frames.empty())
             frame = thread->frames.end()-1;
 
@@ -5390,7 +9115,7 @@ std::pair<InterpretResult,Value> VM::execute()
     } // for
 
     if (thread->execute_depth > 0) thread->execute_depth--;
-    return std::make_pair(InterpretResult::OK, Value::nilVal());
+    return std::make_pair(ExecutionStatus::OK, Value::nilVal());
 
 }
 
@@ -5426,6 +9151,9 @@ bool VM::processPendingEvents()
         size_t previous = thread->pendingEventCount.fetch_sub(1, std::memory_order_acq_rel);
         assert(previous > 0);
         auto handlersIt = thread->eventHandlers.find(tev.eventType);
+        // Collect oneShot relay handlers that fire so they can be removed
+        // after the loop (we can't mutate the vector during iteration).
+        std::vector<Obj*> firedRelayClosures;
         if (handlersIt != thread->eventHandlers.end()) {
             for(const auto& handler : handlersIt->second) {
                 // Skip if handler closure is nil or no longer alive
@@ -5461,8 +9189,6 @@ bool VM::processPendingEvents()
                     }
                 }
 
-                auto closureObj = asClosure(handler.closure);
-
                 auto prevThreadSleep = thread->threadSleep.load();
                 auto prevThreadSleepUntil = thread->threadSleepUntil.load();
 
@@ -5496,7 +9222,23 @@ bool VM::processPendingEvents()
                         Value exc = Value::exceptionVal(Value::nilVal(), excType);
                         raiseException(exc);
                     }
+                } else if (isClosure(handler.closure)
+                           && combinatorRelayFunction.isNonNil()
+                           && asClosure(handler.closure)->function.asObj() == combinatorRelayFunction.asObj()) {
+                    // Sentinel relay: route directly to the combinator's
+                    // notifySlotReady (no user closure invoked). Idempotent
+                    // — already-fulfilled combinators silently ignore.
+                    Value cbStrong = handler.combinatorTarget.strongRef();
+                    if (!cbStrong.isNil() && isCombinator(cbStrong)) {
+                        asCombinator(cbStrong)->notifySlotReady(
+                            handler.combinatorSlot, tev.instance);
+                    }
+                    if (handler.oneShot)
+                        firedRelayClosures.push_back(handler.closure.asObj());
+                    thread->threadSleep = prevThreadSleep;
+                    thread->threadSleepUntil = prevThreadSleepUntil;
                 } else {
+                    auto closureObj = asClosure(handler.closure);
                     // Skip handler if closure has been cleaned up (function is nil)
                     if (closureObj->function.isNil()) {
                         continue;
@@ -5516,14 +9258,36 @@ bool VM::processPendingEvents()
                         }
                         handlerArgs.push_back(strongInstance);
                     }
-                    auto result = callAndExec(closureObj, handlerArgs);
+                    auto result = invokeClosure(closureObj, handlerArgs);
                     assert(!thread->threadSleep);
 
-                    if (result.first != InterpretResult::OK)
+                    if (result.first != ExecutionStatus::OK)
                         return false;
 
                     thread->threadSleep = prevThreadSleep;
                     thread->threadSleepUntil = prevThreadSleepUntil;
+                }
+            }
+            // Remove oneShot combinator-relay handlers that fired this cycle
+            // (active fire-time cleanup so subscriptions don't accumulate).
+            if (!firedRelayClosures.empty()) {
+                std::unordered_set<Obj*> firedSet(firedRelayClosures.begin(), firedRelayClosures.end());
+                auto& vec = handlersIt->second;
+                vec.erase(std::remove_if(vec.begin(), vec.end(),
+                    [&](const Thread::HandlerRegistration& r) {
+                        return r.closure.isNonNil() && firedSet.count(r.closure.asObj()) > 0;
+                    }), vec.end());
+                if (vec.empty()) {
+                    thread->eventHandlers.erase(handlersIt);
+                }
+                // Prune matching weak entries from the event's subscriber list.
+                Value evStrong = tev.eventType.strongRef();
+                if (!evStrong.isNil() && isEventType(evStrong)) {
+                    auto& subs = asEventType(evStrong)->subscribers;
+                    subs.erase(std::remove_if(subs.begin(), subs.end(),
+                        [&](const Value& sub) {
+                            return sub.isNonNil() && firedSet.count(sub.asObj()) > 0;
+                        }), subs.end());
                 }
             }
         }
@@ -5531,9 +9295,946 @@ bool VM::processPendingEvents()
     return true;
 }
 
+
+bool VM::invokeNextEventHandler()
+{
+    auto& dispatch = thread->eventDispatch;
+    auto& tev = dispatch.currentEvent;
+
+    while (dispatch.nextHandlerIndex < dispatch.handlerSnapshot.size()) {
+        const auto& handler = dispatch.handlerSnapshot[dispatch.nextHandlerIndex];
+        dispatch.nextHandlerIndex++;
+
+        // Check target filter before invoking handler
+        if (handler.targetFilter.has_value() && isEventInstance(tev.instance)) {
+            auto* inst = asEventInstance(tev.instance);
+            static const int32_t targetHash = toUnicodeString("target").hashCode();
+            auto it = inst->payload.find(targetHash);
+            if (it == inst->payload.end()) {
+                continue;  // No target property, skip this handler
+            }
+            const Value& eventTarget = it->second;
+            if (!eventTarget.equals(handler.targetFilter.value(), /*strict=*/false)) {
+                continue;  // Target doesn't match filter, skip this handler
+            }
+        }
+
+        // Check matchValue filter for 'becomes' handlers
+        if (handler.matchValue.has_value() && isEventInstance(tev.instance)) {
+            auto* inst = asEventInstance(tev.instance);
+            static const int32_t valueHash = toUnicodeString("value").hashCode();
+            auto it = inst->payload.find(valueHash);
+            if (it == inst->payload.end()) {
+                continue;
+            }
+            const Value& sample = it->second;
+            if (!sample.equals(handler.matchValue.value(), /*strict=*/false)) {
+                continue;
+            }
+        }
+
+        // ConditionalInterrupt: handle inline (no frame push needed)
+        if (handler.closure == conditionalInterruptClosure) {
+            bool raise = true;
+            auto sigIt = thread->eventToSignal.find(tev.eventType);
+            if (sigIt != thread->eventToSignal.end()) {
+                Value sigVal = sigIt->second;
+                if (!sigVal.isAlive()) {
+                    thread->eventToSignal.erase(sigIt);
+                    raise = false;
+                } else {
+                    Value sigStrong = sigVal.strongRef();
+                    if (!sigStrong.isNil() && isSignal(sigStrong)) {
+                        ObjSignal* sigObj = asSignal(sigStrong);
+                        Value cur = sigObj->signal->lastValue();
+                        if (cur.isBool() && cur.asBool()) {
+                            raise = true;
+                        } else {
+                            raise = false;
+                        }
+                    } else {
+                        raise = false;
+                    }
+                }
+            }
+            if (raise) {
+                // Finish the dispatch before raising the exception so that
+                // unwindFrame does not need to clear it redundantly.
+                dispatch.active = false;
+                // Clear threadSleep so the exception handler runs immediately
+                // (matches original processPendingEvents behaviour where
+                // threadSleep was set to false before every handler).
+                thread->threadSleep = false;
+                Value excType = globals.load(toUnicodeString("ConditionalInterrupt")).value();
+                Value exc = Value::exceptionVal(Value::nilVal(), excType);
+                raiseException(exc);
+                // raiseException modified the frame/IP state directly;
+                // return true so execute() continues with the exception handler.
+                return true;
+            }
+            continue;
+        }
+
+        // Combinator relay: handle inline (no frame push, no user code run)
+        if (isClosure(handler.closure)
+            && combinatorRelayFunction.isNonNil()
+            && asClosure(handler.closure)->function.asObj() == combinatorRelayFunction.asObj()) {
+            Value cbStrong = handler.combinatorTarget.strongRef();
+            if (!cbStrong.isNil() && isCombinator(cbStrong)) {
+                asCombinator(cbStrong)->notifySlotReady(
+                    handler.combinatorSlot, tev.instance);
+            }
+            // Active fire-time cleanup: remove the matching oneShot
+            // HandlerRegistration from the live map and the matching weak
+            // ref from the event's subscribers. Safe — runs on the
+            // registering thread. The handlerSnapshot we're iterating is a
+            // copy, so this mutation doesn't affect dispatch.
+            if (handler.oneShot) {
+                Obj* relayObj = handler.closure.asObj();
+                auto regIt = thread->eventHandlers.find(tev.eventType);
+                if (regIt != thread->eventHandlers.end()) {
+                    auto& vec = regIt->second;
+                    vec.erase(std::remove_if(vec.begin(), vec.end(),
+                        [&](const Thread::HandlerRegistration& r) {
+                            return r.closure.isNonNil() && r.closure.asObj() == relayObj;
+                        }), vec.end());
+                    if (vec.empty()) thread->eventHandlers.erase(regIt);
+                }
+                Value evStrong = tev.eventType.strongRef();
+                if (!evStrong.isNil() && isEventType(evStrong)) {
+                    auto& subs = asEventType(evStrong)->subscribers;
+                    subs.erase(std::remove_if(subs.begin(), subs.end(),
+                        [&](const Value& sub) {
+                            return sub.isNonNil() && sub.asObj() == relayObj;
+                        }), subs.end());
+                }
+            }
+            continue;
+        }
+
+        auto closureObj = asClosure(handler.closure);
+
+        // Skip handler if closure has been cleaned up (function is nil)
+        if (closureObj->function.isNil()) {
+            continue;
+        }
+
+        // Save sleep state before invoking handler
+        dispatch.prevThreadSleep = thread->threadSleep.load();
+        dispatch.prevThreadSleepUntil = thread->threadSleepUntil.load();
+        thread->threadSleep = false;
+
+        // Push closure + args (same stack layout as invokeClosure / OpCode::Call)
+        int arity = asFunction(closureObj->function)->arity;
+        push(Value::objRef(closureObj));
+        if (arity > 0) {
+            if (tev.instance.isNil()) {
+                pop(); // pop closure
+                continue;
+            }
+            Value strongInstance = tev.instance.strongRef();
+            if (strongInstance.isNil() || !isEventInstance(strongInstance)) {
+                pop(); // pop closure
+                continue;
+            }
+            push(strongInstance);
+        }
+
+        CallSpec spec(arity > 0 ? 1 : 0);
+        if (!call(closureObj, spec))
+            return false;
+
+        // Mark the new frame as an event handler so opReturn can flag it
+        thread->frames.back().isEventHandler = true;
+        return true;  // frame pushed; main loop will execute it
+    }
+
+    return false;  // no more applicable handlers
+}
+
+
+bool VM::processEventDispatch()
+{
+    if (exitRequested.load()) return false;
+
+    auto& dispatch = thread->eventDispatch;
+
+    // Phase 1: If an event handler just returned, clean up and try the next handler
+    if (thread->eventHandlerJustReturned) {
+        thread->eventHandlerJustReturned = false;
+
+        // Discard the handler's return value (event handlers are procs → nil)
+        pop();
+
+        assert(!thread->threadSleep);
+
+        // Restore sleep state that was saved before the handler was invoked
+        thread->threadSleep = dispatch.prevThreadSleep;
+        thread->threadSleepUntil = dispatch.prevThreadSleepUntil;
+
+        // Try to invoke the next handler for the current event
+        if (invokeNextEventHandler())
+            return true;  // next handler frame pushed
+
+        // All handlers for this event have been processed
+        dispatch.active = false;
+    }
+
+    // Phase 2: Check for new pending events
+    if (thread->pendingEventCount.load(std::memory_order_acquire) == 0)
+        return true;
+
+    Thread::PendingEvent tev;
+
+    // Drop events that are no longer alive or have no handlers
+    while(thread->pendingEvents.pop_if([&](const Thread::PendingEvent& e){
+                return !e.eventType.isAlive() ||
+                        thread->eventHandlers.count(e.eventType) == 0;
+            }, tev)) {
+        size_t previous = thread->pendingEventCount.fetch_sub(1, std::memory_order_acq_rel);
+        assert(previous > 0);
+        thread->eventHandlers.erase(tev.eventType);
+    }
+
+    if (thread->pendingEventCount.load(std::memory_order_acquire) == 0)
+        return true;
+
+    auto now = TimePoint::currentTime();
+    if (thread->pendingEvents.pop_if([&](const Thread::PendingEvent& e){
+            return e.when <= now && e.eventType.isAlive() &&
+                    thread->eventHandlers.count(e.eventType) > 0;
+        }, tev)) {
+        size_t previous = thread->pendingEventCount.fetch_sub(1, std::memory_order_acq_rel);
+        assert(previous > 0);
+        auto handlersIt = thread->eventHandlers.find(tev.eventType);
+        if (handlersIt != thread->eventHandlers.end()) {
+            // Start a new event dispatch: snapshot the handler list and invoke
+            // the first applicable handler.
+            dispatch.active = true;
+            dispatch.currentEvent = tev;
+            dispatch.handlerSnapshot = handlersIt->second;
+            dispatch.nextHandlerIndex = 0;
+
+            if (invokeNextEventHandler())
+                return true;  // first handler frame pushed
+
+            // No applicable handlers after filtering
+            dispatch.active = false;
+        }
+    }
+
+    return true;
+}
+
+
+bool VM::pushContinuationCall(ObjClosure* closure, const std::vector<Value>& args)
+{
+    push(Value::objRef(closure));
+    for (const auto& arg : args)
+        push(arg);
+
+    CallSpec spec(args.size());
+    if (!call(closure, spec))
+        return false;
+
+    thread->frames.back().isContinuationCallback = true;
+    if (thread->hasContinuation())
+        thread->currentContinuation().callbackFrameDepth = thread->frames.size();
+    return true;
+}
+
+void VM::clearContinuation()
+{
+    thread->popContinuation();
+}
+
+bool VM::processContinuationDispatch()
+{
+    if (!thread->continuationCallbackReturned)
+        return true;
+
+    thread->continuationCallbackReturned = false;
+
+    if (!thread->hasContinuation()) {
+        // Check for closure param conversion (uses isContinuationCallback but not nativeContinuation)
+        if (thread->hasClosureParamConversion()) {
+            Value result = pop();
+            return processClosureParamConversion(result);
+        }
+        return true;  // No active continuation
+    }
+
+    // Check if a closure param conversion is active AND its callback frame just returned
+    // (i.e., the returning frame is deeper than the native continuation's callback frame).
+    // This happens when a Roxal function with typed params is called inside a native
+    // param conversion body.
+    if (thread->hasClosureParamConversion()) {
+        auto& closureConv = thread->currentClosureParamConversion();
+        auto& cont = thread->currentContinuation();
+        // If the current frame depth is past the native continuation's callback depth,
+        // this return belongs to the closure param conversion, not the native continuation.
+        if (thread->frames.size() >= closureConv.targetFrameDepth
+            && cont.callbackFrameDepth > 0
+            && thread->frames.size() < cont.callbackFrameDepth) {
+            Value result = pop();
+            return processClosureParamConversion(result);
+        }
+    }
+
+    auto& cont = thread->currentContinuation();
+
+    // Get closure return value from stack
+    Value result = pop();
+
+    // Invoke handler - it may push another frame or finalize
+    size_t contDepth = thread->nativeContinuationStack.size();
+    bool ok = cont.onComplete(*this, result);
+
+    // If handler pushed another callback frame for this continuation (next iteration),
+    // continue. Use callbackFrameDepth to distinguish "this continuation's next iteration"
+    // from "an outer continuation's callback frame that happens to be on top."
+    if (!thread->frames.empty() && thread->frames.back().isContinuationCallback
+        && thread->frames.size() == cont.callbackFrameDepth)
+        return ok;
+
+    // This continuation is done — clean up
+    // Re-acquire reference since stack may have changed during onComplete
+    auto& doneCont = thread->currentContinuation();
+    if (doneCont.resultSlotIndex >= 0) {
+        Value finalResult = pop();
+        auto stackBase = thread->stack.begin() + doneCont.stackBaseIndex;
+        if (thread->stackTop >= stackBase) {
+            size_t itemsToPop = static_cast<size_t>(thread->stackTop - stackBase) + 1;
+            popN(itemsToPop);
+        }
+        push(finalResult);
+    }
+    clearContinuation();
+
+    return ok;
+}
+
+bool VM::processNativeDefaultParamDispatch(Value defaultValue)
+{
+
+    if (!thread->hasNativeDefaultParam())
+        return true;
+    auto& state = thread->currentNativeDefaultParam();
+
+    // Store the result in the args buffer at the correct position
+    size_t paramIdx = state.closureParamIndices[state.nextClosureIndex];
+    size_t bufferIdx = paramIdx + (state.includeReceiver ? 1 : 0);
+    state.argsBuffer[bufferIdx] = defaultValue;
+
+    // Apply type conversion if needed
+    const auto& params = state.funcType->func.value().params;
+    if (params[paramIdx].has_value() && params[paramIdx]->type.has_value()) {
+        auto vt = builtinToValueType(params[paramIdx]->type.value()->builtin);
+        if (vt.has_value()) {
+            bool strictConv = false;
+            if (thread->frames.size() >= 1)
+                strictConv = (thread->frames.end()-1)->strict;
+            state.argsBuffer[bufferIdx] = toType(vt.value(), state.argsBuffer[bufferIdx], strictConv);
+        }
+    }
+
+    // Move to next closure default
+    state.nextClosureIndex++;
+
+    // More closure defaults to evaluate?
+    if (state.nextClosureIndex < state.closureParamIndices.size()) {
+        size_t nextParamIdx = state.closureParamIndices[state.nextClosureIndex];
+        auto it = state.paramDefaultFuncs.find(params[nextParamIdx]->nameHashCode);
+        Value defFunc = it->second;
+        Value defClosure = Value::closureVal(defFunc);
+
+        // Check for captured variables (not allowed in default params)
+        if (asClosure(defClosure)->upvalues.size() > 0) {
+            auto paramName = params[nextParamIdx]->name;
+            thread->popNativeDefaultParam();
+            runtimeError("Captured variables in default parameter '" + toUTF8StdString(paramName) +
+                        "' value expressions are not allowed.");
+            return false;
+        }
+
+        // Push closure and call it using continuation mechanism
+        push(defClosure);
+        if (!call(asClosure(defClosure), CallSpec(0))) {
+            thread->popNativeDefaultParam();
+            clearContinuation();
+            return false;
+        }
+        thread->frames.back().isContinuationCallback = true;
+        if (thread->hasContinuation())
+            thread->currentContinuation().callbackFrameDepth = thread->frames.size();
+        return true;  // Continue with next closure frame
+    }
+
+    // All defaults evaluated — call the native function
+    // Note: don't clearContinuation() here — processContinuationDispatch handles it
+    NativeFn fn = state.nativeFunc;
+    size_t actual = state.argsBuffer.size();
+    Value* buf = state.argsBuffer.data();
+
+    // Non-blocking resolution of future args indicated by mask
+    if (state.resolveArgMask) {
+        for (size_t i = 0; i < actual && state.resolveArgMask >> i; ++i) {
+            if ((state.resolveArgMask & (1u << i)) && isFuture(buf[i])) {
+                auto s = buf[i].tryResolveFuture();
+                if (s == FutureStatus::Pending) {
+                    thread->awaitedFuture = buf[i];
+                    thread->popNativeDefaultParam();
+                    runtimeError("Cannot await future in native function with deferred default params");
+                    return false;
+                }
+                if (s == FutureStatus::Error) {
+                    thread->popNativeDefaultParam();
+                    return false;
+                }
+            }
+        }
+    }
+
+    ArgsView view{buf, actual};
+    Value result { fn(*this, view) };
+
+    // For init methods (proc that returns void on ObjectInstance), the result should be the instance
+    // Native init returns nil, but we want to leave the instance on the stack
+    // Check if this is a proc (not func) - init is always a proc
+    bool isInitMethod = state.includeReceiver &&
+                        isObjectInstance(state.receiver) &&
+                        state.funcType &&
+                        state.funcType->func.has_value() &&
+                        state.funcType->func.value().isProc;
+    Value finalResult = result;
+    if (isInitMethod) {
+        finalResult = state.receiver;
+    } else {
+    }
+
+    // Clean up original call args from stack and store result.
+    // After processContinuationDispatch pops the closure result, the stack has the
+    // receiver and original args. We need to replace them with the final result.
+    size_t argCount = state.originalArgCount;
+    // Stack: [receiver, <args>...] - write result to receiver slot, pop args
+    *(thread->stackTop - argCount - 1) = finalResult;
+    popN(argCount);
+
+    thread->popNativeDefaultParam();
+    return true;
+}
+
+
+// Check if a future's promised type is assignable to the given target ValueType
+// without needing resolution. Returns true if the future can pass through.
+bool VM::isFutureAssignableTo(const Value& futureVal, ValueType targetVT)
+{
+    if (!isFuture(futureVal)) return false;
+    auto* fut = asFuture(futureVal);
+    if (!fut->promisedType) return false; // unknown → not assignable, must resolve
+
+    auto promisedVT = builtinToValueType(fut->promisedType->builtin);
+    if (!promisedVT.has_value()) return false;
+    return promisedVT.value() == targetVT;
+}
+
+// Check if a future's promised type is assignable to the given target typespec
+// (handles both builtin types and object/actor types with inheritance).
+bool VM::isFutureAssignableTo(const Value& futureVal, const Value& targetTypeSpec)
+{
+    if (!isFuture(futureVal)) return false;
+    auto* fut = asFuture(futureVal);
+    if (!fut->promisedType) return false; // unknown → not assignable, must resolve
+
+    if (!isTypeSpec(targetTypeSpec)) return false;
+    ObjTypeSpec* ts = asTypeSpec(targetTypeSpec);
+
+    // For builtin target types: check builtin type identity
+    if (ts->typeValue != ValueType::Object && ts->typeValue != ValueType::Actor) {
+        auto promisedVT = builtinToValueType(fut->promisedType->builtin);
+        return promisedVT.has_value() && promisedVT.value() == ts->typeValue;
+    }
+
+    // For object/actor target types: check inheritance
+    if ((fut->promisedType->builtin == type::BuiltinType::Object
+         || fut->promisedType->builtin == type::BuiltinType::Actor)
+        && fut->promisedType->obj.has_value() && isObjectType(targetTypeSpec)) {
+        // Resolve the promised type name to an ObjObjectType for inheritance check
+        auto& typeName = fut->promisedType->obj.value().name;
+        if (!thread->frames.empty()) {
+            auto moduleType = asFunction(asClosure(thread->frames.back().closure)->function)->moduleType;
+            if (!moduleType.isNil()) {
+                auto found = asModuleType(moduleType)->vars.load(typeName);
+                if (found.has_value() && isObjectType(found.value()))
+                    return isSubtypeOf(asObjectType(found.value()), asObjectType(targetTypeSpec));
+            }
+        }
+    }
+
+    return false;
+}
+
+namespace {
+
+Value resolveCanonicalRuntimeObjectType(const Value& typeVal)
+{
+    if (!isObjectType(typeVal))
+        return typeVal;
+
+    ObjObjectType* objectType = asObjectType(typeVal);
+    auto findPreferredModule = [&](const Value& moduleValue) -> Value {
+        if (!isModuleType(moduleValue))
+            return Value::nilVal();
+
+        ObjModuleType* module = asModuleType(moduleValue);
+        auto matchesModule = [&](const Value& candidate) -> Value {
+            if (!isModuleType(candidate) || candidate.asObj() == moduleValue.asObj())
+                return Value::nilVal();
+            ObjModuleType* candidateModule = asModuleType(candidate);
+            if (!module->fullName.isEmpty()) {
+                if (candidateModule->fullName == module->fullName)
+                    return candidate.strongRef();
+                return Value::nilVal();
+            }
+            if (candidateModule->name == module->name)
+                return candidate.strongRef();
+            return Value::nilVal();
+        };
+
+        Value builtin = VM::instance().getBuiltinModuleType(module->name);
+        Value matched = matchesModule(builtin);
+        if (matched.isNonNil())
+            return matched;
+
+        if (!module->fullName.isEmpty()) {
+            auto globalByFull = VM::instance().loadGlobal(module->fullName);
+            if (globalByFull.has_value()) {
+                matched = matchesModule(globalByFull.value());
+                if (matched.isNonNil())
+                    return matched;
+            }
+        }
+
+        auto globalByName = VM::instance().loadGlobal(module->name);
+        if (globalByName.has_value()) {
+            matched = matchesModule(globalByName.value());
+            if (matched.isNonNil())
+                return matched;
+        }
+
+        for (const Value& candidate : ObjModuleType::allModules.get()) {
+            matched = matchesModule(candidate);
+            if (matched.isNonNil())
+                return matched;
+        }
+
+        return moduleValue.strongRef();
+    };
+
+    auto tryModule = [&](const Value& moduleValue) -> Value {
+        Value preferredModule = findPreferredModule(moduleValue);
+        if (isModuleType(preferredModule)) {
+            auto found = asModuleType(preferredModule)->vars.load(objectType->name);
+            if (found.has_value() && isObjectType(found.value()))
+                return found.value().strongRef();
+        }
+
+        if (isModuleType(moduleValue)) {
+            auto found = asModuleType(moduleValue)->vars.load(objectType->name);
+            if (found.has_value() && isObjectType(found.value()))
+                return found.value().strongRef();
+        }
+        return Value::nilVal();
+    };
+
+    for (const auto& [_, methodSet] : objectType->methods) {
+        for (const auto& method : methodSet.overloads) {
+            if (!isClosure(method.closure))
+                continue;
+            Value resolved = tryModule(asFunction(asClosure(method.closure)->function)->moduleType.strongRef());
+            if (resolved.isNonNil())
+                return resolved;
+        }
+    }
+
+    for (const Value& modVal : ObjModuleType::allModules.get()) {
+        Value resolved = tryModule(modVal.strongRef());
+        if (resolved.isNonNil())
+            return resolved;
+    }
+
+    return typeVal;
+}
+
+bool isCompatibleRuntimeObjectArg(const Value& slot, const Value& expectedType)
+{
+    if (slot.is(expectedType))
+        return true;
+    // nil is compatible with any object/actor target — reference-identity types
+    // accept nil as the natural absence-of-value.
+    if (slot.isNil())
+        return true;
+    if (!isObjectType(expectedType))
+        return false;
+
+    Value slotType = Value::nilVal();
+    if (isObjectInstance(slot))
+        slotType = asObjectInstance(slot)->instanceType;
+    else if (isActorInstance(slot))
+        slotType = asActorInstance(slot)->instanceType;
+    else
+        return false;
+
+    slotType = resolveCanonicalRuntimeObjectType(slotType);
+    if (!isObjectType(slotType))
+        return false;
+
+    return isSubtypeOf(asObjectType(slotType), asObjectType(expectedType));
+}
+
+} // namespace
+
+bool VM::needsAsyncConversion(const Value& val, ptr<type::Type> paramType, bool strictCtx)
+{
+    if (!paramType)
+        return false;
+
+    // Futures with matching promised type pass through — no conversion needed
+    if (isFuture(val)) {
+        auto vt = builtinToValueType(paramType->builtin);
+        if (vt.has_value() && isFutureAssignableTo(val, vt.value()))
+            return false;
+        // For non-matching futures: they'll need resolution first, then possibly
+        // async conversion. But the resolution itself is handled by marshalArgs/toType.
+        // We only flag async conversion if the resolved value would need it,
+        // which we can't know until resolution. For now, don't flag — let marshalArgs
+        // resolve and toType convert synchronously.
+        return false;
+    }
+
+    auto vt = builtinToValueType(paramType->builtin);
+
+    // Object/Actor target type: check for constructor auto-conversion
+    if (paramType->builtin == type::BuiltinType::Object
+        || paramType->builtin == type::BuiltinType::Actor) {
+        if (!paramType->obj.has_value())
+            return false;
+        // Look up the target type in module variables
+        auto& typeName = paramType->obj.value().name;
+        Value typeVal = Value::nilVal();
+        if (!thread->frames.empty()) {
+            auto moduleType = asFunction(asClosure(thread->frames.back().closure)->function)->moduleType;
+            if (!moduleType.isNil()) {
+                auto found = asModuleType(moduleType)->vars.load(typeName);
+                if (found.has_value())
+                    typeVal = found.value();
+            }
+        }
+        if (typeVal.isNil() || !isTypeSpec(typeVal))
+            return false;
+        // If value already matches, no conversion needed
+        if (isCompatibleRuntimeObjectArg(val, typeVal))
+            return false;
+        // Check if constructor auto-conversion is possible
+        return canConvertToType(val, typeVal, true);
+    }
+
+    // Builtin target type: check if source is object/actor with conversion operator
+    if (vt.has_value() && (isObjectInstance(val) || isActorInstance(val))) {
+        Value instType = isObjectInstance(val)
+            ? asObjectInstance(val)->instanceType
+            : asActorInstance(val)->instanceType;
+        UnicodeString convName = UnicodeString("operator->") + toUnicodeString(to_string(vt.value()));
+        int32_t convHash = convName.hashCode();
+        Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/true);
+        return !closure.isNil();
+    }
+
+    return false;
+}
+
+
+bool VM::pushParamConversionFrame(const Value& val, ptr<type::Type> paramType, bool strictCtx)
+{
+    auto vt = builtinToValueType(paramType->builtin);
+
+    // User-defined conversion operator (object/actor → builtin)
+    if (vt.has_value() && (isObjectInstance(val) || isActorInstance(val))) {
+        Value instType = isObjectInstance(val)
+            ? asObjectInstance(val)->instanceType
+            : asActorInstance(val)->instanceType;
+        UnicodeString convName = UnicodeString("operator->") + toUnicodeString(to_string(vt.value()));
+        int32_t convHash = convName.hashCode();
+        Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/true);
+        if (!closure.isNil()) {
+            thread->conversionInProgress.push_back({val, thread->frames.size()});
+            push(val); // push as receiver for method call
+            if (!call(asClosure(closure), CallSpec(0)))
+                return false;
+            thread->frames.back().isContinuationCallback = true;
+            if (thread->hasContinuation())
+                thread->currentContinuation().callbackFrameDepth = thread->frames.size();
+            return true;
+        }
+    }
+
+    // Constructor auto-conversion (for object/actor target types)
+    if (paramType->builtin == type::BuiltinType::Object
+        || paramType->builtin == type::BuiltinType::Actor) {
+        if (paramType->obj.has_value()) {
+            auto& typeName = paramType->obj.value().name;
+            Value typeVal = Value::nilVal();
+            if (!thread->frames.empty()) {
+                auto moduleType = asFunction(asClosure(thread->frames.back().closure)->function)->moduleType;
+                if (!moduleType.isNil()) {
+                    auto found = asModuleType(moduleType)->vars.load(typeName);
+                    if (found.has_value())
+                        typeVal = found.value();
+                }
+            }
+            if (!typeVal.isNil() && isTypeSpec(typeVal)) {
+                // Try constructor auto-conversion first
+                ObjObjectType* targetType = asObjectType(typeVal);
+                // Look for any single-arg implicit init in the target type's
+                // overload set (or its supertype chain).
+                ObjObjectType* tInit = targetType;
+                bool hasImplicitInit = false;
+                while (tInit && !hasImplicitInit) {
+                    auto it = tInit->methods.find(asStringObj(initString)->hash);
+                    if (it != tInit->methods.end()) {
+                        for (const auto& m : it->second.overloads) {
+                            if (!isClosure(m.closure)) continue;
+                            auto* fn = asFunction(asClosure(m.closure)->function);
+                            if (fn->arity == 1 &&
+                                ast::hasModifier(fn->methodModifiers, ast::MethodModifier::Implicit)) {
+                                hasImplicitInit = true;
+                                break;
+                            }
+                        }
+                        // init declared at this level shadows any in supertypes
+                        break;
+                    }
+                    tInit = tInit->superType.isNil() ? nullptr : asObjectType(tInit->superType);
+                }
+                if (hasImplicitInit) {
+                    push(typeVal);  // callee (type constructor)
+                    push(val);     // argument
+                    if (!callValue(typeVal, CallSpec(1)))
+                        return false;
+                    thread->frames.back().isContinuationCallback = true;
+                    if (thread->hasContinuation())
+                        thread->currentContinuation().callbackFrameDepth = thread->frames.size();
+                    return true;
+                }
+
+                // Fall through: try conversion operator on source (object → object)
+                if (isObjectInstance(val) || isActorInstance(val)) {
+                    Value instType = isObjectInstance(val)
+                        ? asObjectInstance(val)->instanceType
+                        : asActorInstance(val)->instanceType;
+                    UnicodeString convName = UnicodeString("operator->") + targetType->name;
+                    int32_t convHash = convName.hashCode();
+                    Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/true);
+                    if (!closure.isNil()) {
+                        thread->conversionInProgress.push_back({val, thread->frames.size()});
+                        push(val); // push as receiver for method call
+                        if (!call(asClosure(closure), CallSpec(0)))
+                            return false;
+                        thread->frames.back().isContinuationCallback = true;
+                        if (thread->hasContinuation())
+                            thread->currentContinuation().callbackFrameDepth = thread->frames.size();
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
+
+bool VM::processNativeParamConversion(Value convertedValue)
+{
+    if (!thread->hasNativeParamConversion())
+        return true;
+    auto& state = thread->currentNativeParamConversion();
+
+    // Store the converted value in the args buffer
+    size_t paramIdx = state.conversionParamIndices[state.nextConversionIndex];
+    size_t bufferIdx = paramIdx + (state.includeReceiver ? 1 : 0);
+    state.argsBuffer[bufferIdx] = convertedValue;
+
+    // Clean up conversion recursion guard
+    auto& guards = thread->conversionInProgress;
+    if (!guards.empty()) {
+        guards.erase(
+            std::remove_if(guards.begin(), guards.end(),
+                [&](const Thread::ConversionGuard& g) {
+                    return thread->frames.size() <= g.frameDepth;
+                }),
+            guards.end());
+    }
+
+    // Move to next conversion
+    state.nextConversionIndex++;
+
+    // More conversions to do?
+    if (state.nextConversionIndex < state.conversionParamIndices.size()) {
+        size_t nextParamIdx = state.conversionParamIndices[state.nextConversionIndex];
+        size_t nextBufIdx = nextParamIdx + (state.includeReceiver ? 1 : 0);
+        const auto& params = state.funcType->func.value().params;
+        Value val = state.argsBuffer[nextBufIdx];
+        bool nativeStrict = !thread->frames.empty() && (thread->frames.end()-1)->strict;
+        if (!pushParamConversionFrame(val, params[nextParamIdx]->type.value(), nativeStrict)) {
+            thread->popNativeParamConversion();
+            clearContinuation();
+            runtimeError("Failed to convert parameter for native function call");
+            return false;
+        }
+        return true;  // Continue with next conversion frame
+    }
+
+    // All conversions done — call the native function
+    // Note: don't clearContinuation() here — processContinuationDispatch handles it
+    NativeFn fn = state.nativeFunc;
+    size_t actual = state.argsBuffer.size();
+    Value* buf = state.argsBuffer.data();
+
+    // Non-blocking resolution of future args
+    if (state.resolveArgMask) {
+        for (size_t i = 0; i < actual && state.resolveArgMask >> i; ++i) {
+            if ((state.resolveArgMask & (1u << i)) && isFuture(buf[i])) {
+                auto s = buf[i].tryResolveFuture();
+                if (s == FutureStatus::Pending) {
+                    thread->awaitedFuture = buf[i];
+                    thread->popNativeParamConversion();
+                    runtimeError("Cannot await future in native function with deferred param conversion");
+                    return false;
+                }
+                if (s == FutureStatus::Error) {
+                    thread->popNativeParamConversion();
+                    return false;
+                }
+            }
+        }
+    }
+
+    ArgsView view{buf, actual};
+    Value result { fn(*this, view) };
+
+    // Check if this is an init method (proc returning instance)
+    bool isInitMethod = state.includeReceiver &&
+                        isObjectInstance(state.receiver) &&
+                        state.funcType &&
+                        state.funcType->func.has_value() &&
+                        state.funcType->func.value().isProc;
+    Value finalResult = result;
+    if (isInitMethod)
+        finalResult = state.receiver;
+
+    // Clean up original call args from stack
+    size_t argCount = state.originalArgCount;
+    *(thread->stackTop - argCount - 1) = finalResult;
+    popN(argCount);
+
+    thread->popNativeParamConversion();
+    return true;
+}
+
+
+bool VM::processClosureParamConversion(Value convertedValue)
+{
+    if (!thread->hasClosureParamConversion())
+        return true;
+
+    auto& state = thread->currentClosureParamConversion();
+
+    // Store the converted value directly into the target frame's param slot
+    size_t paramIdx = state.conversionParamIndices[state.nextConversionIndex];
+
+    // Find the target frame by depth
+    if (thread->frames.size() < state.targetFrameDepth) {
+        thread->popClosureParamConversion();
+        runtimeError("Closure param conversion: target frame no longer exists");
+        return false;
+    }
+    auto targetFrame = thread->frames.begin() + (state.targetFrameDepth - 1);
+    *(targetFrame->slots + 1 + paramIdx) = convertedValue;
+
+    // Clean up conversion recursion guard
+    auto& guards = thread->conversionInProgress;
+    if (!guards.empty()) {
+        guards.erase(
+            std::remove_if(guards.begin(), guards.end(),
+                [&](const Thread::ConversionGuard& g) {
+                    return thread->frames.size() <= g.frameDepth;
+                }),
+            guards.end());
+    }
+
+    // Move to next conversion
+    state.nextConversionIndex++;
+
+    // More conversions to do?
+    if (state.nextConversionIndex < state.conversionParamIndices.size()) {
+        size_t nextIdx = state.conversionParamIndices[state.nextConversionIndex];
+        Value& nextSlot = *(targetFrame->slots + 1 + nextIdx);
+        auto& params = state.funcType->func.value().params;
+        bool strictCtx = targetFrame->callerStrict;
+        if (!pushParamConversionFrame(nextSlot, params[nextIdx]->type.value(), strictCtx)) {
+            thread->popClosureParamConversion();
+            runtimeError("Failed to convert parameter for function call");
+            return false;
+        }
+        return true;  // Continue with next conversion frame
+    }
+
+    // All conversions done — freeze const params before function body executes
+    {
+        auto& params = state.funcType->func.value().params;
+        for (size_t pi = 0; pi < params.size(); ++pi) {
+            if (!params[pi].has_value() || !params[pi]->type.has_value())
+                continue;
+            if (params[pi]->type.value()->isConst) {
+                Value& slot = *(targetFrame->slots + 1 + pi);
+                slot = createFrozenSnapshot(slot);
+            }
+        }
+    }
+
+    thread->popClosureParamConversion();
+    return true;
+}
+
+
 void VM::unwindFrame()
 {
     auto f = thread->frames.back();
+    // If an event handler frame is being unwound (e.g. by raiseException),
+    // clear the dispatch state so the event dispatch machinery does not
+    // attempt to invoke the next handler for the same event.
+    if (f.isEventHandler && thread->eventDispatch.active) {
+        thread->eventDispatch.active = false;
+        thread->eventHandlerJustReturned = false;
+    }
+    // If a continuation callback frame is being unwound, clear the continuation state
+    // and clean up the original method call's stack area (receiver + args)
+    if (f.isContinuationCallback && thread->hasContinuation()) {
+        auto& cont = thread->currentContinuation();
+        if (cont.resultSlotIndex >= 0) {
+            // The original method call's args are below this frame's slots.
+            // We need to mark them for cleanup. We can't pop them now (frame's stack
+            // area hasn't been popped yet), so we adjust the frame's slots pointer
+            // to include the original args. This way, the normal unwinding will
+            // pop everything including the original args.
+            // Calculate: slots should be at resultSlot (to include receiver)
+            f.slots = &*(thread->stack.begin() + cont.resultSlotIndex);
+        }
+        clearContinuation();
+    } else if (f.isContinuationCallback && thread->hasClosureParamConversion()) {
+        thread->popClosureParamConversion();
+    }
     closeUpvalues(f.slots);
     size_t popCount = &(*thread->stackTop) - f.slots;
     for(size_t i = 0; i < popCount; i++) pop();
@@ -5552,9 +10253,35 @@ void VM::raiseException(Value exc)
     if (thread && thread->nativeCallDepth > 0)
         thread->exceptionJumpPending.store(true, std::memory_order_relaxed);
 
+    // A suspended sys.wait() must be abandoned once control transfers via an
+    // exception handler; its saved stack cleanup info is no longer valid after
+    // the exception rewind.
+    if (thread && thread->waitSuspension.active) {
+        thread->waitSuspension.clear();
+        thread->pendingWaitFor = Value::nilVal();
+        thread->awaitedFuture = Value::nilVal();
+        thread->threadSleep = false;
+    }
+
     while (true) {
         if (thread->frames.empty()) {
-            runtimeError("Uncaught exception: " + objExceptionToString(asException(exc)));
+            // Stash the exception so the actor return path can forward it
+            // through the actor's return future (so wait(for=fut), allof/anyof
+            // etc. observe and re-raise on the awaiting thread).
+            thread->pendingUncaughtException = exc;
+            // If we're inside an actor call, the actor's main loop will see
+            // the unwound state and forward the exception through the return
+            // promise. Don't trigger the global runtimeErrorFlag — that would
+            // abort *all* threads, defeating the whole point of cross-actor
+            // exception propagation.
+            bool willForward = thread->isActorThread() && thread->currentActorCall.isNonNil();
+            if (!willForward) {
+                runtimeError("Uncaught exception: " + objExceptionToString(asException(exc)));
+            } else {
+                // Reset stack on this thread (so the actor loop can pick up
+                // cleanly) without setting the global flag.
+                resetStack();
+            }
             return;
         }
 
@@ -5942,58 +10669,136 @@ void VM::defineBuiltinMethods()
         return;
     }
 
-    defineBuiltinMethod(ValueType::Vector, "norm", std::mem_fn(&VM::vector_norm_builtin));
-    defineBuiltinMethod(ValueType::Vector, "sum", std::mem_fn(&VM::vector_sum_builtin));
-    defineBuiltinMethod(ValueType::Vector, "normalized", std::mem_fn(&VM::vector_normalized_builtin));
-    defineBuiltinMethod(ValueType::Vector, "dot", std::mem_fn(&VM::vector_dot_builtin));
+    // noMutateSelf / noMutateArgs flags:
+    //   noMutateSelf=true  → method reads but doesn't mutate receiver
+    //   noMutateArgs bits  → bit N set means arg N is read-only (not mutated)
+    // These flags enable the VM to skip snapshot isolation for const dispatch.
 
-    defineBuiltinMethod(ValueType::Matrix, "rows", std::mem_fn(&VM::matrix_rows_builtin));
-    defineBuiltinMethod(ValueType::Matrix, "cols", std::mem_fn(&VM::matrix_cols_builtin));
-    defineBuiltinMethod(ValueType::Matrix, "transpose", std::mem_fn(&VM::matrix_transpose_builtin));
-    defineBuiltinMethod(ValueType::Matrix, "determinant", std::mem_fn(&VM::matrix_determinant_builtin));
-    defineBuiltinMethod(ValueType::Matrix, "inverse", std::mem_fn(&VM::matrix_inverse_builtin));
-    defineBuiltinMethod(ValueType::Matrix, "trace", std::mem_fn(&VM::matrix_trace_builtin));
-    defineBuiltinMethod(ValueType::Matrix, "norm", std::mem_fn(&VM::matrix_norm_builtin));
-    defineBuiltinMethod(ValueType::Matrix, "sum", std::mem_fn(&VM::matrix_sum_builtin));
+    // Vector methods — all read-only on self
+    defineBuiltinMethod(ValueType::Vector, "norm", std::mem_fn(&VM::vector_norm_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Vector, "sum", std::mem_fn(&VM::vector_sum_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Vector, "min", std::mem_fn(&VM::vector_min_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Vector, "max", std::mem_fn(&VM::vector_max_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Vector, "normalized", std::mem_fn(&VM::vector_normalized_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Vector, "dot", std::mem_fn(&VM::vector_dot_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x1);
 
-    defineBuiltinMethod(ValueType::List, "append", std::mem_fn(&VM::list_append_builtin));
-    defineBuiltinMethod(ValueType::List, "filter", std::mem_fn(&VM::list_filter_builtin));
-    defineBuiltinMethod(ValueType::List, "map", std::mem_fn(&VM::list_map_builtin));
-    defineBuiltinMethod(ValueType::List, "reduce", std::mem_fn(&VM::list_reduce_builtin));
+    // Matrix methods — all read-only on self
+    defineBuiltinMethod(ValueType::Matrix, "rows", std::mem_fn(&VM::matrix_rows_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Matrix, "cols", std::mem_fn(&VM::matrix_cols_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Matrix, "transpose", std::mem_fn(&VM::matrix_transpose_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Matrix, "determinant", std::mem_fn(&VM::matrix_determinant_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Matrix, "inverse", std::mem_fn(&VM::matrix_inverse_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Matrix, "trace", std::mem_fn(&VM::matrix_trace_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Matrix, "norm", std::mem_fn(&VM::matrix_norm_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Matrix, "sum", std::mem_fn(&VM::matrix_sum_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Matrix, "min", std::mem_fn(&VM::matrix_min_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Matrix, "max", std::mem_fn(&VM::matrix_max_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+
+    // Tensor methods — all read-only on self
+    defineBuiltinMethod(ValueType::Tensor, "min", std::mem_fn(&VM::tensor_min_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Tensor, "max", std::mem_fn(&VM::tensor_max_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Tensor, "sum", std::mem_fn(&VM::tensor_sum_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+
+    // Orient methods — all read-only on self
+    defineBuiltinMethod(ValueType::Orient, "rotate", std::mem_fn(&VM::orient_rotate_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x1);
+    defineBuiltinMethod(ValueType::Orient, "slerp", std::mem_fn(&VM::orient_slerp_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x3);
+    defineBuiltinMethod(ValueType::Orient, "angle_to", std::mem_fn(&VM::orient_angle_to_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x1);
+    defineBuiltinMethod(ValueType::Orient, "euler", std::mem_fn(&VM::orient_euler_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+
+    // list.append/extend/insert/remove/pop mutate self; list.filter/map/reduce are registered from ModuleSys.
+    defineBuiltinMethod(ValueType::List, "append", std::mem_fn(&VM::list_append_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x1);
+    defineBuiltinMethod(ValueType::List, "extend", std::mem_fn(&VM::list_extend_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x1);
+    defineBuiltinMethod(ValueType::List, "insert", std::mem_fn(&VM::list_insert_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x3);
+    defineBuiltinMethod(ValueType::List, "remove", std::mem_fn(&VM::list_remove_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x1);
+    defineBuiltinMethod(ValueType::List, "pop", std::mem_fn(&VM::list_pop_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x1);
+
+    // String case-conversion methods — read-only on self (return new string)
+    defineBuiltinMethod(ValueType::String, "upper", std::mem_fn(&VM::string_upper_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::String, "lower", std::mem_fn(&VM::string_lower_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::String, "capitalize", std::mem_fn(&VM::string_capitalize_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::String, "title", std::mem_fn(&VM::string_title_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
 
 #ifdef ROXAL_ENABLE_REGEX
-    defineBuiltinMethod(ValueType::String, "match", std::mem_fn(&VM::string_match_builtin));
-    defineBuiltinMethod(ValueType::String, "search", std::mem_fn(&VM::string_search_builtin));
-    defineBuiltinMethod(ValueType::String, "replace", std::mem_fn(&VM::string_replace_builtin));
-    defineBuiltinMethod(ValueType::String, "split", std::mem_fn(&VM::string_split_builtin));
+    // String methods — all read-only on self and args
+    defineBuiltinMethod(ValueType::String, "match", std::mem_fn(&VM::string_match_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x1);
+    defineBuiltinMethod(ValueType::String, "search", std::mem_fn(&VM::string_search_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x1);
+    defineBuiltinMethod(ValueType::String, "replace", std::mem_fn(&VM::string_replace_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x3);
+    defineBuiltinMethod(ValueType::String, "split", std::mem_fn(&VM::string_split_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x1);
 #endif
 
+    // Signal methods — run/stop/tick/set mutate self; freq is read-only
     defineBuiltinMethod(ValueType::Signal, "run", std::mem_fn(&VM::signal_run_builtin));
     defineBuiltinMethod(ValueType::Signal, "stop", std::mem_fn(&VM::signal_stop_builtin));
     defineBuiltinMethod(ValueType::Signal, "tick", std::mem_fn(&VM::signal_tick_builtin));
-    defineBuiltinMethod(ValueType::Signal, "freq", std::mem_fn(&VM::signal_freq_builtin));
-    defineBuiltinMethod(ValueType::Signal, "set", std::mem_fn(&VM::signal_set_builtin));
+    defineBuiltinMethod(ValueType::Signal, "freq", std::mem_fn(&VM::signal_freq_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Signal, "set", std::mem_fn(&VM::signal_set_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x1);
     defineBuiltinMethod(ValueType::Signal, "on_changed", std::mem_fn(&VM::signal_on_changed_builtin), true);
 
-    defineBuiltinMethod(ValueType::Event, "emit", std::mem_fn(&VM::event_emit_builtin), true);
-    defineBuiltinMethod(ValueType::Object, "emit", std::mem_fn(&VM::event_emit_builtin), true);
+    // Event methods — all mutate self (register/remove handlers)
+    defineBuiltinMethod(ValueType::Event, "emit", std::mem_fn(&VM::event_emit_builtin), true,
+                        nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x1);
+    defineBuiltinMethod(ValueType::Object, "emit", std::mem_fn(&VM::event_emit_builtin), true,
+                        nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x1);
     defineBuiltinMethod(ValueType::Event, "when", std::mem_fn(&VM::event_when_builtin), true);
     defineBuiltinMethod(ValueType::Event, "remove", std::mem_fn(&VM::event_remove_builtin), true);
 
+    // Actor dataflow methods — all mutate state (procs)
     defineBuiltinMethod(ValueType::Actor, "tick", std::mem_fn(&VM::dataflow_tick_native), true);  // proc
     defineBuiltinMethod(ValueType::Actor, "run", std::mem_fn(&VM::dataflow_run_native), true);   // proc
-    defineBuiltinMethod(ValueType::Actor, "runFor", std::mem_fn(&VM::dataflow_run_for_native), true);  // proc
+    defineBuiltinMethod(ValueType::Actor, "runFor", std::mem_fn(&VM::dataflow_run_for_native), true,
+                        nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x1);
 }
 
 void VM::defineBuiltinMethod(ValueType type, const std::string& name, NativeFn fn,
                              bool isProc,
                              ptr<type::Type> funcType,
                              std::vector<Value> defaults,
-                             Value declFunction)
+                             Value declFunction,
+                             bool noMutateSelf,
+                             uint32_t noMutateArgs)
 {
     auto us = toUnicodeString(name);
     builtinMethods[type][us.hashCode()] = BuiltinMethodInfo(fn, isProc, funcType,
-                                                            std::move(defaults), declFunction);
+                                                            std::move(defaults), declFunction,
+                                                            0, noMutateSelf, noMutateArgs);
 }
 
 void VM::defineBuiltinProperties()
@@ -6008,6 +10813,25 @@ void VM::defineBuiltinProperties()
     defineBuiltinProperty(ValueType::Object, "stackTrace", &VM::exception_stacktrace_getter);
     defineBuiltinProperty(ValueType::Object, "stackTraceString", &VM::exception_stacktrace_string_getter);
     defineBuiltinProperty(ValueType::Object, "detail", &VM::exception_detail_getter);
+
+    // Range properties
+    defineBuiltinProperty(ValueType::Range, "start", &VM::range_start_getter);
+    defineBuiltinProperty(ValueType::Range, "stop", &VM::range_stop_getter);
+    defineBuiltinProperty(ValueType::Range, "step", &VM::range_step_getter);
+    defineBuiltinProperty(ValueType::Range, "closed", &VM::range_closed_getter);
+    defineBuiltinProperty(ValueType::Range, "first", &VM::range_first_getter);
+    defineBuiltinProperty(ValueType::Range, "last", &VM::range_last_getter);
+
+    // Orient properties
+    defineBuiltinProperty(ValueType::Orient, "rpy", &VM::orient_rpy_getter);
+    defineBuiltinProperty(ValueType::Orient, "r", &VM::orient_r_getter);
+    defineBuiltinProperty(ValueType::Orient, "p", &VM::orient_p_getter);
+    defineBuiltinProperty(ValueType::Orient, "y", &VM::orient_y_getter);
+    defineBuiltinProperty(ValueType::Orient, "quat", &VM::orient_quat_getter);
+    defineBuiltinProperty(ValueType::Orient, "mat", &VM::orient_mat_getter);
+    defineBuiltinProperty(ValueType::Orient, "axis", &VM::orient_axis_getter);
+    defineBuiltinProperty(ValueType::Orient, "angle", &VM::orient_angle_getter);
+    defineBuiltinProperty(ValueType::Orient, "inverse", &VM::orient_inverse_getter);
 }
 
 void VM::defineBuiltinProperty(ValueType type, const std::string& name, NativePropertyGetter getter, NativePropertySetter setter)
@@ -6098,6 +10922,57 @@ Value VM::exception_detail_getter(Value& receiver)
     return ex->detail;
 }
 
+Value VM::range_start_getter(Value& receiver)
+{
+    ObjRange* r = asRange(receiver);
+    return r->start;
+}
+
+Value VM::range_stop_getter(Value& receiver)
+{
+    ObjRange* r = asRange(receiver);
+    return r->stop;
+}
+
+Value VM::range_step_getter(Value& receiver)
+{
+    ObjRange* r = asRange(receiver);
+    return r->step.isNil() ? Value::intVal(1) : r->step;
+}
+
+Value VM::range_closed_getter(Value& receiver)
+{
+    ObjRange* r = asRange(receiver);
+    return Value::boolVal(r->closed);
+}
+
+Value VM::range_first_getter(Value& receiver)
+{
+    ObjRange* r = asRange(receiver);
+    auto len = r->length();
+    if (len == 0) return Value::nilVal();
+    if (len > 0) return Value(r->targetIndex(0));
+    // Indeterminate length: first is known if start is known
+    if (!r->start.isNil()) return r->start;
+    return Value::nilVal();
+}
+
+Value VM::range_last_getter(Value& receiver)
+{
+    ObjRange* r = asRange(receiver);
+    auto len = r->length();
+    if (len == 0) return Value::nilVal();
+    if (len > 0) return Value(r->targetIndex(len - 1));
+    // Indeterminate length: last is known if stop is known (adjusted for closed/open)
+    if (!r->stop.isNil()) {
+        if (r->closed)
+            return r->stop;
+        else if (r->stop.isInt())
+            return Value::intVal(r->stop.asInt() - 1);
+    }
+    return Value::nilVal();
+}
+
 Value VM::captureStacktrace()
 {
     Value framesList { Value::listVal() };
@@ -6136,6 +11011,58 @@ bool VM::resolveValue(Value& value)
 {
     value.resolve();
     return !runtimeErrorFlag.load();
+}
+
+FutureStatus VM::tryResolveValue(Value& value)
+{
+    auto status = value.tryResolveFuture();
+    if (status == FutureStatus::Resolved)
+        value.resolveSignal();
+    return status;
+}
+
+FutureStatus VM::tryAwaitFuture(Value& v)
+{
+    auto s = v.tryResolveFuture();
+    if (s == FutureStatus::Pending) {
+        thread->awaitedFuture = v;
+        (thread->frames.end() - 1)->ip = thread->instructionStart;
+    }
+    return s;
+}
+
+FutureStatus VM::tryAwaitFutures(Value& a, Value& b)
+{
+    auto s = a.tryResolveFuture();
+    if (s == FutureStatus::Resolved)
+        s = b.tryResolveFuture();
+    if (s == FutureStatus::Pending) {
+        thread->awaitedFuture = isFuture(a) ? a : b;
+        (thread->frames.end() - 1)->ip = thread->instructionStart;
+    }
+    return s;
+}
+
+FutureStatus VM::tryAwaitValue(Value& v)
+{
+    auto s = tryResolveValue(v);
+    if (s == FutureStatus::Pending) {
+        thread->awaitedFuture = v;
+        (thread->frames.end() - 1)->ip = thread->instructionStart;
+    }
+    return s;
+}
+
+FutureStatus VM::tryAwaitValues(Value& a, Value& b)
+{
+    auto s = tryResolveValue(a);
+    if (s == FutureStatus::Resolved)
+        s = tryResolveValue(b);
+    if (s == FutureStatus::Pending) {
+        thread->awaitedFuture = isFuture(a) ? a : b;
+        (thread->frames.end() - 1)->ip = thread->instructionStart;
+    }
+    return s;
 }
 
 Value VM::event_emit_builtin(ArgsView args)
@@ -6182,6 +11109,10 @@ Value VM::event_emit_builtin(ArgsView args)
 
     if (!ev)
         ev = asEventType(eventType);
+
+    // Event instances are implicitly const once emitted (spec: Event Implicit Const).
+    // Freeze before dispatch so all handlers receive a const snapshot.
+    instance = createFrozenSnapshot(instance);
 
     Value eventWeak = eventType.weakRef();
     scheduleEventHandlers(eventWeak, ev, instance, when);
@@ -6263,7 +11194,7 @@ Value VM::vector_norm_builtin(ArgsView args)
         throw std::invalid_argument("vector.norm expects no arguments");
 
     ObjVector* vec = asVector(args[0]);
-    double n = vec->vec.norm();
+    double n = vec->vec().norm();
     return Value::realVal(n);
 }
 
@@ -6273,7 +11204,7 @@ Value VM::vector_sum_builtin(ArgsView args)
         throw std::invalid_argument("vector.sum expects no arguments");
 
     ObjVector* vec = asVector(args[0]);
-    double s = vec->vec.sum();
+    double s = vec->vec().sum();
     return Value::realVal(s);
 }
 
@@ -6283,7 +11214,7 @@ Value VM::vector_normalized_builtin(ArgsView args)
         throw std::invalid_argument("vector.normalized expects no arguments");
 
     ObjVector* vec = asVector(args[0]);
-    Eigen::VectorXd nvec = vec->vec.normalized();
+    Eigen::VectorXd nvec = vec->vec().normalized();
     return Value::vectorVal(nvec);
 }
 
@@ -6297,7 +11228,7 @@ Value VM::vector_dot_builtin(ArgsView args)
     if (v1->length() != v2->length())
         throw std::invalid_argument("vector.dot requires vectors of same length");
 
-    double d = v1->vec.dot(v2->vec);
+    double d = v1->vec().dot(v2->vec());
     return Value::realVal(d);
 }
 
@@ -6325,7 +11256,7 @@ Value VM::matrix_transpose_builtin(ArgsView args)
         throw std::invalid_argument("matrix.transpose expects no arguments");
 
     ObjMatrix* mat = asMatrix(args[0]);
-    Eigen::MatrixXd tr = mat->mat.transpose();
+    Eigen::MatrixXd tr = mat->mat().transpose();
     return Value::matrixVal(tr);
 }
 
@@ -6338,7 +11269,7 @@ Value VM::matrix_determinant_builtin(ArgsView args)
     if (mat->rows() != mat->cols())
         throw std::invalid_argument("matrix.determinant requires a square matrix");
 
-    double det = mat->mat.determinant();
+    double det = mat->mat().determinant();
     return Value::realVal(det);
 }
 
@@ -6351,7 +11282,7 @@ Value VM::matrix_inverse_builtin(ArgsView args)
     if (mat->rows() != mat->cols())
         throw std::invalid_argument("matrix.inverse requires a square matrix");
 
-    Eigen::MatrixXd inv = mat->mat.inverse();
+    Eigen::MatrixXd inv = mat->mat().inverse();
     return Value::matrixVal(inv);
 }
 
@@ -6361,7 +11292,7 @@ Value VM::matrix_trace_builtin(ArgsView args)
         throw std::invalid_argument("matrix.trace expects no arguments");
 
     ObjMatrix* mat = asMatrix(args[0]);
-    double tr = mat->mat.trace();
+    double tr = mat->mat().trace();
     return Value::realVal(tr);
 }
 
@@ -6371,7 +11302,7 @@ Value VM::matrix_norm_builtin(ArgsView args)
         throw std::invalid_argument("matrix.norm expects no arguments");
 
     ObjMatrix* mat = asMatrix(args[0]);
-    double n = mat->mat.norm();
+    double n = mat->mat().norm();
     return Value::realVal(n);
 }
 
@@ -6381,9 +11312,227 @@ Value VM::matrix_sum_builtin(ArgsView args)
         throw std::invalid_argument("matrix.sum expects no arguments");
 
     ObjMatrix* mat = asMatrix(args[0]);
-    double s = mat->mat.sum();
+    double s = mat->mat().sum();
     return Value::realVal(s);
 }
+
+Value VM::vector_min_builtin(ArgsView args)
+{
+    if (args.size() != 1 || !isVector(args[0]))
+        throw std::invalid_argument("vector.min expects no arguments");
+
+    ObjVector* vec = asVector(args[0]);
+    return Value::realVal(vec->vec().minCoeff());
+}
+
+Value VM::vector_max_builtin(ArgsView args)
+{
+    if (args.size() != 1 || !isVector(args[0]))
+        throw std::invalid_argument("vector.max expects no arguments");
+
+    ObjVector* vec = asVector(args[0]);
+    return Value::realVal(vec->vec().maxCoeff());
+}
+
+Value VM::matrix_min_builtin(ArgsView args)
+{
+    if (args.size() != 1 || !isMatrix(args[0]))
+        throw std::invalid_argument("matrix.min expects no arguments");
+
+    ObjMatrix* mat = asMatrix(args[0]);
+    return Value::realVal(mat->mat().minCoeff());
+}
+
+Value VM::matrix_max_builtin(ArgsView args)
+{
+    if (args.size() != 1 || !isMatrix(args[0]))
+        throw std::invalid_argument("matrix.max expects no arguments");
+
+    ObjMatrix* mat = asMatrix(args[0]);
+    return Value::realVal(mat->mat().maxCoeff());
+}
+
+Value VM::tensor_min_builtin(ArgsView args)
+{
+    if (args.size() != 1 || !isTensor(args[0]))
+        throw std::invalid_argument("tensor.min expects no arguments");
+
+    ObjTensor* t = asTensor(args[0]);
+    int64_t n = t->numel();
+    if (n == 0) throw std::invalid_argument("tensor.min on empty tensor");
+    double minVal = t->at(0);
+    for (int64_t i = 1; i < n; ++i)
+        minVal = std::min(minVal, t->at(i));
+    return Value::realVal(minVal);
+}
+
+Value VM::tensor_max_builtin(ArgsView args)
+{
+    if (args.size() != 1 || !isTensor(args[0]))
+        throw std::invalid_argument("tensor.max expects no arguments");
+
+    ObjTensor* t = asTensor(args[0]);
+    int64_t n = t->numel();
+    if (n == 0) throw std::invalid_argument("tensor.max on empty tensor");
+    double maxVal = t->at(0);
+    for (int64_t i = 1; i < n; ++i)
+        maxVal = std::max(maxVal, t->at(i));
+    return Value::realVal(maxVal);
+}
+
+Value VM::tensor_sum_builtin(ArgsView args)
+{
+    if (args.size() != 1 || !isTensor(args[0]))
+        throw std::invalid_argument("tensor.sum expects no arguments");
+
+    ObjTensor* t = asTensor(args[0]);
+    int64_t n = t->numel();
+    double s = 0.0;
+    for (int64_t i = 0; i < n; ++i)
+        s += t->at(i);
+    return Value::realVal(s);
+}
+
+// Orient helpers for creating quantity(rad) return values
+
+static Value makeAngleQuantity(double radians)
+{
+    // Get the quantity type from globals
+    auto maybeType = VM::instance().loadGlobal(toUnicodeString("quantity"));
+    if (!maybeType.has_value())
+        throw std::runtime_error("sys.quantity type not available");
+    Value inst = Value::objectInstanceVal(maybeType.value());
+    asObjectInstance(inst)->setProperty("_v", Value::realVal(radians));
+    auto dims = Value::listVal(std::vector<Value>{Value::intVal(0), Value::intVal(0), Value::intVal(0), Value::intVal(1)});
+    asObjectInstance(inst)->setProperty("_d", dims);
+    return inst;
+}
+
+static Eigen::Vector3d orientToRPY(const Eigen::Quaterniond& q)
+{
+    Eigen::Matrix3d m = q.toRotationMatrix();
+    Eigen::Vector3d ea = m.canonicalEulerAngles(2, 1, 0); // [yaw, pitch, roll]
+    return Eigen::Vector3d(ea[2], ea[1], ea[0]); // [roll, pitch, yaw]
+}
+
+// Orient property getters
+
+Value VM::orient_rpy_getter(Value& receiver)
+{
+    auto rpy = orientToRPY(asOrient(receiver)->quat());
+    // Return a list of 3 angle quantities
+    return Value::listVal(std::vector<Value>{
+        makeAngleQuantity(rpy[0]),
+        makeAngleQuantity(rpy[1]),
+        makeAngleQuantity(rpy[2])
+    });
+}
+
+Value VM::orient_r_getter(Value& receiver)
+{
+    auto rpy = orientToRPY(asOrient(receiver)->quat());
+    return makeAngleQuantity(rpy[0]);
+}
+
+Value VM::orient_p_getter(Value& receiver)
+{
+    auto rpy = orientToRPY(asOrient(receiver)->quat());
+    return makeAngleQuantity(rpy[1]);
+}
+
+Value VM::orient_y_getter(Value& receiver)
+{
+    auto rpy = orientToRPY(asOrient(receiver)->quat());
+    return makeAngleQuantity(rpy[2]);
+}
+
+Value VM::orient_quat_getter(Value& receiver)
+{
+    auto& q = asOrient(receiver)->quat();
+    Eigen::VectorXd v(4);
+    v[0] = q.x(); v[1] = q.y(); v[2] = q.z(); v[3] = q.w();
+    return Value::vectorVal(v);
+}
+
+Value VM::orient_mat_getter(Value& receiver)
+{
+    Eigen::Matrix3d m3 = asOrient(receiver)->quat().toRotationMatrix();
+    Eigen::MatrixXd m(3,3);
+    m = m3;
+    return Value::matrixVal(m);
+}
+
+Value VM::orient_axis_getter(Value& receiver)
+{
+    Eigen::AngleAxisd aa(asOrient(receiver)->quat());
+    Eigen::Vector3d axis = aa.axis();
+    // For identity (angle ~0), AngleAxis may return arbitrary axis
+    if (aa.angle() < 1e-12)
+        axis = Eigen::Vector3d::UnitZ();
+    Eigen::VectorXd v(3);
+    v[0] = axis[0]; v[1] = axis[1]; v[2] = axis[2];
+    return Value::vectorVal(v);
+}
+
+Value VM::orient_angle_getter(Value& receiver)
+{
+    Eigen::AngleAxisd aa(asOrient(receiver)->quat());
+    return makeAngleQuantity(aa.angle());
+}
+
+Value VM::orient_inverse_getter(Value& receiver)
+{
+    return Value::orientVal(asOrient(receiver)->quat().inverse());
+}
+
+// Orient methods
+
+Value VM::orient_rotate_builtin(ArgsView args)
+{
+    if (args.size() != 2 || !isOrient(args[0]) || !isVector(args[1]))
+        throw std::invalid_argument("orient.rotate expects a single 3D vector argument");
+    auto* rv = asVector(args[1]);
+    if (rv->length() != 3)
+        throw std::invalid_argument("orient.rotate requires a 3D vector");
+    Eigen::Vector3d v(rv->vec()[0], rv->vec()[1], rv->vec()[2]);
+    Eigen::Vector3d rotated = asOrient(args[0])->quat() * v;
+    Eigen::VectorXd result(3);
+    result[0] = rotated[0]; result[1] = rotated[1]; result[2] = rotated[2];
+    return Value::vectorVal(result);
+}
+
+Value VM::orient_slerp_builtin(ArgsView args)
+{
+    if (args.size() != 3 || !isOrient(args[0]) || !isOrient(args[1]) || !args[2].isNumber())
+        throw std::invalid_argument("orient.slerp expects (other_orient, t) where t is 0..1");
+    double t = args[2].isReal() ? args[2].asReal() : static_cast<double>(args[2].asInt());
+    Eigen::Quaterniond result = asOrient(args[0])->quat().slerp(t, asOrient(args[1])->quat());
+    return Value::orientVal(result);
+}
+
+Value VM::orient_angle_to_builtin(ArgsView args)
+{
+    if (args.size() != 2 || !isOrient(args[0]) || !isOrient(args[1]))
+        throw std::invalid_argument("orient.angle_to expects a single orient argument");
+    double dot = asOrient(args[0])->quat().dot(asOrient(args[1])->quat());
+    double angle = 2.0 * std::acos(std::min(std::abs(dot), 1.0));
+    return makeAngleQuantity(angle);
+}
+
+Value VM::orient_euler_builtin(ArgsView args)
+{
+    if (args.size() != 2 || !isOrient(args[0]) || !isString(args[1]))
+        throw std::invalid_argument("orient.euler expects a string argument (e.g. \"ZXZ\")");
+    auto axes = parseEulerAxes(toUTF8StdString(asStringObj(args[1])->s));
+    Eigen::Matrix3d m = asOrient(args[0])->quat().toRotationMatrix();
+    Eigen::Vector3d ea = m.canonicalEulerAngles(axes[0], axes[1], axes[2]);
+    return Value::listVal(std::vector<Value>{
+        makeAngleQuantity(ea[0]),
+        makeAngleQuantity(ea[1]),
+        makeAngleQuantity(ea[2])
+    });
+}
+
 
 Value VM::list_append_builtin(ArgsView args)
 {
@@ -6393,111 +11542,97 @@ Value VM::list_append_builtin(ArgsView args)
     // TODO: Signal values should be resolved when passed as function arguments
     // Currently signals may not be resolved immediately, requiring workarounds like arithmetic (0 + signal)
     ObjList* list = asList(args[0]);
-    list->elts.push_back(args[1]);
+    list->append(args[1]);
     return Value::nilVal();
 }
 
-Value VM::list_filter_builtin(ArgsView args)
+Value VM::list_extend_builtin(ArgsView args)
 {
     if (args.size() != 2 || !isList(args[0]))
-        throw std::invalid_argument("list.filter expects single predicate argument");
-
-    if (!isClosure(args[1]))
-        throw std::invalid_argument("list.filter: argument must be a function");
-
-    ObjList* inputList = asList(args[0]);
-    ObjClosure* predicate = asClosure(args[1]);
-
-    // Detect callback arity
-    int arity = asFunction(predicate->function)->arity;
-
-    Value resultVal = Value::listVal();
-    ObjList* result = asList(resultVal);
-
-    auto elts = inputList->elts.get();
-    for (size_t i = 0; i < elts.size(); ++i) {
-        std::vector<Value> callArgs;
-        callArgs.push_back(elts[i]);
-        if (arity >= 2)
-            callArgs.push_back(Value::intVal(static_cast<int32_t>(i)));
-
-        auto [interpResult, returnValue] = callAndExec(predicate, callArgs);
-        if (interpResult != InterpretResult::OK)
-            throw std::runtime_error("list.filter: predicate callback failed");
-
-        if (isTruthy(returnValue))
-            result->append(elts[i]);
-    }
-
-    return resultVal;
+        throw std::invalid_argument("list.extend expects a single list argument");
+    if (!isList(args[1]))
+        throw std::invalid_argument("list.extend expects a list argument (got " + args[1].typeName()
+                                    + "); use list.append(x) to add a single element");
+    asList(args[0])->concatenate(asList(args[1]));
+    return Value::nilVal();
 }
 
-Value VM::list_map_builtin(ArgsView args)
-{
-    if (args.size() != 2 || !isList(args[0]))
-        throw std::invalid_argument("list.map expects single transform argument");
-
-    if (!isClosure(args[1]))
-        throw std::invalid_argument("list.map: argument must be a function");
-
-    ObjList* inputList = asList(args[0]);
-    ObjClosure* transform = asClosure(args[1]);
-
-    // Detect callback arity
-    int arity = asFunction(transform->function)->arity;
-
-    Value resultVal = Value::listVal();
-    ObjList* result = asList(resultVal);
-
-    auto elts = inputList->elts.get();
-    for (size_t i = 0; i < elts.size(); ++i) {
-        std::vector<Value> callArgs;
-        callArgs.push_back(elts[i]);
-        if (arity >= 2)
-            callArgs.push_back(Value::intVal(static_cast<int32_t>(i)));
-
-        auto [interpResult, returnValue] = callAndExec(transform, callArgs);
-        if (interpResult != InterpretResult::OK)
-            throw std::runtime_error("list.map: transform callback failed");
-
-        result->append(returnValue);
-    }
-
-    return resultVal;
-}
-
-Value VM::list_reduce_builtin(ArgsView args)
+Value VM::list_insert_builtin(ArgsView args)
 {
     if (args.size() != 3 || !isList(args[0]))
-        throw std::invalid_argument("list.reduce expects reducer function and initial value");
+        throw std::invalid_argument("list.insert expects an index and a value");
+    if (!args[1].isInt())
+        throw std::invalid_argument("list.insert index must be an integer");
+    asList(args[0])->insertAt(args[1].asInt(), args[2]);
+    return Value::nilVal();
+}
 
-    if (!isClosure(args[1]))
-        throw std::invalid_argument("list.reduce: first argument must be a function");
+Value VM::list_remove_builtin(ArgsView args)
+{
+    if (args.size() != 2 || !isList(args[0]))
+        throw std::invalid_argument("list.remove expects a single value argument");
+    if (!asList(args[0])->removeValue(args[1], false))
+        throw std::invalid_argument("list.remove: value not found in list");
+    return Value::nilVal();
+}
 
-    ObjList* inputList = asList(args[0]);
-    ObjClosure* reducer = asClosure(args[1]);
-
-    // Detect callback arity
-    int arity = asFunction(reducer->function)->arity;
-
-    Value accumulator = args[2];
-
-    auto elts = inputList->elts.get();
-    for (size_t i = 0; i < elts.size(); ++i) {
-        std::vector<Value> callArgs;
-        callArgs.push_back(accumulator);
-        callArgs.push_back(elts[i]);
-        if (arity >= 3)
-            callArgs.push_back(Value::intVal(static_cast<int32_t>(i)));
-
-        auto [interpResult, returnValue] = callAndExec(reducer, callArgs);
-        if (interpResult != InterpretResult::OK)
-            throw std::runtime_error("list.reduce: reducer callback failed");
-
-        accumulator = returnValue;
+Value VM::list_pop_builtin(ArgsView args)
+{
+    if (args.empty() || !isList(args[0]) || args.size() > 2)
+        throw std::invalid_argument("list.pop expects an optional index argument");
+    int64_t index = -1;  // default: last element
+    if (args.size() == 2) {
+        if (!args[1].isInt())
+            throw std::invalid_argument("list.pop index must be an integer");
+        index = args[1].asInt();
     }
+    return asList(args[0])->removeAt(index);  // throws std::out_of_range if empty/out-of-range
+}
 
-    return accumulator;
+Value VM::string_upper_builtin(ArgsView args)
+{
+    if (args.size() != 1 || !isString(args[0]))
+        throw std::invalid_argument("upper expects a single string argument");
+    UnicodeString result(asStringObj(args[0])->s);
+    result.toUpper();
+    return Value::stringVal(result);
+}
+
+Value VM::string_lower_builtin(ArgsView args)
+{
+    if (args.size() != 1 || !isString(args[0]))
+        throw std::invalid_argument("lower expects a single string argument");
+    UnicodeString result(asStringObj(args[0])->s);
+    result.toLower();
+    return Value::stringVal(result);
+}
+
+Value VM::string_capitalize_builtin(ArgsView args)
+{
+    if (args.size() != 1 || !isString(args[0]))
+        throw std::invalid_argument("capitalize expects a single string argument");
+    UnicodeString result(asStringObj(args[0])->s);
+    result.toLower();
+    if (result.isEmpty())
+        return Value::stringVal(result);
+    // First code point may be a surrogate pair — split on code-point boundary.
+    UChar32 firstCp = result.char32At(0);
+    int32_t firstLen = U16_LENGTH(firstCp);
+    UnicodeString head(result, 0, firstLen);
+    head.toUpper();
+    UnicodeString tail(result, firstLen);
+    head.append(tail);
+    return Value::stringVal(head);
+}
+
+Value VM::string_title_builtin(ArgsView args)
+{
+    if (args.size() != 1 || !isString(args[0]))
+        throw std::invalid_argument("title expects a single string argument");
+    UnicodeString result(asStringObj(args[0])->s);
+    // nullptr → ICU creates a default word-break iterator for the root locale.
+    result.toTitle(nullptr);
+    return Value::stringVal(result);
 }
 
 #ifdef ROXAL_ENABLE_REGEX
@@ -6551,10 +11686,10 @@ Value VM::string_match_builtin(ArgsView args)
         PCRE2_SIZE start = ovector[2*i];
         PCRE2_SIZE end = ovector[2*i + 1];
         if (start == PCRE2_UNSET) {
-            result->elts.push_back(Value::nilVal());
+            result->append(Value::nilVal());
         } else {
             std::string matchStr = subject.substr(start, end - start);
-            result->elts.push_back(Value::stringVal(toUnicodeString(matchStr)));
+            result->append(Value::stringVal(toUnicodeString(matchStr)));
         }
     }
 
@@ -6727,7 +11862,7 @@ Value VM::string_split_builtin(ArgsView args)
         if (rc < 0) {
             // No more matches - add rest of string
             std::string rest = subject.substr(offset);
-            result->elts.push_back(Value::stringVal(toUnicodeString(rest)));
+            result->append(Value::stringVal(toUnicodeString(rest)));
             break;
         }
 
@@ -6737,7 +11872,7 @@ Value VM::string_split_builtin(ArgsView args)
 
         // Add part before match
         std::string part = subject.substr(offset, matchStart - offset);
-        result->elts.push_back(Value::stringVal(toUnicodeString(part)));
+        result->append(Value::stringVal(toUnicodeString(part)));
 
         // Handle zero-length matches
         if (matchEnd == matchStart) {
@@ -6848,7 +11983,7 @@ Value VM::signal_on_changed_builtin(ArgsView args)
     ev->subscribers.push_back(closureVal.weakRef());
 
     // Track the signal for this event
-        thread->eventToSignal[eventVal.weakRef()] = eventVal.weakRef();
+        thread->eventToSignal[eventVal.weakRef()] = signalVal.weakRef();
 
     return Value::nilVal();
 }
@@ -7028,7 +12163,7 @@ void VM::executeBuiltinModuleScript(const std::string& path, Value moduleType)
     ptr<Thread> t = make_ptr<Thread>();
     thread = t;
     resetStack();
-    callAndExec(asClosure(closure), {});
+    invokeClosure(asClosure(closure), {});
     thread = nullptr;
 }
 
@@ -7104,6 +12239,38 @@ int64_t ModulePoller::minIntervalMicros() const
 }
 
 
+std::optional<Value> VM::lookupUserModule(const icu::UnicodeString& qualifiedName)
+{
+    std::lock_guard<std::mutex> guard(userModuleRegistryMutex);
+    auto it = userModuleRegistry.find(qualifiedName);
+    if (it == userModuleRegistry.end())
+        return std::nullopt;
+    return it->second;
+}
+
+void VM::registerUserModule(const icu::UnicodeString& qualifiedName, const Value& moduleType)
+{
+    std::lock_guard<std::mutex> guard(userModuleRegistryMutex);
+    // Insert-only; never overwrite.  If two compilations race past the
+    // pre-compile lookup, the loser's freshly allocated ObjModuleType is
+    // simply discarded by its compileImport caller (which re-reads the
+    // canonical value after registration -- see RoxalCompiler.cpp).
+    userModuleRegistry.emplace(qualifiedName, moduleType);
+}
+
+void VM::clearUserModuleRegistry()
+{
+    {
+        std::lock_guard<std::mutex> guard(userModuleRegistryMutex);
+        userModuleRegistry.clear();
+    }
+    // Also wipe the long-lived REPL compiler's importedModules cache so its
+    // per-instance short-circuit doesn't bypass the now-empty VM registry on
+    // the next compile.
+    if (replCompiler_)
+        replCompiler_->clearImportedModules();
+}
+
 #ifdef ROXAL_ENABLE_GRPC
 Value VM::importProtoModule(const std::string& path)
 {
@@ -7152,9 +12319,9 @@ void VM::dumpStackTraces()
     fflush(stderr);
 }
 
-InterpretResult VM::joinAllThreads(uint64_t skipId)
+ExecutionStatus VM::joinAllThreads(uint64_t skipId)
 {
-    InterpretResult combined = InterpretResult::OK;
+    ExecutionStatus combined = ExecutionStatus::OK;
     for (;;) {
         auto ids = threads.keys();
         bool joinedAny = false;
@@ -7171,8 +12338,8 @@ InterpretResult VM::joinAllThreads(uint64_t skipId)
 
             if (t) {
                 t->join();
-                if (t->result != InterpretResult::OK)
-                    combined = InterpretResult::RuntimeError;
+                if (t->result != ExecutionStatus::OK)
+                    combined = ExecutionStatus::RuntimeError;
             }
 
             threads.erase(id);

@@ -18,6 +18,7 @@
 #include "TypeDeducer.h"
 #include "VM.h"
 #include "Error.h"
+#include "OverloadResolver.h"
 
 #include "RoxalCompiler.h"
 
@@ -28,7 +29,7 @@ using ast::Access;
 namespace {
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 21;
+constexpr std::uint32_t ModuleCacheVersion = 42;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -126,6 +127,11 @@ Value RoxalCompiler::compile(std::istream& source, const std::string& name,
         return function;
     }
 
+    if (ast == nullptr) {
+        clearCompileContext();
+        return function;
+    }
+
     if (!isa<File>(ast))
         throw std::runtime_error("ASTGenerator root node is not a File");
 
@@ -160,6 +166,36 @@ Value RoxalCompiler::compile(std::istream& source, const std::string& name,
         enterModuleScope("", toUnicodeString(moduleName), toUnicodeString(sourceName), existingModule);
 
         auto module { asModuleScope(moduleScope()) };
+
+        // Seed suffix registry from implicitly imported modules (e.g. sys)
+        // that may have registered @suffix functions.
+        // Use moduleResolverVM to avoid VM::instance() recursion during VM init.
+        if (moduleResolverVM) {
+            Value sysModType = moduleResolverVM->getBuiltinModuleType(toUnicodeString("sys"));
+            if (sysModType.isNonNil() && isModuleType(sysModType)) {
+                ObjModuleType* sysMod = asModuleType(sysModType);
+                // If registeredSuffixes is empty (e.g. module loaded from cache),
+                // rebuild it by scanning function annotations for @suffix
+                if (sysMod->registeredSuffixes.empty()) {
+                    sysMod->vars.forEach([&](const VariablesMap::NameValue& nv) {
+                        const auto& name = nv.first;
+                        const auto& val = nv.second;
+                        if (isClosure(val)) {
+                            ObjFunction* fn = asFunction(asClosure(val)->function);
+                            for (const auto& annot : fn->annotations) {
+                                if (annot->name == "suffix" && annot->args.size() == 1) {
+                                    if (auto s = dynamic_ptr_cast<ast::Str>(annot->args[0].second))
+                                        sysMod->registeredSuffixes[s->str] = name;
+                                }
+                            }
+                        }
+                    });
+                }
+                for (const auto& [suf, funcName] : sysMod->registeredSuffixes) {
+                    suffixRegistry[suf] = SuffixRegistration{suf, funcName, sysMod->name};
+                }
+            }
+        }
 
         bool strictContext = false;
         if (auto file = dynamic_ptr_cast<ast::File>(ast)) {
@@ -298,7 +334,28 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
 
     // Helpers --------------------------------------------------------------
 
-    auto mergeModuleTypes = [](ObjModuleType* target, ObjModuleType* source) {
+    // Memo: maps a fresh-deserialized ObjModuleType* to its decided canonical
+    // Value (which itself wraps an ObjModuleType*). Populated lazily by
+    // canonicalizeModuleValue and consulted on every subsequent call within
+    // this reconcile pass — eliminates the target/source role-flipping
+    // previously observed when two deserialized duplicates each picked the
+    // other as "canonical" depending on transient var-count state.
+    std::unordered_map<ObjModuleType*, Value> canonicalModuleMemo;
+
+    // Memo: maps a fresh-deserialized ObjObjectType* (or ObjEventType*) to its
+    // canonical Value, populated when mergeModuleTypes sees the same-named
+    // type already present in the target module. Used to substitute fresh
+    // duplicate type instances out of chunk constants after the module-level
+    // walk completes.
+    std::unordered_map<Obj*, Value> canonicalTypeMemo;
+
+    // Keys in the two memos above are raw Obj* pointers. Pin them with strong
+    // Value refs for the lifetime of this reconcile pass so a future change
+    // that triggers GC mid-walk can't invalidate the keys. (Current code
+    // doesn't run GC during reconcile, but treat memo keys as load-bearing.)
+    std::vector<Value> memoKeyPins;
+
+    auto mergeModuleTypes = [&](ObjModuleType* target, ObjModuleType* source) {
         if (target == nullptr || source == nullptr || target == source)
             return;
 
@@ -307,23 +364,53 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
         if (!source->sourcePath.isEmpty())
             target->sourcePath = source->sourcePath;
 
+        // Non-destructive merge: store source entries only if target doesn't
+        // already have the name. When both sides hold a type with the same
+        // name but a different pointer, record source's pointer as aliasing
+        // the canonical (target's) so chunk constants can be substituted later.
         auto sourceVars = source->vars.snapshot();
-        if (!sourceVars.empty()) {
-            target->vars.clear();
-            for (const auto& entry : sourceVars)
-                target->vars.store(entry, true);
-            target->constVars = source->constVars;
+        for (const auto& entry : sourceVars) {
+            int32_t nameHash = entry.first.hashCode();
+            auto existing = target->vars.load(nameHash);
+            if (existing.has_value() && !existing.value().isNil()) {
+                if (entry.second.isObj() && existing.value().isObj()
+                    && entry.second.asObj() != existing.value().asObj()) {
+                    bool isType =
+                        isObjectType(entry.second) || isEventType(entry.second);
+                    bool isExistingType =
+                        isObjectType(existing.value()) || isEventType(existing.value());
+                    if (isType && isExistingType) {
+                        canonicalTypeMemo.emplace(entry.second.asObj(), existing.value().strongRef());
+                        memoKeyPins.push_back(entry.second.strongRef());  // pin key
+                        memoKeyPins.push_back(existing.value().strongRef());  // pin canonical
+                    }
+                }
+                // Keep target's value — don't overwrite.
+            } else {
+                target->vars.store(entry);
+            }
         }
+        // Union of constVar markers (source's set, plus whatever target had).
+        for (auto h : source->constVars)
+            target->constVars.insert(h);
 
         auto sourceAliases = source->moduleAliasSnapshot();
-        if (!sourceAliases.empty()) {
-            target->clearModuleAliases();
-            for (const auto& alias : sourceAliases)
+        for (const auto& alias : sourceAliases) {
+            if (target->moduleAliasFullName(alias.first).isEmpty())
                 target->registerModuleAlias(alias.first, alias.second);
         }
 
-        target->cstructArch = source->cstructArch;
-        target->propertyCTypes = source->propertyCTypes;
+        for (const auto& kv : source->cstructArch) {
+            if (target->cstructArch.find(kv.first) == target->cstructArch.end())
+                target->cstructArch[kv.first] = kv.second;
+        }
+        for (const auto& kv : source->propertyCTypes) {
+            auto& tgtProps = target->propertyCTypes[kv.first];
+            for (const auto& pkv : kv.second) {
+                if (tgtProps.find(pkv.first) == tgtProps.end())
+                    tgtProps[pkv.first] = pkv.second;
+            }
+        }
     };
 
     auto toKey = [](const icu::UnicodeString& value) {
@@ -344,13 +431,72 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
             return strong;
 
         ObjModuleType* module = asModuleType(strong);
+
+        // Memo hit: same fresh input always returns same canonical within
+        // this reconcile pass. Prevents two deserialized duplicates from
+        // each picking the other as canonical on alternate calls.
+        auto memoIt = canonicalModuleMemo.find(module);
+        if (memoIt != canonicalModuleMemo.end())
+            return memoIt->second.strongRef();
+
+        // Decide canonical and record memo. Also memo canonical->canonical so
+        // a later call with the canonical pointer as input stays stable.
+        auto record = [&](const Value& canonical) -> Value {
+            Value strongCanonical = canonical.strongRef();
+            canonicalModuleMemo.emplace(module, strongCanonical);
+            memoKeyPins.push_back(strong);  // pin the input key alive
+            if (isModuleType(strongCanonical)) {
+                ObjModuleType* canonMt = asModuleType(strongCanonical);
+                if (canonMt != module) {
+                    canonicalModuleMemo.emplace(canonMt, strongCanonical);
+                    memoKeyPins.push_back(strongCanonical);  // pin canonical too
+                }
+            }
+            return strongCanonical;
+        };
+
         icu::UnicodeString qualified = moduleQualifiedName(module);
         Value builtin = resolverVM->getBuiltinModuleType(qualified);
         if (builtin.isNil())
             builtin = resolverVM->getBuiltinModuleType(module->name);
         if (builtin.isNonNil()) {
             mergeModuleTypes(asModuleType(builtin), module);
-            return builtin.strongRef();
+            return record(builtin);
+        }
+
+        // Register the chosen canonical user-module Value in the
+        // VM-wide registry.  This is what makes the cache-load path
+        // self-bootstrapping: when a builtin-module companion script
+        // (e.g. robot.rox) is loaded from cache, compileImport never
+        // runs for its transitive user modules, so no pre-compile
+        // registration happens — reconcile picks one deserialised
+        // duplicate as canonical (the "first one wins" via memo) and
+        // the registry must learn that choice so the next reconcile
+        // pass (e.g. for the user script that imports the same
+        // modules) canonicalises consistently.  Skipped for builtin
+        // modules (handled above) and for empty qualified names.
+        auto registerCanonical = [&](const Value& canonical) {
+            if (qualified.isEmpty() || !isModuleType(canonical))
+                return;
+            resolverVM->registerUserModule(qualified, canonical.strongRef());
+        };
+
+        // Cross-compiler user-module registry takes precedence over
+        // the global/allModules fallbacks: if another compilation has
+        // registered a canonical ObjModuleType for this qualified
+        // name, every reference to a same-named cache-loaded
+        // duplicate should resolve to it.  This is the deterministic
+        // counterpart to the order-dependent findExistingModule
+        // fallback below.
+        if (!qualified.isEmpty()) {
+            auto registered = resolverVM->lookupUserModule(qualified);
+            if (registered.has_value() && isModuleType(registered.value())) {
+                Value canonical = registered.value();
+                if (asModuleType(canonical) != module) {
+                    mergeModuleTypes(asModuleType(canonical), module);
+                    return record(canonical);
+                }
+            }
         }
 
         // Prefer an existing global module with the same name
@@ -358,7 +504,8 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
         if (globalOpt.has_value() && isModuleType(globalOpt.value())) {
             Value globalMod = globalOpt.value();
             mergeModuleTypes(asModuleType(globalMod), module);
-            return globalMod.strongRef();
+            registerCanonical(globalMod);
+            return record(globalMod);
         }
 
         // Try to match an existing module by name/fullName (e.g., dynamically imported IDL/proto)
@@ -392,10 +539,28 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
         Value existing = findExistingModule(module->name, qualified);
         if (existing.isNonNil()) {
             mergeModuleTypes(asModuleType(existing), module);
-            return existing.strongRef();
+            registerCanonical(existing);
+            return record(existing);
         }
 
-        return strong;
+        // No prior match: this deserialised module is itself canonical.
+        // Register it so the next reconcile pass canonicalises against it.
+        registerCanonical(strong);
+        return record(strong);
+    };
+
+    // Substitute a constant/value: if it's a fresh-deserialized type that
+    // mergeModuleTypes flagged as duplicating a canonical one, return the
+    // canonical Value; otherwise return the original unchanged.
+    auto canonicalizeTypeIfDup = [&](const Value& v) -> Value {
+        if (!v.isObj())
+            return v;
+        if (!isObjectType(v) && !isEventType(v))
+            return v;
+        auto it = canonicalTypeMemo.find(v.asObj());
+        if (it == canonicalTypeMemo.end())
+            return v;
+        return it->second.strongRef();
     };
 
     // Walk every function owned by the entry chunk and collect the module
@@ -444,7 +609,13 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
             // Fall back to the variable table when the module did not record
             // explicit alias metadata (this covers older cache files or
             // modules that populated the table manually).
+            // Only include MODULE-typed entries — non-module vars (types,
+            // functions, values) belong to the module's content and must not
+            // be funneled through the import-rebuild loop below, which would
+            // replace them with placeholder modules of the same name.
             for (const auto& entry : moduleType->vars.snapshot()) {
+                if (!isModuleType(entry.second))
+                    continue;
                 const icu::UnicodeString& name = entry.first;
                 if (importHashes.insert(name.hashCode()).second)
                     imports.emplace_back(name, icu::UnicodeString());
@@ -470,6 +641,8 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
                     ObjModuleType* imported = asModuleType(moduleValue);
                     canonicalModules[toKey(moduleQualifiedName(imported))] = moduleValue.strongRef();
                 }
+            } else if (isObjectType(constant) || isEventType(constant)) {
+                constant = canonicalizeTypeIfDup(constant);
             }
         }
 
@@ -627,6 +800,42 @@ void RoxalCompiler::setModuleResolverVM(VM* vm)
 }
 
 
+void RoxalCompiler::registerSuffix(const icu::UnicodeString& suffix, const icu::UnicodeString& funcName,
+                                   const icu::UnicodeString& moduleName)
+{
+    auto it = suffixRegistry.find(suffix);
+    if (it != suffixRegistry.end()) {
+        // Allow re-registration from the same module (can happen during compilation)
+        if (it->second.functionName == funcName && it->second.moduleName == moduleName)
+            return; // already registered, skip
+        std::string suf; suffix.toUTF8String(suf);
+        std::string existingMod; it->second.moduleName.toUTF8String(existingMod);
+        std::string newMod; moduleName.toUTF8String(newMod);
+        error("suffix '" + suf + "' is already registered by '" + existingMod
+              + "'; conflicting registration in '" + newMod + "'");
+        return;
+    }
+    suffixRegistry[suffix] = SuffixRegistration{suffix, funcName, moduleName};
+
+    // Also store on the module type so imported modules expose their suffixes
+    if (inModuleScope()) {
+        auto modScope = asModuleScope(moduleScope());
+        if (!modScope->moduleType.isNil()) {
+            auto* modType = asModuleType(modScope->moduleType);
+            modType->registeredSuffixes[suffix] = funcName;
+        }
+    }
+}
+
+const RoxalCompiler::SuffixRegistration* RoxalCompiler::lookupSuffix(const icu::UnicodeString& suffix) const
+{
+    auto it = suffixRegistry.find(suffix);
+    if (it != suffixRegistry.end())
+        return &it->second;
+    return nullptr;
+}
+
+
 ASTVisitor::TraversalOrder RoxalCompiler::traversalOrder() const
 {
     // we don't want AST implemented pre- or post-order tree traversal.
@@ -643,6 +852,50 @@ std::any RoxalCompiler::visit(ptr<ast::File> ast)
 {
     currentNode = ast;
     Anys results {};
+
+    // Hoist top-level type declarations: emit "create empty placeholder type
+    // and bind to module slot" for each TypeDecl directly in the file body,
+    // before any other module-level code runs. The actual TypeDecl bodies
+    // later mutate these placeholders in place — the type-creation opcodes
+    // are reuse-aware (see VM.cpp). This makes module-scope type names
+    // forward-referenceable in type annotations (object/actor field types,
+    // extends/implements, return types, parameter types, top-level var types).
+    for (const auto& declOrStmt : ast->declsOrStmts) {
+        if (!std::holds_alternative<ptr<Declaration>>(declOrStmt))
+            continue;
+        auto typeDecl = dynamic_ptr_cast<ast::TypeDecl>(std::get<ptr<Declaration>>(declOrStmt));
+        if (!typeDecl)
+            continue;
+        uint16_t typeNameConstant = identifierConstant(typeDecl->name);
+        OpCode op = OpCode::ObjectType;
+        switch (typeDecl->kind) {
+            case ast::TypeDecl::Object:      op = OpCode::ObjectType; break;
+            case ast::TypeDecl::Actor:       op = OpCode::ActorType; break;
+            case ast::TypeDecl::Interface:   op = OpCode::InterfaceType; break;
+            case ast::TypeDecl::Enumeration: op = OpCode::EnumerationType; break;
+            case ast::TypeDecl::Event:       op = OpCode::EventType; break;
+        }
+        emitOpArgsBytes(op, typeNameConstant,
+                        "forward-decl placeholder " + toUTF8StdString(typeDecl->name));
+        emitOpArgsBytes(OpCode::DefineModuleVar, typeNameConstant,
+                        "bind placeholder " + toUTF8StdString(typeDecl->name));
+    }
+
+    // Function-overload pre-pass: count module-level FuncDecls per name. A
+    // name with count > 1 will bind to an OverloadSet rather than overwrite.
+    // visit(FuncDecl) reads this map to decide which opcode to emit.
+    {
+        auto modScope = asModuleScope(moduleScope());
+        for (const auto& declOrStmt : ast->declsOrStmts) {
+            if (!std::holds_alternative<ptr<Declaration>>(declOrStmt))
+                continue;
+            auto funcDecl = dynamic_ptr_cast<ast::FuncDecl>(std::get<ptr<Declaration>>(declOrStmt));
+            if (!funcDecl || !funcDecl->func->name.has_value())
+                continue;
+            ++modScope->moduleFuncDeclCounts[funcDecl->func->name.value()];
+        }
+    }
+
     ast->acceptChildren(*this, results);
     emitReturn();
     return {};
@@ -676,14 +929,21 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
     //  for the specified module
     ModuleInfo module = findImport(ast->packages);
     bool builtinModule = false;
+    icu::UnicodeString builtinRegistryKey;  // dotted name for lazy registry lookup
     if (module.isProto || module.isIdl)
         currentModuleHasDynamicImport = true;
 
-    // Check if this is a builtin module (even if a file also exists)
-    if (ast->packages.size() == 1) {
-        icu::UnicodeString modName { ast->packages[0] };
-        if (VM::instance().getBuiltinModuleType(modName).isNonNil()) {
-            module.name = modName;
+    // Check if this is a builtin module (even if a file also exists).
+    // Support both single-component (e.g., "regex") and dotted (e.g., "ai.nn") names.
+    {
+        icu::UnicodeString joinedModName;
+        for (size_t i = 0; i < ast->packages.size(); ++i) {
+            if (i > 0) joinedModName += ".";
+            joinedModName += ast->packages[i];
+        }
+        if (VM::instance().getBuiltinModuleType(joinedModName).isNonNil()) {
+            builtinRegistryKey = joinedModName;
+            module.name = ast->packages.back();  // leaf name for module hierarchy
             builtinModule = true;
         }
     }
@@ -724,9 +984,11 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
 
     if (!imported) {  // import it
         if (builtinModule) {
-            ptr<BuiltinModule> importedModule = VM::instance().getBuiltinModule(module.name);
+            // Use the full dotted registry key (e.g. "ai.nn") for lazy module lookup
+            auto registryKey = builtinRegistryKey.isEmpty() ? module.name : builtinRegistryKey;
+            ptr<BuiltinModule> importedModule = VM::instance().getBuiltinModule(registryKey);
             if (!importedModule)
-                throw std::runtime_error("builtin module '" + toUTF8StdString(module.name) + "' not registered");
+                throw std::runtime_error("builtin module '" + toUTF8StdString(registryKey) + "' not registered");
             importedModuleType = importedModule->moduleType();
             importedModuleType = importedModuleType.strongRef();
             importedModules[module] = importedModuleType;
@@ -791,64 +1053,130 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
                 return {};
             }
         } else {
-            // compile or load it, emit code to execute it
-            Value function { Value::nilVal() }; // ObjFunction
-            bool prevRepl = replModeFlag;
-            bool loadedFromCache = false;
-
-            try {
-                if (module.cacheValid)
-                    function = loadModuleFromCache(module);
-
-                if (function.isNonNil())
-                    loadedFromCache = true;
-
-                if (!loadedFromCache) {
-                    std::ifstream sourcestream(absoluteModuleFilePath);
-                    if (!sourcestream.is_open())
-                        throw std::runtime_error("unable to open module source: " + absoluteModuleFilePath);
-
-                    replModeFlag = false; // don't auto-print expressions when compiling imported module
-                    function = compile(sourcestream,
-                                       !absoluteModuleFilePath.empty() ?
-                                              absoluteModuleFilePath
-                                            : toUTF8StdString(module.name)
-                                      );
-                    storeModuleCache(module, function);
-                }
-
-                replModeFlag = prevRepl;
-
-                importedModuleType = asFunction(function)->moduleType;
+            // Cross-compiler canonicalisation: if another compilation
+            // has already loaded this user module, reuse its
+            // ObjModuleType rather than producing a fresh one.  Each
+            // RoxalCompiler has its own per-compilation
+            // `importedModules` map, so without a process-wide
+            // registry two top-level compilations (e.g. a builtin
+            // module's companion .rox followed by a user script that
+            // imports the same transitive user module) would produce
+            // distinct ObjModuleType pointers for the same name.
+            // That would break `linkMethod`: the native binding
+            // lands on one ObjObjectType, but instances constructed
+            // later use the other.
+            VM& vm = VM::instance();
+            if (auto canon = vm.lookupUserModule(moduleFullName); canon.has_value()) {
+                importedModuleType = *canon;
                 if (isModuleType(importedModuleType)) {
                     ObjModuleType* imported = asModuleType(importedModuleType);
-                    imported->fullName = moduleFullName;
+                    if (imported->fullName.isEmpty())
+                        imported->fullName = moduleFullName;
+
+                    // Anchor the canonical Value in this compilation's
+                    // constant pool so GC keeps it alive while this
+                    // compilation runs.
+                    bool hasConstant = false;
+                    for (const auto& constant : currentChunk()->constants) {
+                        if (constant.is(importedModuleType, true)) {
+                            hasConstant = true;
+                            break;
+                        }
+                    }
+                    if (!hasConstant)
+                        makeConstant(importedModuleType);
                 }
-
-                // emit code to place module's main chunk on stack as closure
-                assert(asFunction(function)->upvalueCount == 0);
-                {
-                    uint16_t constIdx = makeConstant(function);
-                    emitOpArgsBytes(OpCode::Closure, constIdx);
-                }
-
-                // call it to have it executed (which will result in module vars being declared)
-                CallSpec callSpec {};
-                callSpec.allPositional = true;
-                callSpec.argCount = 0;
-                auto bytes = callSpec.toBytes();
-                assert(bytes.size()==1);
-                emitBytes(OpCode::Call, bytes[0]);
-
-                // Discard the module's return value so subsequent locals start at the expected slot
-                emitByte(OpCode::Pop);
-
                 importedModules[module] = importedModuleType;
+                // No Closure+Call emit: the canonical module's body has
+                // already run during the compilation that first loaded
+                // it.  Re-executing would re-declare its consts /
+                // procs / types and either fail or duplicate state.
+            } else {
+                // compile or load it, emit code to execute it
+                Value function { Value::nilVal() }; // ObjFunction
+                bool prevRepl = replModeFlag;
+                bool loadedFromCache = false;
 
-            } catch (std::exception& e) {
-                replModeFlag = prevRepl;
-                error(e.what());
-                return {};
+                try {
+                    if (module.cacheValid)
+                        function = loadModuleFromCache(module);
+
+                    if (function.isNonNil())
+                        loadedFromCache = true;
+
+                    if (!loadedFromCache) {
+                        std::ifstream sourcestream(absoluteModuleFilePath);
+                        if (!sourcestream.is_open())
+                            throw std::runtime_error("unable to open module source: " + absoluteModuleFilePath);
+
+                        replModeFlag = false; // don't auto-print expressions when compiling imported module
+
+                        // Pre-allocate the ObjModuleType and register
+                        // it BEFORE the body compiles so a circular
+                        // import (this module's body re-importing one
+                        // of its ancestors via the registry path)
+                        //  sees the already-registered (partially-
+                        // populated) value rather than infinitely
+                        // recursing through a fresh allocation each
+                        // time.
+                        Value preallocated = Value::objVal(newModuleTypeObj(module.name));
+                        ObjModuleType::allModules.push_back(preallocated);
+                        vm.registerUserModule(moduleFullName, preallocated);
+
+                        function = compile(sourcestream,
+                                           !absoluteModuleFilePath.empty() ?
+                                                  absoluteModuleFilePath
+                                                : toUTF8StdString(module.name),
+                                           preallocated);
+                        if (function.isNil())
+                            throw std::runtime_error("compilation failed for module: " + toUTF8StdString(module.name));
+                        storeModuleCache(module, function);
+                    }
+
+                    replModeFlag = prevRepl;
+
+                    importedModuleType = asFunction(function)->moduleType;
+                    if (isModuleType(importedModuleType)) {
+                        ObjModuleType* imported = asModuleType(importedModuleType);
+                        imported->fullName = moduleFullName;
+                    }
+
+                    // Cache-load path didn't pre-register (the
+                    // canonical ObjModuleType is materialised by
+                    // deserialisation).  Register it now so the next
+                    // compilation that imports this module will
+                    // canonicalise against it.  The fresh-compile
+                    // path already registered the pre-allocated
+                    // module above; this is a no-op for it
+                    // (registerUserModule is insert-only).
+                    if (loadedFromCache && isModuleType(importedModuleType))
+                        vm.registerUserModule(moduleFullName, importedModuleType);
+
+                    // emit code to place module's main chunk on stack as closure
+                    assert(asFunction(function)->upvalueCount == 0);
+                    {
+                        uint16_t constIdx = makeConstant(function);
+                        emitOpArgsBytes(OpCode::Closure, constIdx);
+                    }
+
+                    // call it to have it executed (which will result in module vars being declared)
+                    CallSpec callSpec {};
+                    callSpec.allPositional = true;
+                    callSpec.argCount = 0;
+                    auto bytes = callSpec.toBytes();
+                    assert(bytes.size()==1);
+                    emitBytes(OpCode::Call, bytes[0]);
+
+                    // Discard the module's return value so subsequent locals start at the expected slot
+                    emitByte(OpCode::Pop);
+
+                    importedModules[module] = importedModuleType;
+
+                } catch (std::exception& e) {
+                    replModeFlag = prevRepl;
+                    error(e.what());
+                    return {};
+                }
             }
         }
     } else { // already previously imported
@@ -939,7 +1267,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
             symbolsList.push_back(Value::stringVal(symbol));
 
         Value symbolsListVal { Value::listVal() };
-        asList(symbolsListVal)->elts = symbolsList;
+        asList(symbolsListVal)->setElements(symbolsList);
 
         // Opcode::ImportModuleVars expects a list (of symbols) and the source module & target module
         emitConstant(symbolsListVal, "import vars "+toUTF8StdString(join(ast->symbols)));
@@ -950,6 +1278,37 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
         emitByte(OpCode::ImportModuleVars);
     }
 
+    // Propagate registered suffixes from the imported module into this compiler's registry.
+    // If the module was loaded from cache, registeredSuffixes may be empty;
+    // rebuild it by scanning function annotations.
+    if (isModuleType(importedModuleType)) {
+        ObjModuleType* imported = asModuleType(importedModuleType);
+        if (imported->registeredSuffixes.empty()) {
+            imported->vars.forEach([&](const VariablesMap::NameValue& nv) {
+                if (isClosure(nv.second)) {
+                    ObjFunction* fn = asFunction(asClosure(nv.second)->function);
+                    for (const auto& annot : fn->annotations) {
+                        if (annot->name == "suffix" && annot->args.size() == 1) {
+                            if (auto s = dynamic_ptr_cast<ast::Str>(annot->args[0].second))
+                                imported->registeredSuffixes[s->str] = nv.first;
+                        }
+                    }
+                }
+            });
+        }
+        for (const auto& [suf, funcName] : imported->registeredSuffixes) {
+            auto existing = suffixRegistry.find(suf);
+            if (existing != suffixRegistry.end() && existing->second.moduleName != imported->name) {
+                std::string sufStr; suf.toUTF8String(sufStr);
+                std::string existingMod; existing->second.moduleName.toUTF8String(existingMod);
+                std::string newMod; imported->name.toUTF8String(newMod);
+                error("suffix '" + sufStr + "' is already registered by '" + existingMod
+                      + "'; conflicting import from '" + newMod + "'");
+            } else {
+                suffixRegistry[suf] = SuffixRegistration{suf, funcName, imported->name};
+            }
+        }
+    }
 
     return {};
 }
@@ -962,6 +1321,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
     if (ast->kind == TypeDecl::Event) {
         enterTypeScope(ast->name);
+        asTypeScope(typeScope())->typeDecl = ast;
 
         if (!ast->methods.empty())
             error("Events cannot declare methods");
@@ -969,10 +1329,11 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             error("Events cannot implement interfaces");
 
         if (ast->extends.has_value()) {
-            auto superName = ast->extends.value();
+            auto superName = joinTypeName(ast->extends.value());
             auto it = typePropertyRegistry.find(superName);
             if (it != typePropertyRegistry.end())
-                asTypeScope(typeScope())->propertyNames.insert(it->second.begin(), it->second.end());
+                for (const auto& kv : it->second)
+                    asTypeScope(typeScope())->propertyNames.insert(kv);
         }
 
         uint16_t typeNameConstant = identifierConstant(ast->name);
@@ -980,16 +1341,20 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         emitOpArgsBytes(OpCode::EventType, typeNameConstant);
         defineVariable(typeNameConstant);
 
-        auto moduleScopePtr = asModuleScope(moduleScope());
-        ObjModuleType* moduleTypeObj = asModuleType(moduleScopePtr->moduleType);
-        moduleScopePtr->moduleConstLines[ast->name] = currentNode->interval.first;
-        moduleTypeObj->constVars.insert(ast->name.hashCode());
+        if (asFuncScope(funcScope())->scopeDepth == 0) {
+            auto moduleScopePtr = asModuleScope(moduleScope());
+            ObjModuleType* moduleTypeObj = asModuleType(moduleScopePtr->moduleType);
+            moduleScopePtr->moduleConstLines[ast->name] = currentNode->interval.first;
+            moduleTypeObj->constVars.insert(ast->name.hashCode());
+        } else {
+            asFuncScope(funcScope())->locals.back().isConst = true;
+        }
 
         if (ast->extends.has_value()) {
             asTypeScope(typeScope())->hasSuperType = true;
             asTypeScope(typeScope())->superTypeName = ast->extends.value();
 
-            namedVariable(ast->extends.value(), false);
+            emitTypeName(ast->extends.value());
             enterLocalScope();
             addLocal("super");
             defineVariable(0);
@@ -1000,12 +1365,13 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         namedVariable(ast->name, false);
 
         for (const auto& prop : ast->properties) {
+            currentNode = prop;
             if (prop->access == Access::Private)
                 error("Event payload member '" + toUTF8StdString(prop->name) + "' cannot be private");
 
             auto propName { prop->name };
             uint16_t propNameConstant = identifierConstant(propName);
-        asTypeScope(typeScope())->propertyNames[propName] = {prop->access, ast->name, prop->isConst};
+            asTypeScope(typeScope())->propertyNames[propName] = {prop->access, ast->name, prop->isConst, prop->varType};
 
             if (prop->varType.has_value()) {
                 auto varType { prop->varType.value() };
@@ -1017,7 +1383,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
                     Value typeValue { Value::typeSpecVal(builtinToValueType(builtinType)) };
                     emitConstant(typeValue, "event payload " + toUTF8StdString(propName) + " type");
                 } else {
-                    namedVariable(std::get<icu::UnicodeString>(varType), false);
+                    emitTypeName(std::get<TypeName>(varType));
                 }
             } else {
                 emitByte(OpCode::ConstNil, "event payload " + toUTF8StdString(propName) + " (no type)");
@@ -1073,35 +1439,58 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
     enterTypeScope(ast->name);
     asTypeScope(typeScope())->isActor = isActor;
+    asTypeScope(typeScope())->typeDecl = ast;
 
     // inherit property registry from super type if available
     if (ast->extends.has_value()) {
-        auto superName = ast->extends.value();
+        auto superName = joinTypeName(ast->extends.value());
         auto it = typePropertyRegistry.find(superName);
         if (it != typePropertyRegistry.end())
-            asTypeScope(typeScope())->propertyNames.insert(it->second.begin(), it->second.end());
+            for (const auto& kv : it->second)
+                asTypeScope(typeScope())->propertyNames.insert(kv);
     }
 
     uint16_t typeNameConstant = identifierConstant(ast->name);
-    declareVariable(ast->name);
 
-    if (ast->implements.size()>2)
-        throw std::runtime_error("Multiple implements types unimplemented.");
+    if (!compilingNestedType)
+        declareVariable(ast->name);
 
-    if (isInterface && (ast->implements.size() > 0))
-        throw std::runtime_error("Interfaces can't implement (only extend)");
+    if (isInterface && !ast->implements.empty())
+        error("Interfaces can't implement (only extend)");
 
     // Write type opcode with automatic single/double-byte argument handling
     if (isActor) emitOpArgsBytes(OpCode::ActorType, typeNameConstant);
     else if (isInterface) emitOpArgsBytes(OpCode::InterfaceType, typeNameConstant);
     else if (isEnumeration) emitOpArgsBytes(OpCode::EnumerationType, typeNameConstant);
     else emitOpArgsBytes(OpCode::ObjectType, typeNameConstant);
-    defineVariable(typeNameConstant);
 
-    auto moduleScopePtr = asModuleScope(moduleScope());
-    ObjModuleType* moduleTypeObj = asModuleType(moduleScopePtr->moduleType);
-    moduleScopePtr->moduleConstLines[ast->name] = currentNode->interval.first;
-    moduleTypeObj->constVars.insert(ast->name.hashCode());
+    if (!compilingNestedType) {
+        defineVariable(typeNameConstant);
+
+        if (asFuncScope(funcScope())->scopeDepth == 0) {
+            auto moduleScopePtr = asModuleScope(moduleScope());
+            ObjModuleType* moduleTypeObj = asModuleType(moduleScopePtr->moduleType);
+            moduleScopePtr->moduleConstLines[ast->name] = currentNode->interval.first;
+            moduleTypeObj->constVars.insert(ast->name.hashCode());
+        } else {
+            asFuncScope(funcScope())->locals.back().isConst = true;
+        }
+    } else {
+        // Register the OBJECT_TYPE (or actor/interface/enum) result as an
+        // anchor local at the parent's current scope depth.
+        // (Without this, locals[] indices would drift from actual VM stack
+        // slots: the type value pushed by the Type opcode is an unregistered
+        // stack temp, so the subsequent Dup-and-addLocal($selfType) would
+        // record the wrong slot.
+        //
+        // The anchor lives in the parent's scope so the nested type body's
+        // own enterLocalScope/exitLocalScope dance doesn't touch it. The
+        // parent's NestedType emission loop pops both the runtime value (via
+        // OpCode::NestedType) and this locals[] entry (manually).
+        addLocal(UnicodeString("__nested_anchor_") + ast->name);
+        asFuncScope(funcScope())->locals.back().depth =
+            asFuncScope(funcScope())->scopeDepth;
+    }
 
 
     // handle extension (inheritance)
@@ -1112,30 +1501,166 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         auto superTypeName = ast->extends.value();
 
         // can't inherit yourself
-        if (superTypeName == ast->name)
+        if (superTypeName.size() == 1 && superTypeName[0] == ast->name)
             error("Type object, actor or interface '"+toUTF8StdString(ast->name)+"' can't extend itself.");
 
-        namedVariable(superTypeName, /*assign=*/false); // parent (super)
+        emitTypeName(superTypeName); // parent (super)
 
         enterLocalScope();
         addLocal("super");
         defineVariable(0);
 
-        namedVariable(ast->name, /*assign=*/false); // child (sub)
+        if (compilingNestedType)
+            // The Type opcode pushed the sub-type, then emitTypeName(super)
+            // pushed super on top. Sub is at peek(1); DupBelow copies it on
+            // top so Extend sees the expected [super, sub] ordering. Plain
+            // Dup would duplicate super, silently linking the type to itself.
+            emitByte(OpCode::DupBelow);
+        else
+            namedVariable(ast->name, /*assign=*/false); // child (sub)
         emitByte(OpCode::Extend);
     }
 
 
-    namedVariable(ast->name, false); // make type accessible on the stack
+    if (compilingNestedType) {
+        // After the Type opcode (and, if applicable, the Extend handler which
+        // pops its top entry), the implementer is the deepest fresh entry on
+        // the stack relative to top: with extends, super sits above it at
+        // peek(0), so DupBelow grabs peek(1); without extends, the implementer
+        // is at peek(0), so plain Dup works.
+        if (ast->extends.has_value() && !isEnumeration)
+            emitByte(OpCode::DupBelow);
+        else
+            emitByte(OpCode::Dup);
+    } else {
+        namedVariable(ast->name, false); // make type accessible on the stack
+    }
+
+    // Anchor the in-flight type as a local so the typescope walker can load it
+    // directly via OpCode::GetLocal, bypassing the parent-attachment chain. This
+    // matters for triply-nested cases where references to a sibling nested type
+    // would otherwise emit `GetModuleVar grandparent + GetProp parent + GetProp
+    // sibling` — but `parent`'s NESTED_TYPE attachment to grandparent runs after
+    // the body finishes, so the chain fails at runtime.
+    enterLocalScope();
+    addLocal(UnicodeString("__selfType_") + ast->name);
+    defineVariable(0);
+    asTypeScope(typeScope())->inFlightStackSlot =
+        static_cast<int16_t>(asFuncScope(funcScope())->locals.size() - 1);
+
+    // Compile nested type declarations before properties,
+    // so nested type names are available as property types.
+    // Nested types compile normally (creating module vars) so sibling types can
+    // reference each other. After the enclosing type body is fully compiled,
+    for (const auto& nestedType : ast->nestedTypes) {
+        // Register nested type name as a const member of the enclosing type.
+        // This enables sibling resolution via TypeScope in namedVariable().
+        asTypeScope(typeScope())->propertyNames[nestedType->name] =
+            {nestedType->access, ast->name, /*isConst=*/true};
+
+        // Compile the nested type without module-level registration.
+        bool wasCompilingNestedType = compilingNestedType;
+        compilingNestedType = true;
+        size_t localsBefore = asFuncScope(funcScope())->locals.size();
+        nestedType->accept(*this);
+        compilingNestedType = wasCompilingNestedType;
+
+        // The type value is on the stack from the type opcode.
+        // Store on enclosing type via NestedType opcode (with access flag).
+        emitByte(nestedType->access == Access::Private ? OpCode::ConstTrue : OpCode::ConstFalse);
+        uint16_t nestedNameConstant = identifierConstant(nestedType->name);
+        emitOpArgsBytes(OpCode::NestedType, nestedNameConstant,
+                        "nested type " + toUTF8StdString(nestedType->name));
+
+        // The nested-type compile registered an anchor in our locals[] to keep
+        // slot tracking aligned with the VM stack (see visit(TypeDecl)).
+        // NestedType just popped the runtime value; remove the anchor entry so
+        // future addLocal calls compute correct indices.
+        auto& locals = asFuncScope(funcScope())->locals;
+        if (locals.size() > localsBefore)
+            locals.pop_back();
+    }
 
     for(size_t i=0; i<ast->properties.size(); i++) {
 
-        if (isInterface) {
-            error("Interfaces cannot declare properties");
-            break;
-        }
-
         ptr<VarDecl> prop { ast->properties.at(i) };
+        currentNode = prop;
+
+        // In an interface:
+        //   `const X :T = <literal>` → concrete static const inherited by implementers
+        //                              (falls through to the normal property emission below).
+        //   `var X :T` (no initializer) → sugar for abstract `get`+`set`.
+        //   `var X :T = <literal>` → forbidden (writable static is dangerous).
+        //   `const X :T` (no initializer) → already rejected by TypeDeducer
+        //     (const requires initializer). Use `var X :T:` `get` for an
+        //     abstract read-only API: the `const` keyword would otherwise
+        //     promise value-stability that a computed getter can't honor.
+        if (isInterface && prop->initializer.has_value()) {
+            if (!prop->isConst)
+                error("Interface property '" + toUTF8StdString(prop->name) +
+                      "' cannot be a writable storage property; only `const X = literal` is allowed");
+            // Concrete const: fall through to the normal storage-property emission
+            // path (OpCode::Property). At runtime, defineProperty allows const
+            // properties on interfaces; OpCode::Implements then copies them into
+            // implementers, mirroring how Extend copies parent properties.
+        }
+        else if (isInterface) {
+            // Sugar path: `var X :T` no-init → abstract get+set.
+            // (const-no-init was rejected by TypeDeducer; we only get var here.)
+            if (!prop->varType.has_value())
+                error("Interface property '" + toUTF8StdString(prop->name) +
+                      "' must declare a type");
+
+            auto enclosingModuleScope = asModuleScope(moduleScope());
+            asTypeScope(typeScope())->propertyNames[prop->name] =
+                {prop->access, ast->name, /*isConst=*/false, prop->varType};
+
+            auto emitAbstractAccessor =
+                [&](const icu::UnicodeString& accName, bool isSetter) {
+                    asTypeScope(typeScope())->propertyNames[accName] =
+                        {prop->access, ast->name, /*isConst=*/false};
+                    uint16_t methodNameConstant = identifierConstant(accName);
+
+                    ptr<type::Type> accType = make_ptr<type::Type>(BuiltinType::Func);
+                    accType->func = type::Type::FuncType{};
+                    accType->func->isProc = isSetter;
+
+                    enterFuncScope(enclosingModuleScope->moduleType,
+                                   accName, FunctionType::Method, accType);
+                    asFunction(asFuncScope(funcScope())->function)->access = prop->access;
+                    asFunction(asFuncScope(funcScope())->function)->arity = isSetter ? 1 : 0;
+                    ast::setModifier(asFunction(asFuncScope(funcScope())->function)->methodModifiers,
+                                     ast::MethodModifier::Abstract);
+
+                    enterLocalScope();
+                    if (isSetter) {
+                        addLocal("value");
+                        defineVariable(0);
+                    }
+                    // No body for abstract — trailing emitReturn supplies a return-nil tail.
+                    if (lastByte() != uint8_t(OpCode::Return))
+                        emitReturn();
+
+                    auto accFuncScope = *asFuncScope(funcScope());
+                    ObjFunction* accFunc = asFunction(accFuncScope.function);
+                    exitFuncScope();
+
+                    uint16_t constIdx = makeConstant(Value::objRef(accFunc));
+                    emitOpArgsBytes(OpCode::Closure, constIdx);
+                    for (int u = 0; u < accFunc->upvalueCount; u++) {
+                        emitByte(accFuncScope.upvalues[u].isLocal ? 1 : 0);
+                        emitByte(accFuncScope.upvalues[u].index);
+                    }
+                    emitOpArgsBytes(OpCode::Method, methodNameConstant,
+                                    (isSetter ? "abstract setter " : "abstract getter ")
+                                    + toUTF8StdString(accName));
+                };
+
+            emitAbstractAccessor(UnicodeString("__get_") + prop->name, /*isSetter=*/false);
+            emitAbstractAccessor(UnicodeString("__set_") + prop->name, /*isSetter=*/true);
+
+            continue;
+        }
 
         if (isActor && prop->access != Access::Private) {
             error("Actors cannot declare shared properties (use private)");
@@ -1147,8 +1672,8 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         auto propName { prop->name };
         uint16_t propNameConstant = identifierConstant(propName);
 
-        // record property name for implicit access within methods
-        asTypeScope(typeScope())->propertyNames[propName] = {prop->access, ast->name, prop->isConst};
+        // record property name and type for implicit access within methods
+        asTypeScope(typeScope())->propertyNames[propName] = {prop->access, ast->name, prop->isConst, prop->varType};
 
         // store @ctype annotation
         for(const auto& a : prop->annotations) {
@@ -1176,13 +1701,19 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             }
             else { // assume string names module scope (local?) type var
                 // will emit GetLocal or GetModuleVar (or GetUpValue)
-                namedVariable( std::get<icu::UnicodeString>(varType), false );
+                emitTypeName(std::get<TypeName>(varType));
             }
 
         }
         else {
             emitByte(OpCode::ConstNil, "prop "+toUTF8StdString(propName)+" (no type)"); // nil value will be interpreted as no type (or any type)
         }
+
+        // Mark the property type as const for const members without mutable qualifier.
+        // This enables type-level access (e.g. Type.constMember) and ensures the
+        // initial value will be frozen in defineProperty.
+        if (prop->isConst && !prop->isTypeMutable)
+            emitByte(OpCode::MakeConst);
 
         // initial value
         if (prop->initializer.has_value()) {
@@ -1219,6 +1750,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     // Compile property accessors (with implicit backing fields) BEFORE regular methods
     // This ensures getter/setter method names are registered before methods that might access them
     for (const auto& propAccessor : ast->propertyAccessors) {
+        currentNode = propAccessor;
         auto enclosingModuleScope = asModuleScope(moduleScope());
 
         // Property accessor names cannot start with '_' (reserved for backing fields)
@@ -1227,45 +1759,78 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             error("Property accessor name cannot start with '_': " + toUTF8StdString(propAccessor->name));
         }
 
-        // Step 1: Create implicit backing field _<name>
-        icu::UnicodeString backingFieldName = UnicodeString("_") + propAccessor->name;
-        uint16_t backingFieldConstant = identifierConstant(backingFieldName);
+        bool getterAbstract = propAccessor->getter.has_value()
+                              && std::holds_alternative<std::monostate>(*propAccessor->getter);
+        bool setterAbstract = propAccessor->setter.has_value()
+                              && std::holds_alternative<std::monostate>(*propAccessor->setter);
+        bool hasAbstractAccessor = getterAbstract || setterAbstract;
+        bool getterConcrete = propAccessor->getter.has_value() && !getterAbstract;
+        bool setterConcrete = propAccessor->setter.has_value() && !setterAbstract;
 
-        // Register backing field as private property
-        asTypeScope(typeScope())->propertyNames[backingFieldName] = {Access::Private, ast->name, /*isConst=*/false};
-
-        namedVariable(ast->name, false); // make type accessible on the stack
-
-        // Emit type for backing field
-        if (std::holds_alternative<BuiltinType>(propAccessor->propType)) {
-            auto builtinType = std::get<BuiltinType>(propAccessor->propType);
-            Value typeValue { Value::typeSpecVal(builtinToValueType(builtinType)) };
-            emitConstant(typeValue, "backing field " + toUTF8StdString(backingFieldName) + " type");
-        } else {
-            // Named type
-            namedVariable(std::get<icu::UnicodeString>(propAccessor->propType), false);
+        if (isInterface) {
+            if (getterConcrete || setterConcrete)
+                error("Interface property accessors must be abstract (no body)");
+            if (propAccessor->initializer.has_value())
+                error("Interface property accessor cannot have an initializer");
+            // `const X :T:` get (no initializer) is rejected for the same
+            // reason `const X :T` (sugar) is: the `const` keyword promises
+            // value stability, but a future implementer's getter could
+            // return different values. Use `var X :T:` `get` for an abstract
+            // read-only API instead.
+            if (propAccessor->isConst)
+                error("Interface const property '" + toUTF8StdString(propAccessor->name) +
+                      "' requires an initializer; for an abstract read-only API use `var X :T:` `get`");
+        }
+        else {
+            if (hasAbstractAccessor)
+                error("Abstract property accessor only allowed inside an interface declaration");
         }
 
-        // Emit initial value for backing field
-        if (propAccessor->initializer.has_value()) {
-            propAccessor->initializer.value()->accept(*this);
-        } else {
-            // Default value based on type
+        if (!isInterface) {
+            // Step 1: Create implicit backing field _<name>
+            icu::UnicodeString backingFieldName = UnicodeString("_") + propAccessor->name;
+            uint16_t backingFieldConstant = identifierConstant(backingFieldName);
+
+            // Register backing field as private property
+            asTypeScope(typeScope())->propertyNames[backingFieldName] = {Access::Private, ast->name, /*isConst=*/false};
+
+            // The in-flight enclosing type is already on the stack at slot
+            // inFlightStackSlot (anchored above), so we can let the subsequent
+            // Property and Method opcodes reach it via peek(...). Pushing
+            // another copy here would orphan a stale Value that shifts the
+            // anchored slot for the next type.
+
+            // Emit type for backing field
             if (std::holds_alternative<BuiltinType>(propAccessor->propType)) {
-                auto bt = std::get<BuiltinType>(propAccessor->propType);
-                if (bt == BuiltinType::Signal)
-                    error("Can't default-construct signal");
-                emitConstant(defaultValue(builtinToValueType(bt)));
+                auto builtinType = std::get<BuiltinType>(propAccessor->propType);
+                Value typeValue { Value::typeSpecVal(builtinToValueType(builtinType)) };
+                emitConstant(typeValue, "backing field " + toUTF8StdString(backingFieldName) + " type");
             } else {
-                emitByte(OpCode::ConstNil);
+                // Named type
+                emitTypeName(std::get<TypeName>(propAccessor->propType));
             }
+
+            // Emit initial value for backing field
+            if (propAccessor->initializer.has_value()) {
+                propAccessor->initializer.value()->accept(*this);
+            } else {
+                // Default value based on type
+                if (std::holds_alternative<BuiltinType>(propAccessor->propType)) {
+                    auto bt = std::get<BuiltinType>(propAccessor->propType);
+                    if (bt == BuiltinType::Signal)
+                        error("Can't default-construct signal");
+                    emitConstant(defaultValue(builtinToValueType(bt)));
+                } else {
+                    emitByte(OpCode::ConstNil);
+                }
+            }
+
+            // Emit isPrivate=true, isConst based on property declaration
+            emitByte(OpCode::ConstTrue);  // private
+            emitByte(propAccessor->isConst ? OpCode::ConstTrue : OpCode::ConstFalse); // const if property is const
+
+            emitOpArgsBytes(OpCode::Property, backingFieldConstant, "backing field " + toUTF8StdString(backingFieldName));
         }
-
-        // Emit isPrivate=true, isConst based on property declaration
-        emitByte(OpCode::ConstTrue);  // private
-        emitByte(propAccessor->isConst ? OpCode::ConstTrue : OpCode::ConstFalse); // const if property is const
-
-        emitOpArgsBytes(OpCode::Property, backingFieldConstant, "backing field " + toUTF8StdString(backingFieldName));
 
         // Step 2: Register the property name itself in propertyNames so it can be accessed
         asTypeScope(typeScope())->propertyNames[propAccessor->name] = {propAccessor->access, ast->name, /*isConst=*/false};
@@ -1285,6 +1850,9 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             enterFuncScope(enclosingModuleScope->moduleType, getterName, FunctionType::Method, getterType);
             asFunction(asFuncScope(funcScope())->function)->access = propAccessor->access;
             asFunction(asFuncScope(funcScope())->function)->arity = 0; // No parameters
+            if (getterAbstract)
+                ast::setModifier(asFunction(asFuncScope(funcScope())->function)->methodModifiers,
+                                 ast::MethodModifier::Abstract);
 
             enterLocalScope();
 
@@ -1301,6 +1869,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
                     stmt->accept(*this);
                 }
             }
+            // monostate: abstract — no body, the trailing emitReturn below handles it.
 
             // Ensure function ends with return
             if (lastByte() != uint8_t(OpCode::Return))
@@ -1336,6 +1905,9 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             enterFuncScope(enclosingModuleScope->moduleType, setterName, FunctionType::Method, setterType);
             asFunction(asFuncScope(funcScope())->function)->access = propAccessor->access;
             asFunction(asFuncScope(funcScope())->function)->arity = 1; // One parameter: value
+            if (setterAbstract)
+                ast::setModifier(asFunction(asFuncScope(funcScope())->function)->methodModifiers,
+                                 ast::MethodModifier::Abstract);
 
             enterLocalScope();
 
@@ -1356,6 +1928,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
                     stmt->accept(*this);
                 }
             }
+            // monostate: abstract — no body, the trailing emitReturn below handles it.
 
             // Ensure function ends with return
             if (lastByte() != uint8_t(OpCode::Return))
@@ -1377,6 +1950,143 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         }
     }
 
+    // Validate and remap operator method names before compilation
+    {
+        // Collect operator method info for cross-checks
+        static const std::set<icu::UnicodeString> comparisonOps = {
+            UnicodeString("=="), UnicodeString("!="),
+            UnicodeString("<"), UnicodeString(">"),
+            UnicodeString("<="), UnicodeString(">=")
+        };
+        static const std::set<icu::UnicodeString> arithmeticOps = {
+            UnicodeString("+"), UnicodeString("-"),
+            UnicodeString("*"), UnicodeString("/"), UnicodeString("%")
+        };
+
+        // Track which operator symbols have which forms defined
+        std::map<icu::UnicodeString, bool> hasOp;   // "operator<sym>" defined
+        std::map<icu::UnicodeString, bool> hasLop;   // "loperator<sym>" defined
+        std::map<icu::UnicodeString, bool> hasRop;   // "roperator<sym>" defined
+
+        for (auto& func : ast->methods) {
+            if (!func->name.has_value()) continue;
+            auto& name = func->name.value();
+            auto nameUtf8 = toUTF8StdString(name);
+
+            // Conversion operators: "operator->string", "operator->int", etc.
+            bool isConversion = name.startsWith("operator->");
+            if (isConversion) {
+                icu::UnicodeString targetType = name.tempSubString(10); // after "operator->"
+
+                if (func->isProc)
+                    error("Conversion operator '"+nameUtf8+"' must be 'func', not 'proc'.");
+
+                if (func->params.size() != 0)
+                    error("Conversion operator '"+nameUtf8+"' must have 0 parameters.");
+
+                // Return type inference or validation
+                auto bt = type::builtinTypeFromName(toUTF8StdString(targetType));
+                if (!func->returnTypes.has_value()) {
+                    // Infer return type from target type
+                    if (bt.has_value()) {
+                        func->returnTypes = std::vector<VarType>{ bt.value() };
+                        func->returnTypeConst = std::vector<bool>{ false };
+                    } else {
+                        // User-defined type
+                        func->returnTypes = std::vector<VarType>{ TypeName{targetType} };
+                        func->returnTypeConst = std::vector<bool>{ false };
+                    }
+                } else {
+                    // Validate supplied return type matches target
+                    if (func->returnTypes->size() != 1)
+                        error("Conversion operator '"+nameUtf8+"' must return exactly 1 value.");
+                    else {
+                        auto& rt = func->returnTypes->at(0);
+                        bool matches = false;
+                        if (bt.has_value()) {
+                            if (std::holds_alternative<BuiltinType>(rt) && std::get<BuiltinType>(rt) == bt.value())
+                                matches = true;
+                        } else {
+                            if (std::holds_alternative<TypeName>(rt) && joinTypeName(std::get<TypeName>(rt)) == targetType)
+                                matches = true;
+                        }
+                        if (!matches)
+                            error("Conversion operator '"+nameUtf8+"' return type must match target type '"+toUTF8StdString(targetType)+"'.");
+                    }
+                }
+                continue; // skip arithmetic/comparison operator checks
+            }
+
+            bool isOperator = name.startsWith("operator");
+            bool isLoperator = name.startsWith("loperator");
+            bool isRoperator = name.startsWith("roperator");
+
+            if (!isOperator && !isLoperator && !isRoperator)
+                continue;
+
+            // Extract the symbol part
+            icu::UnicodeString symbol;
+            if (isLoperator) symbol = name.tempSubString(9); // after "loperator"
+            else if (isRoperator) symbol = name.tempSubString(9); // after "roperator"
+            else symbol = name.tempSubString(8); // after "operator"
+
+            // Must be func, not proc
+            if (func->isProc)
+                error("Operator method '"+nameUtf8+"' must be 'func', not 'proc'.");
+
+            // Comparison operators don't support l/r variants
+            if ((isLoperator || isRoperator) && comparisonOps.count(symbol))
+                error("Comparison operator '"+nameUtf8+"' does not support l/r variants.");
+
+            // Comparison operators must return bool
+            if (isOperator && comparisonOps.count(symbol)) {
+                bool returnsBool = false;
+                if (func->returnTypes.has_value() && func->returnTypes->size() == 1) {
+                    auto& rt = func->returnTypes->at(0);
+                    if (std::holds_alternative<BuiltinType>(rt) && std::get<BuiltinType>(rt) == BuiltinType::Bool)
+                        returnsBool = true;
+                }
+                if (!returnsBool)
+                    error("Comparison operator '"+nameUtf8+"' must declare return type '-> bool'.");
+            }
+
+            // Arity checks and unary negation remap
+            size_t paramCount = func->params.size();
+            if (isOperator && symbol == "-" && paramCount == 0) {
+                // Unary negation: remap name to "uoperator-"
+                func->name = UnicodeString("uoperator-");
+            } else if (isLoperator || isRoperator) {
+                if (paramCount != 1)
+                    error("Operator method '"+nameUtf8+"' must have exactly 1 parameter.");
+            } else if (isOperator) {
+                // Binary operator must have 1 param (except unary negation handled above)
+                if (paramCount != 1)
+                    error("Binary operator method '"+nameUtf8+"' must have exactly 1 parameter.");
+            }
+
+            // Track for cross-checks
+            if (isOperator) hasOp[symbol] = true;
+            else if (isLoperator) hasLop[symbol] = true;
+            else if (isRoperator) hasRop[symbol] = true;
+        }
+
+        // Cross-checks: mutual exclusion and pairing
+        for (auto& [sym, _] : hasOp) {
+            if (hasLop.count(sym) || hasRop.count(sym))
+                error("Type '"+toUTF8StdString(ast->name)+"' defines both 'operator"+toUTF8StdString(sym)
+                      +"' and 'loperator"+toUTF8StdString(sym)+"'/'roperator"+toUTF8StdString(sym)
+                      +"' — use one convention.");
+        }
+        for (auto& [sym, _] : hasLop) {
+            if (!hasRop.count(sym))
+                error("'loperator"+toUTF8StdString(sym)+"' requires corresponding 'roperator"+toUTF8StdString(sym)+"'.");
+        }
+        for (auto& [sym, _] : hasRop) {
+            if (!hasLop.count(sym))
+                error("'roperator"+toUTF8StdString(sym)+"' requires corresponding 'loperator"+toUTF8StdString(sym)+"'.");
+        }
+    }
+
     // Now compile regular methods (after property accessors so they can reference the getter/setter methods)
 
     for(size_t i=0; i<ast->methods.size(); i++) {
@@ -1391,7 +2101,6 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
         emitOpArgsBytes(OpCode::Method, methodNameConstant, "method "+toUTF8StdString(methodName));
     }
-
 
     if (isEnumeration) {
 
@@ -1430,8 +2139,22 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         }
     }
 
+    // Emit Implements opcodes -- AFTER methods/properties have been registered
+    // on the type, so the runtime conformance check sees the full method set.
+    currentNode = ast;
+    for (const auto& ifaceName : ast->implements) {
+        emitTypeName(ifaceName);                   // push interface type
+        // Push implementer. Dup would duplicate the iface just pushed above,
+        // not the implementer; namedVariable resolves a nested type's own name
+        // via its in-flight anchor slot (set above).
+        namedVariable(ast->name, /*assign=*/false);
+        emitByte(OpCode::Implements, "implements " + toUTF8StdString(joinTypeName(ifaceName)));
+    }
 
-    emitByte(OpCode::Pop, "type name");
+    // Exit the in-flight-type local scope; emits a Pop for the $selfType local,
+    // which serves the role the explicit `Pop "type name"` had previously.
+    asTypeScope(typeScope())->inFlightStackSlot = -1;
+    exitLocalScope();
 
     if (asTypeScope(typeScope())->hasSuperType)
         exitLocalScope();
@@ -1452,14 +2175,54 @@ std::any RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
     assert(func->name.has_value()); // func declarations must have names
     auto name { func->name.value() };
 
-    declareVariable(name);
+    bool atModuleScope = (asFuncScope(funcScope())->scopeDepth == 0);
+
+    // Determine whether this name is part of an overload set in this scope
+    // (count > 1, populated by the pre-passes in visit(File) / visit(Function)).
+    bool overloaded = false;
+    if (atModuleScope) {
+        auto modScope = asModuleScope(moduleScope());
+        overloaded = modScope->moduleFuncDeclCounts[name] > 1;
+    } else {
+        auto fs = asFuncScope(funcScope());
+        overloaded = fs->localFuncDeclCounts[name] > 1;
+    }
+
+    // Within an overload set, distinguish first vs subsequent decl by whether
+    // we've already recorded a candidate FuncType for this name.
+    bool firstOverloadDecl = false;
+    int16_t existingLocalSlot = -1;
+    if (overloaded) {
+        if (atModuleScope) {
+            auto& cands = asModuleScope(moduleScope())->moduleOverloadCandidates;
+            firstOverloadDecl = (cands.find(name) == cands.end());
+        } else {
+            auto fs = asFuncScope(funcScope());
+            firstOverloadDecl = (fs->localOverloadCandidates.find(name) == fs->localOverloadCandidates.end());
+            if (!firstOverloadDecl)
+                existingLocalSlot = fs->localOverloadSlots[name];
+        }
+    }
+
+    // Declare the variable on the FIRST decl only. Subsequent overload decls
+    // reuse the same module slot (DefineModuleOverload appends) or local slot
+    // (DefineLocalOverload appends) — calling declareVariable again would
+    // either error on duplicate or add an unwanted second local.
+    if (!overloaded || firstOverloadDecl) {
+        declareVariable(name);
+        if (!atModuleScope && overloaded) {
+            int16_t slot = (int16_t)(asFuncScope(funcScope())->locals.size() - 1);
+            asFuncScope(funcScope())->localOverloadSlots[name] = slot;
+            existingLocalSlot = slot;
+        }
+    }
 
     uint16_t var { 0 };
-    if (asFuncScope(funcScope())->scopeDepth == 0) // module variable
+    if (atModuleScope) // module variable
         var = identifierConstant(name); // create constant table entry for name
 
-    if (asFuncScope(funcScope())->scopeDepth > 0) {
-        // mark initialized
+    if (!atModuleScope && (!overloaded || firstOverloadDecl)) {
+        // mark initialized so the function body can refer to itself by name
         asFuncScope(funcScope())->locals.back().depth = asFuncScope(funcScope())->scopeDepth;
     }
 
@@ -1486,9 +2249,55 @@ std::any RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
             }
             function->doc = toUnicodeString(d);
         }
+        else if (annot->name == "suffix") {
+            if (annot->args.size() != 1) {
+                error("@suffix annotation requires exactly one string argument");
+            } else if (auto s = dynamic_ptr_cast<ast::Str>(annot->args[0].second)) {
+                // Validate function arity
+                if (ast->func->params.size() != 1)
+                    error("@suffix function must accept exactly one parameter");
+                else {
+                    icu::UnicodeString suffixStr = s->str;
+                    // '%' is reserved as a standalone one-char suffix. Any other
+                    // suffix that contains '%' is rejected at registration.
+                    if (suffixStr.indexOf((UChar)'%') >= 0
+                            && suffixStr != icu::UnicodeString("%")) {
+                        error("@suffix string may not contain '%' (the '%' suffix is reserved as a standalone single-character form)");
+                    } else {
+                        icu::UnicodeString funcName = ast->func->name.value_or(toUnicodeString(""));
+                        icu::UnicodeString modName;
+                        if (inModuleScope())
+                            modName = asModuleScope(moduleScope())->name;
+                        registerSuffix(suffixStr, funcName, modName);
+                    }
+                }
+            } else {
+                error("@suffix argument must be a string literal");
+            }
+        }
     }
 
-    defineVariable(var);
+    // Record this overload's FuncType for compile-time resolution by visit(Call).
+    if (overloaded && ast->func->type.has_value()) {
+        auto funcType = ast->func->type.value();
+        if (atModuleScope) {
+            asModuleScope(moduleScope())->moduleOverloadCandidates[name].push_back(funcType);
+        } else {
+            asFuncScope(funcScope())->localOverloadCandidates[name].push_back(funcType);
+        }
+    }
+
+    if (overloaded) {
+        if (atModuleScope) {
+            emitOpArgsBytes(OpCode::DefineModuleOverload, var,
+                            "overload of " + toUTF8StdString(name));
+        } else {
+            emitOpArgsBytes(OpCode::DefineLocalOverload, (uint16_t)existingLocalSlot,
+                            "local overload of " + toUTF8StdString(name));
+        }
+    } else {
+        defineVariable(var);
+    }
 
     return {};
 }
@@ -1497,37 +2306,109 @@ std::any RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
 std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
 {
     currentNode = ast;
+    auto emitInitializer = [&]() {
+        if (ast->atHost.has_value()) {
+            auto callAst = dynamic_ptr_cast<ast::Call>(ast->initializer.value());
+            if (callAst == nullptr || !isRemoteActorConstructorCall(ast->initializer.value()))
+                error("'at <host>' requires an actor constructor call.");
+            emitRemoteActorConstructorCall(callAst, ast->atHost.value());
+        } else {
+            ast->initializer.value()->accept(*this);
+        }
+    };
 
     std::optional<VarTypeSpec> declType{};
     if (ast->varType.has_value()) {
         if (std::holds_alternative<BuiltinType>(ast->varType.value()))
             declType = std::get<BuiltinType>(ast->varType.value());
         else
-            declType = std::get<icu::UnicodeString>(ast->varType.value());
+            declType = std::get<TypeName>(ast->varType.value());
     }
 
     if (ast->isConst) {
         if (!ast->initializer.has_value())
             error("Const declarations require an initializer.");
 
-        bool strictContext = asFuncScope(funcScope())->strict;
-        Value constValue = evaluateConstExpression(ast->initializer.value(), strictContext);
-        constValue = applyConstType(constValue, declType, strictContext);
-        if (constValue.isObj())
-            error("Const declarations are currently limited to builtin value types.");
-
-        declareConstant(ast->name, constValue, declType);
-
-        if (asFuncScope(funcScope())->scopeDepth == 0) {
-            uint16_t var = identifierConstant(ast->name);
-            emitConstant(constValue, toUTF8StdString(ast->name));
-            defineVariable(var, true);
+        // Try compile-time constant evaluation (works for primitive literals, unary ops, const refs)
+        bool useCompileTimeConst = false;
+        Value constValue;
+        try {
+            bool strictContext = asFuncScope(funcScope())->strict;
+            constValue = evaluateConstExpression(ast->initializer.value(), strictContext);
+            constValue = applyConstType(constValue, declType, strictContext);
+            useCompileTimeConst = true; // evaluateConstExpression only returns primitives
+        } catch (std::logic_error&) {
+            // Not a compile-time constant — fall through to runtime const path
         }
+
+        if (useCompileTimeConst) {
+            // Existing path: compile-time constant folding (primitives inlined at use sites)
+            declareConstant(ast->name, constValue, declType);
+            if (asFuncScope(funcScope())->scopeDepth == 0) {
+                uint16_t var = identifierConstant(ast->name);
+                emitConstant(constValue, toUTF8StdString(ast->name));
+                defineVariable(var, true);
+            }
+            return {};
+        }
+
+        // Runtime const path: reference types or non-const-foldable expressions
+        // Creates a frozen snapshot via MakeConst opcode
+        if (declType.has_value() && std::holds_alternative<BuiltinType>(*declType)
+            && std::get<BuiltinType>(*declType) == BuiltinType::Signal)
+            error("const signal is not allowed.");
+
+        uint16_t var { 0 };
+        if (asFuncScope(funcScope())->scopeDepth == 0) {
+            // Module scope: register as const (prevents reassignment at runtime)
+            auto module = asModuleScope(moduleScope());
+            auto varIt = module->moduleVarLines.find(ast->name);
+            if (varIt != module->moduleVarLines.end())
+                error("A variable with this name already exists in this scope (previously declared at line " + std::to_string(varIt->second.line) + ").");
+            auto constIt = module->moduleConstLines.find(ast->name);
+            if (constIt != module->moduleConstLines.end())
+                error("A const with this name already exists in this scope (previously declared at line " + std::to_string(constIt->second.line) + ").");
+            ObjModuleType* moduleTypeObj = asModuleType(module->moduleType);
+            moduleTypeObj->constVars.insert(ast->name.hashCode());
+            module->moduleConstLines[ast->name] = currentNode->interval.first;
+            module->moduleVarLines[ast->name] = currentNode->interval.first;
+            if (declType.has_value())
+                module->moduleVarTypes[ast->name] = declType.value();
+            var = identifierConstant(ast->name);
+        } else {
+            // Local scope: declare as local variable marked const
+            declareVariable(ast->name, declType);
+            asFuncScope(funcScope())->locals.back().isConst = true;
+        }
+
+        // Evaluate initializer at runtime
+        emitInitializer();
+        if (declType.has_value()) {
+            if (std::holds_alternative<BuiltinType>(*declType))
+                emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
+                          uint8_t(builtinToValueType(std::get<BuiltinType>(*declType))));
+            else {
+                emitTypeName(std::get<TypeName>(*declType));
+                emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
+            }
+        }
+        if (!ast->isTypeMutable)
+            emitByte(OpCode::MakeConst);
+        defineVariable(var, asFuncScope(funcScope())->scopeDepth == 0);
 
         return {};
     }
 
     declareVariable(ast->name, declType);
+    if (ast->isTypeConst) {
+        if (declType.has_value() && std::holds_alternative<BuiltinType>(*declType)
+            && std::get<BuiltinType>(*declType) == BuiltinType::Signal)
+            error("const signal is not allowed.");
+        if (asFuncScope(funcScope())->scopeDepth > 0)
+            asFuncScope(funcScope())->locals.back().isTypeConst = true;
+        else
+            asModuleScope(moduleScope())->moduleVarTypeConst.insert(ast->name);
+    }
     uint16_t var { 0 };
     if (asFuncScope(funcScope())->scopeDepth == 0) { // global variable
         var = identifierConstant(ast->name); // create constant table entry for name
@@ -1536,16 +2417,39 @@ std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
     }
 
     if (ast->initializer.has_value()) {
-        ast->initializer.value()->accept(*this);
+        // Check for const T → T assignment (prohibited per spec for reference types).
+        // Skip compile-time constants (primitives with value semantics) — only check
+        // runtime consts (reference types: objects, lists, dicts) and const-marked locals.
+        if (!ast->isTypeConst) {
+            auto* varExpr = dynamic_cast<ast::Variable*>(ast->initializer.value().get());
+            if (varExpr) {
+                auto localIdx = resolveLocal(funcScope(), varExpr->name);
+                bool initIsConst = false;
+                if (localIdx >= 0) {
+                    initIsConst = asFuncScope(funcScope())->locals[localIdx].isConst;
+                } else {
+                    // Runtime const = in moduleConstLines but NOT a compile-time const binding
+                    // (compile-time consts are primitives with value semantics, safe to copy)
+                    initIsConst = moduleConstExists(varExpr->name)
+                                  && !lookupConstBinding(varExpr->name);
+                }
+                if (initIsConst)
+                    error("Cannot assign const to mutable variable '" + toUTF8StdString(ast->name) + "'. Use clone() to create a mutable copy.");
+            }
+        }
+
+        emitInitializer();
         if (declType.has_value()) {
             if (std::holds_alternative<BuiltinType>(*declType))
                 emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
                           uint8_t(builtinToValueType(std::get<BuiltinType>(*declType))));
             else {
-                namedVariable(std::get<icu::UnicodeString>(*declType), false);
+                emitTypeName(std::get<TypeName>(*declType));
                 emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
             }
         }
+        if (ast->isTypeConst)
+            emitByte(OpCode::MakeConst);
     } else {
         if (declType.has_value()) {
             if (std::holds_alternative<BuiltinType>(*declType)) {
@@ -1584,12 +2488,98 @@ std::any RoxalCompiler::visit(ptr<ast::Suite> ast)
     return results;
 }
 
+CallSpec RoxalCompiler::buildCallSpec(const ptr<ast::Call>& ast)
+{
+    auto argCount = ast->args.size();
+    if (argCount > 127)
+        error("Number of call parameters is limited to 127");
+
+    CallSpec callSpec {};
+    if (!ast->namedArgs()) {
+        callSpec.allPositional = true;
+        callSpec.argCount = ast->args.size();
+        return callSpec;
+    }
+
+    callSpec.allPositional = false;
+    callSpec.argCount = ast->args.size();
+#ifdef DEBUG_BUILD
+    std::map<UnicodeString,uint16_t> hashes {};
+#endif
+    for(const auto& arg : ast->args) {
+        CallSpec::ArgSpec aspec {};
+        if (arg.first.isEmpty())
+            aspec.positional = true;
+        else {
+            aspec.positional = false;
+            aspec.paramNameHash = 0x8000 | (arg.first.hashCode() & 0x7fff);
+#ifdef DEBUG_BUILD
+            hashes[arg.first] = aspec.paramNameHash;
+#endif
+        }
+        callSpec.args.push_back(aspec);
+    }
+#ifdef DEBUG_BUILD
+    std::set<uint16_t> hashSet;
+    for (auto const& hash : hashes)
+        hashSet.insert(hash.second);
+    if (hashSet.size() != hashes.size())
+        throw std::runtime_error("Hash collision occured between two argument names");
+#endif
+    return callSpec;
+}
+
+bool RoxalCompiler::isRemoteActorConstructorCall(const ptr<ast::Expression>& expr) const
+{
+    auto callAst = dynamic_ptr_cast<ast::Call>(expr);
+    if (callAst == nullptr || !callAst->callable->type.has_value())
+        return false;
+    return callAst->callable->type.value()->builtin == BuiltinType::Actor;
+}
+
+void RoxalCompiler::emitRemoteActorConstructorCall(const ptr<ast::Call>& callAst,
+                                                   const ptr<ast::Expression>& hostExpr)
+{
+#ifndef ROXAL_COMPUTE_SERVER
+    (void)callAst;
+    (void)hostExpr;
+    error("Remote actor calls require a build with ROXAL_COMPUTE_SERVER enabled.");
+#else
+    if (!callAst->callable->type.has_value() || callAst->callable->type.value()->builtin != BuiltinType::Actor)
+        error("Remote calls require an actor constructor expression.");
+
+    currentNode = callAst;
+    CallSpec callSpec = buildCallSpec(callAst);
+
+    callAst->callable->accept(*this); // actor type
+    hostExpr->accept(*this);          // host string expression
+    for (const auto& arg : callAst->args)
+        arg.second->accept(*this);
+
+    auto bytes = callSpec.toBytes();
+    if (bytes.size() == 1)
+        emitBytes(OpCode::RemoteCall, bytes[0]);
+    else {
+        emitByte(OpCode::RemoteCall);
+        for (auto b : bytes)
+            emitByte(b);
+    }
+#endif
+}
+
 
 std::any RoxalCompiler::visit(ptr<ast::ExpressionStatement> ast)
 {
     currentNode = ast;
     ast::Anys results {};
-    ast->acceptChildren(*this, results);
+    if (ast->atHost.has_value()) {
+        auto callAst = dynamic_ptr_cast<ast::Call>(ast->expr);
+        if (callAst == nullptr || !isRemoteActorConstructorCall(ast->expr))
+            error("'at <host>' requires an actor constructor call.");
+        emitRemoteActorConstructorCall(callAst, ast->atHost.value());
+    } else {
+        ast->acceptChildren(*this, results);
+    }
 
     // In REPL mode at module scope with no nested local scope, automatically
     // print the value of expression statements
@@ -1608,9 +2598,23 @@ std::any RoxalCompiler::visit(ptr<ast::ExpressionStatement> ast)
         }
         emitByte(OpCode::Pop); // discard print return
     } else {
-        // expressions leave their value on the stack, but statements don't
-        // have a value, so discard it
-        emitByte(OpCode::Pop, "expr_stmt value");
+        // Expression-statement disposition. Assignments leave their RHS on
+        // the stack as an incidental "expression value" so they can also be
+        // used inside enclosing expressions; in *statement* position that
+        // leftover is not meaningful and must not trigger statement-action
+        // dispatch. Other expressions (calls, binary ops, variable reads,
+        // etc.) put their actual result on the stack and may meaningfully
+        // be a statement-action receiver — emit StmtAction for those.
+        bool isAssignment = false;
+        if (ast->expr) {
+            if (auto exprNode = dynamic_ptr_cast<ast::Expression>(ast->expr))
+                isAssignment = (exprNode->exprType == ast::Expression::Assignment);
+        }
+        if (isAssignment) {
+            emitByte(OpCode::Pop, "expr_stmt assignment leftover");
+        } else {
+            emitByte(OpCode::StmtAction, "expr_stmt value");
+        }
     }
     return results;
 }
@@ -1630,12 +2634,78 @@ std::any RoxalCompiler::visit(ptr<ast::ReturnStatement> ast)
         if (asFuncScope(funcScope())->type->func.has_value() && asFuncScope(funcScope())->type->func.value().isProc)
             error("A value cannot be returned from a proc method.");
 
+        // Emit return type conversion if the function has a declared return type.
+        // The return expression result is on the stack from acceptChildren.
+        auto& astReturnTypes = asFuncScope(funcScope())->astReturnTypes;
+        if (astReturnTypes.has_value() && !astReturnTypes->empty()) {
+            auto& rt = astReturnTypes->at(0);
+            if (std::holds_alternative<BuiltinType>(rt))
+                emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
+                          uint8_t(builtinToValueType(std::get<BuiltinType>(rt))));
+            else {
+                emitTypeName(std::get<TypeName>(rt));
+                emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
+            }
+        }
+
         emitByte(OpCode::Return);
     }
     else
         emitReturn();
 
     return results;
+}
+
+
+void RoxalCompiler::emitPopsForLoopExit(int targetDepth)
+{
+    // Read-only walk: emit Pop / CloseUpvalue for each local declared at depth
+    // greater than targetDepth, without mutating the locals vector or scopeDepth.
+    // The body's natural exitLocalScope (at end of body) — or the outer loop's
+    // exitLocalScope — will do the bookkeeping.
+    auto& locals = asFuncScope(funcScope())->locals;
+    for (auto it = locals.rbegin(); it != locals.rend() && it->depth > targetDepth; ++it) {
+        if (it->isCaptured)
+            emitByte(OpCode::CloseUpvalue, "loop-exit local "+toUTF8StdString(it->name));
+        else
+            emitByte(OpCode::Pop, "loop-exit local "+toUTF8StdString(it->name));
+    }
+}
+
+
+std::any RoxalCompiler::visit(ptr<ast::BreakStatement> ast)
+{
+    currentNode = ast;
+    if (loopStack.empty()) {
+        error("'break' outside of a loop");
+        return {};
+    }
+    auto& ctx = loopStack.back();
+    emitPopsForLoopExit(ctx.bodyScopeDepth);
+    auto off = emitJump(OpCode::Jump, "break");
+    ctx.breakOffsets.push_back(off);
+    return {};
+}
+
+
+std::any RoxalCompiler::visit(ptr<ast::ContinueStatement> ast)
+{
+    currentNode = ast;
+    if (loopStack.empty()) {
+        error("'continue' outside of a loop");
+        return {};
+    }
+    auto& ctx = loopStack.back();
+    emitPopsForLoopExit(ctx.bodyScopeDepth);
+    if (ctx.isForLoop) {
+        // Forward jump to the position right before the increment block.
+        auto off = emitJump(OpCode::Jump, "continue");
+        ctx.continueOffsets.push_back(off);
+    } else {
+        // While loop: backward jump straight to loop start.
+        emitLoop(ctx.whileLoopStart, "continue");
+    }
+    return {};
 }
 
 
@@ -1690,12 +2760,25 @@ std::any RoxalCompiler::visit(ptr<ast::WhileStatement> ast)
     auto jumpToExit = emitJump(OpCode::JumpIfFalse);
     emitByte(OpCode::Pop, "while cond");
 
+    loopStack.push_back(LoopContext {
+        asFuncScope(funcScope())->scopeDepth,
+        /*isForLoop*/ false,
+        /*whileLoopStart*/ loopStart,
+        {}, {}
+    });
+
     ast->body->accept(*this);
 
     emitLoop(loopStart);
 
     patchJump(jumpToExit);
     emitByte(OpCode::Pop, "while cond");
+
+    // break jumps land here (after the cond Pop, since break doesn't have a cond on the stack)
+    for (auto off : loopStack.back().breakOffsets)
+        patchJump(off);
+
+    loopStack.pop_back();
 
     return {};
 }
@@ -1739,13 +2822,14 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
     for(auto i = 0; i < numTargets; i++) {
         assert(isa<VarDecl>(ast->targetList.at(i)));
         auto vdecl = as<VarDecl>(ast->targetList.at(i));
+        currentNode = vdecl;
         auto name = vdecl->name;
         std::optional<VarTypeSpec> vtype{};
         if (vdecl->varType.has_value()) {
             if (std::holds_alternative<BuiltinType>(vdecl->varType.value()))
                 vtype = std::get<BuiltinType>(vdecl->varType.value());
             else
-                vtype = std::get<icu::UnicodeString>(vdecl->varType.value());
+                vtype = std::get<TypeName>(vdecl->varType.value());
         }
         targetVarNames.push_back(name);
         targetVarTypes.push_back(vtype);
@@ -1807,6 +2891,13 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
     emitByte(OpCode::Nop, "for loop body");
     #endif
 
+    loopStack.push_back(LoopContext {
+        asFuncScope(funcScope())->scopeDepth,
+        /*isForLoop*/ true,
+        /*whileLoopStart*/ 0,
+        {}, {}
+    });
+
     // check condition iname < len(iterable)
     namedVariable(iname);
     namedVariable(lenName);
@@ -1829,7 +2920,7 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
                 emitBytes(strict ? OpCode::ToTypeStrict : OpCode::ToType,
                           uint8_t(builtinToValueType(std::get<BuiltinType>(tv))));
             else {
-                namedVariable(std::get<icu::UnicodeString>(tv), false);
+                emitTypeName(std::get<TypeName>(tv));
                 emitByte(strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
             }
         }
@@ -1855,7 +2946,7 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
                     emitBytes(strict ? OpCode::ToTypeStrict : OpCode::ToType,
                               uint8_t(builtinToValueType(std::get<BuiltinType>(tv))));
                 else {
-                    namedVariable(std::get<icu::UnicodeString>(tv), false);
+                    emitTypeName(std::get<TypeName>(tv));
                     emitByte(strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
                 }
             }
@@ -1868,6 +2959,10 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
 
     // generate code for the body
     ast->body->accept(*this);
+
+    // 'continue' lands here — before increment, so the index still advances
+    for (auto off : loopStack.back().continueOffsets)
+        patchJump(off);
 
     // increment the loop index
     //  TODO: add Inc opcode (or IncLocal?)
@@ -1882,6 +2977,12 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
     patchJump(jumpToExit);
     patchJump(jumpToAbort);
     emitByte(OpCode::Pop, "exit/abort cond");
+
+    // 'break' lands here — synthetic locals will be popped by the outer exitLocalScope
+    for (auto off : loopStack.back().breakOffsets)
+        patchJump(off);
+
+    loopStack.pop_back();
 
     exitLocalScope();
 
@@ -2029,6 +3130,33 @@ std::any RoxalCompiler::visit(ptr<ast::UntilStatement> ast)
     return {};
 }
 
+std::any RoxalCompiler::visit(ptr<ast::AdheringIfStatement> ast)
+{
+    currentNode = ast;
+
+    // <stmt> if <cond>
+    //   is compiled like a no-else if-statement that wraps the entire wrapped
+    //   statement's bytecode. The wrapped statement (typically an
+    //   ExpressionStatement) emits its own StmtAction/Pop terminator, so when
+    //   the guard is true the value is disposed normally; when false, the body
+    //   is skipped wholesale and nothing is left on the stack.
+
+    ast->condition->accept(*this);                       // [cond]
+    auto jumpOver = emitJump(OpCode::JumpIfFalse);
+    emitByte(OpCode::Pop, "if-suffix cond (true)");      // pop true cond
+
+    enterLocalScope();
+    ast->stmt->accept(*this);
+    exitLocalScope();
+
+    auto jumpEnd = emitJump(OpCode::Jump);
+    patchJump(jumpOver);
+    emitByte(OpCode::Pop, "if-suffix cond (false)");     // pop false cond
+    patchJump(jumpEnd);
+
+    return {};
+}
+
 std::any RoxalCompiler::visit(ptr<ast::TryStatement> ast)
 {
     currentNode = ast;
@@ -2071,9 +3199,6 @@ std::any RoxalCompiler::visit(ptr<ast::TryStatement> ast)
         ec.body->accept(*this);
         exceptionVarStack.pop_back();
         exitLocalScope();
-
-        if (!ec.name.has_value())
-            emitByte(OpCode::Pop, "exception");
 
         if (ast->finallySuite.has_value())
             ast->finallySuite.value()->accept(*this);
@@ -2128,8 +3253,7 @@ std::any RoxalCompiler::visit(ptr<ast::MatchStatement> ast)
                     // Check lower bound: value >= start
                     emitByte(OpCode::Dup);
                     range->start->accept(*this);
-                    emitByte(OpCode::Less);
-                    emitByte(OpCode::Negate);
+                    emitByte(OpCode::GreaterEqual);
 
                     // Short-circuit if lower bound fails
                     auto lowerFail = emitJump(OpCode::JumpIfFalse);
@@ -2139,8 +3263,7 @@ std::any RoxalCompiler::visit(ptr<ast::MatchStatement> ast)
                     emitByte(OpCode::Dup);
                     range->stop->accept(*this);
                     if (range->closed) {
-                        emitByte(OpCode::Greater);
-                        emitByte(OpCode::Negate);
+                        emitByte(OpCode::LessEqual);
                     } else {
                         emitByte(OpCode::Less);
                     }
@@ -2163,8 +3286,7 @@ std::any RoxalCompiler::visit(ptr<ast::MatchStatement> ast)
                     // Only lower bound: start.. or start:
                     // Check: value >= start
                     range->start->accept(*this);
-                    emitByte(OpCode::Less);
-                    emitByte(OpCode::Negate);
+                    emitByte(OpCode::GreaterEqual);
                     caseMatchJumps.push_back(emitJump(OpCode::JumpIfTrue));
                     emitByte(OpCode::Pop);
 
@@ -2173,8 +3295,7 @@ std::any RoxalCompiler::visit(ptr<ast::MatchStatement> ast)
                     // Check: value <= stop (or < stop if half-open)
                     range->stop->accept(*this);
                     if (range->closed) {
-                        emitByte(OpCode::Greater);
-                        emitByte(OpCode::Negate);
+                        emitByte(OpCode::LessEqual);
                     } else {
                         emitByte(OpCode::Less);
                     }
@@ -2312,6 +3433,13 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
 {
     currentNode = ast;
 
+    // A function declared without a body (`func foo()<NEWLINE>`) is abstract.
+    // Mark it so the runtime conformance check can distinguish it from a
+    // user-written empty body, and so abstract methods can be detected on
+    // interfaces.
+    if (std::holds_alternative<std::monostate>(ast->body))
+        ast::setModifier(ast->methodModifiers, ast::MethodModifier::Abstract);
+
     bool isProc = ast->isProc;
     bool isMethod = inTypeScope() // methods can't be outside type decl
                      && (asFuncScope(funcScope())->functionType!=FunctionType::Method) // or directly inside another method
@@ -2324,6 +3452,25 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
 
     if (isInitializer && !isProc)
         error("object or actor type 'init' method must be a proc.");
+
+    // `proc init(*)` sugar: a single `*` param expands at compile time into
+    // one synthesized param per public property of the enclosing type, with
+    // an assignment prologue `this.<prop> = <prop>` for each. Validate here;
+    // the actual synthesis happens after enterLocalScope below.
+    bool isStarInit = ast->params.size() == 1 && ast->params[0]->isStar;
+    if (isStarInit) {
+        if (!isInitializer)
+            error("`*` parameter is only allowed in `proc init(*)`");
+        if (!inTypeScope())
+            error("`proc init(*)` only allowed inside a type declaration");
+        else {
+            auto ts = asTypeScope(typeScope());
+            if (ts->isActor)
+                error("`proc init(*)` is not yet supported on actor types");
+            if (ts->typeDecl.expired())
+                error("internal: enclosing TypeDecl missing for `proc init(*)`");
+        }
+    }
 
     FunctionType ftype = isMethod ?
                               (isInitializer ? FunctionType::Initializer : FunctionType::Method)
@@ -2344,6 +3491,30 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
 
     enterFuncScope(enclosingModuleScope->moduleType, funcName, ftype, ast->type.value());
 
+    // Local function-overload pre-pass: count FuncDecls at the top level of
+    // this function's body. A name with count > 1 binds to an OverloadSet
+    // in its local slot (DefineLocalOverload); single-decl names use the
+    // existing fast path. We only count immediate children of the body
+    // Suite — FuncDecls inside nested if/for/while blocks belong to their
+    // own block scopes and are not yet supported as overloads.
+    if (std::holds_alternative<ptr<Suite>>(ast->body)) {
+        auto bodySuite = std::get<ptr<Suite>>(ast->body);
+        auto fs = asFuncScope(funcScope());
+        for (const auto& declOrStmt : bodySuite->declsOrStmts) {
+            if (!std::holds_alternative<ptr<Declaration>>(declOrStmt))
+                continue;
+            auto fd = dynamic_ptr_cast<ast::FuncDecl>(std::get<ptr<Declaration>>(declOrStmt));
+            if (!fd || !fd->func->name.has_value())
+                continue;
+            ++fs->localFuncDeclCounts[fd->func->name.value()];
+        }
+    }
+
+    // Store AST-level return types so visit(ReturnStatement) can emit conversion opcodes.
+    // Skip for conversion operators (would recurse — the operator IS the conversion).
+    if (ast->returnTypes.has_value() && !(ast->name.has_value() && ast->name.value().startsWith("operator->")))
+        asFuncScope(funcScope())->astReturnTypes = ast->returnTypes;
+
     bool strictContext = true;
     for (const auto& annot : ast->annotations) {
         if (annot->name == "strict")
@@ -2357,27 +3528,112 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
     ObjFunction* funcObj = asFunction(funcScopePtr->function);
     funcObj->strict = strictContext;
     funcObj->access = ast->access;
+    funcObj->methodModifiers = ast->methodModifiers;
 
     #ifdef DEBUG_BUILD
     emitByte(OpCode::Nop, "func "+toUTF8StdString(funcName));
     #endif
     enterLocalScope();
 
+    // For `proc init(*)`, build the unified, source-ordered list of public
+    // members (plain data props and accessor-equipped props interleaved in
+    // declaration order). The synthesized arity is this list's size.
+    std::vector<StarInitMember> starInitMembers;
+    if (isStarInit) {
+        auto enclosingTypeDecl = asTypeScope(typeScope())->typeDecl.lock();
+        if (enclosingTypeDecl) {
+            // Build (sourcePos, member) pairs from both AST lists, then sort
+            // by source position so callers see params in the order the
+            // properties appear in the user's type body — regardless of
+            // whether each is implemented as a plain `var` or via accessors.
+            std::vector<std::pair<LinePos, StarInitMember>> ordered;
+            ordered.reserve(enclosingTypeDecl->properties.size()
+                            + enclosingTypeDecl->propertyAccessors.size());
+
+            for (const auto& prop : enclosingTypeDecl->properties) {
+                if (prop->access != Access::Public)
+                    continue;
+                StarInitMember m;
+                m.name = prop->name;
+                m.declaredType = prop->varType;
+                m.initializer = prop->initializer;
+                m.storageName = prop->name;       // SetProp targets the property itself
+                m.isConst = prop->isConst;
+                ordered.emplace_back(prop->interval.first, std::move(m));
+            }
+            for (const auto& pa : enclosingTypeDecl->propertyAccessors) {
+                if (pa->access != Access::Public)
+                    continue;
+                // Get-only accessors are read-only on the public surface
+                // (computed / externally immutable). Excluding them from
+                // init(*) preserves that contract: a synthesized param would
+                // let callers write through what was declared read-only.
+                if (pa->getter.has_value() && !pa->setter.has_value())
+                    continue;
+                StarInitMember m;
+                m.name = pa->name;
+                m.declaredType = pa->propType;
+                m.initializer = pa->initializer;
+                // Accessor properties: write to the synthetic `_<name>`
+                // backing field, bypassing the user-defined setter.
+                m.storageName = icu::UnicodeString("_") + pa->name;
+                m.isConst = pa->isConst;
+                ordered.emplace_back(pa->interval.first, std::move(m));
+            }
+
+            std::sort(ordered.begin(), ordered.end(),
+                      [](const auto& a, const auto& b) {
+                          if (a.first.line != b.first.line)
+                              return a.first.line < b.first.line;
+                          return a.first.pos < b.first.pos;
+                      });
+
+            starInitMembers.reserve(ordered.size());
+            for (auto& entry : ordered)
+                starInitMembers.push_back(std::move(entry.second));
+        }
+    }
+
     // Count regular params (exclude variadic param from arity)
     size_t regularParamCount = ast->params.size();
     if (!ast->params.empty() && ast->params.back()->variadic) {
         regularParamCount--;
     }
+    if (isStarInit)
+        regularParamCount = starInitMembers.size();
     asFunction(asFuncScope(funcScope())->function)->arity = regularParamCount;
     if (asFunction(asFuncScope(funcScope())->function)->arity > 255)
         error("Maximum of function or procedure 255 parameters exceeded.");
 
     Anys results {};
-    ast->acceptChildren(*this, results);
+    if (isStarInit) {
+        emitStarInitPrologue(starInitMembers);
+        // Body only — params are synthesized above; no AST params to visit.
+        if (std::holds_alternative<ptr<Suite>>(ast->body)) {
+            auto suite = std::get<ptr<Suite>>(ast->body);
+            results.push_back(suite->accept(*this));
+        }
+        // proc bodies cannot be expression-form; `proc init(*)` is always proc.
+    } else {
+        ast->acceptChildren(*this, results);
+    }
 
     // if the body is an expression (e.g. lambda func), leaves the result on the stack, so return it
-    if (std::holds_alternative<ptr<Expression>>(ast->body))
+    if (std::holds_alternative<ptr<Expression>>(ast->body)) {
+        // Emit return type conversion for expression-body lambdas
+        auto& astReturnTypes = asFuncScope(funcScope())->astReturnTypes;
+        if (astReturnTypes.has_value() && !astReturnTypes->empty()) {
+            auto& rt = astReturnTypes->at(0);
+            if (std::holds_alternative<BuiltinType>(rt))
+                emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
+                          uint8_t(builtinToValueType(std::get<BuiltinType>(rt))));
+            else {
+                emitTypeName(std::get<TypeName>(rt));
+                emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
+            }
+        }
         emitByte(OpCode::Return);
+    }
 
     //exitLocalScope();
 
@@ -2434,12 +3690,31 @@ std::any RoxalCompiler::visit(ptr<ast::Parameter> ast)
 {
     currentNode = ast;
 
+    // Signals cannot be const (they exist to change over time)
+    if (ast->isConst && ast->type.has_value() && std::holds_alternative<BuiltinType>(*ast->type)
+        && std::get<BuiltinType>(*ast->type) == BuiltinType::Signal)
+        error("const signal is not allowed.");
+
     // TODO: handle optional type
 
     declareVariable(ast->name);
     uint16_t var = identifierConstant(ast->name); // create constant table entry for name
 
     defineVariable(var);
+
+    // Parameter type conversion is handled at runtime in frameStart (VM.cpp),
+    // which scans funcType params and converts in-place using callerStrict.
+    // No bytecode emission needed here.
+
+    // Const-freezing of typed params is handled at runtime in frameStart (VM.cpp),
+    // using funcType param's type->isConst.
+    // Params are immutable bindings — reassignment is checked via isParam
+    // in namedVariable(), not via isConst (which would also block copying to mutable locals).
+    {
+        auto localArg = resolveLocal(funcScope(), ast->name);
+        if (localArg >= 0)
+            asFuncScope(funcScope())->locals[localArg].isParam = true;
+    }
 
     // output code for evaluating default value (if any)
     if (ast->defaultValue.has_value()) {
@@ -2488,16 +3763,196 @@ std::any RoxalCompiler::visit(ptr<ast::Parameter> ast)
 }
 
 
+void RoxalCompiler::emitStarInitPrologue(const std::vector<StarInitMember>& members)
+{
+    // Caller ensures we are inside a `proc init(*)` body with the function scope already entered.
+    auto funcScopePtr { asFuncScope(this->funcScope()) };
+    ObjFunction* funcObj { asFunction(funcScopePtr->function) };
+
+    // Reject const properties up front — initializing const members during
+    // init(*) needs a separate const-during-init mechanism (deferred).
+    for (const auto& m : members) {
+        if (m.isConst) {
+            error("`proc init(*)` does not yet support const properties; declare init explicitly");
+            return;
+        }
+    }
+
+    // Helper that turns an AST VarType (BuiltinType | TypeName) into a
+    // runtime type::Type used in synthesized FuncType params.
+    auto varTypeToFuncParamType = [&](const VarType& vt) -> ptr<type::Type> {
+        if (std::holds_alternative<BuiltinType>(vt)) {
+            return make_ptr<type::Type>(std::get<BuiltinType>(vt));
+        }
+        auto pt = make_ptr<type::Type>(BuiltinType::Object);
+        pt->obj = type::Type::ObjectType{};
+        pt->obj->name = joinTypeName(std::get<TypeName>(vt));
+        return pt;
+    };
+
+    // 1. Populate the function's FuncType params from the public properties so
+    //    OverloadResolver sees the expanded signature in source-declaration
+    //    order.
+    //
+    // Every init(*) param is treated as having a default: either the property's
+    // explicit initializer expression, or the same implicit zero the type-
+    // construction loop would emit for an uninitialized property (`0`, `""`,
+    // `false`, ... for builtins; `nil` for user types and untyped fields).
+    // See registerDefaultFunc below.
+    if (funcObj->funcType.has_value() && funcObj->funcType.value()->func.has_value()) {
+        auto& fts = funcObj->funcType.value()->func.value();
+        fts.params.clear();
+        fts.params.reserve(members.size());
+        for (const auto& m : members) {
+            type::Type::FuncType::ParamType pt;
+            pt.name = m.name;
+            pt.nameHashCode = m.name.hashCode();
+            pt.hasDefault = true;
+            if (m.declaredType.has_value())
+                pt.type = varTypeToFuncParamType(m.declaredType.value());
+            fts.params.push_back(pt);
+        }
+    }
+
+    // 2. Declare each property as a local parameter so the body can read it
+    //    by its bare name (matching how regular params behave).
+    for (const auto& m : members) {
+        declareVariable(m.name);
+        uint16_t var = identifierConstant(m.name);
+        defineVariable(var);
+        auto localArg = resolveLocal(funcScope(), m.name);
+        if (localArg >= 0)
+            asFuncScope(funcScope())->locals[localArg].isParam = true;
+    }
+
+    // 3. Compile a paramDefaultFunc closure for every synthesized param.
+    //    If the source property carries an explicit initializer expression we
+    //    compile that; otherwise we emit the same default the type-construction
+    //    loop would emit for an uninitialized property (`0`/`""`/`false`/... for
+    //    builtin types via `defaultValue`, and `nil` for user object/actor
+    //    types and untyped fields). This keeps init(*) call semantics aligned
+    //    with the legacy no-init auto-construct path — adding `proc init(*)`
+    //    doesn't make previously-permissible `Type()` calls fail.
+    auto enclosingModuleScope { asModuleScope(moduleScope()) };
+    auto registerDefaultFunc = [&](const StarInitMember& m) {
+        ptr<type::Type> defFuncType = make_ptr<type::Type>(BuiltinType::Func);
+        defFuncType->func = type::Type::FuncType();
+
+        enterFuncScope(enclosingModuleScope->moduleType, m.name, FunctionType::Function, defFuncType);
+        #ifdef DEBUG_BUILD
+        emitByte(OpCode::Nop, "star_init_default " + toUTF8StdString(m.name));
+        #endif
+        enterLocalScope();
+
+        asFunction(asFuncScope(funcScope())->function)->arity = 0;
+
+        if (m.initializer.has_value()) {
+            m.initializer.value()->accept(*this);
+        } else {
+            // No explicit initializer: mirror the type-construction default
+            // emission (RoxalCompiler.cpp's property loop). For a typed
+            // builtin we emit `defaultValue(...)`; for everything else (user
+            // object types, untyped fields), we emit nil. The legacy
+            // type-construction path already rejects non-default-constructible
+            // builtin types like signal at the declaration site, so they
+            // never reach init(*) synthesis.
+            bool isBuiltin = m.declaredType.has_value()
+                             && std::holds_alternative<BuiltinType>(m.declaredType.value());
+            if (isBuiltin) {
+                auto bt = std::get<BuiltinType>(m.declaredType.value());
+                emitConstant(defaultValue(builtinToValueType(bt)));
+            } else {
+                emitByte(OpCode::ConstNil);
+            }
+        }
+
+        exitLocalScope();
+
+        // ReturnStore copies the top of stack into the caller's placeholder
+        // arg slot (default-value funcs are dispatched directly by OpCode::Call).
+        emitByte(OpCode::ReturnStore);
+
+        ptr<FunctionScope> defFuncScope { asFuncScope(funcScope()) };
+        Value defFunction = defFuncScope->function;
+        if (outputBytecodeDisassembly)
+            asFunction(defFunction)->chunk->disassemble(asFunction(defFunction)->name);
+
+        exitFuncScope();
+
+        asFunction(asFuncScope(funcScope())->function)->paramDefaultFunc[m.name.hashCode()] = defFunction;
+    };
+    for (const auto& m : members)
+        registerDefaultFunc(m);
+
+    // 4. Emit `this.<storageName> = <param>` for each member. Compose the same
+    //    bytecode `visit(Assignment)` would produce for `this.x = …` (GetLocal
+    //    this, GetLocal paramSlot, [type-conversion], SetProp). For
+    //    accessor-equipped properties `storageName` is `_<name>` (writes the
+    //    synthetic backing field directly, bypassing any user setter).
+    int16_t thisSlot = resolveLocal(funcScope(), UnicodeString("this"));
+    if (thisSlot < 0) {
+        error("internal: cannot resolve 'this' local for `proc init(*)` prologue");
+        return;
+    }
+
+    bool strictCtx = funcScopePtr->strict;
+
+    auto emitTypeConversion = [&](const VarType& vt) {
+        if (std::holds_alternative<BuiltinType>(vt)) {
+            emitBytes(strictCtx ? OpCode::ToTypeStrict : OpCode::ToType,
+                      uint8_t(builtinToValueType(std::get<BuiltinType>(vt))));
+        } else {
+            emitTypeName(std::get<TypeName>(vt));
+            emitByte(strictCtx ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
+        }
+    };
+
+    for (const auto& m : members) {
+        emitOpArgsBytes(OpCode::GetLocal, thisSlot, "init(*) this");
+
+        int16_t propSlot = resolveLocal(funcScope(), m.name);
+        if (propSlot < 0) {
+            error("internal: synthesized init(*) param local missing");
+            return;
+        }
+        emitOpArgsBytes(OpCode::GetLocal, propSlot, "init(*) param " + toUTF8StdString(m.name));
+
+        if (m.declaredType.has_value())
+            emitTypeConversion(m.declaredType.value());
+
+        uint16_t propConst = identifierConstant(m.storageName);
+        emitOpArgsBytes(OpCode::SetProp, propConst, "init(*) " + toUTF8StdString(m.storageName));
+
+        // SetProp is an assignment expression: it pops (instance, value) and
+        // pushes the assigned value back. Like a normal assignment statement,
+        // discard that leftover — otherwise each synthesized assignment leaves
+        // a phantom value on the stack, shifting every subsequent body local
+        // slot and corrupting later reads/calls in the init(*) body.
+        emitByte(OpCode::Pop);
+    }
+}
+
+
 std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 {
     currentNode = ast;
+    auto emitRhs = [&]() {
+        if (ast->atHost.has_value()) {
+            auto callAst = dynamic_ptr_cast<ast::Call>(ast->rhs);
+            if (callAst == nullptr || !isRemoteActorConstructorCall(ast->rhs))
+                error("'at <host>' requires an actor constructor call.");
+            emitRemoteActorConstructorCall(callAst, ast->atHost.value());
+        } else {
+            ast->rhs->accept(*this);
+        }
+    };
 
     if (ast->op == ast::Assignment::CopyInto) {
         if (isa<Variable>(ast->lhs)) {
             auto name { as<Variable>(ast->lhs)->name };
             namedVariable(name, false); // push current value
 
-            ast->rhs->accept(*this);
+            emitRhs();
 
             auto vtype = localVarType(name);
             if (!vtype.has_value())
@@ -2507,7 +3962,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
                     emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
                               uint8_t(builtinToValueType(std::get<BuiltinType>(*vtype))));
                 else {
-                    namedVariable(std::get<icu::UnicodeString>(*vtype), false);
+                    emitTypeName(std::get<TypeName>(*vtype));
                     emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
                 }
             }
@@ -2542,7 +3997,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             emitByte(OpCode::Dup);             // keep instance for SetProp
             emitOpArgsBytes(getOp, propName);  // push current property value
 
-            ast->rhs->accept(*this);
+            emitRhs();
 
             emitByte(OpCode::CopyInto);        // mutate property value
             emitOpArgsBytes(setOp, propName);  // store back
@@ -2557,7 +4012,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             debug_assert_msg(index->args.size() <= 255, "Indexing with more than 255 arguments is not supported");
             emitBytes(OpCode::Index, uint8_t(index->args.size()));
 
-            ast->rhs->accept(*this);
+            emitRhs();
             emitByte(OpCode::CopyInto);          // mutate element
 
             // set element back
@@ -2575,9 +4030,36 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 
     if (isa<Variable>(ast->lhs)) {
 
-        ast->rhs->accept(*this);
-
         auto name { as<Variable>(ast->lhs)->name };
+
+        // Check for const T → T assignment (prohibited per spec)
+        {
+            auto* varExpr = dynamic_cast<ast::Variable*>(ast->rhs.get());
+            if (varExpr) {
+                auto localIdx = resolveLocal(funcScope(), name);
+                bool targetIsConst = false;
+                if (localIdx >= 0)
+                    targetIsConst = asFuncScope(funcScope())->locals[localIdx].isConst
+                                 || asFuncScope(funcScope())->locals[localIdx].isTypeConst;
+                else
+                    targetIsConst = asModuleScope(moduleScope())->moduleVarTypeConst.count(name) > 0;
+                if (!targetIsConst) {
+                    auto rhsLocalIdx = resolveLocal(funcScope(), varExpr->name);
+                    bool rhsIsConst = false;
+                    if (rhsLocalIdx >= 0)
+                        rhsIsConst = asFuncScope(funcScope())->locals[rhsLocalIdx].isConst;
+                    else {
+                        // Runtime const = in moduleConstLines but NOT a compile-time const binding
+                        rhsIsConst = moduleConstExists(varExpr->name)
+                                     && !lookupConstBinding(varExpr->name);
+                    }
+                    if (rhsIsConst)
+                        error("Cannot assign const to mutable variable '" + toUTF8StdString(name) + "'. Use clone() to create a mutable copy.");
+                }
+            }
+        }
+
+        emitRhs();
 
         auto vtype = localVarType(name);
         if (!vtype.has_value())
@@ -2587,9 +4069,21 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
                 emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
                           uint8_t(builtinToValueType(std::get<BuiltinType>(*vtype))));
             else {
-                namedVariable(std::get<icu::UnicodeString>(*vtype), false);
+                emitTypeName(std::get<TypeName>(*vtype));
                 emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
             }
+        }
+
+        // var x: const T — freeze assigned value (T → const T implicit conversion)
+        {
+            bool typeConst = false;
+            auto localIdx = resolveLocal(funcScope(), name);
+            if (localIdx >= 0)
+                typeConst = asFuncScope(funcScope())->locals[localIdx].isTypeConst;
+            else
+                typeConst = asModuleScope(moduleScope())->moduleVarTypeConst.count(name) > 0;
+            if (typeConst)
+                emitByte(OpCode::MakeConst);
         }
 
         namedVariable(name, /*assign=*/true);
@@ -2606,6 +4100,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 
         OpCode op = OpCode::SetPropCheck;
         bool useSetter = false;
+        std::optional<VarTypeSpec> propType;
 
         if (isa<Variable>(accessor->arg) && as<Variable>(accessor->arg)->name == "this" && inTypeScope()) {
             auto typeScopePtr = asTypeScope(typeScope());
@@ -2617,9 +4112,9 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
                 if (info.isConst)
                     error("Cannot assign to constant '"+toUTF8StdString(accessor->member.value())+"'");
                 op = OpCode::SetProp;
+                propType = info.propType;
 
-                // Check if property has a setter (Phase 6)
-                // Check if __set_<property> method exists in current type
+                // Check if property has a setter
                 icu::UnicodeString setterMethodName = UnicodeString("__set_") + accessor->member.value();
                 if (typeScopePtr->propertyNames.find(setterMethodName) != typeScopePtr->propertyNames.end()) {
                     useSetter = true;
@@ -2627,7 +4122,18 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             }
         }
 
-        ast->rhs->accept(*this);
+        emitRhs();
+
+        // Emit type conversion for typed properties (same pattern as variable declarations)
+        if (propType.has_value()) {
+            if (std::holds_alternative<BuiltinType>(*propType)) {
+                emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
+                          uint8_t(builtinToValueType(std::get<BuiltinType>(*propType))));
+            } else {
+                emitTypeName(std::get<TypeName>(*propType));
+                emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
+            }
+        }
 
         if (useSetter) {
             // Call __set_<property>(value) instead of SetProp
@@ -2651,7 +4157,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
     else if (isa<Index>(ast->lhs)) {
 
         // evaluate rhs
-        ast->rhs->accept(*this);
+        emitRhs();
 
         auto index { as<Index>(ast->lhs) };
 
@@ -2670,7 +4176,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
 
         // evaluate rhs (expected to leave list on stack)
         //  TOOD: consider also supporting dict lhs so return components can be named(?)
-        ast->rhs->accept(*this);
+        emitRhs();
 
         auto lhsList = as<List>(ast->lhs);
         auto lhsSize = lhsList->elements.size();
@@ -2693,7 +4199,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
                         emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
                                   uint8_t(builtinToValueType(std::get<BuiltinType>(*vtype))));
                     else {
-                        namedVariable(std::get<icu::UnicodeString>(*vtype), false);
+                        emitTypeName(std::get<TypeName>(*vtype));
                         emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
                     }
                 }
@@ -2805,7 +4311,7 @@ std::any RoxalCompiler::visit(ptr<ast::BinaryOp> ast)
             case BinaryOp::Multiply: emitByte(OpCode::Multiply); break;
             case BinaryOp::Divide: emitByte(OpCode::Divide); break;
             case BinaryOp::Equal: emitByte(OpCode::Equal); break;
-            case BinaryOp::NotEqual: emitByte(OpCode::Equal); emitByte(OpCode::Negate); break;
+            case BinaryOp::NotEqual: emitByte(OpCode::NotEqual); break;
             case BinaryOp::Is: emitByte(OpCode::Is); break;
             case BinaryOp::In: emitByte(OpCode::In); break;
             case BinaryOp::NotIn: emitByte(OpCode::In); emitByte(OpCode::Negate); break;
@@ -2815,8 +4321,8 @@ std::any RoxalCompiler::visit(ptr<ast::BinaryOp> ast)
             case BinaryOp::BitXor: emitByte(OpCode::BitXor); break;
             case BinaryOp::LessThan: emitByte(OpCode::Less); break;
             case BinaryOp::GreaterThan: emitByte(OpCode::Greater); break;
-            case BinaryOp::LessOrEqual: emitByte(OpCode::Greater); emitByte(OpCode::Negate); break;
-            case BinaryOp::GreaterOrEqual: emitByte(OpCode::Less); emitByte(OpCode::Negate); break;
+            case BinaryOp::LessOrEqual: emitByte(OpCode::LessEqual); break;
+            case BinaryOp::GreaterOrEqual: emitByte(OpCode::GreaterEqual); break;
             default:
                 throw std::runtime_error("unimplemented binary opertor:"+ast->opString());
         }
@@ -2844,7 +4350,7 @@ std::any RoxalCompiler::visit(ptr<ast::UnaryOp> ast)
             throw std::runtime_error("super. accessor requires member name");
 
         // check access of member in super type
-        auto superName = asTypeScope(typeScope())->superTypeName;
+        auto superName = joinTypeName(asTypeScope(typeScope())->superTypeName);
         auto itType = typePropertyRegistry.find(superName);
         if (itType != typePropertyRegistry.end()) {
             auto itMem = itType->second.find(ast->member.value());
@@ -2936,6 +4442,278 @@ std::any RoxalCompiler::visit(ptr<ast::Call> ast)
     currentNode = ast;
     Anys results {};
 
+    // Disallow calling a suffixed literal directly: 10m(...) is an error
+    if (dynamic_ptr_cast<ast::SuffixedNum>(ast->callable) ||
+        dynamic_ptr_cast<ast::SuffixedStr>(ast->callable)) {
+        error("cannot call a suffixed literal directly; add a space if you intend a separate operation");
+        return {};
+    }
+
+    // Compiler-recognized move(expr): transfers ownership by nilling the source.
+    // For lvalue args, emits MoveLocal/MoveModuleVar/MoveProp.
+    // For non-lvalue args (temporaries), evaluates normally (already sole-owner).
+    if (auto callVar = dynamic_ptr_cast<ast::Variable>(ast->callable)) {
+        if (callVar->name == toUnicodeString("move") && ast->args.size() == 1 && !lookupConstBinding(callVar->name)) {
+            auto& argExpr = ast->args[0].second;
+
+            // move(variable)
+            if (auto varArg = dynamic_ptr_cast<ast::Variable>(argExpr)) {
+                auto localIdx = resolveLocal(funcScope(), varArg->name);
+                // At module scope (depth 0), variables live in the module var table,
+                // not in local stack slots, so use MoveModuleVar instead of MoveLocal.
+                if (localIdx >= 0 && asFuncScope(funcScope())->scopeDepth > 0) {
+                    if (asFuncScope(funcScope())->locals[localIdx].isConst)
+                        error("Cannot move const variable '" + toUTF8StdString(varArg->name) + "'");
+                    emitOpArgsBytes(OpCode::MoveLocal, localIdx);
+                    return {};
+                }
+                auto upIdx = resolveUpvalue(funcScope(), varArg->name);
+                if (upIdx >= 0) {
+                    error("Cannot move captured variable '" + toUTF8StdString(varArg->name) + "'");
+                    return {};
+                }
+                // Implicit property access: move(prop) inside a method → this.prop move
+                if (asFuncScope(funcScope())->functionType == FunctionType::Method ||
+                    asFuncScope(funcScope())->functionType == FunctionType::Initializer) {
+                    int16_t thisLocal = resolveLocal(funcScope(), UnicodeString("this"));
+                    if (thisLocal != -1 && inTypeScope()) {
+                        auto itMem = asTypeScope(typeScope())->propertyNames.find(varArg->name);
+                        if (itMem != asTypeScope(typeScope())->propertyNames.end()) {
+                            if (itMem->second.isConst)
+                                error("Cannot move const property '" + toUTF8StdString(varArg->name) + "'");
+                            emitOpArgsBytes(OpCode::GetLocal, thisLocal);
+                            uint16_t propConst = identifierConstant(varArg->name);
+                            emitOpArgsBytes(OpCode::MoveProp, propConst);
+                            return {};
+                        }
+                    }
+                }
+                // Module variable
+                if (!lookupConstBinding(varArg->name)) {
+                    if (moduleConstExists(varArg->name))
+                        error("Cannot move const variable '" + toUTF8StdString(varArg->name) + "'");
+                    uint16_t nameConst = identifierConstant(varArg->name);
+                    emitOpArgsBytes(OpCode::MoveModuleVar, nameConst);
+                    return {};
+                }
+                error("Cannot move constant '" + toUTF8StdString(varArg->name) + "'");
+                return {};
+            }
+
+            // move(obj.prop) — accessor expression
+            if (auto accessor = dynamic_ptr_cast<ast::UnaryOp>(argExpr)) {
+                if (accessor->op == ast::UnaryOp::Accessor && accessor->member.has_value()) {
+                    // Evaluate the receiver object
+                    accessor->arg->accept(*this);
+                    uint16_t propConst = identifierConstant(accessor->member.value());
+                    emitOpArgsBytes(OpCode::MoveProp, propConst);
+                    return {};
+                }
+            }
+
+            // move(non-lvalue expr) — just evaluate (temporary, already sole-owner)
+            argExpr->accept(*this);
+            return {};
+        }
+    }
+
+    // Compile-time function-overload resolution.
+    // If the callable is a bare name that resolves to an overload set in this
+    // scope, attempt to pick a unique overload using the deduced argument
+    // types. On success we emit GetOverloadAt/GetLocalOverloadAt to push the
+    // chosen closure directly — bypassing all runtime dispatch overhead.
+    // On failure (ambiguous or no-match) we report a compile error. If the
+    // result is NeedsRuntime (some arg types are unknown and can't be safely
+    // narrowed), we fall through to the existing runtime dispatch path.
+    if (auto callVar = dynamic_ptr_cast<ast::Variable>(ast->callable)) {
+        const auto& name = callVar->name;
+        std::vector<ptr<type::Type>>* candTypes = nullptr;
+        bool isLocalOverload = false;
+        int16_t localSlot = -1;
+
+        // Local scope first (innermost), then module scope.
+        if (asFuncScope(funcScope())->scopeDepth > 0) {
+            auto fs = asFuncScope(funcScope());
+            auto it = fs->localOverloadCandidates.find(name);
+            if (it != fs->localOverloadCandidates.end()) {
+                candTypes = &it->second;
+                isLocalOverload = true;
+                auto sit = fs->localOverloadSlots.find(name);
+                if (sit != fs->localOverloadSlots.end())
+                    localSlot = sit->second;
+            }
+        }
+        if (candTypes == nullptr) {
+            auto modScope = asModuleScope(moduleScope());
+            auto it = modScope->moduleOverloadCandidates.find(name);
+            if (it != modScope->moduleOverloadCandidates.end())
+                candTypes = &it->second;
+        }
+
+        if (candTypes != nullptr && candTypes->size() > 1) {
+            // Build candidate list and ArgInfo.
+            OverloadResolver resolver;
+            std::vector<OverloadResolver::Candidate> cands;
+            cands.reserve(candTypes->size());
+            for (const auto& ft : *candTypes) {
+                OverloadResolver::Candidate c;
+                c.funcType = ft;
+                c.target   = Value::nilVal();  // not needed for compile-time selection
+                c.isMethod = false;
+                cands.push_back(c);
+            }
+            std::vector<OverloadResolver::ArgInfo> argInfos;
+            argInfos.reserve(ast->args.size());
+            for (const auto& a : ast->args) {
+                OverloadResolver::ArgInfo info;
+                info.type = a.second->type.has_value() ? a.second->type.value() : nullptr;
+                info.isNamed = !a.first.isEmpty();
+                info.nameHash = a.first.isEmpty() ? 0 : a.first.hashCode();
+                argInfos.push_back(info);
+            }
+
+            bool strictMode = asFuncScope(funcScope())->strict;
+            auto rr = resolver.resolve(cands, argInfos,
+                                       /*staticDispatchAttempt=*/true, strictMode);
+
+            if (rr.kind == OverloadResolver::ResolveResult::ResolvedUnique) {
+                // Emit the chosen overload directly, then args, then Call.
+                if (isLocalOverload) {
+                    emitOpArgsBytesPlusIndex(OpCode::GetLocalOverloadAt,
+                                             (uint16_t)localSlot, rr.chosenIndex,
+                                             "overload " + std::to_string(rr.chosenIndex) + " of "
+                                             + toUTF8StdString(name));
+                } else {
+                    uint16_t nameConst = identifierConstant(name);
+                    emitOpArgsBytesPlusIndex(OpCode::GetOverloadAt,
+                                             nameConst, rr.chosenIndex,
+                                             "overload " + std::to_string(rr.chosenIndex) + " of "
+                                             + toUTF8StdString(name));
+                }
+                // Visit args only (skip callable, which we just emitted).
+                for (auto& a : ast->args)
+                    a.second->accept(*this);
+
+                currentNode = ast;
+                CallSpec callSpec = buildCallSpec(ast);
+                auto bytes = callSpec.toBytes();
+                if (bytes.size() == 1)
+                    emitBytes(OpCode::Call, bytes[0]);
+                else {
+                    emitByte(OpCode::Call);
+                    for (auto i = 0u; i < bytes.size(); i++)
+                        emitByte(bytes[i]);
+                }
+                return {};
+            }
+
+            if (rr.kind == OverloadResolver::ResolveResult::Ambiguous) {
+                error(resolver.ambiguityDiagnostic(name, cands, rr.tiedIndices, argInfos));
+                return {};
+            }
+            if (rr.kind == OverloadResolver::ResolveResult::NoMatch) {
+                error(resolver.noMatchDiagnostic(name, cands, argInfos));
+                return {};
+            }
+            // NeedsRuntime: fall through to existing runtime dispatch path.
+        }
+    }
+
+    // Compile-time METHOD-overload resolution.
+    // If the callable is `receiver.methodName` (an Accessor) and the
+    // receiver's type was deduced to an object/actor with a known
+    // overload set for that method, attempt unique resolution against the
+    // deduced arg types. On ResolvedUnique we emit InvokeOverloadAt —
+    // bypassing the GET_PROP_CHECK + CALL + runtime resolver path. On
+    // NeedsRuntime / NoMatch / Ambiguous (with all types known) we either
+    // fall through to runtime dispatch or report a compile error.
+    if (auto accessor = dynamic_ptr_cast<ast::UnaryOp>(ast->callable);
+        accessor && accessor->op == ast::UnaryOp::Accessor && accessor->member.has_value())
+    {
+        const auto& methodName = accessor->member.value();
+        if (accessor->arg->type.has_value()) {
+            auto recvType = accessor->arg->type.value();
+            // Only attempt for object/actor receivers with a populated obj.
+            if (recvType && recvType->obj.has_value() &&
+                (recvType->builtin == type::BuiltinType::Object ||
+                 recvType->builtin == type::BuiltinType::Actor))
+            {
+                // Walk the compile-time extends chain to find the first
+                // level that declares the method (matches the runtime
+                // shadow-by-name semantics from Phase 2).
+                std::vector<ptr<type::Type>> methodFTs;
+                ptr<type::Type> walked = recvType;
+                while (walked && walked->obj.has_value() && methodFTs.empty()) {
+                    for (const auto& mi : walked->obj.value().methods) {
+                        if (mi.name == methodName && mi.funcType) {
+                            ptr<type::Type> wrapper = make_ptr<type::Type>(type::BuiltinType::Func);
+                            wrapper->func = *mi.funcType;
+                            methodFTs.push_back(wrapper);
+                        }
+                    }
+                    if (!methodFTs.empty()) break;  // shadow-by-name
+                    if (walked->obj.value().extends.has_value())
+                        walked = walked->obj.value().extends.value();
+                    else
+                        walked = nullptr;
+                }
+
+                if (methodFTs.size() > 1) {
+                    OverloadResolver resolver;
+                    std::vector<OverloadResolver::Candidate> cands;
+                    cands.reserve(methodFTs.size());
+                    for (const auto& ft : methodFTs) {
+                        OverloadResolver::Candidate c;
+                        c.funcType = ft;
+                        c.target = Value::nilVal();
+                        c.isMethod = true;
+                        cands.push_back(c);
+                    }
+                    std::vector<OverloadResolver::ArgInfo> argInfos;
+                    argInfos.reserve(ast->args.size());
+                    for (const auto& a : ast->args) {
+                        OverloadResolver::ArgInfo info;
+                        info.type = a.second->type.has_value() ? a.second->type.value() : nullptr;
+                        info.isNamed = !a.first.isEmpty();
+                        info.nameHash = a.first.isEmpty() ? 0 : a.first.hashCode();
+                        argInfos.push_back(info);
+                    }
+                    bool strictMode = asFuncScope(funcScope())->strict;
+                    auto rr = resolver.resolve(cands, argInfos,
+                                               /*staticDispatchAttempt=*/true,
+                                               strictMode);
+                    if (rr.kind == OverloadResolver::ResolveResult::ResolvedUnique) {
+                        // Emit: receiver, then args, then InvokeOverloadAt.
+                        accessor->arg->accept(*this);
+                        for (auto& a : ast->args)
+                            a.second->accept(*this);
+                        currentNode = ast;
+                        uint16_t nameConst = identifierConstant(methodName);
+                        // Build a single-byte CallSpec (all-positional / matched).
+                        CallSpec callSpec = buildCallSpec(ast);
+                        // Emit the opcode + name + 2-byte index + CallSpec bytes.
+                        emitOpArgsBytesPlusIndex(OpCode::InvokeOverloadAt,
+                                                 nameConst, rr.chosenIndex,
+                                                 "method overload " + std::to_string(rr.chosenIndex)
+                                                 + " of " + toUTF8StdString(methodName));
+                        auto bytes = callSpec.toBytes();
+                        for (auto i = 0u; i < bytes.size(); ++i)
+                            emitByte(bytes[i]);
+                        return {};
+                    }
+                    if (rr.kind == OverloadResolver::ResolveResult::Ambiguous) {
+                        error(resolver.ambiguityDiagnostic(methodName, cands, rr.tiedIndices, argInfos));
+                        return {};
+                    }
+                    if (rr.kind == OverloadResolver::ResolveResult::NoMatch) {
+                        error(resolver.noMatchDiagnostic(methodName, cands, argInfos));
+                        return {};
+                    }
+                    // NeedsRuntime: fall through.
+                }
+            }
+        }
+    }
 
     ast->acceptChildren(*this, results);
 
@@ -2956,51 +4734,7 @@ std::any RoxalCompiler::visit(ptr<ast::Call> ast)
     // the final argument.
     currentNode = ast;
 
-    auto argCount = ast->args.size();
-    if (argCount > 127)
-        error("Number of call parameters is limited to 127");
-
-    //
-    // create call param spec
-    CallSpec callSpec {};
-
-    if (!ast->namedArgs()) {
-        // only positional arguments
-        callSpec.allPositional = true;
-        callSpec.argCount = ast->args.size();
-    }
-    else {
-        #ifdef DEBUG_BUILD
-        // keep track of hashes to check for collisions
-        std::map<UnicodeString,uint16_t> hashes {};
-        #endif
-        // mix of positional & named args
-        callSpec.allPositional = false;
-        callSpec.argCount = ast->args.size();
-        for(const auto& arg : ast->args) {
-            CallSpec::ArgSpec aspec {};
-            if (arg.first.isEmpty())
-                aspec.positional = true;
-            else {
-                aspec.positional = false;
-                // 15bits of param name string hash
-                aspec.paramNameHash =0x8000 | (arg.first.hashCode() & 0x7fff);
-                #ifdef DEBUG_BUILD
-                hashes[arg.first] = aspec.paramNameHash;
-                #endif
-            }
-            callSpec.args.push_back(aspec);
-        }
-        #ifdef DEBUG_BUILD
-        // if any hash collisions occurs, the size of the set of hashes
-        //  won't match the arg count
-        std::set<uint16_t> hashSet;
-        for(auto const& hash: hashes)
-            hashSet.insert(hash.second);
-        if (hashSet.size() != hashes.size())
-            throw std::runtime_error("Hash collision occured between two argument names");
-        #endif
-    }
+    CallSpec callSpec = buildCallSpec(ast);
 
     // Optimization: dict(object) with known object type at compile time
     // Instead of OpCode::Call -> construct -> toType (which accesses backing fields),
@@ -3210,6 +4944,74 @@ std::any RoxalCompiler::visit(ptr<ast::Num> ast)
     }
     else
         throw std::runtime_error("unhandled Num type");
+    return {};
+}
+
+
+std::any RoxalCompiler::visit(ptr<ast::SuffixedNum> ast)
+{
+    currentNode = ast;
+
+    auto* reg = lookupSuffix(ast->suffix);
+    if (!reg) {
+        std::string suf; ast->suffix.toUTF8String(suf);
+        error("unknown literal suffix '" + suf + "'. Did you mean to use spaces?");
+        return {};
+    }
+
+    // Push suffix function onto stack.
+    // Try local/upvalue first, then fall back to module variable lookup
+    // (which resolves sys module globals at runtime via GetModuleVar).
+    if (!namedVariable(reg->functionName))
+        namedModuleVariable(reg->functionName);
+
+    if (std::holds_alternative<double>(ast->num))
+        emitConstant(Value::realVal(std::get<double>(ast->num)));
+    else if (std::holds_alternative<int32_t>(ast->num))
+        emitConstant(Value::intVal(std::get<int32_t>(ast->num)));
+    else
+        emitConstant(Value::intVal(std::get<int64_t>(ast->num)));
+
+    CallSpec callSpec {};
+    callSpec.allPositional = true;
+    callSpec.argCount = 1;
+    auto bytes = callSpec.toBytes();
+    if (bytes.size() == 1)
+        emitBytes(OpCode::Call, bytes[0]);
+    else {
+        emitByte(OpCode::Call);
+        for (auto b : bytes) emitByte(b);
+    }
+    return {};
+}
+
+std::any RoxalCompiler::visit(ptr<ast::SuffixedStr> ast)
+{
+    currentNode = ast;
+
+    auto* reg = lookupSuffix(ast->suffix);
+    if (!reg) {
+        std::string suf; ast->suffix.toUTF8String(suf);
+        error("unknown literal suffix '" + suf + "'. Did you mean to use spaces?");
+        return {};
+    }
+
+    // Push suffix function onto stack
+    if (!namedVariable(reg->functionName))
+        namedModuleVariable(reg->functionName);
+
+    emitConstant(Value::stringVal(ast->str));
+
+    CallSpec callSpec {};
+    callSpec.allPositional = true;
+    callSpec.argCount = 1;
+    auto bytes = callSpec.toBytes();
+    if (bytes.size() == 1)
+        emitBytes(OpCode::Call, bytes[0]);
+    else {
+        emitByte(OpCode::Call);
+        for (auto b : bytes) emitByte(b);
+    }
     return {};
 }
 
@@ -3972,6 +5774,15 @@ ValueType RoxalCompiler::builtinToValueType(ast::BuiltinType bt)
 }
 
 
+void RoxalCompiler::emitTypeName(const ast::TypeName& components)
+{
+    namedVariable(components[0], false);
+    for (size_t i = 1; i < components.size(); i++) {
+        uint16_t nameConst = identifierConstant(components[i]);
+        emitOpArgsBytes(OpCode::GetProp, nameConst);
+    }
+}
+
 void RoxalCompiler::emitByte(uint8_t byte, const std::string& comment)
 {
     currentChunk()->write(byte, currentNode->interval.first.line,
@@ -4152,7 +5963,7 @@ int16_t RoxalCompiler::resolveLocal(Scope scopeState, const icu::UnicodeString& 
                 if (locals[i].name == name) {
             #endif
                     if (locals[i].depth == -1)
-                        error("Reference to local variable in initializer not allowed.");
+                        continue;  // skip uninitialized shadow; keep searching for outer binding
                     #ifdef DEBUG_TRACE_NAME_RESOLUTION
                     std::cout << " - found " << i << std::endl;
                     #endif
@@ -4387,11 +6198,8 @@ Value RoxalCompiler::applyConstType(Value value, std::optional<VarTypeSpec> type
     if (std::holds_alternative<type::BuiltinType>(*type)) {
         auto builtin = std::get<type::BuiltinType>(*type);
         ValueType vt = builtinToValueType(builtin);
-        if (vt == ValueType::String || vt == ValueType::Range || vt == ValueType::List ||
-            vt == ValueType::Dict || vt == ValueType::Vector || vt == ValueType::Matrix ||
-            vt == ValueType::Signal || vt == ValueType::Tensor || vt == ValueType::Orient || vt == ValueType::Event) {
-            error("Const declarations are currently limited to builtin value types.");
-        }
+        if (vt == ValueType::Signal)
+            error("const signal is not allowed.");
         try {
             return toType(vt, value, strictContext);
         } catch (const std::exception& e) {
@@ -4425,7 +6233,7 @@ Value RoxalCompiler::evaluateConstExpression(ptr<ast::Expression> expr, bool str
                     return Value::intVal(std::get<int32_t>(num->num));
             }
             default:
-                error("Const initializers currently support only nil, bool, and numeric literals.");
+                error("Compile-time const folding supports only nil, bool, and numeric literals. Non-primitive const values are frozen at runtime.");
         }
     }
 
@@ -4516,6 +6324,10 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
     if (localArg != -1) { // found
         if (asSignal)
             error("'changes' requires a module variable binding; use a signal expression instead");
+        if (assign && asFuncScope(funcScope())->locals[localArg].isConst)
+            error("Cannot assign to constant '" + toUTF8StdString(name) + "'");
+        if (assign && asFuncScope(funcScope())->locals[localArg].isParam)
+            error("Cannot assign to parameter '" + toUTF8StdString(name) + "'. Parameters are immutable bindings; use 'var " + toUTF8StdString(name) + " = ...' to create a mutable copy.");
         found = true;
         arg = localArg;
         getOp = OpCode::GetLocal;
@@ -4598,8 +6410,8 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
                 }
 
                 // Check methods
-                for (const auto& [methodName, methodType] : objType.methods) {
-                    if (methodName == name) {
+                for (const auto& mi : objType.methods) {
+                    if (mi.name == name) {
                         if (assign)
                             error("Cannot assign to method '" + toUTF8StdString(name) + "'");
                         if (asSignal)
@@ -4612,6 +6424,58 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
                         return true;
                     }
                 }
+            }
+        }
+    }
+
+    // If `name` matches an in-flight enclosing type's own name, load it directly
+    // from its anchor slot. Without this, references like `Middle.Inner` from
+    // inside Middle's body would fall through to the const-member walker below,
+    // find Middle in Outer's typescope, and emit `GetLocal Outer + GetProp Middle`
+    // — which fails at runtime because Outer's NESTED_TYPE attachment for Middle
+    // hasn't run yet.
+    if (!found && inTypeScope()
+        && asFuncScope(funcScope())->functionType == FunctionType::Module) {
+        for (auto si = lexicalScopes.rbegin(); si != lexicalScopes.rend(); ++si) {
+            if ((*si)->scopeType != LexicalScope::ScopeType::Type) continue;
+            auto ts = dynamic_ptr_cast<TypeScope>(*si);
+            if (ts->name == name && ts->inFlightStackSlot >= 0) {
+                if (assign)
+                    error("Cannot assign to type '" + toUTF8StdString(name) + "'");
+                emitOpArgsBytes(OpCode::GetLocal,
+                                static_cast<uint16_t>(ts->inFlightStackSlot),
+                                "in-flight " + toUTF8StdString(name));
+                return true;
+            }
+        }
+    }
+
+    // If in a type body (not a method), check if the name is a const member of any
+    // enclosing type (e.g., nested type or const value). Resolve as EnclosingType.name.
+    // Walk up through nested TypeScopes to find the member.
+    if (!found && inTypeScope()
+        && asFuncScope(funcScope())->functionType == FunctionType::Module) {
+        for (auto si = lexicalScopes.rbegin(); si != lexicalScopes.rend(); ++si) {
+            if ((*si)->scopeType != LexicalScope::ScopeType::Type) continue;
+            auto ts = dynamic_ptr_cast<TypeScope>(*si);
+            auto itMem = ts->propertyNames.find(name);
+            if (itMem != ts->propertyNames.end() && itMem->second.isConst) {
+                uint16_t nameConst = identifierConstant(name);
+                if (ts->inFlightStackSlot >= 0) {
+                    // Load the in-flight enclosing type from its anchor slot.
+                    // Going through namedVariable(ts->name) would emit
+                    // `GetModuleVar grandparent + GetProp ts->name`, which fails
+                    // at runtime when ts is itself a nested type still under
+                    // construction (its NESTED_TYPE attachment to its parent
+                    // hasn't run yet).
+                    emitOpArgsBytes(OpCode::GetLocal,
+                                    static_cast<uint16_t>(ts->inFlightStackSlot),
+                                    "in-flight " + toUTF8StdString(ts->name));
+                } else {
+                    namedVariable(ts->name, false); // push enclosing type
+                }
+                emitOpArgsBytes(OpCode::GetProp, nameConst);
+                return true;
             }
         }
     }

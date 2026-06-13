@@ -4,6 +4,9 @@
 #include <core/AST.h>
 #include "RoxalVisitor.h"
 
+namespace antlr4 {
+class Token;
+}
 
 namespace roxal {
 
@@ -37,6 +40,10 @@ public:
 
     virtual std::any visitReturn_stmt(RoxalParser::Return_stmtContext *context);
 
+    virtual std::any visitBreak_stmt(RoxalParser::Break_stmtContext *context);
+
+    virtual std::any visitContinue_stmt(RoxalParser::Continue_stmtContext *context);
+
     virtual std::any visitIf_stmt(RoxalParser::If_stmtContext *context);
 
     virtual std::any visitWhile_stmt(RoxalParser::While_stmtContext *context);
@@ -55,6 +62,8 @@ public:
     virtual std::any visitFinally_clause(RoxalParser::Finally_clauseContext *context);
 
     virtual std::any visitUntil_clause(RoxalParser::Until_clauseContext *context);
+    virtual std::any visitIf_clause(RoxalParser::If_clauseContext *context);
+    virtual std::any visitAt_clause(RoxalParser::At_clauseContext *context);
 
     virtual std::any visitVar_decl(RoxalParser::Var_declContext *context);
 
@@ -66,18 +75,27 @@ public:
 
     virtual std::any visitFunc_sig(RoxalParser::Func_sigContext *context);
 
+    virtual std::any visitOperator_name(RoxalParser::Operator_nameContext *context) override { return {}; }
+    virtual std::any visitOperator_symbol(RoxalParser::Operator_symbolContext *context) override { return {}; }
+    virtual std::any visitConversion_target(RoxalParser::Conversion_targetContext *context) override { return {}; }
+
     virtual std::any visitParameters(RoxalParser::ParametersContext *context);
 
     virtual std::any visitParameter(RoxalParser::ParameterContext *context);
 
     virtual std::any visitSuite(RoxalParser::SuiteContext *context);
 
+    virtual std::any visitType_name(RoxalParser::Type_nameContext *context) override { return {}; } // handled inline
+    virtual std::any visitNested_type_decl(RoxalParser::Nested_type_declContext *context) override { return {}; } // handled inline
     virtual std::any visitType_decl(RoxalParser::Type_declContext *context);
     virtual std::any visitObject_type_decl(RoxalParser::Object_type_declContext *context);
     virtual std::any visitEnum_type_decl(RoxalParser::Enum_type_declContext *context);
     virtual std::any visitEvent_type_decl(RoxalParser::Event_type_declContext *context);
 
     virtual std::any visitMethod(RoxalParser::MethodContext *context);
+
+    virtual std::any visitImplicit_kw(RoxalParser::Implicit_kwContext *context) { return {}; }
+    virtual std::any visitStmt_action_kw(RoxalParser::Stmt_action_kwContext *context) { return {}; }
 
     virtual std::any visitMember_var(RoxalParser::Member_varContext *context);
 
@@ -144,6 +162,7 @@ public:
     virtual std::any visitReturn_type(RoxalParser::Return_typeContext *context);
     virtual std::any visitType_spec(RoxalParser::Type_specContext *context);
     virtual std::any visitBuiltin_type(RoxalParser::Builtin_typeContext *context);
+    virtual std::any visitConst_qualifier(RoxalParser::Const_qualifierContext *context);
 
     virtual std::any visitList(RoxalParser::ListContext *context);
 
@@ -152,6 +171,8 @@ public:
     virtual std::any visitMatrix(RoxalParser::MatrixContext *context);
 
     virtual std::any visitRow(RoxalParser::RowContext *context);
+
+    virtual std::any visitVec_elem(RoxalParser::Vec_elemContext *context);
 
     virtual std::any visitSigned_num(RoxalParser::Signed_numContext *context);
 
@@ -171,10 +192,15 @@ protected:
     icu::UnicodeString normalizeIdentifier(const std::string& text);
     icu::UnicodeString identifierFromTerminal(antlr4::tree::TerminalNode* terminal);
     icu::UnicodeString identifierFromContext(antlr4::ParserRuleContext* context);
+    icu::UnicodeString operatorNameFromContext(RoxalParser::Operator_nameContext* context);
 
     antlr4::Token* currentToken;
     ptr<std::string> source;
     std::string sourceName;
+
+private:
+    void reportError(antlr4::Token* token, const std::string& message);
+    bool hadError { false };
 };
 
 

@@ -1,0 +1,15 @@
+// Take a first-class reference to an overloaded method via `g = obj.f`
+// and call through it. The BoundMethod carries the OverloadSet so the
+// dispatch happens at call time.
+
+type Box object:
+    func handle(x :int):
+        print("int:{x}")
+
+    func handle(x :string):
+        print("str:{x}")
+
+var b = Box()
+g = b.handle
+g(5)
+g("hi")

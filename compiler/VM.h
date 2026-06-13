@@ -6,6 +6,7 @@
 #include <map>
 #include <deque>
 #include <mutex>
+#include <condition_variable>
 #include <array>
 #include <filesystem>
 
@@ -13,7 +14,7 @@
 #include "Chunk.h"
 #include "Value.h"
 #include "ArgsView.h"
-#include "InterpretResult.h"
+#include "ExecutionStatus.h"
 #include "Thread.h"
 #include "BuiltinModule.h"
 #include "LazyModuleRegistry.h"
@@ -35,6 +36,12 @@
 #ifdef ROXAL_ENABLE_SOCKET
 #include "ModuleSocket.h"
 #endif
+#ifdef ROXAL_ENABLE_AI_NN
+#include "ModuleNN.h"
+#endif
+#ifdef ROXAL_ENABLE_MEDIA
+#include "ModuleMedia.h"
+#endif
 #include <ffi.h>
 #include <vector>
 
@@ -48,6 +55,7 @@ namespace roxal {
 
 struct CallFrame; // forward
 struct ActorInstance;
+class RoxalCompiler;
 
 
 // ============================================================================
@@ -93,9 +101,9 @@ typedef std::vector<CallFrame> CallFrames;
 
 struct CallFrame {
     #ifdef DEBUG_BUILD
-    CallFrame() : closure(Value::nilVal()), slots(nullptr), strict(false) {}
+    CallFrame() : closure(Value::nilVal()), slots(nullptr), strict(false), callerStrict(false), isEventHandler(false), isContinuationCallback(false) {}
     #else
-    CallFrame() : closure(Value::nilVal()), strict(false) {}
+    CallFrame() : closure(Value::nilVal()), strict(false), callerStrict(false), isEventHandler(false), isContinuationCallback(false) {}
     #endif
     Value closure; // ObjClosure
     Chunk::iterator startIp;
@@ -105,6 +113,7 @@ struct CallFrame {
     CallFrames::iterator parent;
 
     bool strict; // whether current frame executes in strict mode
+    bool callerStrict; // caller's lexical strict setting (for parameter conversion context)
 
     // on frame start, move argument Value (second) to end of the frame's
     //  argument list (in existing stack arg placeholder slots)
@@ -119,6 +128,9 @@ struct CallFrame {
         size_t frameDepth;
     };
     std::vector<ExceptionHandler> exceptionHandlers;
+
+    bool isEventHandler { false }; // true for event handler frames (pushed by processEventDispatch)
+    bool isContinuationCallback { false }; // true for native continuation callback frames (e.g., filter/map/reduce, native default params)
 };
 
 
@@ -170,6 +182,7 @@ public:
     ptr<BuiltinModule> getBuiltinModule(const icu::UnicodeString& name);
     Value getBuiltinModuleType(const icu::UnicodeString& name);
     std::optional<Value> loadGlobal(const icu::UnicodeString& name) { return globals.load(name); }
+    void storeGlobal(const icu::UnicodeString& name, const Value& value) { globals.storeGlobal(name, value); }
     void registerBuiltinModule(ptr<BuiltinModule> module);
 
     // Register a poll callback for periodic execution during VM operation
@@ -179,6 +192,34 @@ public:
     // Access the module poller (for direct polling if needed)
     ModulePoller& modulePoller() { return poller; }
 
+    // Cross-compiler user-module canonicalisation.  Each RoxalCompiler
+    // instance has its own per-compilation `importedModules` map; without
+    // a process-wide registry, two top-level compilations (e.g. a
+    // builtin-module's companion .rox followed by a user script that
+    // imports the same transitive user module) produce distinct
+    // ObjModuleType pointers for the same module.  That breaks
+    // `linkMethod`: the native binding lands on one ObjObjectType, but
+    // instances constructed later use the other.
+    //
+    // `lookupUserModule` returns the canonical ObjModuleType Value for
+    // a user module if it has already been registered in this VM,
+    // otherwise nullopt.  `registerUserModule` records the canonical
+    // Value for future lookups; registering happens BEFORE the module
+    // body runs, so a circular import (A's body imports B, B's body
+    // re-imports A) sees A's already-registered (partially-populated)
+    // module rather than infinitely recursing.
+    std::optional<Value> lookupUserModule(const icu::UnicodeString& qualifiedName);
+    void registerUserModule(const icu::UnicodeString& qualifiedName, const Value& moduleType);
+
+    // REPL-only: drop all cached user-module entries so the next `import X.*`
+    // re-runs each module's body, picking up source edits.  Does NOT reset
+    // existing bindings in the REPL module's vars — paired with the REPL's
+    // overwrite-on-re-import semantics so a subsequent `run` of a script
+    // that re-imports the same modules will rebind to the freshly-loaded
+    // versions.  Old user-created instances retain their old instanceType
+    // and old method tables (Python `reload` semantics — see future task
+    // for IPython %autoreload-2-style in-place class mutation).
+    void clearUserModuleRegistry();
 #ifdef ROXAL_ENABLE_GRPC
     Value importProtoModule(const std::string& path);
 #endif
@@ -186,20 +227,166 @@ public:
     Value importIdlModule(const std::string& path);
 #endif
 
-    InterpretResult interpret(std::istream& source, const std::string& sourceName);
-    InterpretResult interpretLine(std::istream& linestream,
+    // =========================================================================
+    // Execution API
+    // =========================================================================
+
+    // --- One-shot execution ---
+    /// Compile and run source to completion. Suitable for simple scripts.
+    ExecutionStatus run(std::istream& source, const std::string& sourceName);
+
+    /// Run `source` as if it were a top-level script, but pre-populate the
+    /// script's module vars from `imports`.  Each Value in `imports` must
+    /// be an ObjModuleType.  Names that the user wrote explicit imports for
+    /// (or declared) take precedence over the pre-import (overwrite=false).
+    ///
+    /// Intended use: embeddings that want to make their standard library
+    /// visible to a user script without forcing the user to write
+    /// `import X.*`.  Equivalent to wrapping the source with `import A.*;
+    /// import B.*;` lines, but doesn't show up in compile errors / source
+    /// lookups.
+    ExecutionStatus runWithImports(std::istream& source,
+                                    const std::string& sourceName,
+                                    const std::vector<Value>& imports);
+
+    /// REPL mode: compile and execute a single line/expression.
+    ExecutionStatus runLine(std::istream& linestream,
                                   bool replMode=true,
                                   const std::string& sourceNameOverride="");
 
+    // --- Incremental execution ---
+    // Use setup() + runFor() when you need control over execution timing,
+    // e.g., running Roxal within a host application's main loop.
+
+    /// Compile source and set up initial call frame, but don't execute.
+    /// Returns CompileError on failure, OK on success.
+    /// After setup(), call runFor() repeatedly to execute incrementally.
+    ExecutionStatus setup(std::istream& source, const std::string& sourceName);
+
+    /// setup() variant that pre-populates the script's module type with
+    /// vars copied from each module in `imports` before compilation.
+    /// See runWithImports for rationale.
+    ExecutionStatus setup(std::istream& source, const std::string& sourceName,
+                          const std::vector<Value>& imports);
+
+    /// Execute for up to the given duration, then yield.
+    /// Returns: {OK, returnValue} if completed, {Yielded, nil} if budget exhausted or blocked,
+    /// {RuntimeError, nil} on error. Call repeatedly to continue execution.
+    std::pair<ExecutionStatus, Value> runFor(TimeDuration duration);
+
+    /// Check if the current thread has more work to do (not completed).
+    bool hasMoreWork() const;
+
+    /// Check if the current thread is blocked (sleeping or awaiting future).
+    bool isBlocked() const;
+
+    /// Get the earliest time the blocked thread could make progress.
+    /// Returns TimePoint::max() if not blocked or if blocked on future.
+    TimePoint blockedUntil() const;
+
+    // --- RT REPL integration ---
+    // Use setupLine() on a non-RT thread to compile REPL input, then
+    // runFor() on an RT thread to execute incrementally with a time budget.
+    // setupLine() + runFor() can be used interchangeably with setup() + runFor().
+
+    enum class RTState : int { Idle, Ready, Executing, Yielded };
+
+    /// Compile a REPL line/script and enqueue the closure for execution via runFor().
+    /// Blocks if previous work is still executing (waits for Idle state).
+    /// Uses persistent REPL state (replThread, replModuleValue, compiler).
+    ExecutionStatus setupLine(std::istream& linestream,
+                              bool replMode = true,
+                              const std::string& sourceNameOverride = "");
+
+    /// Current RT coordination state (for diagnostics/coordination).
+    RTState rtState() const { return rtState_.load(std::memory_order_acquire); }
+
+    /// Block until rtState_ becomes Idle (RT thread finished executing).
+    void waitForRTCompletion();
+
+    /// Set the RT core index that actor threads should avoid.
+    /// Set to -1 (default) to disable actor thread affinity restrictions.
+    /// When set (e.g. to 3), spawned actor threads will be pinned to all cores
+    /// except this one and will use SCHED_OTHER (non-RT) scheduling.
+    void setRTCoreExclusion(int coreIndex) { rtCoreExclusion_ = coreIndex; }
+    int rtCoreExclusion() const { return rtCoreExclusion_; }
+
+    /// Control the synchronous-execution guard that prevents runFor() from
+    /// entering execute() while run()/runLine() owns the VM. Tests that call
+    /// runFor() from within a native builtin can temporarily clear this.
+    void setSynchronousExecution(bool sync) { inSynchronousExecution_.store(sync, std::memory_order_release); }
+
+    /// Enable timing instrumentation for native (C++) function calls.
+    /// When enabled, calls that exceed the remaining RT budget are logged
+    /// with the function name to help identify blocking builtins.
+    void setNativeCallTimingEnabled(bool enabled) { nativeCallTimingEnabled_ = enabled; }
+
+    /// After runFor() returns, check if a native call exceeded the RT budget.
+    /// Returns the function name and elapsed time, or empty string if no overrun.
+    /// Clears the stored overrun on read. Call from the same thread as runFor().
+    static std::string consumeNativeCallOverrun();
+
+    // =========================================================================
+    // Internal call mechanics (used by the above APIs)
+    // =========================================================================
 
     bool call(ObjClosure* closure, const CallSpec& callSpec);
     bool call(ValueType builtinType, const CallSpec& callSpec);
     bool callValue(const Value& callee, const CallSpec& callSpec);
-    bool invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& callSpec);
+    bool invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& callSpec,
+                        const Value& receiver);
     bool invoke(ObjString* name, const CallSpec& callSpec);
+    // Compile-time-resolved method dispatch: like invoke() but skips the
+    // OverloadResolver and goes directly to the overload at the given index
+    // in the named method's overload set on the receiver's type chain.
+    bool invokeOverloadAt(ObjString* name, uint16_t overloadIndex, const CallSpec& callSpec);
 
-    // Convenience for C++ callers: execute closure with arguments
-    std::pair<InterpretResult,Value> callAndExec(ObjClosure* closure, const std::vector<Value>& args);
+    // Operator method name hashes for fast lookup during operator dispatch
+    struct OperatorHashes {
+        int32_t op;   // "operator<sym>"
+        int32_t lop;  // "loperator<sym>"
+        int32_t rop;  // "roperator<sym>"
+    };
+
+    // Operator overload dispatch helpers
+    // Returns the method closure Value, or nil if not found. Walks supertype chain.
+    Value findOperatorMethod(ObjObjectType* type, int32_t hash);
+    bool tryDispatchBinaryOperator(const OperatorHashes& hashes);
+    bool tryDispatchUnaryOperator(int32_t hash);
+
+    // Conversion operator lookup. Returns method closure Value (nil if not found
+    // or not allowed in current strict context when implicitCall is true).
+    Value findConversionMethod(const Value& instanceType, int32_t hash, bool implicitCall);
+
+    // Check if a value can be converted to the target type (pure predicate, no side effects).
+    bool canConvertToType(const Value& val, const Value& targetTypeSpec, bool implicitCall) const;
+
+    // Unified type conversion. Attempts to convert val to targetTypeSpec.
+    // Returns outcome indicating whether conversion was sync, async (frame pushed), or failed.
+    // For NeedsAsyncFrame: a call frame + PendingConversion have been set up;
+    // the caller must break to the dispatch loop. The converted value will be
+    // pushed by the PendingConversion completion handler when the frame returns.
+    enum class ConversionResult { AlreadyCorrectType, ConvertedSync, NeedsAsyncFrame, Failed };
+    struct ConversionOutcome {
+        ConversionResult result;
+        Value convertedValue;  // valid when result == ConvertedSync
+    };
+    ConversionOutcome tryConvertValue(
+        const Value& val,
+        const Value& targetTypeSpec,
+        bool strict,
+        bool implicitCall,
+        Thread::PendingConversion::Kind pendingKind,
+        const Value& savedContext = Value::nilVal()
+    );
+
+    /// Invoke a closure with arguments. Executes until completion or deadline.
+    /// Returns {OK, value} on completion, {Yielded, nil} if deadline exceeded,
+    /// {RuntimeError, nil} on error.
+    /// Used by REPL, module execution, dataflow func nodes, event handlers.
+    std::pair<ExecutionStatus,Value> invokeClosure(ObjClosure* closure,
+                                                    const std::vector<Value>& args,
+                                                    TimePoint deadline = TimePoint::max());
     bool indexValue(const Value& indexable, int subscriptCount);
     bool setIndexValue(const Value& indexable, int subscriptCount, Value& value);
     enum class BindResult {
@@ -217,10 +404,17 @@ public:
     void defineEventPayload(ObjString* name);
     void extendEventType();
     void defineMethod(ObjString* name);
+    // Verify `impl` (and its `extends` chain) supplies a non-abstract method
+    // for every abstract method declared on `iface` (and its own extends
+    // chain). Property-accessor satisfaction (`__get_X`/`__set_X`) accepts a
+    // plain property `X` on the implementer chain; setters reject `const`
+    // properties. Returns "" on success, or a multi-line error otherwise.
+    std::string checkInterfaceConformance(ObjObjectType* impl, ObjObjectType* iface);
     void defineEnumLabel(ObjString* name);
     void defineNative(const std::string& name, NativeFn function,
                       ptr<type::Type> funcType = nullptr,
-                      std::vector<Value> defaults = {});
+                      std::vector<Value> defaults = {},
+                      uint32_t resolveArgMask = 0);
 
     // Helper used by builtin call marshalling
     size_t marshalArgs(ptr<type::Type> funcType,
@@ -231,17 +425,58 @@ public:
                        const Value& receiver = Value::nilVal(),
                        const std::map<int32_t, Value>& paramDefaultFuncs = {});
 
+    // Identifies which params need closure default evaluation (returns param indices)
+    std::vector<size_t> getClosureDefaultParamIndices(
+        ptr<type::Type> funcType,
+        const std::vector<Value>& defaults,
+        const CallSpec& callSpec,
+        const std::map<int32_t, Value>& paramDefaultFuncs);
+
+    // Marshal args without evaluating closure defaults (stores nil placeholders)
+    size_t marshalArgsPartial(ptr<type::Type> funcType,
+                              const std::vector<Value>& defaults,
+                              const CallSpec& callSpec,
+                              Value* out,
+                              bool includeReceiver = false,
+                              const Value& receiver = Value::nilVal(),
+                              const std::map<int32_t, Value>& paramDefaultFuncs = {});
+
+    // Process native default param continuation after a closure default returns
+    // Called by the nativeContinuation.onComplete callback
+    bool processNativeDefaultParamDispatch(Value defaultValue);
+
+    // Check if a future's promised type is assignable to the target type.
+    // If true, the future can pass through without resolution.
+    bool isFutureAssignableTo(const Value& futureVal, ValueType targetVT);
+    bool isFutureAssignableTo(const Value& futureVal, const Value& targetTypeSpec);
+
+    // Returns true if converting val to the given param type requires executing Roxal code
+    // (user-defined conversion operator or constructor auto-conversion).
+    bool needsAsyncConversion(const Value& val, ptr<type::Type> paramType, bool strictCtx);
+
+    // Process native param conversion continuation after a conversion frame returns
+    bool processNativeParamConversion(Value convertedValue);
+
+    // Process closure param conversion after a conversion frame returns
+    bool processClosureParamConversion(Value convertedValue);
+
+    // Push a conversion frame for a single param (operator call or constructor call).
+    // strictCtx: the caller's lexical strict setting
+    bool pushParamConversionFrame(const Value& val, ptr<type::Type> paramType, bool strictCtx);
+
     bool callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                       const std::vector<Value>& defaults,
                       const CallSpec& callSpec,
                       bool includeReceiver = false,
                       const Value& receiver = Value::nilVal(),
-                      const Value& declFunction = Value::nilVal());
+                      const Value& declFunction = Value::nilVal(),
+                      uint32_t resolveArgMask = 0);
 
     // Expose a simple helper to keep track of active threads.  Actor
     // deserialization needs this to prevent the thread object from being
     // destroyed immediately after creation.
     inline void registerThread(ptr<Thread> t) { threads.store(t->id(), t); }
+    inline void unregisterThread(uint64_t id) { threads.erase(id); }
 
     void wakeAllThreadsForGC();
 
@@ -251,14 +486,26 @@ public:
     inline int exitCode() const { return exitCodeValue.load(); }
 
     // Join all currently tracked threads, optionally skipping one by id.
-    // Returns InterpretResult::RuntimeError if any joined thread failed.
-    InterpretResult joinAllThreads(uint64_t skipId = 0);
+    // Returns ExecutionStatus::RuntimeError if any joined thread failed.
+    ExecutionStatus joinAllThreads(uint64_t skipId = 0);
 
 
     static constexpr size_t DefaultMaxStack = 1024;
     static constexpr size_t DefaultMaxCallFrames = 128;
 
     static std::string versionString();
+    static std::vector<std::string> featureStrings();
+    static std::string featureString();
+#ifdef ROXAL_COMPUTE_SERVER
+    using PrintTarget = ActorInstance::MethodCallInfo::PrintTarget;
+    struct ScopedPrintTarget {
+        explicit ScopedPrintTarget(const PrintTarget& target);
+        ~ScopedPrintTarget();
+        PrintTarget previous;
+    };
+    static const PrintTarget& currentPrintTarget();
+    static void emitPrintOutput(const std::string& text, bool flush, bool here = false);
+#endif
     static std::filesystem::path executablePath();
     static std::vector<std::string> defaultModuleSearchPaths();
     static void configureModulePaths(const std::vector<std::string>& modulePaths);
@@ -296,7 +543,10 @@ protected:
 
     void ensureDataflowEngineStopped();
 
-    std::pair<InterpretResult,Value> execute();
+    /// Low-level dispatch loop. Runs until completion, error, or deadline.
+    /// Prefer runFor() for incremental execution; this is used internally
+    /// by run(), runFor(), and invokeClosure().
+    std::pair<ExecutionStatus,Value> execute(TimePoint deadline = TimePoint::max());
 
     bool outputBytecodeDisassembly;
     bool lineMode;
@@ -354,6 +604,15 @@ protected:
 
     // module poll callback handler
     ModulePoller poller;
+
+    // Cross-compiler user-module registry — see lookupUserModule /
+    // registerUserModule.  Holds strong Value refs for the VM lifetime
+    // (user modules are already pinned via ObjModuleType::allModules,
+    // so this is not an additional retention path in practice).  Mutex
+    // serialises concurrent registrations from multi-threaded
+    // compilation paths and from compile-vs-reconcile races.
+    std::unordered_map<icu::UnicodeString, Value> userModuleRegistry;
+    std::mutex userModuleRegistryMutex;
 #ifdef ROXAL_ENABLE_GRPC
     ModuleGrpc* grpcModule { nullptr };
 #endif
@@ -367,16 +626,80 @@ protected:
     ptr<Thread> dataflowEngineThread;
 
     Value conditionalInterruptClosure {}; // ObjClosure
+    // Sentinel function for sys.allof/anyof slot wakeups. Each slot
+    // registration creates a fresh ObjClosure wrapping this function so the
+    // closure's handlerThread is per-registration (avoids cross-thread
+    // mutation of a shared closure). Dispatch recognises the sentinel by
+    // identity of the underlying ObjFunction.
+    Value combinatorRelayFunction {}; // ObjFunction
     Value replModuleValue { Value::nilVal() }; // ObjModuleType
 
+    // Shared compiler instance for both runLine() and setupLine(). Lazy-
+    // initialised on first use and torn down before freeObjects() in
+    // ~VM(). Held by unique_ptr so the type can stay forward-declared in
+    // this header (full definition lives in RoxalCompiler.h).
+    std::unique_ptr<RoxalCompiler> replCompiler_;
 
+    // RT REPL synchronization
+    std::atomic<RTState> rtState_ { RTState::Idle };
+    std::mutex rtMutex_;
+    std::condition_variable rtCondVar_;
+    Value pendingRTClosure_ { Value::nilVal() }; // protected by rtMutex_
+    int rtCoreExclusion_ { -1 }; // -1 = disabled (desktop), >=0 = exclude this core for actor threads
+
+    // Guard: prevents runFor() from entering execute() while run()/runLine() is executing
+    // synchronously. Handles the case where ax.init() (inside a synchronous --setup script)
+    // starts the WC RoxalLoop whose callback calls runFor().
+    std::atomic<bool> inSynchronousExecution_ { false };
+
+    // Native call timing instrumentation.
+    // When enabled, callNativeFn() times each C++ native call and warns if it
+    // exceeds the remaining RT budget. Identifies blocking builtins by name.
+    // The deadline and call context are thread_local since execute() runs on
+    // multiple threads (RT main thread + non-RT actor threads).
+    bool nativeCallTimingEnabled_ { false };
+    static thread_local TimePoint nativeCallDeadline_;
+    static thread_local UnicodeString nativeCallContext_;
+    static thread_local std::string nativeCallOverrun_; // set by callNativeFn() on overrun
+#ifdef ROXAL_COMPUTE_SERVER
+    static thread_local PrintTarget currentPrintTarget_;
+#endif
+
+    // Dataflow thread flag: when true, module var reads return const refs
+    // and module var writes raise a runtime error.
+    static thread_local bool onDataflowThread_;
 
 public:
+    static bool onDataflowThread() { return onDataflowThread_; }
+    static void setOnDataflowThread(bool v) { onDataflowThread_ = v; }
     Value getConditionalInterruptClosure() const { return conditionalInterruptClosure; } // ObjClosure
+    Value getCombinatorRelayFunction() const { return combinatorRelayFunction; } // ObjFunction
     ObjModuleType* replModuleType() const;
+
+    /// Like `replModuleType()`, but lazily creates the REPL module if
+    /// none exists yet (rather than returning nullptr).  Lets callers
+    /// pre-populate the REPL's globals before the user types anything.
+    /// Safe to call multiple times; returns the same module each time.
+    ObjModuleType* ensureReplModule();
+
+    /// Copy all exported vars from each `source` ObjModuleType into `target`.
+    /// Equivalent to executing `import S0.*; import S1.*; ...` against
+    /// `target`, but pure C++ -- no opcode dispatch, no source-code
+    /// generation, no RT-loop involvement.  Source modules must have
+    /// been fully evaluated (their top-level statements run) before
+    /// calling.  Replicates the wildcard branch of OpCode::ImportModuleVars
+    /// including OverloadSet cloning + REPL-reimport overwrite semantics.
+    /// Throws if `target` or any element of `sources` is not a module type.
+    void importModuleVarsInto(ObjModuleType* target,
+                              const std::vector<Value>& sources);
 
 
     Value initString; // ObjString "init"
+
+    OperatorHashes opHashAdd, opHashSub, opHashMul, opHashDiv, opHashMod;
+    OperatorHashes opHashEq, opHashNe, opHashLt, opHashGt, opHashLe, opHashGe;
+    int32_t opHashNeg;  // "uoperator-"
+    int32_t opHashConvString;  // "operator->string"
 
     // TODO: perhaps implement inheritance first, then pre-define
     //  object type as root of class heirarchy and add clone() and other
@@ -388,14 +711,22 @@ public:
         ptr<type::Type> funcType;
         std::vector<Value> defaultValues;
         Value declFunction;
+        uint32_t resolveArgMask {0}; // bit N set → resolve arg N before call
+        bool noMutateSelf {false};   // method doesn't mutate receiver state
+        uint32_t noMutateArgs {0};   // bitmask: bit N set → arg N not mutated
 
         BuiltinMethodInfo() : isProc(false), declFunction(Value::nilVal()) {}
         BuiltinMethodInfo(NativeFn fn, bool proc = false,
                           ptr<type::Type> type=nullptr,
                           std::vector<Value> defaults = {},
-                          Value declFn = Value::nilVal())
+                          Value declFn = Value::nilVal(),
+                          uint32_t resolveMask = 0,
+                          bool noMutateSelf_ = false,
+                          uint32_t noMutateArgs_ = 0)
             : function(fn), isProc(proc), funcType(type),
-              defaultValues(std::move(defaults)), declFunction(declFn) {}
+              defaultValues(std::move(defaults)), declFunction(declFn),
+              resolveArgMask(resolveMask),
+              noMutateSelf(noMutateSelf_), noMutateArgs(noMutateArgs_) {}
 
         void trace(ValueVisitor& visitor) const
         {
@@ -410,6 +741,16 @@ public:
     std::unordered_map<ValueType, std::unordered_map<int32_t, BuiltinMethodInfo>> builtinMethods;
 
     bool processPendingEvents();
+
+    // Event handler closures are pushed as regular call frames (like func call).
+    bool processEventDispatch();
+    bool invokeNextEventHandler();
+
+    // Native continuation support - allows native functions to call Roxal closures
+    // without re-entering execute() (e.g., list.filter/map/reduce)
+    bool processContinuationDispatch();
+    bool pushContinuationCall(ObjClosure* closure, const std::vector<Value>& args);
+    void clearContinuation();
 
     void resetStack();
     void freeObjects();
@@ -434,7 +775,9 @@ public:
                              bool isProc = false,
                              ptr<type::Type> funcType = nullptr,
                              std::vector<Value> defaults = {},
-                             Value declFunction = Value::nilVal());
+                             Value declFunction = Value::nilVal(),
+                             bool noMutateSelf = false,
+                             uint32_t noMutateArgs = 0);
 
     // Native property support
     typedef Value (VM::*NativePropertyGetter)(Value&);
@@ -458,6 +801,8 @@ public:
 
     Value vector_norm_builtin(ArgsView args);
     Value vector_sum_builtin(ArgsView args);
+    Value vector_min_builtin(ArgsView args);
+    Value vector_max_builtin(ArgsView args);
     Value vector_normalized_builtin(ArgsView args);
     Value vector_dot_builtin(ArgsView args);
     Value matrix_rows_builtin(ArgsView args);
@@ -468,11 +813,39 @@ public:
     Value matrix_trace_builtin(ArgsView args);
     Value matrix_norm_builtin(ArgsView args);
     Value matrix_sum_builtin(ArgsView args);
+    Value matrix_min_builtin(ArgsView args);
+    Value matrix_max_builtin(ArgsView args);
+    Value tensor_min_builtin(ArgsView args);
+    Value tensor_max_builtin(ArgsView args);
+    Value tensor_sum_builtin(ArgsView args);
+
+    // Orient methods
+    Value orient_rotate_builtin(ArgsView args);
+    Value orient_slerp_builtin(ArgsView args);
+    Value orient_angle_to_builtin(ArgsView args);
+    Value orient_euler_builtin(ArgsView args);
+
+    // Orient property getters
+    Value orient_rpy_getter(Value& receiver);
+    Value orient_r_getter(Value& receiver);
+    Value orient_p_getter(Value& receiver);
+    Value orient_y_getter(Value& receiver);
+    Value orient_quat_getter(Value& receiver);
+    Value orient_mat_getter(Value& receiver);
+    Value orient_axis_getter(Value& receiver);
+    Value orient_angle_getter(Value& receiver);
+    Value orient_inverse_getter(Value& receiver);
 
     Value list_append_builtin(ArgsView args);
-    Value list_filter_builtin(ArgsView args);
-    Value list_map_builtin(ArgsView args);
-    Value list_reduce_builtin(ArgsView args);
+    Value list_extend_builtin(ArgsView args);
+    Value list_insert_builtin(ArgsView args);
+    Value list_remove_builtin(ArgsView args);
+    Value list_pop_builtin(ArgsView args);
+
+    Value string_upper_builtin(ArgsView args);
+    Value string_lower_builtin(ArgsView args);
+    Value string_capitalize_builtin(ArgsView args);
+    Value string_title_builtin(ArgsView args);
 
 #ifdef ROXAL_ENABLE_REGEX
     Value string_match_builtin(ArgsView args);
@@ -499,6 +872,14 @@ public:
     Value captureStacktrace();
 
     bool resolveValue(Value& value);
+    FutureStatus tryResolveValue(Value& value);
+
+    // Non-blocking await helpers for opcode handlers.
+    // On Pending, each sets thread->awaitedFuture and rewinds the IP.
+    inline FutureStatus tryAwaitFuture(Value& v);
+    inline FutureStatus tryAwaitFutures(Value& a, Value& b);
+    inline FutureStatus tryAwaitValue(Value& v);
+    inline FutureStatus tryAwaitValues(Value& a, Value& b);
 
 
 
@@ -525,6 +906,14 @@ public:
     Value exception_stacktrace_getter(Value& receiver);
     Value exception_stacktrace_string_getter(Value& receiver);
     Value exception_detail_getter(Value& receiver);
+
+    // Range property getters
+    Value range_start_getter(Value& receiver);
+    Value range_stop_getter(Value& receiver);
+    Value range_step_getter(Value& receiver);
+    Value range_closed_getter(Value& receiver);
+    Value range_first_getter(Value& receiver);
+    Value range_last_getter(Value& receiver);
 
     Value loadlib_native(ArgsView args);
     Value ffi_native(ArgsView args);

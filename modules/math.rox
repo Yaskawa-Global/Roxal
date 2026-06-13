@@ -1,3 +1,7 @@
+
+const pi :real = 3.1415926535897932
+const e :real  = 2.718281828459045235
+
 @builtin
 func sin(x:real) -> real:
   """sine of x"""
@@ -187,12 +191,158 @@ func ones(r:int, c:int) -> matrix:
   """matrix of all ones"""
 
 @builtin
-func dot(a:vector, b:vector) -> real:
+func dot(a: const vector, b: const vector) -> real:
   """dot product of two vectors"""
 
 @builtin
-func cross(a:vector, b:vector) -> vector:
+func cross(a: const vector, b: const vector) -> vector:
   """cross product of two 3-element vectors"""
+
+@builtin
+func relu(x):
+  """rectified linear unit: max(0, x) applied element-wise (works on scalar, vector, matrix, or tensor)"""
+
+@builtin
+func softmax(x):
+  """softmax function: exp(x_i) / sum(exp(x_j)) (works on vector or 1D tensor)"""
+
+@builtin
+func argmax(x):
+  """index of maximum element (works on vector or 1D tensor)"""
+
+@builtin
+func min(x) -> real:
+  """minimum element value (works on vector, matrix, tensor, or list)"""
+
+@builtin
+func max(x) -> real:
+  """maximum element value (works on vector, matrix, tensor, or list)"""
+
+@builtin
+func sum(x) -> real:
+  """sum of all elements (works on vector, matrix, tensor, or list)"""
+
+
+func clamp(value, r :range):
+  """clamp value to the given range; returns int if value is int, otherwise real.
+     Indeterminate bounds (nil) leave that side unclamped."""
+  var lo = r.first
+  var hi = r.last
+  if lo is nil and hi is nil:
+    if value is int:
+      return value
+    return real(value)
+  if lo is not nil and hi is not nil and lo > hi:
+    var tmp = lo
+    lo = hi
+    hi = tmp
+  if value is int:
+    if lo is not nil and value < lo:
+      return lo
+    if hi is not nil and value > hi:
+      return hi
+    return value
+  var v = real(value)
+  if lo is not nil and v < real(lo):
+    return real(lo)
+  if hi is not nil and v > real(hi):
+    return real(hi)
+  return v
+
+
+// Complex number type
+type complex object:
+  var re :real = 0.0
+  var im :real = 0.0
+
+  proc init(re :real = 0.0, im :real = 0.0):
+    this.re = re
+    this.im = im
+
+  // Arithmetic: commutative + and * (accepts complex or real)
+  func operator+(other) -> complex:
+    if other is complex:
+      return complex(re + other.re, im + other.im)
+    return complex(re + real(other), im)
+
+  func operator-(other) -> complex:
+    if other is complex:
+      return complex(re - other.re, im - other.im)
+    return complex(re - real(other), im)
+
+  // Unary negation
+  func operator-() -> complex:
+    return complex(-re, -im)
+
+  // Multiplication: (a+bi)(c+di) = (ac-bd) + (ad+bc)i
+  func operator*(other) -> complex:
+    if other is complex:
+      return complex(re * other.re - im * other.im, re * other.im + im * other.re)
+    var s = real(other)
+    return complex(re * s, im * s)
+
+  // Division: (a+bi)/(c+di) = ((ac+bd) + (bc-ad)i) / (c²+d²)
+  func loperator/(other) -> complex:
+    if other is complex:
+      var denom = other.re * other.re + other.im * other.im
+      return complex((re * other.re + im * other.im) / denom, (im * other.re - re * other.im) / denom)
+    var s = real(other)
+    return complex(re / s, im / s)
+
+  // real / complex: r/(c+di) = r*(c-di)/(c²+d²)
+  func roperator/(other) -> complex:
+    var r = real(other)
+    var denom = re * re + im * im
+    return complex(r * re / denom, -r * im / denom)
+
+  // Comparison
+  func operator==(other) -> bool:
+    if other is complex:
+      return re == other.re and im == other.im
+    return im == 0.0 and re == real(other)
+
+  func operator!=(other) -> bool:
+    if other is complex:
+      return re != other.re or im != other.im
+    return im != 0.0 or re != real(other)
+
+  // Magnitude (absolute value)
+  func abs() -> real:
+    return sqrt(re * re + im * im)
+
+  // Conjugate
+  func conj() -> complex:
+    return complex(re, -im)
+
+  // String representation: "a+bi", "a-bi", "bi", or "a"
+  implicit func operator string() -> string:
+    if im == 0.0:
+      return string(re)
+    if re == 0.0:
+      if im == 1.0:
+        return 'i'
+      if im == -1.0:
+        return '-i'
+      return string(im) + 'i'
+    if im < 0.0:
+      if im == -1.0:
+        return string(re) + '-i'
+      return string(re) + string(im) + 'i'
+    if im == 1.0:
+      return string(re) + '+i'
+    return string(re) + '+' + string(im) + 'i'
+
+  // Explicit conversion to real — only if imaginary part is zero
+  func operator real() -> real:
+    if im != 0.0:
+      raise 'cannot convert complex with non-zero imaginary part to real'
+    return re
+
+
+// Imaginary literal suffix: 3i → complex(0, 3)
+@suffix("i")
+func _suf_i(v) -> complex:
+  return complex(im=real(v))
 
 
 // Example only: source signal updated from native code

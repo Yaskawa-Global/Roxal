@@ -1,0 +1,25 @@
+// Subtype overload selection: typed Animal vs typed Dog overloads.
+// Calling with a Dog instance should pick the Dog overload (exact),
+// and calling with a plain Animal should pick the Animal overload.
+
+type Animal object:
+    var name :string = ""
+
+type Dog object extends Animal:
+    var breed :string = ""
+
+func describe(a :Animal):
+    print("animal:{a.name}")
+
+func describe(d :Dog):
+    print("dog:{d.name},{d.breed}")
+
+var rex = Dog()
+rex.name = "Rex"
+rex.breed = "Lab"
+
+var spot = Animal()
+spot.name = "Spot"
+
+describe(rex)
+describe(spot)

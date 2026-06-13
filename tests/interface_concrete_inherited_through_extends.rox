@@ -1,0 +1,21 @@
+type I interface:
+    const TAG :string = "from_iface"
+    type Mode enum: a, b
+    func ping()
+
+type Parent object implements I:
+    var x :int
+    func ping():
+        print("p")
+
+type Child object extends Parent:
+    var y :int
+
+# Child inherits TAG and Mode through Parent's implements
+print(Child.TAG)
+print(Child.Mode.a)
+
+var c = Child(x=1, y=2)
+c.ping()
+print(c.TAG)
+print(c is I)

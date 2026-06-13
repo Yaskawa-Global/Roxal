@@ -1,0 +1,4 @@
+Actor 1 initialized.
+Actor 2 initialized.
+Actor 1 is calling other actor...
+Actor 2 says: Hello, Alice!

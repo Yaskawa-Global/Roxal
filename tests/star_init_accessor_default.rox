@@ -1,0 +1,19 @@
+// Accessor property with an initializer expression. init(*) uses the
+// initializer as the param's default — Type() leaves the value as the
+// declared default; Type(name=N) overrides it (still bypassing setter).
+
+type Pulse object:
+  var width :int = 7:
+    get:
+      return _width
+    set:
+      _width = value * 100   // setter would inflate; init bypasses
+
+  proc init(*):
+    print("init")
+
+var a = Pulse()
+print(a.width)        // 7 — default initializer used
+
+var b = Pulse(width=3)
+print(b.width)        // 3 — provided arg, setter bypassed

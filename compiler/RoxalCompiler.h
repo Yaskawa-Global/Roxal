@@ -7,6 +7,7 @@
 #include <filesystem>
 
 #include <core/AST.h>
+#include <core/ordered_map.h>
 
 #include "Chunk.h"
 #include "Object.h"
@@ -54,11 +55,14 @@ public:
     virtual std::any visit(ptr<ast::Suite> ast);
     virtual std::any visit(ptr<ast::ExpressionStatement> ast);
     virtual std::any visit(ptr<ast::ReturnStatement> ast);
+    virtual std::any visit(ptr<ast::BreakStatement> ast);
+    virtual std::any visit(ptr<ast::ContinueStatement> ast);
     virtual std::any visit(ptr<ast::IfStatement> ast);
     virtual std::any visit(ptr<ast::WhileStatement> ast);
     virtual std::any visit(ptr<ast::ForStatement> ast);
     virtual std::any visit(ptr<ast::WhenStatement> ast);
     virtual std::any visit(ptr<ast::UntilStatement> ast);
+    virtual std::any visit(ptr<ast::AdheringIfStatement> ast);
     virtual std::any visit(ptr<ast::TryStatement> ast);
     virtual std::any visit(ptr<ast::MatchStatement> ast);
     virtual std::any visit(ptr<ast::WithStatement> ast);
@@ -78,6 +82,8 @@ public:
     virtual std::any visit(ptr<ast::Str> ast);
     virtual std::any visit(ptr<ast::Type> ast);
     virtual std::any visit(ptr<ast::Num> ast);
+    virtual std::any visit(ptr<ast::SuffixedNum> ast);
+    virtual std::any visit(ptr<ast::SuffixedStr> ast);
     virtual std::any visit(ptr<ast::List> ast);
     virtual std::any visit(ptr<ast::Vector> ast);
     virtual std::any visit(ptr<ast::Matrix> ast);
@@ -119,7 +125,7 @@ public:
     };
 
 public:
-    using VarTypeSpec = std::variant<type::BuiltinType, icu::UnicodeString>;
+    using VarTypeSpec = std::variant<type::BuiltinType, ast::TypeName>;
 
 protected:
     bool outputBytecodeDisassembly;
@@ -134,7 +140,29 @@ protected:
     // Persistent TypeDeducer for REPL mode to maintain type info across lines
     ptr<TypeDeducer> replTypeDeducer;
 
+    // Literal suffix registry: maps suffix string -> function name
+    struct SuffixRegistration {
+        icu::UnicodeString suffix;
+        icu::UnicodeString functionName;
+        icu::UnicodeString moduleName;  // for error messages
+    };
+    std::unordered_map<icu::UnicodeString, SuffixRegistration> suffixRegistry;
+    void registerSuffix(const icu::UnicodeString& suffix, const icu::UnicodeString& funcName,
+                        const icu::UnicodeString& moduleName);
+    const SuffixRegistration* lookupSuffix(const icu::UnicodeString& suffix) const;
+
     std::map<ModuleInfo,Value> importedModules;
+
+public:
+    // Drop this compiler's per-instance imported-modules cache.  Used by the
+    // REPL's `reload` command together with VM::clearUserModuleRegistry() so
+    // the next `import` statement re-runs the dependency's body. Without this
+    // the long-lived REPL RoxalCompiler instance would still short-circuit on
+    // its own importedModules entry before the VM-level registry lookup
+    // happens. Other compiler state (replTypeDeducer, suffixRegistry) is
+    // preserved so previously-declared types in the REPL still type-check.
+    void clearImportedModules() { importedModules.clear(); }
+protected:
 
     // given the components of an import, such as "package.subpackage.module", return
     //  information about the module, including the file that should be executed
@@ -142,12 +170,17 @@ protected:
 
     struct Local {
         Local(const icu::UnicodeString& _name, int scopeDepth,
-               std::optional<VarTypeSpec> t = std::nullopt)
-            : name(_name), depth(scopeDepth), isCaptured(false), type(t) {}
+               std::optional<VarTypeSpec> t = std::nullopt, bool _isConst = false,
+               bool _isTypeConst = false)
+            : name(_name), depth(scopeDepth), isCaptured(false), isConst(_isConst),
+              isTypeConst(_isTypeConst), type(t) {}
 
         icu::UnicodeString name;
         int depth;
         bool isCaptured;
+        bool isConst;
+        bool isTypeConst;   // var x: const T — type is const, but var is reassignable
+        bool isParam { false }; // immutable binding (cannot reassign) but value is not const
         std::optional<VarTypeSpec> type;
     };
 
@@ -271,7 +304,22 @@ protected:
         FunctionType    functionType;
         ptr<type::Type> type;
 
+        // AST-level return types (preserves user-defined type names that TypeDeducer loses).
+        // Used by visit(ReturnStatement) to emit return type conversion.
+        std::optional<std::vector<VarTypeSpec>> astReturnTypes;
+
         std::vector<uint16_t> identConsts;
+
+        // Local-scope function overload tracking. Populated by a pre-pass in
+        // visit(Function) over the function body. A name with count > 1 will
+        // bind to an OverloadSet in its local slot; visit(FuncDecl) emits
+        // DefineLocalOverload accordingly. Each new FuncType is appended to
+        // localOverloadCandidates as the FuncDecl is processed; visit(Call)
+        // consults this for compile-time resolution.
+        std::unordered_map<icu::UnicodeString, int> localFuncDeclCounts;
+        std::unordered_map<icu::UnicodeString, int16_t> localOverloadSlots;
+        std::unordered_map<icu::UnicodeString,
+                           std::vector<ptr<type::Type>>> localOverloadCandidates;
     };
 
 
@@ -282,23 +330,43 @@ protected:
         TypeScope(const icu::UnicodeString& typeName)
           : LexicalScope(ScopeType::Type, typeName), hasSuperType(false) {}
 
-        icu::UnicodeString superTypeName;
+        ast::TypeName superTypeName;
 
         bool hasSuperType;
         bool isActor { false };
+        // Stack slot of the in-flight type during its own body emission, anchored
+        // by an unnamed local. -1 means not set. Set after the type's value is
+        // pushed onto the runtime stack (via Dup for nested or GetModuleVar for
+        // top-level), and cleared when the body finishes. Used by the
+        // typescope-const walker to load the in-flight enclosing type directly,
+        // bypassing the parent-attachment chain (which fails at runtime when the
+        // enclosing type's NESTED_TYPE attachment hasn't run yet).
+        int16_t inFlightStackSlot { -1 };
         struct MemberInfo {
             ast::Access access { ast::Access::Public };
             icu::UnicodeString owner;
             bool isConst { false };
+            std::optional<VarTypeSpec> propType;
         };
-        std::unordered_map<icu::UnicodeString, MemberInfo> propertyNames;
+        // Insertion order preserved so callers (notably `proc init(*)` and
+        // dict(obj)/to_json) can walk properties in declaration order.
+        ordered_map<icu::UnicodeString, MemberInfo> propertyNames;
+
+        // Weak handle on the enclosing TypeDecl AST. Used by `proc init(*)`
+        // synthesis to walk the type's own properties in declaration order.
+        // Weak so the TypeScope can't accidentally extend the AST's
+        // lifetime; the AST graph is the source of truth and lives at
+        // least as long as the TypeScope by construction. Set right after
+        // enterTypeScope() via `typeDecl = ast;` (assignment from ptr).
+        weak_ptr<ast::TypeDecl> typeDecl;
     };
 
     ptr<TypeScope> asTypeScope(Scope s) const { return dynamic_ptr_cast<TypeScope>(*s); }
 
-    // map type name -> registered member names (properties and methods)
+    // map type name -> registered member names (properties and methods);
+    // inner map preserves declaration order.
     std::unordered_map<icu::UnicodeString,
-                       std::unordered_map<icu::UnicodeString, TypeScope::MemberInfo>> typePropertyRegistry;
+                       ordered_map<icu::UnicodeString, TypeScope::MemberInfo>> typePropertyRegistry;
 
 
     struct ModuleScope : public FunctionScope
@@ -344,8 +412,18 @@ protected:
         icu::UnicodeString sourceName;
         Value moduleType;  // ObjModuleType
         std::unordered_map<icu::UnicodeString, VarTypeSpec> moduleVarTypes;
+        std::unordered_set<icu::UnicodeString> moduleVarTypeConst; // vars declared as var x: const T
         std::unordered_map<icu::UnicodeString, ast::LinePos> moduleVarLines;
         std::unordered_map<icu::UnicodeString, ast::LinePos> moduleConstLines;
+
+        // Module-level function overload tracking. Populated by a pre-pass in
+        // visit(File) over the file's top-level FuncDecls. A name with count > 1
+        // will bind to an OverloadSet via DefineModuleOverload. Each new FuncType
+        // is appended to moduleOverloadCandidates as the FuncDecl is processed;
+        // visit(Call) consults this for compile-time resolution.
+        std::unordered_map<icu::UnicodeString, int> moduleFuncDeclCounts;
+        std::unordered_map<icu::UnicodeString,
+                           std::vector<ptr<type::Type>>> moduleOverloadCandidates;
     };
 
     ptr<ModuleScope> asModuleScope(Scope s) const { return dynamic_ptr_cast<ModuleScope>(*s); }
@@ -381,11 +459,13 @@ protected:
 
     ptr<ast::AST> currentNode;
 
+    bool compilingNestedType { false }; // true during nested type compilation — skips module registration
 
     void error(const std::string& message);
 
     ValueType builtinToValueType(ast::BuiltinType bt);
 
+    void emitTypeName(const ast::TypeName& components); // emit namedVariable + GetProp chain for dotted type names
     void emitByte(uint8_t byte, const std::string& comment = "");
     void emitByte(OpCode op, const std::string& comment = "");
     void emitBytes(uint8_t byte1, uint8_t byte2, const std::string& comment = "");
@@ -403,6 +483,19 @@ protected:
             emitBytes(op, uint8_t(arg), comment);
         else
             emitBytes(OpCode(uint8_t(op) | DoubleByteArg), uint8_t(arg >> 8), uint8_t(arg & 0xFF), comment);
+    }
+    // Two-arg variant: first arg uses single/double-byte encoding (auto-promotes),
+    // second arg is always emitted as a 2-byte big-endian uint16_t. Used by
+    // OpCode::GetOverloadAt and OpCode::GetLocalOverloadAt.
+    void emitOpArgsBytesPlusIndex(OpCode op, uint16_t arg, uint16_t index, const std::string& comment = "") {
+        debug_assert_msg(!isDoubleByte(op), "emitOpArgsBytesPlusIndex(OpCode, ...) accepts only regular OpCode (automatically promoted to double-byte variant).");
+        if (arg <= 255) {
+            emitBytes(op, uint8_t(arg), comment);
+        } else {
+            emitBytes(OpCode(uint8_t(op) | DoubleByteArg), uint8_t(arg >> 8), uint8_t(arg & 0xFF), comment);
+        }
+        emitByte(uint8_t(index >> 8));
+        emitByte(uint8_t(index & 0xFF));
     }
     uint8_t lastByte();
 
@@ -429,6 +522,35 @@ protected:
     void defineVariable(uint16_t moduleVar = 0, bool isConst = false); // moduleVar unused if defining a local
     bool namedVariable(const icu::UnicodeString& name, bool assign=false, bool asSignal=false);
     void namedModuleVariable(const icu::UnicodeString& name, bool assign=false);
+    CallSpec buildCallSpec(const ptr<ast::Call>& ast);
+    bool isRemoteActorConstructorCall(const ptr<ast::Expression>& expr) const;
+    void emitRemoteActorConstructorCall(const ptr<ast::Call>& callAst, const ptr<ast::Expression>& hostExpr);
+
+    // Per-member view used by `proc init(*)` synthesis. Abstracts over plain
+    // data `var` declarations and accessor-equipped declarations so the
+    // prologue iterates members in source-declaration order regardless of
+    // which AST list they came from.
+    struct StarInitMember {
+        icu::UnicodeString name;
+        std::optional<ast::VarType> declaredType;
+        std::optional<ptr<ast::Expression>> initializer;
+        // The actual property name written by the SetProp opcode. Equals
+        // `name` for plain data props; `_<name>` for accessor-equipped props
+        // (writes go directly to the synthetic backing field, bypassing the
+        // user setter).
+        icu::UnicodeString storageName;
+        bool isConst { false };
+    };
+
+    // Synthesize parameters + assignment prologue for `proc init(*)`. Called
+    // from visit(Function) when the function is a star-init. Declares one
+    // local per public property (in source-declaration order — data and
+    // accessor-equipped props interleaved as written), populates the
+    // surrounding function's FuncType params accordingly, sets up
+    // paramDefaultFunc entries for every param (explicit initializer if
+    // present, otherwise the type-construction default), and emits
+    // `this.<storageName> = <param>` for each.
+    void emitStarInitPrologue(const std::vector<StarInitMember>& members);
 
     std::optional<VarTypeSpec> localVarType(const icu::UnicodeString& name);
     std::optional<VarTypeSpec> moduleVarType(const icu::UnicodeString& name);
@@ -437,6 +559,23 @@ protected:
     bool moduleConstExists(const icu::UnicodeString& name) const;
     Value evaluateConstExpression(ptr<ast::Expression> expr, bool strictContext);
     Value applyConstType(Value value, std::optional<VarTypeSpec> type, bool strictContext);
+
+    // Stack of enclosing loops, used to resolve break/continue jump targets.
+    // bodyScopeDepth is the scopeDepth at the loop body's entry — break/continue
+    // emit Pop opcodes for any locals declared at greater depth before jumping.
+    // For while: continue emits a backward Loop opcode directly to loopStart.
+    // For for: continue emits a forward Jump (target is before the increment),
+    //   patched by the for-stmt visitor after body emission.
+    struct LoopContext {
+        int bodyScopeDepth;
+        bool isForLoop;
+        Chunk::size_type whileLoopStart;  // unused for for-loops
+        std::vector<Chunk::size_type> breakOffsets;
+        std::vector<Chunk::size_type> continueOffsets;  // for-loops only
+    };
+    std::vector<LoopContext> loopStack;
+
+    void emitPopsForLoopExit(int targetDepth);
 
 };
 

@@ -1,0 +1,9 @@
+type W actor:
+  func compute(n :int) -> int:
+    wait(ms=5)
+    return n
+
+# Variadic args mixed with list args (one-level flattening).
+w = W()
+results = wait(for=allof([w.compute(1), w.compute(2)], w.compute(3)))
+print(results)

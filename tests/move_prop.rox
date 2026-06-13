@@ -1,0 +1,8 @@
+// Test move() with object property
+type Container object:
+    var items: list
+
+var c = Container([1,2,3])
+var y = move(c.items)
+print('y=' + y)
+print('c.items is nil: ' + (c.items == nil))

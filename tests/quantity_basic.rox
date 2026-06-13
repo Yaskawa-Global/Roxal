@@ -1,0 +1,61 @@
+// Basic quantity type tests
+
+// Length suffixes
+print(10m)
+print(500mm)
+print(25cm)
+print(12in)
+print(6ft)
+
+// Mass suffixes
+print(5kg)
+print(100g)
+
+// Time suffixes
+print(1s)
+print(500ms)
+print(2min)
+
+// Angle suffixes
+print(90deg)
+print(180deg)
+
+// Velocity
+print(10m/s)
+
+// Arithmetic: addition of compatible units
+print(1m + 500mm)
+
+// Scalar multiplication
+print(2 * 5m)
+print(5m * 3)
+
+// Division: distance / time = velocity
+print(100m / 4s)
+
+// Force: mass * acceleration
+print(10kg * 9.81m/s^2)
+
+// Negation
+print(-5m)
+
+// Property getters
+var d = 2.5m
+print(d.meters)
+print(d.millimeters)
+print(d.centimeters)
+
+var a = 90deg
+print(a.degrees)
+
+// Comparison
+print(10m > 5m)
+print(10m < 5m)
+print(10m == 10m)
+print(5kg >= 5kg)
+
+// Dimension mismatch error
+try:
+  var x = 10m + 5s
+except:
+  print('dimension mismatch')

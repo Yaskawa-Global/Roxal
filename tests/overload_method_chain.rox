@@ -1,0 +1,20 @@
+// Property-chain method overload dispatch: obj.prop.method(args)
+// where prop has a known typed declaration and method is overloaded.
+// TypeDeducer now propagates prop's type so the call site can
+// compile-time-resolve the overload.
+
+type Engine object:
+    var name :string = ""
+
+    func handle(x :int):
+        print("engine-int:{x}")
+
+    func handle(x :string):
+        print("engine-str:{x}")
+
+type Car object:
+    var engine :Engine
+
+var c = Car(Engine("v8"))
+c.engine.handle(7)
+c.engine.handle("brrr")

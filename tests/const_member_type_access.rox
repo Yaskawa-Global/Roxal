@@ -1,0 +1,19 @@
+type Config object:
+    const name = "default"
+    const count: int = 10
+    const items = [1, 2, 3]
+    var value: int
+
+# access const members via type name
+print(Config.name)
+print(Config.count)
+print(Config.items)
+
+# access const members via instance
+var c = Config(42)
+print(c.name)
+print(c.count)
+print(c.items)
+
+# access var member via instance
+print(c.value)

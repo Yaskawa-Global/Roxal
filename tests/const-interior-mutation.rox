@@ -1,0 +1,22 @@
+
+type Leaf object:
+  var i :int
+
+type Mid object:
+  var l :Leaf
+
+type Outer object:
+  var m :Mid
+
+var o = Outer(Mid(Leaf(1)))
+var m = o.m  // store mutable interior reference to Mid
+
+const c :Outer = o   // implicitly const c :const Outer
+
+m.l.i = 2 // mutation of leaf via mutable reference
+print(c.m.l.i) // should print 1
+print(o.m.l.i) // should print 2
+
+print(typeof(c.m.l)) // <type const object Leaf>
+print(typeof(o.m.l)) // <type object Leaf>
+

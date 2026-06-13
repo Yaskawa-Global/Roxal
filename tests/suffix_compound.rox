@@ -1,0 +1,25 @@
+// Compound suffix test (bare form with /)
+
+@suffix("aa")
+func suf_aa(v):
+  return v
+
+@suffix("aa/bb")
+func suf_aabb(v):
+  return v
+
+@suffix("cc/bb")
+func suf_ccbb(v):
+  return v
+
+// Bare compound suffix
+print(10aa/bb)
+
+// Another compound
+print(100cc/bb)
+
+// Simple suffix still works
+print(5aa)
+
+// Suffix in expression with operator (space separates)
+print(10aa/bb + 5aa/bb)

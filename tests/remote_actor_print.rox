@@ -1,0 +1,17 @@
+type PrintHelperActor actor:
+  func produce(msg: string) -> int:
+    print("helper:" + msg)
+    return 0
+
+type PrintWorkerActor actor:
+  func run(msg: string) -> int:
+    print("worker:" + msg)
+    var helper = PrintHelperActor()
+    var helperDone = helper.produce(msg)
+    wait(for=helperDone)
+    return 1
+
+var worker = PrintWorkerActor() at "__COMPUTE_TEST_ADDR__"
+var result = worker.run("hello")
+wait(for=result)
+print(result)

@@ -30,6 +30,8 @@ public:
     virtual std::any visit(ptr<ast::Suite> ast);
     virtual std::any visit(ptr<ast::ExpressionStatement> ast);
     virtual std::any visit(ptr<ast::ReturnStatement> ast);
+    virtual std::any visit(ptr<ast::BreakStatement> ast);
+    virtual std::any visit(ptr<ast::ContinueStatement> ast);
     virtual std::any visit(ptr<ast::IfStatement> ast);
     virtual std::any visit(ptr<ast::WhileStatement> ast);
     virtual std::any visit(ptr<ast::TryStatement> ast);
@@ -51,6 +53,8 @@ public:
     virtual std::any visit(ptr<ast::Str> ast);
     virtual std::any visit(ptr<ast::Type> ast);
     virtual std::any visit(ptr<ast::Num> ast);
+    virtual std::any visit(ptr<ast::SuffixedNum> ast);
+    virtual std::any visit(ptr<ast::SuffixedStr> ast);
     virtual std::any visit(ptr<ast::List> ast);
     virtual std::any visit(ptr<ast::Vector> ast);
     virtual std::any visit(ptr<ast::Matrix> ast);
@@ -107,11 +111,14 @@ public:
     std::any visit(ptr<roxal::ast::Suite> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::ExpressionStatement> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::ReturnStatement> ast) override { if(m_f) m_f(ast); return{}; }
+    std::any visit(ptr<roxal::ast::BreakStatement> ast) override { if(m_f) m_f(ast); return{}; }
+    std::any visit(ptr<roxal::ast::ContinueStatement> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::IfStatement> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::WhileStatement> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::ForStatement> ast) override { throw std::runtime_error("Not implemented"); }
     std::any visit(ptr<roxal::ast::WhenStatement> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::UntilStatement> ast) override { if(m_f) m_f(ast); return{}; }
+    std::any visit(ptr<roxal::ast::AdheringIfStatement> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::TryStatement> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::MatchStatement> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::WithStatement> ast) override { if(m_f) m_f(ast); return{}; }
@@ -131,6 +138,8 @@ public:
     std::any visit(ptr<roxal::ast::Type> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Str> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Num> ast) override { if(m_f) m_f(ast); return{}; }
+    std::any visit(ptr<roxal::ast::SuffixedNum> ast) override { if(m_f) m_f(ast); return{}; }
+    std::any visit(ptr<roxal::ast::SuffixedStr> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::List> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Vector> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Matrix> ast) override { if(m_f) m_f(ast); return{}; }
