@@ -42,6 +42,7 @@ if(ROXAL_ENABLE_AI_NN)
     set(ROXAL_ENABLE_ONNX ON CACHE BOOL "Enabled implicitly by ROXAL_ENABLE_AI_NN" FORCE)
 endif()
 option(ROXAL_ENABLE_MEDIA "Enable media module (PNG/JPEG image I/O)" OFF)
+option(ROXAL_ENABLE_QT "Enable qt module (QML/QtQuick UI, requires Qt6)" OFF)
 if(ROXAL_ENABLE_ALL)
     set(ROXAL_ENABLE_FILEIO ON CACHE BOOL "Enabled by ROXAL_ENABLE_ALL" FORCE)
     set(ROXAL_ENABLE_GRPC ON CACHE BOOL "Enabled by ROXAL_ENABLE_ALL" FORCE)
@@ -252,6 +253,12 @@ if(ROXAL_ENABLE_MEDIA)
     find_package(JPEG REQUIRED)
 endif()
 
+# Qt6 for the qt module (QML/QtQuick UI). Point find_package at a desktop Qt6
+# install via -DCMAKE_PREFIX_PATH=/path/to/Qt/<ver>/gcc_64 (or set Qt6_DIR).
+if(ROXAL_ENABLE_QT)
+    find_package(Qt6 COMPONENTS Core Gui Qml Quick REQUIRED)
+endif()
+
 # Detect libffi via pkg-config so that include and library paths
 # are recorded explicitly and the build fails clearly if libffi is
 # missing.
@@ -331,6 +338,9 @@ if(ROXAL_ENABLE_AI_NN)
 endif()
 if(ROXAL_ENABLE_MEDIA)
     list(APPEND COMPILER_SOURCES compiler/ModuleMedia.cpp)
+endif()
+if(ROXAL_ENABLE_QT)
+    list(APPEND COMPILER_SOURCES compiler/ModuleQt.cpp)
 endif()
 
 set(MAIN_SOURCE compiler/roxal.cpp)
@@ -450,6 +460,10 @@ target_link_libraries(roxalcore
         $<$<BOOL:${ROXAL_ENABLE_ONNX}>:${ONNXRUNTIME_LIBRARY}>
         $<$<BOOL:${ROXAL_ENABLE_MEDIA}>:PNG::PNG>
         $<$<BOOL:${ROXAL_ENABLE_MEDIA}>:JPEG::JPEG>
+        $<$<BOOL:${ROXAL_ENABLE_QT}>:Qt6::Core>
+        $<$<BOOL:${ROXAL_ENABLE_QT}>:Qt6::Gui>
+        $<$<BOOL:${ROXAL_ENABLE_QT}>:Qt6::Qml>
+        $<$<BOOL:${ROXAL_ENABLE_QT}>:Qt6::Quick>
 )
 
 
@@ -471,6 +485,7 @@ target_compile_definitions(roxalcore PRIVATE
     $<$<BOOL:${ROXAL_ENABLE_ONNX}>:ROXAL_ENABLE_ONNX>
     $<$<BOOL:${ROXAL_ENABLE_AI_NN}>:ROXAL_ENABLE_AI_NN>
     $<$<BOOL:${ROXAL_ENABLE_MEDIA}>:ROXAL_ENABLE_MEDIA>
+    $<$<BOOL:${ROXAL_ENABLE_QT}>:ROXAL_ENABLE_QT>
     $<$<BOOL:${ROXAL_COMPUTE_SERVER}>:ROXAL_COMPUTE_SERVER>
     ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
     ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
@@ -496,6 +511,7 @@ if(ROXAL_BUILD_MAIN)
         $<$<BOOL:${ROXAL_ENABLE_ONNX}>:ROXAL_ENABLE_ONNX>
         $<$<BOOL:${ROXAL_ENABLE_AI_NN}>:ROXAL_ENABLE_AI_NN>
         $<$<BOOL:${ROXAL_ENABLE_MEDIA}>:ROXAL_ENABLE_MEDIA>
+        $<$<BOOL:${ROXAL_ENABLE_QT}>:ROXAL_ENABLE_QT>
         $<$<BOOL:${ROXAL_COMPUTE_SERVER}>:ROXAL_COMPUTE_SERVER>
         ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
         ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"

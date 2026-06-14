@@ -298,6 +298,7 @@ socket_tests = ['socket_basic']
 nn_tests = ['nn_mnist', 'nn_signal', 'nn_chain', 'nn_signal_chain', 'nn_dynamic', 'nn_multi_io', 'nn_async', 'nn_tokenizer']
 nn_lfs_tests = ['nn_dfine']  # require LFS model files (only run with --all)
 media_tests = ['media_read_write', 'media_manipulate', 'media_convert']
+qt_tests = ['qt_lifecycle', 'qt_load_file']  # require Qt6 (ROXAL_ENABLE_QT); run headless
 compute_server_tests = [
     'remote_actor_basic',
     'remote_actor_backchannel',
@@ -323,6 +324,7 @@ tests += xml_tests
 tests += socket_tests
 tests += nn_tests
 tests += media_tests
+tests += qt_tests
 tests += compute_server_tests
 
 long_running_tests = [
@@ -418,6 +420,7 @@ has_xml = 'xml' in features
 has_socket = 'socket' in features
 has_nn = 'nn' in features
 has_compute_server = 'server' in features
+has_qt = 'qt' in features
 if not has_grpc and any(test in tests for test in grpc_tests):
     print("Skipping gRPC tests (feature not enabled).")
     tests = [t for t in tests if t not in grpc_tests]
@@ -440,6 +443,10 @@ if not has_socket:
     if any(test in tests for test in socket_tests):
         print("Skipping socket tests (feature not enabled).")
         tests = [t for t in tests if t not in socket_tests]
+if not has_qt:
+    if any(test in tests for test in qt_tests):
+        print("Skipping qt tests (feature not enabled).")
+        tests = [t for t in tests if t not in qt_tests]
 if not has_compute_server:
     if any(test in tests for test in compute_server_tests):
         print("Skipping compute server tests (feature not enabled).")
@@ -764,12 +771,18 @@ try:
         else:
             timeout_secs = TEST_TIMEOUT_SECS
 
+        test_env = env_base
+        if test in qt_tests:
+            # Qt GUI tests run headless via the offscreen platform plugin.
+            test_env = dict(env_base)
+            test_env['QT_QPA_PLATFORM'] = 'offscreen'
+
         try:
             compProc = subprocess.run(
                 cmd,
                 input=(input_data.encode() if isinstance(input_data, str) else input_data if input_data else None),
                 capture_output=True, shell=False,
-                timeout=timeout_secs, env=env_base)
+                timeout=timeout_secs, env=test_env)
         except subprocess.TimeoutExpired:
             duration_ms = (time.perf_counter() - start_time) * 1000
             print(f"FAIL: {opt_expected}", flush=True)

@@ -1,0 +1,16 @@
+// P0 Qt lifecycle: load QML from a string, block in run(), and confirm that a
+// QML Qt.quit() (fired from a Timer) unblocks run() so the program exits cleanly.
+// Run headless via QT_QPA_PLATFORM=offscreen.
+// NB: single-quoted strings don't do {} interpolation, so QML braces are literal.
+// The Timer logs "qt-tick" (asserted in qt_lifecycle.err) before Qt.quit(): it
+// only fires if run() actually blocked and kept Qt pumped — a no-op run() would
+// exit before the timer, so the .err assertion catches that regression.
+import qt
+
+var qml = 'import QtQuick\nimport QtQuick.Window\nWindow {\n  visible: true\n  width: 200\n  height: 100\n  Timer { interval: 50; running: true; onTriggered: { console.log("qt-tick"); Qt.quit() } }\n}\n'
+
+var engine = qt.Engine()
+engine.load_string(qml)
+print("running")
+engine.run()
+print("exited")

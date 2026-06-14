@@ -41,6 +41,12 @@ public:
     // Use for: registering special VM pointers, starting background threads.
     virtual void onModuleLoaded(VM& vm) {}
 
+    // Called when the top-level script run completes (end of VM::run()), while
+    // the VM and any host runtime are still alive. Use for teardown that MUST NOT
+    // happen at VM-destructor/atexit time — e.g. destroying GUI toolkit objects
+    // whose platform/thread-local state is gone by then.
+    virtual void onScriptComplete(VM& vm) {}
+
     // Called during VM shutdown, before destructor.
     // Use for: stopping background threads, cleanup.
     virtual void onModuleUnloading(VM& vm) {}

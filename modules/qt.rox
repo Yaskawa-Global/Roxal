@@ -1,0 +1,38 @@
+// qt — drive a QML/QtQuick UI from Roxal (Qt 6).
+//
+// The VM stays in control: Qt is pumped cooperatively on the main thread (no
+// Qt exec()), so the single Roxal/UI thread runs both the script and all Qt
+// event handling. An Engine loads QML (root must be a Window) and run() blocks
+// the script until the last window closes or QML Qt.quit() is requested.
+//
+//   import qt
+//   var engine = qt.Engine()
+//   engine.load("main.qml")        // or engine.load_string("import QtQuick ...")
+//   engine.run()                   // blocks until the window closes / Qt.quit()
+
+@builtin
+type Engine object:
+  """A QML application engine: loads QML and runs the Qt UI loop."""
+
+  var _native   // ForeignPtr to the C++ QQmlApplicationEngine (module-owned)
+
+  @builtin
+  proc init():
+    """Create a QML application engine (creates the QGuiApplication on first use)."""
+
+  @builtin
+  proc load(path:string):
+    """Load QML from a file. The QML root object must be a Window."""
+
+  @builtin
+  proc load_string(qml:string):
+    """Load QML from an inline string. The QML root object must be a Window."""
+
+  @builtin
+  proc run():
+    """Block until the last window closes or QML Qt.quit() is requested, pumping
+    the Qt UI loop meanwhile. Returns so the script can finish and tear down."""
+
+  @builtin
+  proc quit():
+    """Request that run() unblock (e.g. from a callback or event)."""

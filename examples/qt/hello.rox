@@ -1,0 +1,23 @@
+# Hello World for the Roxal `qt` module.
+#
+# Opens a QML window with a greeting and blocks until you close the window,
+# then exits cleanly. Demonstrates the P0 surface: create an Engine, load QML
+# from a file, and run the Qt UI loop cooperatively (the VM pumps Qt; there is
+# no Qt exec()).
+#
+# Build (Qt is an optional module, OFF by default):
+#   cmake -B build/ -DROXAL_ENABLE_QT=ON -DCMAKE_PREFIX_PATH=/opt/Qt/6.8.3/gcc_64
+#   cmake --build build/ -j4
+#
+# Run from the repo root (needs an X11 display):
+#   ./build/roxal examples/qt/hello.rox
+#
+# Or headless (no window drawn, exits when closed/quit):
+#   QT_QPA_PLATFORM=offscreen ./build/roxal examples/qt/hello.rox
+
+import qt
+
+var engine = qt.Engine()
+engine.load('examples/qt/hello.qml')
+engine.run()
+print("window closed — bye")

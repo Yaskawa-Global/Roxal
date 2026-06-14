@@ -1,0 +1,11 @@
+// P0 Qt lifecycle via a QML file + the window-close path: load a .qml file whose
+// Window closes itself on a Timer; closing the last window emits lastWindowClosed,
+// which unblocks run() so the program exits cleanly.
+// Run headless via QT_QPA_PLATFORM=offscreen. Path is relative to the build dir.
+import qt
+
+var engine = qt.Engine()
+engine.load('../tests/qt_window.qml')
+print("running")
+engine.run()
+print("exited")

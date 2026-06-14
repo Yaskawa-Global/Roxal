@@ -254,6 +254,9 @@ std::vector<std::string> VM::featureStrings()
 #ifdef ROXAL_ENABLE_MEDIA
     features.push_back("media");
 #endif
+#ifdef ROXAL_ENABLE_QT
+    features.push_back("qt");
+#endif
     return features;
 }
 
@@ -1164,6 +1167,9 @@ VM::VM()
     #ifdef ROXAL_ENABLE_MEDIA
     lazyModuleRegistry.registerFactory("media", []{ return make_ptr<ModuleMedia>(); });
     #endif
+    #ifdef ROXAL_ENABLE_QT
+    lazyModuleRegistry.registerFactory("qt", []{ return make_ptr<ModuleQt>(); });
+    #endif
 
     std::vector<std::string> stagedModulePaths;
     {
@@ -1572,6 +1578,9 @@ ExecutionStatus VM::run(std::istream& source, const std::string& name)
         // skipped, causing static/thread_local destruction order issues.
         inSynchronousExecution_.store(false, std::memory_order_release);
         joinAllThreads();
+        for (auto& mod : builtinModules) {
+            if (mod) mod->onScriptComplete(*this);
+        }
         thread.reset();
         freeObjects();
         throw;
@@ -1590,6 +1599,13 @@ ExecutionStatus VM::run(std::istream& source, const std::string& name)
     #if defined(DEBUG_TRACE_EXECUTION)
     // globals dump disabled (VariablesMap API changed)
     #endif
+
+    // Let host-UI modules (e.g. qt) tear down their native resources here, while
+    // the VM and platform are still alive. Destroying GUI toolkit objects at the
+    // VM destructor (atexit) crashes — their platform/thread-local state is gone.
+    for (auto& mod : builtinModules) {
+        if (mod) mod->onScriptComplete(*this);
+    }
 
     thread.reset();
     freeObjects();
@@ -1794,6 +1810,25 @@ TimePoint VM::blockedUntil() const
     if (!thread) return TimePoint::max();
     if (thread->threadSleep.load()) return thread->threadSleepUntil.load();
     return TimePoint::max();  // future-blocked has no known deadline
+}
+
+// Throttle interval for the host-loop busy-pump (see dispatch loop). Kept well
+// under one 60Hz frame (~16ms) so Roxal can monopolise the UI thread for at most
+// this long before yielding to the host loop; pump() is cheap when idle, so this
+// only exists to avoid a per-instruction syscall storm. Tunable.
+static constexpr int64_t kHostPumpIntervalUs = 1000; // 1 ms
+
+void VM::hostOrCondVarWait(Thread* thread, TimeDuration maxWait)
+{
+    // Only the main thread may drive a host UI loop; actor threads (and any build
+    // without a host loop installed) fall back to the plain sleep condvar.
+    if (hostEventLoop_ && RTCallbackManager::instance().isMainThread()) {
+        hostEventLoop_->waitForEvents(maxWait);
+        return;
+    }
+    if (maxWait.microSecs() <= 0) return;
+    std::unique_lock<std::mutex> lk(thread->sleepMutex);
+    thread->sleepCondVar.wait_for(lk, std::chrono::microseconds(maxWait.microSecs()));
 }
 
 
@@ -8922,6 +8957,20 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             rtMgr.checkAndInvokeCallbacks(TimePoint::currentTime());
         }
 
+        // Host UI event-loop busy-pump: while actively executing, service the host
+        // loop (e.g. Qt) at a throttled cadence so its UI stays responsive. pump()
+        // is cheap when nothing is pending; the throttle only avoids a per-
+        // instruction syscall storm. Main thread only; no-op in the default build.
+        // (Placed before postInstructionDispatch so it runs on the execution path,
+        //  not while parked — the threadSleep block below pumps the idle case.)
+        if (hostEventLoop_ && rtMgr.isMainThread()) {
+            auto nowUs = TimePoint::currentTime().microSecs();
+            if (nowUs - lastHostPumpUs_ >= kHostPumpIntervalUs) {
+                hostEventLoop_->pump();
+                lastHostPumpUs_ = nowUs;
+            }
+        }
+
         postInstructionDispatch:
 
         if (valueGC.isCollectionRequested()) {
@@ -8956,9 +9005,9 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 
                 auto waitTime = sleepTarget - now;
                 if (waitTime.microSecs() > 0) {
-                    std::unique_lock<std::mutex> lk(thread->sleepMutex);
-                    thread->sleepCondVar.wait_for(lk,
-                        std::chrono::microseconds(waitTime.microSecs()));
+                    // When a host UI loop is installed (main thread), block on it so
+                    // host events wake us immediately; else the plain sleep condvar.
+                    hostOrCondVarWait(thread.get(), waitTime);
                 }
 
                 // Invoke any due RT callbacks after waking
@@ -8982,8 +9031,9 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     if (thread->execute_depth > 0) thread->execute_depth--;
                     return yieldReturn;
                 }
-                std::unique_lock<std::mutex> lk(thread->sleepMutex);
-                thread->sleepCondVar.wait_for(lk, std::chrono::milliseconds(1));
+                // Keep a host UI loop (main thread) pumped while awaiting a future;
+                // else the original 1ms condvar poll. Both re-poll the future above.
+                hostOrCondVarWait(thread.get(), TimeDuration::milliSecs(1));
             }
         }
 
@@ -9049,8 +9099,9 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     if (thread->execute_depth > 0) thread->execute_depth--;
                     return yieldReturn;
                 }
-                std::unique_lock<std::mutex> lk(thread->sleepMutex);
-                thread->sleepCondVar.wait_for(lk, std::chrono::milliseconds(1));
+                // Keep a host UI loop (main thread) pumped while awaiting a future;
+                // else the original 1ms condvar poll. Both re-poll the future above.
+                hostOrCondVarWait(thread.get(), TimeDuration::milliSecs(1));
             }
         }
 

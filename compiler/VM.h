@@ -39,6 +39,9 @@
 #ifdef ROXAL_ENABLE_MEDIA
 #include "ModuleMedia.h"
 #endif
+#ifdef ROXAL_ENABLE_QT
+#include "ModuleQt.h"
+#endif
 #include <ffi.h>
 #include <vector>
 
@@ -91,6 +94,22 @@ struct CallFrame {
     bool isContinuationCallback { false }; // true for native continuation callback frames (e.g., filter/map/reduce, native default params)
 };
 
+
+// Generic integration point for a host UI event loop (e.g. Qt's QGuiApplication).
+// A native module installs an implementation via VM::setHostEventLoop(); the VM
+// dispatch loop then services it cooperatively — blocking on waitForEvents() when
+// idle (so host events wake the VM with ~zero latency) and calling pump() at a
+// throttled cadence while busy. Invoked on the main thread only, and never with a
+// VM lock held, so a host callback may safely re-enter the VM. Dependency-free:
+// no host-toolkit types leak into the VM, and the hook stays null in the default
+// build (no behavior change).
+struct HostEventLoop {
+    virtual ~HostEventLoop() = default;
+    // Block until a host event arrives or `maxWait` elapses, servicing host events.
+    virtual void waitForEvents(TimeDuration maxWait) = 0;
+    // Non-blocking: service any pending host events and return immediately.
+    virtual void pump() = 0;
+};
 
 
 // The Virtual Machine (singleton)
@@ -231,6 +250,15 @@ public:
     /// Get the earliest time the blocked thread could make progress.
     /// Returns TimePoint::max() if not blocked or if blocked on future.
     TimePoint blockedUntil() const;
+
+    // --- Host UI event-loop integration ---
+    /// Install (nullptr clears) a host UI event-loop integration. A native module
+    /// (e.g. qt) sets this on the main thread before loading any host UI; the
+    /// dispatch loop then services the host loop cooperatively. See HostEventLoop.
+    /// Held by ptr<> (shared) so the module and VM share ownership, matching the
+    /// VM's convention of managing instances via ptr<>/Value rather than raw C ptrs.
+    void setHostEventLoop(ptr<HostEventLoop> loop) { hostEventLoop_ = std::move(loop); }
+    const ptr<HostEventLoop>& hostEventLoop() const { return hostEventLoop_; }
 
     // --- RT REPL integration ---
     // Use setupLine() on a non-RT thread to compile REPL input, then
@@ -591,6 +619,18 @@ protected:
     std::condition_variable rtCondVar_;
     Value pendingRTClosure_ { Value::nilVal() }; // protected by rtMutex_
     int rtCoreExclusion_ { -1 }; // -1 = disabled (desktop), >=0 = exclude this core for actor threads
+
+    // Host UI event-loop integration (e.g. Qt). When set (serviced on the main
+    // thread only), the dispatch loop pumps the host loop while busy and blocks
+    // on it while idle, instead of the bare sleep condvar. Null in the default
+    // build, so behavior is unchanged. Shared ownership with the installing module.
+    ptr<HostEventLoop> hostEventLoop_;
+    int64_t lastHostPumpUs_ { 0 }; // throttle timestamp for the busy-pump (main thread)
+
+    // Block the current thread until a host event or `maxWait`. Uses the installed
+    // host event loop when on the main thread; otherwise the thread's sleep condvar
+    // (the original behavior). Defined in VM.cpp.
+    void hostOrCondVarWait(Thread* thread, TimeDuration maxWait);
 
     // Guard: prevents runFor() from entering execute() while run()/runLine() is executing
     // synchronously. Handles the case where ax.init() (inside a synchronous --setup script)
