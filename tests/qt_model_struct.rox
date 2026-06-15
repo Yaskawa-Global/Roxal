@@ -1,0 +1,45 @@
+// P3: structural mutators on a qt.ListModel — append/insert/remove/move/clear,
+// bulk set_rows, and a begin_reset/end_reset batch (mutators between them are
+// coalesced into one reset). Verified deterministically on the model's data.
+import qt
+
+type Item object:
+  var label :string
+
+func labels(m) -> string:
+  var s = ""
+  var i = 0
+  while i < m.count():
+    s = s + m.row(i).label
+    i = i + 1
+  return s
+
+var m = qt.ListModel(Item)
+m.append(Item("A"))
+m.append(Item("B"))
+m.append(Item("C"))
+print(labels(m))          # ABC
+
+m.insert(1, Item("X"))
+print(labels(m))          # AXBC
+
+m.remove(2)
+print(labels(m))          # AXC
+
+m.move(0, 2)
+print(labels(m))          # XCA
+
+m.set_rows([Item("P"), Item("Q")])
+print(labels(m))          # PQ
+
+# Batch: coalesced into a single reset; intermediate mutations emit no signals.
+m.begin_reset()
+m.append(Item("R"))
+m.append(Item("S"))
+m.clear()
+m.append(Item("T"))
+m.end_reset()
+print(labels(m))          # T
+
+m.clear()
+print(m.count())          # 0

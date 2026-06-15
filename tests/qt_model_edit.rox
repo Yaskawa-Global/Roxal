@@ -1,0 +1,24 @@
+// P3: editing a cell from QML (writing model.<role> in a delegate) calls setData,
+// which writes the row object's property through Roxal's gated assign. A writable
+// (non-const) role is applied; a const role is read-only and rejected. The delegate
+// performs the edit on a Timer, then signals Roxal to read the row back.
+import qt
+
+type Task object:
+  var name :string
+  var done :bool
+  const id  :int = 0
+
+var engine = qt.Engine()
+var m = qt.ListModel(Task, [Task("Weld", false, 1)])
+engine.set_context_property("tasks", m)
+engine.load_string('import QtQuick\nimport QtQuick.Window\nWindow {\n id: win\n objectName: "win"\n visible: true\n signal edited()\n Column {\n Repeater { id: rep; model: tasks; delegate: Item {\n Timer { interval: 30; running: index === 0; repeat: false; onTriggered: { model.done = true; model.id = 99; win.edited(); Qt.quit() } }\n } }\n }\n}\n')
+
+var win = engine.find("win")
+win.onEdited(proc():
+  print("done = {m.row(0).done}")   # true  (writable role applied)
+  print("id = {m.row(0).id}")       # 1     (const role rejected)
+)
+
+engine.run()
+print("bye")

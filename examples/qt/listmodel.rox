@@ -1,0 +1,39 @@
+# P3 demo: a QML ListView backed by a Roxal qt.ListModel.
+#
+# A row is a Roxal object (Task); its public properties (name, done) are the model's
+# roles, so the QML delegate binds model.name / model.done with no roleNames()
+# boilerplate. The checkbox edits flow back into the Roxal row (setData), and the
+# "Add task" button asks Roxal — via a signal — to append a row.
+#
+# Build (Qt is an optional module, OFF by default):
+#   cmake -B build/ -DROXAL_ENABLE_QT=ON -DCMAKE_PREFIX_PATH=/opt/Qt/6.8.3/gcc_64
+#   cmake --build build/ -j4
+# Run from the repo root (needs an X11 display):
+#   ./build/roxal examples/qt/listmodel.rox
+
+import qt
+
+# A row type — its public properties become the columns/roles.
+type Task object:
+  var name :string
+  var done :bool
+
+var engine = qt.Engine()
+
+# A model over Task, seeded with a couple of rows.
+var model = qt.ListModel(Task, [Task("Inspect weld", false), Task("Calibrate arm", true)])
+engine.set_context_property("tasks", model)
+engine.load('examples/qt/listmodel.qml')
+
+# Button → Roxal: append a new row (logic → UI via the model).
+var win = engine.find("win")
+var n = 2
+win.onAddRequested(proc():
+  n = n + 1
+  model.append(Task("Task {n}", false))
+  print("added — count is now {model.count()}")
+)
+
+print("ready — add tasks, toggle checkboxes; close the window to exit")
+engine.run()
+print("bye")

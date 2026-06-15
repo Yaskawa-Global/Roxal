@@ -75,3 +75,80 @@ type Engine object:
   @builtin
   func root():
     """Return the engine's root object as an item handle (nil if nothing loaded)."""
+
+  @builtin
+  proc set_context_property(name:string, value):
+    """Expose `value` to QML under `name` (e.g. a qt.ListModel for a ListView, a Qt
+    item handle, or a plain value). Call before load(); QML then references `name`."""
+
+
+@builtin
+type ListModel object:
+  """A list model for a QML ListView/Repeater, backed by Roxal row objects. Each row
+  is an object instance; the row type's public properties become the model's roles
+  (columns), so a delegate binds to them by name (e.g. `model.<property>`). Reads are
+  cheap property look-ups; edits from the UI write back through the row's property."""
+
+  var _native   // ForeignPtr to the C++ RoxalListModel (module-owned)
+
+  @builtin
+  proc init(row_type, initial=nil):
+    """Create a list model whose rows are instances of `row_type` — an object type or
+    an interface (its public properties become the roles, in declared order). A
+    `const` property is a read-only role; a writable property is editable from the UI.
+    Optionally seed with `initial`, a list of rows. Each row must be an instance of
+    (or, for an interface, implement) `row_type`."""
+
+  @builtin
+  func count() -> int:
+    """The number of rows."""
+
+  @builtin
+  func row(i:int):
+    """The row object at index `i` (nil if out of range)."""
+
+  @builtin
+  proc append(row):
+    """Append a row to the end of the model."""
+
+  @builtin
+  proc insert(i:int, row):
+    """Insert `row` before index `i`."""
+
+  @builtin
+  proc remove(i:int):
+    """Remove the row at index `i`."""
+
+  @builtin
+  proc move(from_index:int, to_index:int):
+    """Move the row at `from_index` to `to_index`."""
+
+  @builtin
+  proc clear():
+    """Remove all rows."""
+
+  @builtin
+  proc set_rows(rows):
+    """Replace all rows with the rows in `rows` (a single model reset)."""
+
+  @builtin
+  proc begin_reset():
+    """Begin a batch structural change; pair with end_reset(). Mutators called in
+    between are coalesced into a single model reset (no per-operation signals)."""
+
+  @builtin
+  proc end_reset():
+    """End a begin_reset() batch."""
+
+  @builtin
+  proc row_changed(i:int):
+    """Notify the view that every role of row `i` changed (call after editing the row
+    object's properties directly)."""
+
+  @builtin
+  proc cell_changed(i:int, role:string):
+    """Notify the view that `role` of row `i` changed."""
+
+  @builtin
+  proc set(i:int, role:string, value):
+    """Set `role` of row `i` to `value` and notify the view (a no-op if unchanged)."""

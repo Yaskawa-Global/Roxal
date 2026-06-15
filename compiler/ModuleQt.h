@@ -62,6 +62,24 @@ private:
     Value engine_quit_builtin(ArgsView args);
     Value engine_find_builtin(ArgsView args);
     Value engine_root_builtin(ArgsView args);
+    Value engine_set_context_property_builtin(ArgsView args);
+
+    // ListModel methods (args[0] = receiver ListModel instance). A QAbstractListModel
+    // shim backed by a Roxal list of row objects; roles = the row type's properties.
+    Value listmodel_init_builtin(ArgsView args);
+    Value listmodel_count_builtin(ArgsView args);
+    Value listmodel_row_builtin(ArgsView args);
+    Value listmodel_append_builtin(ArgsView args);
+    Value listmodel_insert_builtin(ArgsView args);
+    Value listmodel_remove_builtin(ArgsView args);
+    Value listmodel_move_builtin(ArgsView args);
+    Value listmodel_clear_builtin(ArgsView args);
+    Value listmodel_set_rows_builtin(ArgsView args);
+    Value listmodel_begin_reset_builtin(ArgsView args);
+    Value listmodel_end_reset_builtin(ArgsView args);
+    Value listmodel_row_changed_builtin(ArgsView args);
+    Value listmodel_cell_changed_builtin(ArgsView args);
+    Value listmodel_set_builtin(ArgsView args);
 
     // Module-level escape hatches for non-identifier / fully-dynamic names.
     Value qt_get_builtin(ArgsView args);

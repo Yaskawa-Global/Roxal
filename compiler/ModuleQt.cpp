@@ -3,11 +3,14 @@
 #include "ModuleQt.h"
 #include "VM.h"
 #include "Object.h"
+#include "ModuleQtConvert.h"
 #include "ObjQtObject.h"
 #include "QtSignalHub.h"
+#include "QtListModel.h"
 
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
+#include <QQmlContext>
 #include <QQuickWindow>
 #include <QCoreApplication>
 #include <QEventLoop>
@@ -79,6 +82,40 @@ QQmlApplicationEngine* engineFromReceiver(ArgsView args, const char* method)
     return engine;
 }
 
+// Resolve the RoxalListModel a ListModel receiver (args[0]) wraps (same _native /
+// QPointer-in-ForeignPtr pattern as Engine). Returns a guaranteed-non-null model
+// or throws.
+RoxalListModel* listModelFromReceiver(ArgsView args, const char* method)
+{
+    if (args.size() < 1 || !isObjectInstance(args[0]))
+        throw std::invalid_argument(std::string("ListModel.") + method + " expects a receiver");
+    ObjectInstance* inst = asObjectInstance(args[0]);
+    Value nativeVal = inst->getProperty("_native");
+    if (!isForeignPtr(nativeVal))
+        throw std::runtime_error(std::string("ListModel.") + method +
+                                 "(): model not initialized (call qt.ListModel(type) first)");
+    auto* handle = static_cast<QPointer<RoxalListModel>*>(asForeignPtr(nativeVal)->ptr);
+    RoxalListModel* model = handle ? handle->data() : nullptr;
+    if (!model)
+        throw std::runtime_error(std::string("ListModel.") + method +
+                                 "(): model is no longer valid");
+    return model;
+}
+
+// If `v` is a qt.ListModel handle, return its backing RoxalListModel (else nullptr).
+// Used by set_context_property to hand QML the underlying QAbstractItemModel*.
+RoxalListModel* roxalListModelPtr(const Value& v)
+{
+    if (!isObjectInstance(v)) return nullptr;
+    ObjectInstance* inst = asObjectInstance(v);
+    if (!isObjectType(inst->instanceType)) return nullptr;
+    if (asObjectType(inst->instanceType)->name != icu::UnicodeString("ListModel")) return nullptr;
+    Value nativeVal = inst->getProperty("_native");
+    if (!isForeignPtr(nativeVal)) return nullptr;
+    auto* handle = static_cast<QPointer<RoxalListModel>*>(asForeignPtr(nativeVal)->ptr);
+    return handle ? handle->data() : nullptr;
+}
+
 // Connect each top-level window's `closing` signal so that closing a window
 // unblocks run(). We deliberately do NOT use QGuiApplication::lastWindowClosed:
 // it is only emitted while Qt's own exec() loop runs, and we drive Qt via
@@ -136,6 +173,22 @@ void ModuleQt::registerBuiltins(VM& vm)
     linkMethod("Engine", "quit",        [this](VM&, ArgsView a) { return engine_quit_builtin(a); });
     linkMethod("Engine", "find",        [this](VM&, ArgsView a) { return engine_find_builtin(a); });
     linkMethod("Engine", "root",        [this](VM&, ArgsView a) { return engine_root_builtin(a); });
+    linkMethod("Engine", "set_context_property", [this](VM&, ArgsView a) { return engine_set_context_property_builtin(a); });
+
+    linkMethod("ListModel", "init",        [this](VM&, ArgsView a) { return listmodel_init_builtin(a); });
+    linkMethod("ListModel", "count",       [this](VM&, ArgsView a) { return listmodel_count_builtin(a); });
+    linkMethod("ListModel", "row",         [this](VM&, ArgsView a) { return listmodel_row_builtin(a); });
+    linkMethod("ListModel", "append",      [this](VM&, ArgsView a) { return listmodel_append_builtin(a); });
+    linkMethod("ListModel", "insert",      [this](VM&, ArgsView a) { return listmodel_insert_builtin(a); });
+    linkMethod("ListModel", "remove",      [this](VM&, ArgsView a) { return listmodel_remove_builtin(a); });
+    linkMethod("ListModel", "move",        [this](VM&, ArgsView a) { return listmodel_move_builtin(a); });
+    linkMethod("ListModel", "clear",       [this](VM&, ArgsView a) { return listmodel_clear_builtin(a); });
+    linkMethod("ListModel", "set_rows",    [this](VM&, ArgsView a) { return listmodel_set_rows_builtin(a); });
+    linkMethod("ListModel", "begin_reset", [this](VM&, ArgsView a) { return listmodel_begin_reset_builtin(a); });
+    linkMethod("ListModel", "end_reset",   [this](VM&, ArgsView a) { return listmodel_end_reset_builtin(a); });
+    linkMethod("ListModel", "row_changed", [this](VM&, ArgsView a) { return listmodel_row_changed_builtin(a); });
+    linkMethod("ListModel", "cell_changed",[this](VM&, ArgsView a) { return listmodel_cell_changed_builtin(a); });
+    linkMethod("ListModel", "set",         [this](VM&, ArgsView a) { return listmodel_set_builtin(a); });
 
     link("get",  [this](VM&, ArgsView a) { return qt_get_builtin(a); });
     link("set",  [this](VM&, ArgsView a) { return qt_set_builtin(a); });
@@ -176,6 +229,10 @@ void ModuleQt::onModuleLoaded(VM& vm)
     // Register the signal-connection hub's GC root provider (keeps connected
     // Roxal callbacks / event types alive).
     QtSignalHub::instance().init();
+
+    // Register the list-model hub's GC root provider (keeps each model's row list
+    // and row type alive while the model is live).
+    QtModelHub::instance().init();
 }
 
 void ModuleQt::onScriptComplete(VM& vm)
@@ -205,6 +262,8 @@ void ModuleQt::teardownQt(VM& vm)
 
     // Disconnect all signal relays + drop their Roxal refs while Qt is still alive.
     QtSignalHub::instance().shutdown();
+    // Destroy the list models (QAbstractListModels) + drop their row refs.
+    QtModelHub::instance().shutdown();
     s_quitRequested.store(false, std::memory_order_relaxed);
 
     vm.setHostEventLoop(nullptr);
@@ -428,6 +487,190 @@ Value ModuleQt::qt_disconnect_builtin(ArgsView args)
     if (args.size() < 1 || !args[0].isInt())
         throw std::invalid_argument("qt.disconnect(connection) expects a connection id (from qt.connect / item.onSig)");
     QtSignalHub::instance().disconnectId(static_cast<int>(args[0].asInt()));
+    return Value::nilVal();
+}
+
+// ============================================================
+// Context properties + list models
+// ============================================================
+
+Value ModuleQt::engine_set_context_property_builtin(ArgsView args)
+{
+    QQmlApplicationEngine* engine = engineFromReceiver(args, "set_context_property");
+    if (args.size() < 3 || !isString(args[1]))
+        throw std::invalid_argument("Engine.set_context_property(name, value) expects a string name and a value");
+    QString name = QString::fromStdString(toUTF8StdString(asStringObj(args[1])->s));
+    const Value& v = args[2];
+    if (RoxalListModel* model = roxalListModelPtr(v)) {
+        engine->rootContext()->setContextProperty(name, static_cast<QObject*>(model));
+    } else if (isQtObject(v)) {
+        engine->rootContext()->setContextProperty(name, asQtObject(v)->deref("set_context_property"));
+    } else {
+        engine->rootContext()->setContextProperty(name, toQVariant(v));
+    }
+    return Value::nilVal();
+}
+
+Value ModuleQt::listmodel_init_builtin(ArgsView args)
+{
+    if (args.size() < 2 || !isObjectInstance(args[0]))
+        throw std::invalid_argument("qt.ListModel(row_type) expects a receiver and a row type");
+    ObjectInstance* inst = asObjectInstance(args[0]);
+
+    Value rowTypeVal = args[1];
+    if (!isObjectType(rowTypeVal))
+        throw std::invalid_argument("qt.ListModel(row_type): the argument must be a type");
+    ObjObjectType* rowType = asObjectType(rowTypeVal);
+    if (rowType->isActor || rowType->isEnumeration)
+        throw std::invalid_argument("qt.ListModel(row_type): row type must be an object type or interface "
+                                    "(not an actor or enum)");
+
+    // Build the model's own row list, optionally seeded with `initial` (each row
+    // must be an instance of / implement the row type).
+    auto listObj = newListObj();
+    ObjList* rowList = listObj.get();
+    Value rows = Value::objVal(std::move(listObj));
+    if (args.size() >= 3 && !args[2].isNil()) {
+        if (!isList(args[2]))
+            throw std::invalid_argument("qt.ListModel(row_type, initial): initial must be a list of rows");
+        ObjList* seed = asList(args[2]);
+        for (int32_t i = 0; i < seed->length(); ++i) {
+            Value e = seed->getElement(static_cast<size_t>(i));
+            if (!isObjectInstance(e) ||
+                !isSubtypeOf(asObjectType(asObjectInstance(e)->instanceType), rowType))
+                throw std::runtime_error("qt.ListModel: an initial row does not match the row type");
+            rowList->append(e);
+        }
+    }
+
+    RoxalListModel* model = QtModelHub::instance().create(rowTypeVal, rows);
+
+    // Non-owning, auto-nulling handle (the hub owns the model). Mirrors Engine.
+    auto* handle = new QPointer<RoxalListModel>(model);
+    auto fp = newForeignPtrObj(static_cast<void*>(handle));
+    fp->registerCleanup([](void* p) {
+        delete static_cast<QPointer<RoxalListModel>*>(p);
+    });
+    inst->setProperty("_native", Value::objVal(std::move(fp)));
+    return Value::nilVal();
+}
+
+Value ModuleQt::listmodel_count_builtin(ArgsView args)
+{
+    return Value::intVal(listModelFromReceiver(args, "count")->count());
+}
+
+Value ModuleQt::listmodel_row_builtin(ArgsView args)
+{
+    RoxalListModel* model = listModelFromReceiver(args, "row");
+    if (args.size() < 2 || !args[1].isInt())
+        throw std::invalid_argument("ListModel.row(i) expects an int index");
+    return model->rowAt(static_cast<int>(args[1].asInt()));
+}
+
+Value ModuleQt::listmodel_append_builtin(ArgsView args)
+{
+    RoxalListModel* model = listModelFromReceiver(args, "append");
+    if (args.size() < 2 || !isObjectInstance(args[1]))
+        throw std::invalid_argument("ListModel.append(row) expects a row object");
+    if (!model->admits(args[1]))
+        throw std::runtime_error("ListModel.append: the row does not match the model's row type");
+    model->appendRow(args[1]);
+    return Value::nilVal();
+}
+
+Value ModuleQt::listmodel_insert_builtin(ArgsView args)
+{
+    RoxalListModel* model = listModelFromReceiver(args, "insert");
+    if (args.size() < 3 || !args[1].isInt() || !isObjectInstance(args[2]))
+        throw std::invalid_argument("ListModel.insert(i, row) expects an int index and a row object");
+    if (!model->admits(args[2]))
+        throw std::runtime_error("ListModel.insert: the row does not match the model's row type");
+    model->insertRow(static_cast<int>(args[1].asInt()), args[2]);
+    return Value::nilVal();
+}
+
+Value ModuleQt::listmodel_remove_builtin(ArgsView args)
+{
+    RoxalListModel* model = listModelFromReceiver(args, "remove");
+    if (args.size() < 2 || !args[1].isInt())
+        throw std::invalid_argument("ListModel.remove(i) expects an int index");
+    model->removeRow(static_cast<int>(args[1].asInt()));
+    return Value::nilVal();
+}
+
+Value ModuleQt::listmodel_move_builtin(ArgsView args)
+{
+    RoxalListModel* model = listModelFromReceiver(args, "move");
+    if (args.size() < 3 || !args[1].isInt() || !args[2].isInt())
+        throw std::invalid_argument("ListModel.move(from, to) expects two int indices");
+    model->moveRow(static_cast<int>(args[1].asInt()), static_cast<int>(args[2].asInt()));
+    return Value::nilVal();
+}
+
+Value ModuleQt::listmodel_clear_builtin(ArgsView args)
+{
+    listModelFromReceiver(args, "clear")->clearRows();
+    return Value::nilVal();
+}
+
+Value ModuleQt::listmodel_set_rows_builtin(ArgsView args)
+{
+    RoxalListModel* model = listModelFromReceiver(args, "set_rows");
+    if (args.size() < 2 || !isList(args[1]))
+        throw std::invalid_argument("ListModel.set_rows(rows) expects a list of rows");
+    ObjList* src = asList(args[1]);
+    std::vector<Value> rows;
+    rows.reserve(static_cast<size_t>(src->length()));
+    for (int32_t i = 0; i < src->length(); ++i) {
+        Value e = src->getElement(static_cast<size_t>(i));
+        if (!model->admits(e))
+            throw std::runtime_error("ListModel.set_rows: a row does not match the model's row type");
+        rows.push_back(e);
+    }
+    model->setRows(rows);
+    return Value::nilVal();
+}
+
+Value ModuleQt::listmodel_begin_reset_builtin(ArgsView args)
+{
+    listModelFromReceiver(args, "begin_reset")->beginResetBatch();
+    return Value::nilVal();
+}
+
+Value ModuleQt::listmodel_end_reset_builtin(ArgsView args)
+{
+    listModelFromReceiver(args, "end_reset")->endResetBatch();
+    return Value::nilVal();
+}
+
+Value ModuleQt::listmodel_row_changed_builtin(ArgsView args)
+{
+    RoxalListModel* model = listModelFromReceiver(args, "row_changed");
+    if (args.size() < 2 || !args[1].isInt())
+        throw std::invalid_argument("ListModel.row_changed(i) expects an int index");
+    model->rowChanged(static_cast<int>(args[1].asInt()));
+    return Value::nilVal();
+}
+
+Value ModuleQt::listmodel_cell_changed_builtin(ArgsView args)
+{
+    RoxalListModel* model = listModelFromReceiver(args, "cell_changed");
+    if (args.size() < 3 || !args[1].isInt() || !isString(args[2]))
+        throw std::invalid_argument("ListModel.cell_changed(i, role) expects an int index and a string role");
+    model->cellChanged(static_cast<int>(args[1].asInt()),
+                       QByteArray::fromStdString(toUTF8StdString(asStringObj(args[2])->s)));
+    return Value::nilVal();
+}
+
+Value ModuleQt::listmodel_set_builtin(ArgsView args)
+{
+    RoxalListModel* model = listModelFromReceiver(args, "set");
+    if (args.size() < 4 || !args[1].isInt() || !isString(args[2]))
+        throw std::invalid_argument("ListModel.set(i, role, value) expects an int index, a string role, and a value");
+    model->setCell(static_cast<int>(args[1].asInt()),
+                   QByteArray::fromStdString(toUTF8StdString(asStringObj(args[2])->s)),
+                   args[3]);
     return Value::nilVal();
 }
 

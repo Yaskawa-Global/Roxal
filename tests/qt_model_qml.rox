@@ -1,0 +1,20 @@
+// P3: a QML Repeater binds to a qt.ListModel exposed via set_context_property. The
+// row type's public properties are the roles, so the delegate binds model.name /
+// model.done. A Timer reads the rendered delegates back and reports them via a
+// signal, proving data()/roleNames() reach QML. Headless via QT_QPA_PLATFORM=offscreen.
+import qt
+
+type Task object:
+  var name :string
+  var done :bool
+
+var engine = qt.Engine()
+var m = qt.ListModel(Task, [Task("Weld", false), Task("Inspect", true)])
+engine.set_context_property("tasks", m)
+engine.load_string('import QtQuick\nimport QtQuick.Window\nWindow {\n id: win\n objectName: "win"\n visible: true\n signal report(string s)\n Column {\n Repeater { id: rep; objectName: "rep"; model: tasks; delegate: Text { text: model.name + "=" + model.done } }\n }\n Timer { interval: 30; running: true; onTriggered: { var s = ""; for (var i = 0; i < rep.count; i++) s += rep.itemAt(i).text + ";"; win.report(s); Qt.quit() } }\n}\n')
+
+var win = engine.find("win")
+win.onReport(proc(s): print("report: {s}"))
+
+engine.run()
+print("done")

@@ -1,0 +1,24 @@
+// P3: a model's rows survive a GC cycle. After append, only the C++ model holds
+// the row list (and its row objects) — the model hub's external root provider must
+// keep them alive, or the reads below would fail.
+import qt
+
+type Task object:
+  var name :string
+
+var m = qt.ListModel(Task)
+m.append(Task("Alpha"))
+m.append(Task("Beta"))
+
+# Churn the heap, then force collections. The rows are unreachable from any Roxal
+# root; only QtModelHub's visitRoots keeps them.
+var i = 0
+while i < 5000:
+  var tmp = [i, i + 1, i + 2]
+  i = i + 1
+gc()
+gc()
+
+print(m.count())        # 2
+print(m.row(0).name)    # Alpha
+print(m.row(1).name)    # Beta

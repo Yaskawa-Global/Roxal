@@ -1,0 +1,32 @@
+# P3: a qt.ListModel over a Roxal row type, exercised purely from Roxal (no QML).
+# Rows are objects; the row type's public properties are the model's roles.
+
+import qt
+
+type Task object:
+  var name :string
+  var done :bool
+
+var m = qt.ListModel(Task)
+print(m.count())              # 0
+
+m.append(Task("Weld", false))
+m.append(Task("Inspect", true))
+print(m.count())              # 2
+
+var r = m.row(0)
+print(r.name)                 # Weld
+print(r.done)                 # false
+
+m.insert(1, Task("Mid", false))
+print(m.count())              # 3
+print(m.row(1).name)          # Mid
+
+m.remove(0)
+print(m.count())              # 2
+print(m.row(0).name)          # Mid
+
+# seed via the optional initial list
+var m2 = qt.ListModel(Task, [Task("A", false), Task("B", true)])
+print(m2.count())             # 2
+print(m2.row(1).name)         # B
