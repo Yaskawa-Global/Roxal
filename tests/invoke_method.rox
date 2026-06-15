@@ -1,0 +1,32 @@
+# Exercises VM::invokeMethod via the private _invoke_method builtin: a no-arg method,
+# a method with an arg, a proc that mutates `this` (proves the receiver is bound), and
+# the synthesized __get_/__set_ accessors of a computed property (the receiver-aware
+# path a module uses to read/write computed values, e.g. Qt model roles).
+
+type Greeter object:
+  var name :string
+  func answer() -> int:
+    return 42
+  func greet(punct:string) -> string:
+    return "Hi " + name + punct
+  proc set_name(n:string):
+    name = n
+
+var g = Greeter("Bob")
+print(_invoke_method(g, "answer", []))      # 42
+print(_invoke_method(g, "greet", ["!"]))    # Hi Bob!
+_invoke_method(g, "set_name", ["Alice"])
+print(g.name)                                # Alice  (receiver was bound)
+print(_invoke_method(g, "greet", ["?"]))    # Hi Alice?
+
+type Box object:
+  var w :int = 4:
+    get:
+      return _w
+    set:
+      _w = value
+
+var b = Box()
+print(_invoke_method(b, "__get_w", []))     # 4
+_invoke_method(b, "__set_w", [9])
+print(_invoke_method(b, "__get_w", []))     # 9

@@ -1383,6 +1383,7 @@ void ModuleSys::registerBuiltins(VM& vm)
         addSys("_threadid", [this](VM& vm, ArgsView a){ return threadid_builtin(vm,a); });
         addSys("_stackdepth", [this](VM& vm, ArgsView a){ return stackdepth_builtin(vm,a); });
         addSys("_runtests", [this](VM& vm, ArgsView a){ return runtests_builtin(vm,a); });
+        addSys("_invoke_method", [this](VM& vm, ArgsView a){ return invoke_method_builtin(vm,a); });
         addSys("_weakref", [this](VM& vm, ArgsView a){ return weakref_builtin(vm,a); });
         addSys("_weak_alive", [this](VM& vm, ArgsView a){ return weak_alive_builtin(vm,a); });
         addSys("_strongref", [this](VM& vm, ArgsView a){ return strongref_builtin(vm,a); });
@@ -2234,6 +2235,29 @@ Value ModuleSys::stackdepth_builtin(VM& vm, ArgsView args)
 
     int32_t depth = int32_t(VM::thread->stackTop - VM::thread->stack.begin());
     return Value::intVal(depth);
+}
+
+// Private/internal: call a Roxal method by name on an object, with args, via
+// VM::invokeMethod. Exercises the receiver-aware method-invoke path (and is handy
+// for dynamic dispatch). Mirrors how module C++ calls a Roxal method from native code.
+Value ModuleSys::invoke_method_builtin(VM& vm, ArgsView args)
+{
+    if (args.size() < 2 || !isString(args[1]))
+        throw std::invalid_argument("_invoke_method(obj, name, args=nil) expects an object and a string method name");
+    const Value& receiver = args[0];
+    icu::UnicodeString name = asStringObj(args[1])->s;
+    std::vector<Value> callArgs;
+    if (args.size() >= 3 && !args[2].isNil()) {
+        if (!isList(args[2]))
+            throw std::invalid_argument("_invoke_method: the third argument must be a list of args");
+        ObjList* l = asList(args[2]);
+        for (int32_t i = 0; i < l->length(); ++i)
+            callArgs.push_back(l->getElement(static_cast<size_t>(i)));
+    }
+    auto [status, result] = vm.invokeMethod(receiver, name, callArgs);
+    if (status != ExecutionStatus::OK)
+        throw std::runtime_error("_invoke_method: failed to invoke method '" + toUTF8StdString(name) + "'");
+    return result;
 }
 
 Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)

@@ -335,6 +335,22 @@ public:
     std::pair<ExecutionStatus,Value> invokeClosure(ObjClosure* closure,
                                                     const std::vector<Value>& args,
                                                     TimePoint deadline = TimePoint::max());
+
+    /// Call a Roxal method by name on an object instance, with `receiver` bound as
+    /// `this`, run to completion → {OK, returnValue}. Resolves a single
+    /// (non-overloaded) user method walking the inheritance chain; returns
+    /// {RuntimeError, nil} if the receiver isn't an object instance, or the method
+    /// isn't found / is overloaded / is native. Args (0 for a `__get_` getter, 1 for
+    /// a `__set_` setter, etc.) are passed positionally. For C++ callers (e.g. module
+    /// code) that need to invoke a Roxal method without a bytecode call site.
+    ///
+    /// Like invokeClosure(), this **re-enters the VM dispatch loop** (a nested
+    /// execute()), so callers must be re-entrancy-safe (e.g. not hold VM-internal
+    /// references across the call).
+    std::pair<ExecutionStatus,Value> invokeMethod(const Value& receiver,
+                                                  const icu::UnicodeString& methodName,
+                                                  const std::vector<Value>& args,
+                                                  TimePoint deadline = TimePoint::max());
     bool indexValue(const Value& indexable, int subscriptCount);
     bool setIndexValue(const Value& indexable, int subscriptCount, Value& value);
     enum class BindResult {

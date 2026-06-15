@@ -3641,6 +3641,40 @@ std::pair<ExecutionStatus,Value> VM::invokeClosure(ObjClosure* closure,
     return result;
 }
 
+std::pair<ExecutionStatus,Value> VM::invokeMethod(const Value& receiver,
+                                                  const icu::UnicodeString& methodName,
+                                                  const std::vector<Value>& args,
+                                                  TimePoint deadline)
+{
+    // Receiver must be an object instance (computed getters/setters, model rows, …).
+    if (!isObjectInstance(receiver))
+        return { ExecutionStatus::RuntimeError, Value::nilVal() };
+
+    // Resolve a single (non-overloaded) user method, walking the inheritance chain.
+    const int32_t hash = methodName.hashCode();
+    ObjObjectType::Method* method = nullptr;
+    for (ObjObjectType* t = asObjectType(asObjectInstance(receiver)->instanceType); t != nullptr; ) {
+        method = t->findUniqueMethod(hash);
+        if (method != nullptr)
+            break;
+        t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
+    }
+    if (method == nullptr || !isClosure(method->closure))
+        return { ExecutionStatus::RuntimeError, Value::nilVal() };
+    ObjClosure* closure = asClosure(method->closure);
+    if (asFunction(closure->function)->builtinInfo)
+        return { ExecutionStatus::RuntimeError, Value::nilVal() };  // native methods unsupported
+
+    // Stack layout [receiver, args...]: the receiver slot becomes the method's frame
+    // slot 0 (`this`) — the same convention bound-method dispatch uses.
+    push(receiver);
+    for (const auto& a : args)
+        push(a);
+    if (!call(closure, CallSpec(static_cast<int>(args.size()))))
+        return { ExecutionStatus::RuntimeError, Value::nilVal() };
+    return execute(deadline);
+}
+
 
 
 bool VM::invokeFromType(ObjObjectType* type, ObjString* name, const CallSpec& callSpec,
