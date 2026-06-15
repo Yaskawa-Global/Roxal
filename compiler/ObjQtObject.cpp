@@ -2,6 +2,7 @@
 
 #include "ObjQtObject.h"
 #include "ModuleQtConvert.h"
+#include "QtSignalHub.h"
 #include "ArgsView.h"
 
 #include <QObject>
@@ -12,6 +13,7 @@
 #include <QString>
 #include <QVariant>
 
+#include <cctype>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -52,6 +54,30 @@ static bool hasMetaMethod(QObject* o, const QByteArray& nm)
     return false;
 }
 
+// Find a Qt signal meta-method by name (first match; invalid if none). Exported.
+QMetaMethod roxal::findQtSignal(QObject* o, const char* name)
+{
+    const QMetaObject* mo = o->metaObject();
+    for (int i = 0; i < mo->methodCount(); ++i) {
+        QMetaMethod mm = mo->method(i);
+        if (mm.methodType() == QMetaMethod::Signal && mm.name() == name)
+            return mm;
+    }
+    return QMetaMethod();
+}
+
+// "onClicked" -> "clicked"; "" if not an on<Capital> handler name.
+static std::string deriveSignalFromHandlerName(const std::string& m)
+{
+    if (m.size() > 2 && m[0] == 'o' && m[1] == 'n' &&
+        std::isupper(static_cast<unsigned char>(m[2]))) {
+        std::string s = m.substr(2);
+        s[0] = static_cast<char>(std::tolower(static_cast<unsigned char>(s[0])));
+        return s;
+    }
+    return "";
+}
+
 // A method name resolves to a bound callable (a func-typed member); calling it
 // re-dispatches through tryInvokeDynamicMethod with the actual args at call time.
 static Value makeBoundMethod(const Value& self, std::string mname)
@@ -83,7 +109,34 @@ bool ObjQtObject::tryGetDynamicProperty(const Value& self, const icu::UnicodeStr
         out = fromQVariant(o->property(nm.constData()));
         return true;
     }
-    // 2. A Qt meta-method, or 3. an item intrinsic → a bound callable (Roxal
+    // 2. A bare Qt signal name → its event type (for `when item.sig occurs`).
+    {
+        QMetaMethod sig = findQtSignal(o, nm.constData());
+        if (sig.isValid()) {
+            out = QtSignalHub::instance().eventTypeFor(o, sig);
+            return true;
+        }
+    }
+    // 3. on<Signal>(handler) → a bound callable that connects a slot-style callback
+    //    (mirrors QML's onClicked handler). Tried only if it resolves to a signal.
+    {
+        std::string sigName = deriveSignalFromHandlerName(m);
+        if (!sigName.empty() && findQtSignal(o, sigName.c_str()).isValid()) {
+            out = Value::boundNativeVal(self, [sigName](VM&, ArgsView a) -> Value {
+                if (a.size() < 2 || !isClosure(a[1]))
+                    throw std::runtime_error("qt: on" + sigName + "(handler) expects a callable");
+                ObjQtObject* recv = asQtObject(a[0]);
+                QObject* obj = recv->deref("signal connect");
+                QMetaMethod s = findQtSignal(obj, sigName.c_str());
+                if (!s.isValid())
+                    throw std::runtime_error("qt: no signal '" + sigName + "'");
+                int id = QtSignalHub::instance().connectCallback(obj, s, a[1]);
+                return Value::intVal(id);
+            });
+            return true;
+        }
+    }
+    // 4. A Qt meta-method, or 5. an item intrinsic → a bound callable (Roxal
     //    methods are func-typed members, looked up then called).
     if (hasMetaMethod(o, nm) || m == "find" || m == "find_all" || m == "valid") {
         out = makeBoundMethod(self, m);

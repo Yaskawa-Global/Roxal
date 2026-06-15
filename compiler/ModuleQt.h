@@ -27,6 +27,11 @@ public:
     void registerBuiltins(VM& vm) override;
     inline Value moduleType() const override { return moduleTypeValue; }
 
+    // True once a quit (window close / Qt.quit() / engine.quit()) has been
+    // requested for the current run. The signal hub reads this to decide whether
+    // a synchronous callback that temporarily un-parked run() should re-park.
+    static bool quitRequested();
+
     // Create the QGuiApplication + install the host-loop hook (before any QML
     // loads); tear them down deterministically when the script run completes.
     void onModuleLoaded(VM& vm) override;
@@ -62,6 +67,11 @@ private:
     Value qt_get_builtin(ArgsView args);
     Value qt_set_builtin(ArgsView args);
     Value qt_call_builtin(ArgsView args);
+
+    // Signal connections (dynamic / non-identifier signal names).
+    Value qt_connect_builtin(ArgsView args);
+    Value qt_on_builtin(ArgsView args);
+    Value qt_disconnect_builtin(ArgsView args);
 };
 
 } // namespace roxal

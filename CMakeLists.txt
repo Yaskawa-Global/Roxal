@@ -343,6 +343,8 @@ if(ROXAL_ENABLE_QT)
     list(APPEND COMPILER_SOURCES compiler/ModuleQt.cpp)
     list(APPEND COMPILER_SOURCES compiler/ObjQtObject.cpp)
     list(APPEND COMPILER_SOURCES compiler/ModuleQtConvert.cpp)
+    list(APPEND COMPILER_SOURCES compiler/QtSignalRelay.cpp)
+    list(APPEND COMPILER_SOURCES compiler/QtSignalHub.cpp)
 endif()
 
 set(MAIN_SOURCE compiler/roxal.cpp)

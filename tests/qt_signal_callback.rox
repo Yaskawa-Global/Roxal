@@ -1,0 +1,9 @@
+// P2: a QML signal invokes a Roxal callback via item.onSignal(handler) (mirrors
+// QML's onClicked). Run headless via QT_QPA_PLATFORM=offscreen.
+import qt
+var engine = qt.Engine()
+engine.load_string('import QtQuick\nimport QtQuick.Window\nWindow {\n id: win\n objectName: "win"\n visible: true\n signal pinged(int n)\n Timer { interval: 30; running: true; onTriggered: { win.pinged(7); Qt.quit() } }\n}\n')
+var win = engine.find("win")
+win.onPinged(proc(n): print("got {n}"))
+engine.run()
+print("done")

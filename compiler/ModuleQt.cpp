@@ -4,6 +4,7 @@
 #include "VM.h"
 #include "Object.h"
 #include "ObjQtObject.h"
+#include "QtSignalHub.h"
 
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
@@ -12,6 +13,8 @@
 #include <QEventLoop>
 #include <QByteArray>
 #include <QObject>
+#include <QMetaObject>
+#include <QMetaMethod>
 #include <QPointer>
 #include <QString>
 #include <QUrl>
@@ -23,6 +26,10 @@
 #include <vector>
 
 using namespace roxal;
+
+// True once any quit (window-close / Qt.quit() / engine.quit()) is requested for
+// the current run. Process-static; reset on teardown. Read via ModuleQt::quitRequested().
+static std::atomic<bool> s_quitRequested { false };
 
 // ============================================================
 // Host event-loop integration
@@ -133,6 +140,10 @@ void ModuleQt::registerBuiltins(VM& vm)
     link("get",  [this](VM&, ArgsView a) { return qt_get_builtin(a); });
     link("set",  [this](VM&, ArgsView a) { return qt_set_builtin(a); });
     link("call", [this](VM&, ArgsView a) { return qt_call_builtin(a); });
+
+    link("connect",    [this](VM&, ArgsView a) { return qt_connect_builtin(a); });
+    link("on",         [this](VM&, ArgsView a) { return qt_on_builtin(a); });
+    link("disconnect", [this](VM&, ArgsView a) { return qt_disconnect_builtin(a); });
 }
 
 // ============================================================
@@ -161,6 +172,10 @@ void ModuleQt::onModuleLoaded(VM& vm)
     // Install the host-loop hook so the VM services Qt cooperatively (shared ptr<>).
     impl_->hostLoop = make_ptr<QtHostLoop>();
     vm.setHostEventLoop(impl_->hostLoop);
+
+    // Register the signal-connection hub's GC root provider (keeps connected
+    // Roxal callbacks / event types alive).
+    QtSignalHub::instance().init();
 }
 
 void ModuleQt::onScriptComplete(VM& vm)
@@ -188,6 +203,10 @@ void ModuleQt::teardownQt(VM& vm)
     if (!impl_->app && impl_->engines.empty())
         return; // already torn down
 
+    // Disconnect all signal relays + drop their Roxal refs while Qt is still alive.
+    QtSignalHub::instance().shutdown();
+    s_quitRequested.store(false, std::memory_order_relaxed);
+
     vm.setHostEventLoop(nullptr);
     impl_->hostLoop.reset();
     impl_->engines.clear();             // destroy windows/engines while platform alive
@@ -200,9 +219,12 @@ void ModuleQt::teardownQt(VM& vm)
 // Helpers
 // ============================================================
 
+bool ModuleQt::quitRequested() { return s_quitRequested.load(std::memory_order_relaxed); }
+
 void ModuleQt::requestQuit()
 {
     impl_->quitRequested = true;
+    s_quitRequested.store(true, std::memory_order_relaxed);
     // Clear the parked thread's sleep so the dispatch loop resumes after run().
     // Single-threaded: this runs on the main thread, so VM::thread is the run thread.
     if (Thread* t = VM::thread.get())
@@ -369,6 +391,44 @@ Value ModuleQt::qt_call_builtin(ArgsView args)
                                                 callArgs.empty() ? nullptr : callArgs.data(),
                                                 static_cast<int>(callArgs.size()), out);
     return out;
+}
+
+// ---- Signal connections: qt.connect / qt.on / qt.disconnect ----
+// For dynamic / non-identifier signal names; native `item.onSig(fn)` and
+// `item.sig` (for `when … occurs`) are the preferred forms.
+
+Value ModuleQt::qt_connect_builtin(ArgsView args)
+{
+    if (args.size() < 3 || !isQtObject(args[0]) || !isString(args[1]) || !isClosure(args[2]))
+        throw std::invalid_argument("qt.connect(item, name, handler) expects an item, a string signal name, and a callable");
+    QObject* o = asQtObject(args[0])->deref("qt.connect");
+    QByteArray name = QByteArray::fromStdString(toUTF8StdString(asStringObj(args[1])->s));
+    QMetaMethod sig = findQtSignal(o, name.constData());
+    if (!sig.isValid())
+        throw std::runtime_error("qt.connect: no signal '" + std::string(name.constData()) +
+                                 "' on " + o->metaObject()->className());
+    return Value::intVal(QtSignalHub::instance().connectCallback(o, sig, args[2]));
+}
+
+Value ModuleQt::qt_on_builtin(ArgsView args)
+{
+    if (args.size() < 2 || !isQtObject(args[0]) || !isString(args[1]))
+        throw std::invalid_argument("qt.on(item, name) expects an item and a string signal name");
+    QObject* o = asQtObject(args[0])->deref("qt.on");
+    QByteArray name = QByteArray::fromStdString(toUTF8StdString(asStringObj(args[1])->s));
+    QMetaMethod sig = findQtSignal(o, name.constData());
+    if (!sig.isValid())
+        throw std::runtime_error("qt.on: no signal '" + std::string(name.constData()) +
+                                 "' on " + o->metaObject()->className());
+    return QtSignalHub::instance().eventTypeFor(o, sig);
+}
+
+Value ModuleQt::qt_disconnect_builtin(ArgsView args)
+{
+    if (args.size() < 1 || !args[0].isInt())
+        throw std::invalid_argument("qt.disconnect(connection) expects a connection id (from qt.connect / item.onSig)");
+    QtSignalHub::instance().disconnectId(static_cast<int>(args[0].asInt()));
+    return Value::nilVal();
 }
 
 #endif // ROXAL_ENABLE_QT

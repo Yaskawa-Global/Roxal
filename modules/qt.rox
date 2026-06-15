@@ -26,6 +26,20 @@ func call(item, name:string, args=nil):
   """Invoke method `name` on a Qt item with an optional list of args; returns the result."""
 
 @builtin
+func connect(item, name:string, handler):
+  """Connect Qt signal `name` on `item` to a callback (invoked with the signal's
+  args). Returns a connection id for qt.disconnect. Prefer native `item.onName(fn)`."""
+
+@builtin
+func on(item, name:string):
+  """Return the event for Qt signal `name` on `item`, for `when … occurs`.
+  Prefer native `item.name` (e.g. `when btn.clicked occurs`)."""
+
+@builtin
+func disconnect(connection):
+  """Remove a signal callback connection (the id returned by connect / item.onName)."""
+
+@builtin
 type Engine object:
   """A QML application engine: loads QML and runs the Qt UI loop."""
 

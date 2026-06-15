@@ -6,8 +6,14 @@
 #include <QPointer>
 
 class QObject;
+class QMetaMethod;
 
 namespace roxal {
+
+// Find a Qt signal meta-method by name on `o` (first match; invalid QMetaMethod
+// if none). Shared by the dynamic dispatch and the qt.connect/on module fns.
+QMetaMethod findQtSignal(QObject* o, const char* name);
+
 
 // Non-owning, auto-nulling handle to a QObject / QML item. Native property and
 // method syntax (`item.text`, `item.foo(args)`) routes through the dynamic-dispatch

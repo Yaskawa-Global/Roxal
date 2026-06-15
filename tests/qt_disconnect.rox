@@ -1,0 +1,10 @@
+// P2: a disconnected callback no longer fires; qt.connect / qt.disconnect by id.
+import qt
+var engine = qt.Engine()
+engine.load_string('import QtQuick\nimport QtQuick.Window\nWindow {\n id: win\n objectName: "win"\n visible: true\n signal multi(int i, string s, bool b)\n Timer { interval: 30; running: true; onTriggered: { win.multi(42, "hi", true); Qt.quit() } }\n}\n')
+var win = engine.find("win")
+var a = qt.connect(win, "multi", proc(i, s, b): print("A {i}"))
+var c = qt.connect(win, "multi", proc(i, s, b): print("C {i}"))
+qt.disconnect(a)
+engine.run()
+print("done")

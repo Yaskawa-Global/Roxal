@@ -1,0 +1,10 @@
+// P2: a QML signal is observable via `when … occurs` (the bare signal name is an
+// event; payload keyed by the signal's parameter names).
+import qt
+var engine = qt.Engine()
+engine.load_string('import QtQuick\nimport QtQuick.Window\nWindow {\n id: win\n objectName: "win"\n visible: true\n signal pinged(int n)\n Timer { interval: 30; running: true; onTriggered: { win.pinged(7); Qt.quit() } }\n}\n')
+var win = engine.find("win")
+when win.pinged occurs as e:
+  print("event {e.n}")
+engine.run()
+print("done")

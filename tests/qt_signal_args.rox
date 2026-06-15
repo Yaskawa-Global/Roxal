@@ -1,0 +1,9 @@
+// P2: signal arguments (int / string / bool) marshal through the QVariant<->Value
+// converter into the Roxal callback.
+import qt
+var engine = qt.Engine()
+engine.load_string('import QtQuick\nimport QtQuick.Window\nWindow {\n id: win\n objectName: "win"\n visible: true\n signal multi(int i, string s, bool b)\n Timer { interval: 30; running: true; onTriggered: { win.multi(42, "hi", true); Qt.quit() } }\n}\n')
+var win = engine.find("win")
+win.onMulti(proc(i, s, b): print("{i} {s} {b}"))
+engine.run()
+print("done")

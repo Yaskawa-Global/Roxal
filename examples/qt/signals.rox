@@ -1,0 +1,37 @@
+# P2 demo: a Qt button click reaches Roxal.
+#
+# Connect the Button's `clicked` signal to a Roxal callback with native syntax
+# (btn.onClicked(...)), and have the handler drive the UI back (set a property).
+# Then show the window; click the button to see Roxal react; close it to exit.
+#
+# Build (Qt is an optional module, OFF by default):
+#   cmake -B build/ -DROXAL_ENABLE_QT=ON -DCMAKE_PREFIX_PATH=/opt/Qt/6.8.3/gcc_64
+#   cmake --build build/ -j4
+# Run from the repo root (needs an X11 display):
+#   ./build/roxal examples/qt/signals.rox
+
+import qt
+
+var engine = qt.Engine()
+engine.load('examples/qt/signals.qml')
+
+var btn    = engine.find("btn")
+var status = engine.find("status")
+
+var count = 0
+
+# Native signal-handler syntax: on<Signal>(callback). Fires when the button is
+# clicked; the handler reads/writes UI properties (P1) in response.
+btn.onClicked(proc():
+  count = count + 1
+  status.text = "clicks: {count}"
+  print("clicked! count = {count}")
+)
+
+# Also observable as an event (reactive style) — both can coexist:
+when btn.clicked occurs:
+  print("(also saw the click as an event)")
+
+print("ready — click the button; close the window to exit")
+engine.run()
+print("bye")

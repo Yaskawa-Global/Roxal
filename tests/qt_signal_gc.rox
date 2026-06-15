@@ -1,0 +1,10 @@
+// P2: a connected handler survives a GC cycle — the signal hub's external root
+// provider keeps the callback closure alive even though only the hub references it.
+import qt
+var engine = qt.Engine()
+engine.load_string('import QtQuick\nimport QtQuick.Window\nWindow {\n id: win\n objectName: "win"\n visible: true\n signal pinged(int n)\n Timer { interval: 30; running: true; onTriggered: { win.pinged(7); Qt.quit() } }\n}\n')
+var win = engine.find("win")
+win.onPinged(proc(n): print("survived {n}"))
+gc()
+engine.run()
+print("done")
