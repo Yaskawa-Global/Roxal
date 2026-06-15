@@ -90,6 +90,9 @@ private:
     Value qt_connect_builtin(ArgsView args);
     Value qt_on_builtin(ArgsView args);
     Value qt_disconnect_builtin(ArgsView args);
+
+    // Force-push a bindable object's property to QML (for in-place collection mutation).
+    Value qt_notify_builtin(ArgsView args);
 };
 
 } // namespace roxal

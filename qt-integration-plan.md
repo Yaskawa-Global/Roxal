@@ -15,8 +15,9 @@ Roxal exposes most of the extension points needed; the rest are a few small, san
 hooks (see Core VM touch-points) — integration work, not VM surgery.
 
 This file is the agreed high-level division into broad projects; it defines scope, dependencies,
-and the cross-cutting decisions all projects honor. **P0–P3 are all implemented** (this doc has been
-reconciled with what was actually built).
+and the cross-cutting decisions all projects honor. **P0–P3 plus P4 are all implemented** (this doc
+has been reconciled with what was actually built). P0–P3 were the original program; P4 (a bindable
+single object — the Q_PROPERTY analogue) was added afterward as the single-object complement to P3.
 
 ## Resolved architectural decisions
 
@@ -268,15 +269,83 @@ changes flow both ways — verified headless (`qt_model_basic/qml/edit/struct/gc
 
 **Depends on:** P1, P2.
 
-## Open design questions (future work, post-P3)
+## P4 — Bindable Roxal object (the Q_PROPERTY analogue)  ✅ implemented
+
+**Scope (built).** The single-object complement to P3: expose **one Roxal object** to QML as a
+**bindable backend** (app-state / controller / settings). A **moc-free** `QQmlPropertyMap` subclass
+(`RoxalPropertyMap`, [compiler/QtBindable.{h,cpp}](compiler/QtBindable.h)) mirrors the object's public
+properties as QML-bindable key→value pairs:
+- **read/init:** `getProperty` → `toQVariant`, `insert()`ed under each property name; `const` → read-only.
+- **QML write:** the virtual `updateValue()` routes to the property via the gated `assign()` (a no-op
+  on an unchanged value; `const` rejected) — the same gated path as P3's `setData`.
+- **Roxal edit → QML (auto):** each property's change signal is observed
+  (`ensurePropertySignal` + `df::Signal::addValueChangedCallback`, the pattern
+  [compiler/dds/ModuleDDS.cpp](compiler/dds/ModuleDDS.cpp) already uses); a Roxal-side assignment
+  pushes via `insert()` so bindings update. A re-entrancy guard suppresses the echo during a QML write.
+
+**API (implicit).** `engine.set_context_property(name, obj)` — passing a **plain Roxal object** (not a
+`ListModel`/`Engine`/Qt-item handle) auto-wraps it (idempotent per object). QML binds `obj.prop`. Plus
+`qt.notify(obj[, name])` to force a push after mutating a *contained* list/dict in place (no
+reassignment → `assign()` wouldn't fire).
+
+**Notify is via the property signal (asymmetric with P3 on purpose).** Unlike P3 (explicit), P4 uses
+the per-property dataflow signal because a single object has only N properties (cheap), and a "Q_PROPERTY
+with NOTIFY" is fundamentally about observing changes. The signal is internal, event-driven (never
+ticked), created only for an exposed object's properties. A future **`ChangeNotifier` refactor** (see
+Open questions) would remove the dataflow signal entirely while keeping the behaviour.
+
+**GC + lifetime.** A `QtBindHub` (`SimpleMarkSweepGC::ExternalRootProvider`, mirrors `QtModelHub`)
+owns the wrappers and traces each live wrapper's object. `df::Signal` has no remove-callback API, so
+each callback captures a `shared_ptr<atomic<bool>>` **alive-guard** the wrapper's destructor flips —
+late callbacks no-op. Cleared at script-complete teardown.
+
+**Zero core VM changes, no AUTOMOC.** Module-side behind `ROXAL_ENABLE_QT`, reusing P1 converters,
+`getProperty`/`propertySlot().assign()`, the GC external-root API, and the existing property signal.
+
+**Deliverable (met).** A Roxal object exposed as `app`: QML binds `app.title`/`app.volume`, a slider
+writes `app.volume` back (gated), and a Roxal-side `state.title = …` auto-updates the bound label —
+verified headless (`qt_bind_read/write/auto/gc`) and via a real `gui-user` bindable UI (both directions).
+
+**Teardown ordering (resolved).** `teardownQt` destroys the **windows/engines before** the list-model
+/ bindable context objects, because QML re-evaluates some bindings as a window is torn down — if the
+`QQmlPropertyMap` (or model) a binding refers to is already gone, QML logs `TypeError: Cannot read
+property … of null` at exit. Keeping the context objects alive until the windows are destroyed avoids
+those warnings. (An earlier diagnosis mistook these for a *creation-time* transient; with unbuffered
+stderr vs. buffered stdout the exit warnings can appear out of order. They were teardown-order
+warnings, fixed by the ordering, and the signal hub is still shut down first so no Qt signal invokes a
+Roxal closure mid-teardown.)
+
+**Depends on:** P1.
+
+## Open design questions (future work, post-P4)
 
 - **Roxal → QML** (QML calling Roxal-registered methods) — deferred from P2. Likely unnecessary if
   apps communicate UI→logic via signals→slots (P2) and logic→UI via P1 properties/methods; revisit
   only if a concrete need appears. Would need AUTOMOC or `QMetaObjectBuilder`.
-- **Q_PROPERTY-equivalent in Roxal** — letting a Roxal object expose read/write/**notify** properties
-  to QML, so QML can bind to Roxal state. P3 already does this **for model rows** (a row's properties
-  are QML-bindable roles with explicit change notification); the open part is a **single** Roxal object
-  bound as a QML context object with per-property NOTIFY (not via a list model). Its own phase if needed.
+- **Q_PROPERTY-equivalent in Roxal** — ✅ **done:** P3 does it for model rows, and **P4** (above) does
+  it for a single bindable object. Remaining sub-cases if a need appears: exposing a Roxal object as a
+  *typed* QML element (vs the `var`-typed `QQmlPropertyMap` keys), and binding *nested* objects.
+- **`ChangeNotifier` refactor (planned, separate from P4).** P4's Roxal→QML auto-notify rides the
+  per-property dataflow signal. It's cheap (the signal is internal, event-driven/never-ticked, lazily
+  created), but it's **asymmetric** with P3 (list cells are announced *explicitly* — no signal) and
+  pulls a little dataflow machinery into an otherwise signal-free feature. The cleanup factors out the
+  one piece actually used so the signal and non-signal paths share it:
+  1. Extract a tiny `ChangeNotifier` (`vector<function<void(const Value&)>>` + `notify`/`add`), lifted
+     from `df::Signal`'s `valueChangedCallbacks` / `invokeValueChangedCallbacks` / `addValueChangedCallback`
+     ([dataflow/Signal.h:135](dataflow/Signal.h#L135), Signal.cpp:95-110).
+  2. `df::Signal` HAS-A `ChangeNotifier` (delegates; still also does value-history + engine propagation).
+  3. A property slot may hold a bare `ChangeNotifier` *without* a full signal — stored the same COW-safe,
+     GC-traced way the `signal` member is today (a slot-carried `Value`/`Obj`, shared by reference across
+     copy-on-write copies → no new per-slot bloat). `MonitoredValue::assign()` (the single
+     change-detection choke point, reached from every write path incl. `propertySlot().assign()`)
+     dispatches on change to whatever the slot holds — a `ChangeNotifier`, a full signal, or both.
+  4. Dedup the change-gate (today detected twice: `MonitoredValue::assign()` and `Signal::setValueAt()`).
+  5. The bindable wrapper then observes the property's `ChangeNotifier` instead of a `df::Signal` (a
+     ~1-line change) → binding creates **no** dataflow signal at all. P3's explicit model is unaffected.
+
+  **Risk:** this touches `MonitoredValue::assign()`, the VM's hottest path (every property write of
+  every object/global), so it must be a surgical, heavily-tested core change — which is why it is
+  **deferred out of P4** rather than gating the feature.
 - **Computed (`__get_`) roles + 2-D table model** — the deferred parts of P3's v1 scope: getter-backed
   roles (needs a receiver-aware method-invoke + the P2 `threadSleep` dance) and a `QAbstractTableModel`
   variant (properties-as-columns); the P3 shim is factored to grow into both.

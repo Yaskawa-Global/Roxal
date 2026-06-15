@@ -7,6 +7,7 @@
 #include "ObjQtObject.h"
 #include "QtSignalHub.h"
 #include "QtListModel.h"
+#include "QtBindable.h"
 
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
@@ -197,6 +198,8 @@ void ModuleQt::registerBuiltins(VM& vm)
     link("connect",    [this](VM&, ArgsView a) { return qt_connect_builtin(a); });
     link("on",         [this](VM&, ArgsView a) { return qt_on_builtin(a); });
     link("disconnect", [this](VM&, ArgsView a) { return qt_disconnect_builtin(a); });
+
+    link("notify",     [this](VM&, ArgsView a) { return qt_notify_builtin(a); });
 }
 
 // ============================================================
@@ -233,6 +236,10 @@ void ModuleQt::onModuleLoaded(VM& vm)
     // Register the list-model hub's GC root provider (keeps each model's row list
     // and row type alive while the model is live).
     QtModelHub::instance().init();
+
+    // Register the bindable-object hub's GC root provider (keeps each exposed object
+    // alive while its QQmlPropertyMap wrapper is live).
+    QtBindHub::instance().init();
 }
 
 void ModuleQt::onScriptComplete(VM& vm)
@@ -260,15 +267,26 @@ void ModuleQt::teardownQt(VM& vm)
     if (!impl_->app && impl_->engines.empty())
         return; // already torn down
 
-    // Disconnect all signal relays + drop their Roxal refs while Qt is still alive.
+    // Disconnect all signal relays first, so no Qt signal can invoke a Roxal closure
+    // during the rest of teardown (and drop their Roxal refs while Qt is still alive).
     QtSignalHub::instance().shutdown();
-    // Destroy the list models (QAbstractListModels) + drop their row refs.
-    QtModelHub::instance().shutdown();
-    s_quitRequested.store(false, std::memory_order_relaxed);
 
     vm.setHostEventLoop(nullptr);
     impl_->hostLoop.reset();
+
+    // Destroy the windows/engines BEFORE the list-model / bindable context objects.
+    // QML re-evaluates some bindings as a window is torn down; if the model or
+    // QQmlPropertyMap a binding refers to is already gone, QML logs
+    // "TypeError: Cannot read property … of null" at exit. Keeping the context
+    // objects alive until the windows are gone avoids those teardown warnings.
     impl_->engines.clear();             // destroy windows/engines while platform alive
+
+    // Views/bindings are gone now — drop the models + bindable wrappers (and their
+    // Roxal object refs).
+    QtModelHub::instance().shutdown();
+    QtBindHub::instance().shutdown();
+    s_quitRequested.store(false, std::memory_order_relaxed);
+
     if (impl_->app && impl_->ownsApp)
         delete impl_->app.data();       // QPointer auto-nulls impl_->app afterwards
     impl_->ownsApp = false;
@@ -505,6 +523,12 @@ Value ModuleQt::engine_set_context_property_builtin(ArgsView args)
         engine->rootContext()->setContextProperty(name, static_cast<QObject*>(model));
     } else if (isQtObject(v)) {
         engine->rootContext()->setContextProperty(name, asQtObject(v)->deref("set_context_property"));
+    } else if (isObjectInstance(v)) {
+        // A plain Roxal object → a bindable QQmlPropertyMap (its public properties
+        // become QML-bindable, read/write/notify). (ListModel/Engine handles are
+        // caught above; this is for ordinary objects exposed as a backend/state.)
+        RoxalPropertyMap* map = QtBindHub::instance().wrap(v);
+        engine->rootContext()->setContextProperty(name, static_cast<QObject*>(map));
     } else {
         engine->rootContext()->setContextProperty(name, toQVariant(v));
     }
@@ -671,6 +695,20 @@ Value ModuleQt::listmodel_set_builtin(ArgsView args)
     model->setCell(static_cast<int>(args[1].asInt()),
                    QByteArray::fromStdString(toUTF8StdString(asStringObj(args[2])->s)),
                    args[3]);
+    return Value::nilVal();
+}
+
+Value ModuleQt::qt_notify_builtin(ArgsView args)
+{
+    if (args.size() < 1 || !isObjectInstance(args[0]))
+        throw std::invalid_argument("qt.notify(obj, name=nil) expects a Roxal object exposed via set_context_property");
+    RoxalPropertyMap* map = QtBindHub::instance().lookup(asObjectInstance(args[0]));
+    if (!map)
+        return Value::nilVal();   // not exposed → nothing to push
+    if (args.size() >= 2 && isString(args[1]))
+        map->pushProperty(QString::fromStdString(toUTF8StdString(asStringObj(args[1])->s)));
+    else
+        map->pushAll();
     return Value::nilVal();
 }
 

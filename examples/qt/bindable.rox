@@ -1,0 +1,35 @@
+# P4 demo: a Roxal object exposed to QML as a bindable backend (the Q_PROPERTY
+# analogue). Its public properties (title, volume) become QML-bindable: QML reads
+# them, binds to them, and writes them back — and Roxal-side edits auto-push to the
+# bindings (no explicit notify needed for a property assignment).
+#
+# Build (Qt is an optional module, OFF by default):
+#   cmake -B build/ -DROXAL_ENABLE_QT=ON -DCMAKE_PREFIX_PATH=/opt/Qt/6.8.3/gcc_64
+#   cmake --build build/ -j4
+# Run from the repo root (needs an X11 display):
+#   ./build/roxal examples/qt/bindable.rox
+
+import qt
+
+type AppState object:
+  var title  :string = "Ready"
+  var volume :int = 50
+
+var engine = qt.Engine()
+var state = AppState()
+engine.set_context_property("app", state)     # auto-wraps `state` as a bindable object
+engine.load('examples/qt/bindable.qml')
+
+# Button → Roxal: mutate the object; the bound label + slider update automatically.
+var win = engine.find("win")
+var n = 0
+win.onResetRequested(proc():
+  n = n + 1
+  state.title = "Reset #{n}"
+  state.volume = 0
+  print("reset → title={state.title} volume={state.volume}")
+)
+
+print("ready — drag the slider (writes app.volume); click Reset (Roxal sets app.*)")
+engine.run()
+print("bye")

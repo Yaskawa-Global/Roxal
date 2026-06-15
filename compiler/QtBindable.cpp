@@ -1,0 +1,197 @@
+#ifdef ROXAL_ENABLE_QT
+
+// Roxal headers first (signals/slots/emit macro clash), then Qt.
+#include "VM.h"
+#include "Object.h"
+#include "SimpleMarkSweepGC.h"
+#include "ModuleQtConvert.h"
+#include "dataflow/Signal.h"
+#include "QtBindable.h"
+
+#include <QVariant>
+
+#include <atomic>
+#include <memory>
+#include <unordered_map>
+#include <vector>
+
+using namespace roxal;
+
+// ============================================================
+// RoxalPropertyMap
+// ============================================================
+
+RoxalPropertyMap::RoxalPropertyMap(const Value& obj)
+    : QQmlPropertyMap(this, nullptr),   // protected ctor: register the derived metaobject
+      obj_(obj), alive_(std::make_shared<std::atomic<bool>>(true))
+{
+    buildRoles();
+    initValues();
+    hookSignals();
+}
+
+RoxalPropertyMap::~RoxalPropertyMap()
+{
+    *alive_ = false;   // any late signal callback becomes a no-op
+}
+
+void RoxalPropertyMap::buildRoles()
+{
+    roles_.clear();
+    if (!isObjectInstance(obj_)) return;
+    ObjObjectType* t = asObjectType(asObjectInstance(obj_)->instanceType);
+    if (!t) return;
+    for (const auto& pv : t->orderedPublicProperties()) {
+        Role r;
+        r.uname     = pv.property->name;
+        r.nameHash  = pv.property->name.hashCode();
+        r.name      = QString::fromStdString(toUTF8StdString(pv.property->name));
+        r.editable  = !pv.property->isConst;
+        roles_.push_back(r);
+    }
+}
+
+void RoxalPropertyMap::initValues()
+{
+    if (!isObjectInstance(obj_)) return;
+    ObjectInstance* inst = asObjectInstance(obj_);
+    for (const auto& r : roles_) {
+        QVariant v;
+        try { v = toQVariant(inst->getProperty(r.uname)); }
+        catch (...) { v = QVariant(); }   // non-convertible (e.g. nested object) → null
+        insert(r.name, v);
+    }
+}
+
+void RoxalPropertyMap::hookSignals()
+{
+    if (!isObjectInstance(obj_)) return;
+    ObjectInstance* inst = asObjectInstance(obj_);
+    std::shared_ptr<std::atomic<bool>> alive = alive_;
+    RoxalPropertyMap* self = this;
+    for (const auto& r : roles_) {
+        // Create the property's internal change signal and observe it from C++ (the
+        // pattern ModuleDDS uses). Fires synchronously on the VM/UI thread when a
+        // Roxal-side write changes the value (assign() gates unchanged writes).
+        Value sigVal = inst->ensurePropertySignal(r.nameHash, toUTF8StdString(r.uname));
+        if (!isSignal(sigVal)) continue;
+        ptr<df::Signal> sig = asSignal(sigVal)->signal;
+        if (!sig) continue;
+        Role role = r;   // capture by value
+        sig->addValueChangedCallback(
+            [alive, self, role](TimePoint, ptr<df::Signal>, const Value& v) {
+                if (!alive->load()) return;   // wrapper destroyed → ignore
+                self->onRoxalChange(role, v);
+            });
+    }
+}
+
+const RoxalPropertyMap::Role* RoxalPropertyMap::roleByName(const QString& name) const
+{
+    for (const auto& r : roles_)
+        if (r.name == name) return &r;
+    return nullptr;
+}
+
+void RoxalPropertyMap::onRoxalChange(const Role& role, const Value& v)
+{
+    if (suppressKey_ == role.name)
+        return;   // this change originated from the QML write we're servicing
+    QVariant qv;
+    try { qv = toQVariant(v); } catch (...) { qv = QVariant(); }
+    insert(role.name, qv);   // QML bindings on this key update (insert() emits no valueChanged)
+}
+
+QVariant RoxalPropertyMap::updateValue(const QString& key, const QVariant& input)
+{
+    const Role* r = roleByName(key);
+    if (!r || !r->editable || !isObjectInstance(obj_))
+        return value(key);   // unknown / const → reject by keeping the current value
+    ObjectInstance* inst = asObjectInstance(obj_);
+    suppressKey_ = key;      // suppress the echo from our own change observer
+    Value newVal;
+    try { newVal = fromQVariant(input); } catch (...) { newVal = Value::nilVal(); }
+    inst->propertySlot(r->nameHash).assign(newVal);   // gated write
+    suppressKey_ = QString();
+    return input;            // store what QML wrote into the map
+}
+
+void RoxalPropertyMap::pushProperty(const QString& name)
+{
+    const Role* r = roleByName(name);
+    if (!r || !isObjectInstance(obj_)) return;
+    onRoxalChange(*r, asObjectInstance(obj_)->getProperty(r->uname));
+}
+
+void RoxalPropertyMap::pushAll()
+{
+    if (!isObjectInstance(obj_)) return;
+    ObjectInstance* inst = asObjectInstance(obj_);
+    for (const auto& r : roles_)
+        onRoxalChange(r, inst->getProperty(r.uname));
+}
+
+// ============================================================
+// QtBindHub (owner + GC ExternalRootProvider)
+// ============================================================
+
+struct QtBindHub::Impl : SimpleMarkSweepGC::ExternalRootProvider {
+    std::vector<std::unique_ptr<RoxalPropertyMap>> maps;
+    std::unordered_map<ObjectInstance*, RoxalPropertyMap*> byObject;
+    bool rootRegistered { false };
+
+    // Keep each exposed object reachable (its properties + change signals follow).
+    void visitRoots(ValueVisitor& visitor) override {
+        for (auto& m : maps)
+            if (m) visitor.visit(m->objValue());
+    }
+};
+
+QtBindHub::QtBindHub() : impl_(std::make_unique<Impl>()) {}
+QtBindHub::~QtBindHub() { shutdown(); }
+
+QtBindHub& QtBindHub::instance()
+{
+    static QtBindHub hub;
+    return hub;
+}
+
+void QtBindHub::init()
+{
+    if (!impl_->rootRegistered) {
+        SimpleMarkSweepGC::instance().registerExternalRootProvider(impl_.get());
+        impl_->rootRegistered = true;
+    }
+}
+
+void QtBindHub::shutdown()
+{
+    impl_->byObject.clear();
+    impl_->maps.clear();   // destroys the wrappers (sets their alive-guard false)
+    if (impl_->rootRegistered) {
+        SimpleMarkSweepGC::instance().unregisterExternalRootProvider(impl_.get());
+        impl_->rootRegistered = false;
+    }
+}
+
+RoxalPropertyMap* QtBindHub::wrap(const Value& obj)
+{
+    if (!isObjectInstance(obj)) return nullptr;
+    ObjectInstance* key = asObjectInstance(obj);
+    auto it = impl_->byObject.find(key);
+    if (it != impl_->byObject.end())
+        return it->second;   // idempotent: one wrapper per object
+    auto m = std::make_unique<RoxalPropertyMap>(obj);
+    RoxalPropertyMap* raw = m.get();
+    impl_->maps.push_back(std::move(m));
+    impl_->byObject[key] = raw;
+    return raw;
+}
+
+RoxalPropertyMap* QtBindHub::lookup(ObjectInstance* obj)
+{
+    auto it = impl_->byObject.find(obj);
+    return it != impl_->byObject.end() ? it->second : nullptr;
+}
+
+#endif // ROXAL_ENABLE_QT

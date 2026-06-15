@@ -1,0 +1,22 @@
+// P4: auto-notify — a Roxal-side property assignment pushes to QML automatically.
+// A Timer fires a Roxal callback (via a signal) that sets state.title; the Text bound
+// to app.title updates without any explicit notify call. The same Timer then reads the
+// rendered Text back and reports it.
+import qt
+
+type AppState object:
+  var title :string = "Ready"
+
+var engine = qt.Engine()
+var state = AppState()
+engine.set_context_property("app", state)
+engine.load_string('import QtQuick\nimport QtQuick.Window\nWindow {\n id: win\n objectName: "win"\n visible: true\n signal tick()\n signal report(string s)\n Text { id: t; objectName: "t"; text: app.title }\n Timer { interval: 30; running: true; onTriggered: { win.tick(); win.report(t.text); Qt.quit() } }\n}\n')
+
+var win = engine.find("win")
+win.onTick(proc():
+  state.title = "Updated"      # Roxal edit → auto-pushes to QML
+)
+win.onReport(proc(s): print("report: {s}"))
+
+engine.run()
+print("bye")

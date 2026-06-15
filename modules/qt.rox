@@ -40,6 +40,13 @@ func disconnect(connection):
   """Remove a signal callback connection (the id returned by connect / item.onName)."""
 
 @builtin
+func notify(obj, name=nil):
+  """Push a change of `obj` (a Roxal object exposed to QML via set_context_property)
+  to QML. Roxal-side property *assignments* notify automatically; use this only to
+  force a push after mutating a contained list/dict in place. With `name`, push just
+  that property; otherwise push all. No-op if `obj` isn't exposed."""
+
+@builtin
 type Engine object:
   """A QML application engine: loads QML and runs the Qt UI loop."""
 

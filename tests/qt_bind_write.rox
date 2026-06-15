@@ -1,0 +1,24 @@
+// P4: QML writing a bound property (app.volume = 30) routes through updateValue to
+// the Roxal object's property via the gated assign. A const property (app.version)
+// is read-only and the write is rejected. A Timer performs the writes, then signals
+// Roxal to read the object back.
+import qt
+
+type AppState object:
+  var title   :string = "Ready"
+  var volume  :int = 50
+  const version :string = "1.0"
+
+var engine = qt.Engine()
+var state = AppState()
+engine.set_context_property("app", state)
+engine.load_string('import QtQuick\nimport QtQuick.Window\nWindow {\n id: win\n objectName: "win"\n visible: true\n signal done()\n Timer { interval: 30; running: true; onTriggered: { app.volume = 30; app.version = "9.9"; win.done(); Qt.quit() } }\n}\n')
+
+var win = engine.find("win")
+win.onDone(proc():
+  print("volume = {state.volume}")    # 30  (writable property applied)
+  print("version = {state.version}")  # 1.0 (const property rejected)
+)
+
+engine.run()
+print("bye")

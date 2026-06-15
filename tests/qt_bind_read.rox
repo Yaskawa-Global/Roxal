@@ -1,0 +1,19 @@
+// P4: a plain Roxal object exposed to QML via set_context_property becomes a
+// bindable object — its public properties are QML-bindable (app.title, app.volume).
+// A Timer reads the rendered Text and reports it back, proving the values reached QML.
+import qt
+
+type AppState object:
+  var title  :string = "Ready"
+  var volume :int = 50
+
+var engine = qt.Engine()
+var state = AppState()
+engine.set_context_property("app", state)
+engine.load_string('import QtQuick\nimport QtQuick.Window\nWindow {\n id: win\n objectName: "win"\n visible: true\n signal report(string s)\n Text { id: t; objectName: "t"; text: app.title + "/" + app.volume }\n Timer { interval: 30; running: true; onTriggered: { win.report(t.text); Qt.quit() } }\n}\n')
+
+var win = engine.find("win")
+win.onReport(proc(s): print("report: {s}"))
+
+engine.run()
+print("done")
