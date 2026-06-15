@@ -55,6 +55,13 @@ private:
     Value engine_load_string_builtin(ArgsView args);
     Value engine_run_builtin(ArgsView args);
     Value engine_quit_builtin(ArgsView args);
+    Value engine_find_builtin(ArgsView args);
+    Value engine_root_builtin(ArgsView args);
+
+    // Module-level escape hatches for non-identifier / fully-dynamic names.
+    Value qt_get_builtin(ArgsView args);
+    Value qt_set_builtin(ArgsView args);
+    Value qt_call_builtin(ArgsView args);
 };
 
 } // namespace roxal

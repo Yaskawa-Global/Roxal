@@ -298,7 +298,9 @@ socket_tests = ['socket_basic']
 nn_tests = ['nn_mnist', 'nn_signal', 'nn_chain', 'nn_signal_chain', 'nn_dynamic', 'nn_multi_io', 'nn_async', 'nn_tokenizer']
 nn_lfs_tests = ['nn_dfine']  # require LFS model files (only run with --all)
 media_tests = ['media_read_write', 'media_manipulate', 'media_convert']
-qt_tests = ['qt_lifecycle', 'qt_load_file']  # require Qt6 (ROXAL_ENABLE_QT); run headless
+qt_tests = ['qt_lifecycle', 'qt_load_file',           # P0: lifecycle
+            'qt_properties', 'qt_property_error', 'qt_convert']  # P1: handles/props/methods/convert
+# require Qt6 (ROXAL_ENABLE_QT); run headless via QT_QPA_PLATFORM=offscreen
 compute_server_tests = [
     'remote_actor_basic',
     'remote_actor_backchannel',

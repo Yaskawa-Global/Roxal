@@ -1,0 +1,13 @@
+// P1: a missing/typo Qt property raises a CATCHABLE Roxal exception (caught
+// here), and is FATAL when uncaught (asserted via qt_property_error.err).
+import qt
+var engine = qt.Engine()
+engine.load_string('import QtQuick\nimport QtQuick.Window\nWindow { objectName: "win"; Text { objectName: "label"; text: "hi" } }')
+var label = engine.find("label")
+try:
+  print(label.txt)        // typo -> raises
+except e:
+  print("caught typo")
+print(label.text)         // engine still fine
+print(label.nope)         // uncaught typo -> fatal (see .err)
+print("unreachable")

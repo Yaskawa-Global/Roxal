@@ -1,0 +1,39 @@
+# P1 demo: drive a QML UI from Roxal.
+#
+# Find items by objectName, read/write their properties with native syntax
+# (the window updates live), and call a QML function and read its return.
+# Then show the window; close it to exit.
+#
+# Build (Qt is an optional module, OFF by default):
+#   cmake -B build/ -DROXAL_ENABLE_QT=ON -DCMAKE_PREFIX_PATH=/opt/Qt/6.8.3/gcc_64
+#   cmake --build build/ -j4
+# Run from the repo root (needs an X11 display):
+#   ./build/roxal examples/qt/interactive.rox
+
+import qt
+
+var engine = qt.Engine()
+engine.load('examples/qt/interactive.qml')
+
+# Find items by objectName (recursive from the engine root).
+var title = engine.find("title")
+var box   = engine.find("box")
+var status = engine.find("status")
+
+# Read a property, then write properties — the UI reflects the change.
+print("title started as: {title.text}")
+title.text = "Driven from Roxal!"
+box.color = "tomato"
+box.width = 220
+
+# Call a QML function and read its return; the box's number updates each call.
+for i in [1, 2, 3]:
+  var n = box.bump()
+  print("bump() returned {n}")
+
+# Escape hatch: dynamic name access (here just for illustration).
+qt.set(status, "text", "count is now {box.count} — close the window to exit")
+print(qt.get(status, "text"))
+
+engine.run()
+print("window closed — bye")

@@ -102,7 +102,8 @@ enum class ObjType {
     EventInstance,
     Exception,
     OverloadSet,
-    Combinator
+    Combinator,
+    QtObject   // qt module: QPointer<QObject> wrapper (defined in the qt module)
 };
 
 /// Returns true if the object type is user-mutable and can hold Value references
@@ -135,6 +136,19 @@ struct Obj {
 
     virtual unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const = 0; // deep copy preserving structure
     virtual unique_ptr<Obj, UnreleasedObj> shallowClone() const; // shallow copy (copies property slots, not children); returns nullptr for types that don't support it
+
+    // Dynamic property/method dispatch hooks. Default: not handled (return false),
+    // so the GetProp/SetProp/Invoke catch-all proceeds to its normal "no such
+    // property/method" error. A wrapper Obj (e.g. the qt module's QObject handle)
+    // overrides these to route arbitrary names to native code. Implementations may
+    // throw std::exception to signal a (catchable) Roxal error; the catch-all call
+    // sites convert that via raiseException(), mirroring callNativeFn.
+    // `self` is the receiver Value wrapping this Obj — needed so a getter can
+    // return a bound callable for method-like names (Roxal methods are func-typed
+    // members: `a.m(x)` looks up `a.m` then calls it).
+    virtual bool tryGetDynamicProperty(const Value& self, const icu::UnicodeString& name, Value& out) { (void)self; (void)name; (void)out; return false; }
+    virtual bool trySetDynamicProperty(const icu::UnicodeString& name, const Value& value) { (void)name; (void)value; return false; }
+    virtual bool tryInvokeDynamicMethod(const icu::UnicodeString& name, const Value* args, int argCount, Value& out) { (void)name; (void)args; (void)argCount; (void)out; return false; }
 
     // MVCC: throws if this object is a frozen clone (const snapshot).
     // Call at the top of every mutation method to prevent const violations

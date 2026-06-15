@@ -3,6 +3,7 @@
 #include "ModuleQt.h"
 #include "VM.h"
 #include "Object.h"
+#include "ObjQtObject.h"
 
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
@@ -126,6 +127,12 @@ void ModuleQt::registerBuiltins(VM& vm)
     linkMethod("Engine", "load_string", [this](VM&, ArgsView a) { return engine_load_string_builtin(a); });
     linkMethod("Engine", "run",         [this](VM&, ArgsView a) { return engine_run_builtin(a); });
     linkMethod("Engine", "quit",        [this](VM&, ArgsView a) { return engine_quit_builtin(a); });
+    linkMethod("Engine", "find",        [this](VM&, ArgsView a) { return engine_find_builtin(a); });
+    linkMethod("Engine", "root",        [this](VM&, ArgsView a) { return engine_root_builtin(a); });
+
+    link("get",  [this](VM&, ArgsView a) { return qt_get_builtin(a); });
+    link("set",  [this](VM&, ArgsView a) { return qt_set_builtin(a); });
+    link("call", [this](VM&, ArgsView a) { return qt_call_builtin(a); });
 }
 
 // ============================================================
@@ -294,6 +301,74 @@ Value ModuleQt::engine_quit_builtin(ArgsView args)
     engineFromReceiver(args, "quit"); // validate receiver
     requestQuit();
     return Value::nilVal();
+}
+
+Value ModuleQt::engine_find_builtin(ArgsView args)
+{
+    QQmlApplicationEngine* engine = engineFromReceiver(args, "find");
+    if (args.size() < 2 || !isString(args[1]))
+        throw std::invalid_argument("Engine.find(name) expects a string objectName");
+
+    QString name = QString::fromStdString(toUTF8StdString(asStringObj(args[1])->s));
+    // Search every root object (and its subtree) by objectName; first match wins.
+    const auto roots = engine->rootObjects();
+    for (QObject* root : roots) {
+        if (!root) continue;
+        if (root->objectName() == name)
+            return qtObjectValue(root);
+        if (QObject* child = root->findChild<QObject*>(name))
+            return qtObjectValue(child);
+    }
+    return Value::nilVal(); // not found is normal, not an error
+}
+
+Value ModuleQt::engine_root_builtin(ArgsView args)
+{
+    QQmlApplicationEngine* engine = engineFromReceiver(args, "root");
+    const auto roots = engine->rootObjects();
+    if (roots.isEmpty())
+        return Value::nilVal();
+    return qtObjectValue(roots.first());
+}
+
+// ---- Module-level escape hatches: qt.get / qt.set / qt.call ----
+// For property names that aren't valid Roxal identifiers (e.g. "z-order") or for
+// fully-dynamic access. They reuse the same dynamic dispatch as native syntax.
+
+Value ModuleQt::qt_get_builtin(ArgsView args)
+{
+    if (args.size() < 2 || !isQtObject(args[0]) || !isString(args[1]))
+        throw std::invalid_argument("qt.get(item, name) expects an item and a string name");
+    Value out;
+    asQtObject(args[0])->tryGetDynamicProperty(args[0], asStringObj(args[1])->s, out);
+    return out;
+}
+
+Value ModuleQt::qt_set_builtin(ArgsView args)
+{
+    if (args.size() < 3 || !isQtObject(args[0]) || !isString(args[1]))
+        throw std::invalid_argument("qt.set(item, name, value) expects an item, a string name, and a value");
+    asQtObject(args[0])->trySetDynamicProperty(asStringObj(args[1])->s, args[2]);
+    return Value::nilVal();
+}
+
+Value ModuleQt::qt_call_builtin(ArgsView args)
+{
+    if (args.size() < 2 || !isQtObject(args[0]) || !isString(args[1]))
+        throw std::invalid_argument("qt.call(item, name, args) expects an item, a string name, and an optional args list");
+    std::vector<Value> callArgs;
+    if (args.size() >= 3 && !args[2].isNil()) {
+        if (!isList(args[2]))
+            throw std::invalid_argument("qt.call(item, name, args): args must be a list");
+        ObjList* l = asList(args[2]);
+        for (int32_t i = 0; i < l->length(); ++i)
+            callArgs.push_back(l->getElement(static_cast<size_t>(i)));
+    }
+    Value out;
+    asQtObject(args[0])->tryInvokeDynamicMethod(asStringObj(args[1])->s,
+                                                callArgs.empty() ? nullptr : callArgs.data(),
+                                                static_cast<int>(callArgs.size()), out);
+    return out;
 }
 
 #endif // ROXAL_ENABLE_QT

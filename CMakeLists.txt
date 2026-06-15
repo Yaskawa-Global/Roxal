@@ -341,6 +341,8 @@ if(ROXAL_ENABLE_MEDIA)
 endif()
 if(ROXAL_ENABLE_QT)
     list(APPEND COMPILER_SOURCES compiler/ModuleQt.cpp)
+    list(APPEND COMPILER_SOURCES compiler/ObjQtObject.cpp)
+    list(APPEND COMPILER_SOURCES compiler/ModuleQtConvert.cpp)
 endif()
 
 set(MAIN_SOURCE compiler/roxal.cpp)

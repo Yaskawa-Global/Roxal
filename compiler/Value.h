@@ -86,6 +86,7 @@ enum class ValueType {
     Function,
     Closure,
     Upvalue,
+    QtObject,  // qt module: QObject handle (dynamic property/method dispatch)
     Boxed = 0xff // not used with NAN tagging
 };
 

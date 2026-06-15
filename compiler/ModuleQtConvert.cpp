@@ -1,0 +1,211 @@
+#ifdef ROXAL_ENABLE_QT
+
+#include "ModuleQtConvert.h"
+#include "ObjQtObject.h"
+#include "Object.h"
+
+#include <QVariant>
+#include <QVariantList>
+#include <QVariantMap>
+#include <QString>
+#include <QMetaType>
+#include <QObject>
+#include <QJSValue>
+#include <QJSValueIterator>
+#include <QJSEngine>
+
+#include <cmath>
+#include <stdexcept>
+#include <string>
+
+using namespace roxal;
+
+// ============================================================
+// QVariant <-> Value
+// ============================================================
+
+Value roxal::fromQVariant(const QVariant& v)
+{
+    if (!v.isValid() || v.isNull())
+        return Value::nilVal();
+
+    switch (v.typeId()) {
+        case QMetaType::Bool:
+            return Value::boolVal(v.toBool());
+        case QMetaType::Int:
+        case QMetaType::UInt:
+        case QMetaType::LongLong:
+        case QMetaType::ULongLong:
+            return Value::intVal(static_cast<int64_t>(v.toLongLong()));
+        case QMetaType::Double:
+        case QMetaType::Float:
+            return Value::realVal(v.toDouble());
+        case QMetaType::QString:
+            return Value::stringVal(toUnicodeString(v.toString().toStdString()));
+        case QMetaType::QVariantList: {
+            Value list = Value::objVal(newListObj());
+            ObjList* l = asList(list);
+            const QVariantList items = v.toList();
+            for (const QVariant& e : items)
+                l->append(fromQVariant(e));
+            return list;
+        }
+        case QMetaType::QVariantMap: {
+            Value d = Value::objVal(newDictObj());
+            ObjDict* dict = asDict(d);
+            const QVariantMap m = v.toMap();
+            for (auto it = m.constBegin(); it != m.constEnd(); ++it)
+                dict->store(Value::stringVal(toUnicodeString(it.key().toStdString())),
+                            fromQVariant(it.value()));
+            return d;
+        }
+        default:
+            break;
+    }
+
+    // A QML function returning a JS object/array arrives as a QVariant wrapping a
+    // QJSValue — unwrap it through the JS-value converter.
+    if (v.metaType() == QMetaType::fromType<QJSValue>())
+        return fromQJSValue(v.value<QJSValue>(), nullptr);
+
+    // QObject* (incl. QML items) → a Roxal Item handle (recursive/nested access).
+    if (v.canConvert<QObject*>()) {
+        QObject* o = v.value<QObject*>();
+        if (o)
+            return qtObjectValue(o);
+    }
+    // Last resort: a string representation if one is available; else nil.
+    if (v.canConvert<QString>())
+        return Value::stringVal(toUnicodeString(v.toString().toStdString()));
+    return Value::nilVal();
+}
+
+QVariant roxal::toQVariant(const Value& v)
+{
+    if (v.isNil())  return QVariant();
+    if (v.isBool()) return QVariant(v.asBool());
+    if (v.isInt())  return QVariant(static_cast<qlonglong>(v.asInt()));
+    if (v.isReal()) return QVariant(v.asReal());
+    if (isString(v))
+        return QVariant(QString::fromStdString(toUTF8StdString(asStringObj(v)->s)));
+    if (isList(v)) {
+        QVariantList out;
+        ObjList* l = asList(v);
+        for (int32_t i = 0; i < l->length(); ++i)
+            out.append(toQVariant(l->getElement(static_cast<size_t>(i))));
+        return out;
+    }
+    if (isDict(v)) {
+        QVariantMap out;
+        ObjDict* d = asDict(v);
+        for (const auto& kv : d->items()) {
+            if (!isString(kv.first))
+                throw std::runtime_error("qt: dict keys must be strings to convert to a Qt map");
+            out.insert(QString::fromStdString(toUTF8StdString(asStringObj(kv.first)->s)),
+                       toQVariant(kv.second));
+        }
+        return out;
+    }
+    if (isVector(v)) {
+        QVariantList out;
+        ObjVector* vec = asVector(v);
+        const Eigen::VectorXd& e = vec->vec();
+        for (int32_t i = 0; i < vec->length(); ++i)
+            out.append(e(i));
+        return out;
+    }
+    if (isQtObject(v)) {
+        // A live Item handle round-trips back to its QObject* (nil if destroyed).
+        QObject* o = asQtObject(v)->qobj.data();
+        return QVariant::fromValue(o);
+    }
+    throw std::runtime_error("qt: cannot convert Roxal value of type '" +
+                             to_string(v.type()) + "' to a Qt value");
+}
+
+// ============================================================
+// QJSValue <-> Value
+// ============================================================
+
+Value roxal::fromQJSValue(const QJSValue& v, QJSEngine* engine)
+{
+    if (v.isNull() || v.isUndefined())
+        return Value::nilVal();
+    if (v.isBool())
+        return Value::boolVal(v.toBool());
+    if (v.isNumber()) {
+        double d = v.toNumber();
+        if (std::floor(d) == d && std::abs(d) < 9.0e15)
+            return Value::intVal(static_cast<int64_t>(d));
+        return Value::realVal(d);
+    }
+    if (v.isString())
+        return Value::stringVal(toUnicodeString(v.toString().toStdString()));
+    if (v.isQObject())
+        return qtObjectValue(v.toQObject());
+    if (v.isArray()) {
+        const int len = v.property("length").toInt();
+        Value list = Value::objVal(newListObj());
+        ObjList* l = asList(list);
+        for (int i = 0; i < len; ++i)
+            l->append(fromQJSValue(v.property(static_cast<quint32>(i)), engine));
+        return list;
+    }
+    if (v.isObject()) {
+        Value d = Value::objVal(newDictObj());
+        ObjDict* dict = asDict(d);
+        QJSValueIterator it(v);
+        while (it.hasNext()) {
+            it.next();
+            dict->store(Value::stringVal(toUnicodeString(it.name().toStdString())),
+                        fromQJSValue(it.value(), engine));
+        }
+        return d;
+    }
+    // Anything else (dates, etc.) → go through QVariant.
+    return fromQVariant(v.toVariant());
+}
+
+QJSValue roxal::toQJSValue(const Value& v, QJSEngine* engine)
+{
+    if (!engine)
+        throw std::runtime_error("qt: toQJSValue requires a QJSEngine");
+    if (v.isNil())
+        return QJSValue(QJSValue::NullValue);
+    if (v.isBool())
+        return QJSValue(v.asBool());
+    if (v.isInt())
+        return QJSValue(static_cast<int>(v.asInt()));
+    if (v.isReal())
+        return QJSValue(v.asReal());
+    if (isString(v))
+        return QJSValue(QString::fromStdString(toUTF8StdString(asStringObj(v)->s)));
+    if (isList(v) || isVector(v)) {
+        // Build a JS array (vector becomes a numeric array).
+        QVariant qv = toQVariant(v);
+        const QVariantList items = qv.toList();
+        QJSValue arr = engine->newArray(static_cast<uint>(items.size()));
+        for (int i = 0; i < items.size(); ++i)
+            arr.setProperty(static_cast<quint32>(i), engine->toScriptValue(items.at(i)));
+        return arr;
+    }
+    if (isDict(v)) {
+        QJSValue obj = engine->newObject();
+        ObjDict* d = asDict(v);
+        for (const auto& kv : d->items()) {
+            if (!isString(kv.first))
+                throw std::runtime_error("qt: dict keys must be strings to convert to a JS object");
+            obj.setProperty(QString::fromStdString(toUTF8StdString(asStringObj(kv.first)->s)),
+                            toQJSValue(kv.second, engine));
+        }
+        return obj;
+    }
+    if (isQtObject(v)) {
+        QObject* o = asQtObject(v)->qobj.data();
+        return o ? engine->newQObject(o) : QJSValue(QJSValue::NullValue);
+    }
+    // Fallback through QVariant.
+    return engine->toScriptValue(toQVariant(v));
+}
+
+#endif // ROXAL_ENABLE_QT

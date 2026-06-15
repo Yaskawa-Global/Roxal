@@ -293,6 +293,7 @@ ValueType Obj::valueType() const
             return ValueType::Object;
         }
         case ObjType::Actor: return ValueType::Actor;
+        case ObjType::QtObject: return ValueType::QtObject; // qt module (rare; kept low)
         default: return ValueType::Nil;
     }
 }

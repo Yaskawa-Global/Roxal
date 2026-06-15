@@ -4298,6 +4298,24 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
                     }
                 }
             }
+
+            // Dynamic-method hook (after builtin methods): a wrapper Obj (e.g. the
+            // qt module's QObject handle) may route an arbitrary method name to
+            // native code. A thrown std::exception becomes a catchable Roxal
+            // exception, mirroring callNativeFn (~VM.cpp:987-1004). Args are the
+            // argCount stack slots below stackTop; result replaces the receiver.
+            try {
+                Value dynOut;
+                Value* dynArgs = &(*thread->stackTop) - callSpec.argCount;
+                if (receiver.asObj()->tryInvokeDynamicMethod(name->s, dynArgs, callSpec.argCount, dynOut)) {
+                    *(thread->stackTop - callSpec.argCount - 1) = dynOut;
+                    popN(callSpec.argCount);
+                    return true;
+                }
+            } catch (std::exception& e) {
+                raiseException(Value::exceptionVal(Value::stringVal(toUnicodeString(e.what()))));
+                return true;
+            }
         }
         runtimeError("Only object or actor instances have methods.");
         return false;
@@ -6239,6 +6257,24 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                             break;
                         }
                     }
+
+                    // Dynamic-property hook (placed after the common builtin checks):
+                    // a wrapper Obj (e.g. the qt module's QObject handle) may route an
+                    // arbitrary name to native code. A thrown std::exception becomes a
+                    // catchable Roxal exception, mirroring callNativeFn (~VM.cpp:987-994).
+                    try {
+                        Value dynOut;
+                        if (inst.asObj()->tryGetDynamicProperty(inst, name->s, dynOut)) {
+                            pop();
+                            push(dynOut);
+                            break;
+                        }
+                    } catch (std::exception& e) {
+                        raiseException(Value::exceptionVal(Value::stringVal(toUnicodeString(e.what()))));
+                        if (runtimeErrorFlag.load()) return errorReturn;
+                        if (!thread->frames.empty()) frame = thread->frames.end()-1;
+                        goto postInstructionDispatch;
+                    }
                 }
 
                 if (inst.isNil())
@@ -6597,6 +6633,24 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                             break;
                         }
                     }
+
+                    // Dynamic-property hook (placed after the common builtin checks):
+                    // a wrapper Obj (e.g. the qt module's QObject handle) may route an
+                    // arbitrary name to native code. A thrown std::exception becomes a
+                    // catchable Roxal exception, mirroring callNativeFn (~VM.cpp:987-994).
+                    try {
+                        Value dynOut;
+                        if (inst.asObj()->tryGetDynamicProperty(inst, name->s, dynOut)) {
+                            pop();
+                            push(dynOut);
+                            break;
+                        }
+                    } catch (std::exception& e) {
+                        raiseException(Value::exceptionVal(Value::stringVal(toUnicodeString(e.what()))));
+                        if (runtimeErrorFlag.load()) return errorReturn;
+                        if (!thread->frames.empty()) frame = thread->frames.end()-1;
+                        goto postInstructionDispatch;
+                    }
                 }
 
                 if (inst.isNil())
@@ -6787,6 +6841,26 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                         return errorReturn;
                     }
                     break;
+                }
+
+                // Dynamic-property set hook (after the common branches): a wrapper
+                // Obj (e.g. the qt module's QObject handle) may route an arbitrary
+                // name to native code. A thrown std::exception becomes a catchable
+                // Roxal exception, mirroring callNativeFn (~VM.cpp:987-994).
+                if (inst.isObj()) {
+                    Value setVal = peek(0);
+                    try {
+                        if (inst.asObj()->trySetDynamicProperty(name->s, setVal)) {
+                            popN(2);
+                            push(setVal);
+                            break;
+                        }
+                    } catch (std::exception& e) {
+                        raiseException(Value::exceptionVal(Value::stringVal(toUnicodeString(e.what()))));
+                        if (runtimeErrorFlag.load()) return errorReturn;
+                        if (!thread->frames.empty()) frame = thread->frames.end()-1;
+                        goto postInstructionDispatch;
+                    }
                 }
                 runtimeError("Only object, actor, and dictionary instances have properties (string keys only).");
                 return errorReturn;
@@ -6984,6 +7058,26 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                         return errorReturn;
                     }
                     break;
+                }
+
+                // Dynamic-property set hook (after the common branches): a wrapper
+                // Obj (e.g. the qt module's QObject handle) may route an arbitrary
+                // name to native code. A thrown std::exception becomes a catchable
+                // Roxal exception, mirroring callNativeFn (~VM.cpp:987-994).
+                if (inst.isObj()) {
+                    Value setVal = peek(0);
+                    try {
+                        if (inst.asObj()->trySetDynamicProperty(name->s, setVal)) {
+                            popN(2);
+                            push(setVal);
+                            break;
+                        }
+                    } catch (std::exception& e) {
+                        raiseException(Value::exceptionVal(Value::stringVal(toUnicodeString(e.what()))));
+                        if (runtimeErrorFlag.load()) return errorReturn;
+                        if (!thread->frames.empty()) frame = thread->frames.end()-1;
+                        goto postInstructionDispatch;
+                    }
                 }
                 runtimeError("Only object, actor, and dictionary instances have properties (string keys only).");
                 return errorReturn;

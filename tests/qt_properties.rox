@@ -1,0 +1,22 @@
+// P1: find QML items by objectName (incl. item-rooted search), read/write their
+// properties with native syntax, and call QML functions with args + returns.
+// Synchronous (no run() needed). Run headless via QT_QPA_PLATFORM=offscreen.
+import qt
+
+var engine = qt.Engine()
+var qml = 'import QtQuick\nimport QtQuick.Window\nWindow {\n objectName: "win"\n Item {\n  objectName: "panel"\n  function echo(x) { return x }\n  function add(a, b) { return a + b }\n  Text { objectName: "label"; text: "hello"; property int count: 7 }\n }\n}\n'
+engine.load_string(qml)
+
+var panel = engine.find("panel")
+var label = panel.find("label")        // item-rooted search (from panel's subtree)
+
+print(label.text)                      // read property -> hello
+label.text = "world"                   // write property (native syntax)
+print(label.text)                      // -> world
+print(label.count)                     // custom QML property -> 7
+label.count = 42
+print(label.count)                     // -> 42
+print(panel.echo("hi"))                // call a QML JS function -> hi
+print(panel.add(3, 4))                 // -> 7
+print(label.valid())                   // -> true
+print(engine.find("missing") == nil)   // not found -> nil

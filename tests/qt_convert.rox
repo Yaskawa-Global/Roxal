@@ -1,0 +1,13 @@
+// P1: values round-trip through the QVariant<->Value converter when passed to a
+// QML function and returned. (Roxal `vector` comes back as a list — documented.)
+import qt
+var engine = qt.Engine()
+engine.load_string('import QtQuick\nimport QtQuick.Window\nWindow { objectName: "win"; Item { objectName: "panel"; function echo(x) { return x } } }')
+var panel = engine.find("panel")
+print(panel.echo(42))
+print(panel.echo(3.5))
+print(panel.echo(true))
+print(panel.echo("text"))
+print(panel.echo([1, 2, 3]))
+print(panel.echo([1, [2, 3], "x"]))
+print(panel.echo({"a": 1, "b": 2}))
