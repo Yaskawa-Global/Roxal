@@ -23,7 +23,7 @@ var engine = qt.Engine()
 # A model over Task, seeded with a couple of rows.
 var model = qt.ListModel(Task, [Task("Inspect weld", false), Task("Calibrate arm", true)])
 engine.set_context_property("tasks", model)
-engine.load('examples/qt/listmodel.qml')
+engine.load('listmodel.qml')
 
 # Button → Roxal: append a new row (logic → UI via the model).
 var win = engine.find("win")

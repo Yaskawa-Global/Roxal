@@ -1,0 +1,10 @@
+// Path resolution: engine.load() resolves relative to THIS script's directory, so the
+// bare name 'qt_load_relative.qml' loads from tests/ even though the process runs from
+// the repo root (where that file doesn't exist). Proves script-relative resolution.
+import qt
+var engine = qt.Engine()
+engine.load('qt_load_relative.qml')
+var loaded = engine.root() != nil
+print("loaded: {loaded}")
+engine.run()
+print("done")

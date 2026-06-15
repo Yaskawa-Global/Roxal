@@ -18,6 +18,6 @@
 import qt
 
 var engine = qt.Engine()
-engine.load('examples/qt/hello.qml')
+engine.load('hello.qml')
 engine.run()
 print("window closed — bye")

@@ -1,23 +1,20 @@
 # Roxal + Qt/QML — Building UIs from Roxal
 
 The optional **`qt` module** lets you build **QML / QtQuick** user interfaces and drive them from
-Roxal. The UI is authored in QML (plus inline JavaScript); Roxal loads it, looks up items, reads and
-writes their properties, calls their methods, reacts to their signals, feeds list models, and exposes
-plain Roxal objects to QML for two-way data binding.
+Roxal. You author the UI in QML as usual; from Roxal you load it, find items, read and write their
+properties, call their methods, react to their signals, fill list models, and bind plain Roxal objects
+to QML.
 
-A few cross-cutting facts to keep in mind:
+This guide assumes you know a little QML and just want to drive it from Roxal. Two things up front:
 
-- **The VM drives; Qt is pumped cooperatively.** Roxal never calls Qt's blocking `app.exec()`. The VM
-  services Qt's event loop in its own dispatch loop, so the **single main thread** runs both your
-  Roxal script and all Qt event handling. Callbacks fire directly, with no thread marshalling.
-- **Single-threaded.** Roxal **actors** (worker threads) must **not** touch Qt objects directly.
-- **Explicit lifetime.** A window being open does **not** keep the program alive — you block
-  explicitly with `engine.run()`, which returns when the last window closes or QML requests a quit.
+- **One thread.** Your Roxal script and the UI run together on a single thread, so handlers fire
+  immediately. Don't touch Qt objects from Roxal **actors**.
+- **You block explicitly.** A window being open doesn't keep the program running — you call
+  `engine.run()`, which returns when the last window closes (or the UI requests a quit).
 
-> **Terminology heads-up:** Roxal already has a `signal` type (dataflow). Qt *also* has "signals".
-> They are **not** the same thing — see [Roxal signals vs Qt signals](#roxal-signals-vs-qt-signals)
-> below. In the `qt` module, **Qt signals are surfaced to Roxal as events and callbacks**, never as
-> Roxal dataflow `signal()`s.
+> **Heads-up on the word "signal":** Roxal has a `signal` type (dataflow), and Qt also has "signals" —
+> they're unrelated. The `qt` module surfaces **Qt signals as Roxal events and callbacks**, never as
+> Roxal dataflow `signal()`s. See [Roxal signals vs Qt signals](#roxal-signals-vs-qt-signals).
 
 ## Building with Qt enabled
 
@@ -64,13 +61,12 @@ import qt
 
 var engine = qt.Engine()
 engine.load('hello.qml')   # the QML root must be a Window
-engine.run()               # blocks until the window closes / QML Qt.quit()
+engine.run()               # blocks until the window closes / Qt.quit()
 print('bye')
 ```
 
-`engine.run()` parks the script while keeping the GUI responsive; it returns when the last window
-closes (or QML calls `Qt.quit()` / Roxal calls `engine.quit()`), after which your script finishes and
-everything tears down cleanly.
+Your script blocks at `engine.run()` while the UI is up; it returns when the last window closes (or
+QML calls `Qt.quit()` / Roxal calls `engine.quit()`), after which the script finishes.
 
 You can also load QML from a string instead of a file:
 
@@ -83,17 +79,17 @@ clashes with QML's braces.)
 
 ---
 
-## The Engine (lifecycle)
+## The Engine
 
-`qt.Engine` loads QML and runs the UI loop. Its methods:
+`qt.Engine` loads QML and runs the UI. Its methods:
 
 | Method | What it does |
 |---|---|
-| `qt.Engine()` | Create the engine (creates the `QGuiApplication` on first use). |
+| `qt.Engine()` | Create a UI engine. |
 | `engine.load(path)` | Load QML from a file. The root object must be a `Window`. |
 | `engine.load_string(qml)` | Load QML from an inline string. |
-| `engine.run()` | Block (cooperatively) until the last window closes / `Qt.quit()`. |
-| `engine.quit()` | Ask `run()` to unblock (e.g. from a callback). |
+| `engine.run()` | Block until the last window closes / `Qt.quit()`. |
+| `engine.quit()` | Ask `run()` to unblock (e.g. from a handler). |
 | `engine.find(name)` | Find an item by `objectName` anywhere in the tree (nil if not found). |
 | `engine.root()` | The root object as an item handle. |
 | `engine.set_context_property(name, value)` | Expose a value/object/model to QML (see below). |
@@ -109,12 +105,23 @@ Button { objectName: "okButton"; text: "OK" }
 var btn = engine.find("okButton")
 ```
 
+### Where QML & assets are looked up
+
+`engine.load("ui.qml")` resolves the path **relative to the `.rox` script that calls it** (not the
+current working directory), so your app runs the same from any directory. If the file isn't found next
+to the script, the **Roxal module search paths** are tried next (handy for a shared assets directory),
+then the working directory. **Absolute paths** and **URLs** (`file:`, `qrc:`, `image:`, …) are used as
+given. `engine.load_string(qml)` treats the inline QML as if it lived next to the script, so its
+relative asset URLs resolve there too.
+
+So: keep QML and assets next to your `.rox` and reference them by bare relative name.
+
 ---
 
 ## Items & properties
 
-An item handle is a non-owning reference to a live QML object. Read and write its properties with
-native syntax, and call its methods directly:
+An item handle refers to a live QML object. Read and write its properties with native syntax, and call
+its methods directly:
 
 ```roxal
 var label  = engine.find("status")
@@ -124,7 +131,7 @@ label.text = "Ready"          # write a property
 var v = slider.value          # read a property
 label.color = "#93c5fd"
 
-slider.increase()             # call a Q_INVOKABLE / QML method
+slider.increase()             # call a method the object exposes
 ```
 
 Values convert automatically across the boundary: numbers, bools, strings, **lists ↔ JS arrays**,
@@ -147,11 +154,11 @@ exception**.
 
 ## Reacting to Qt signals (events & callbacks)
 
-A Qt/QML signal (a button's `clicked`, a slider's `valueChanged`, a custom QML `signal`) reaches
-Roxal in **two interchangeable styles**.
+A Qt/QML signal (a button's `clicked`, a slider's `valueChanged`, a custom QML `signal`) reaches Roxal
+in **two interchangeable styles**.
 
 **Callback style** — mirrors QML's `on…` handlers. Write `item.on<SignalName>(handler)`; the handler
-runs synchronously with the signal's arguments:
+runs with the signal's arguments:
 
 ```roxal
 var btn = engine.find("okButton")
@@ -161,7 +168,7 @@ btn.onClicked(proc():
 
 var slider = engine.find("volume")
 slider.onValueChanged(proc(v):
-  print("volume = {v}")           # handler arity = signal arg count
+  print("volume = {v}")           # the handler's params are the signal's args
 )
 ```
 
@@ -180,7 +187,7 @@ Both can coexist on the same signal. For dynamic / non-identifier signal names t
 hatches: `qt.connect(item, "clicked", handler)` (returns a connection id), `qt.on(item, "clicked")`
 (returns the event), and `qt.disconnect(conn)`.
 
-> Handlers run on the single UI thread. A handler that calls `engine.quit()` unblocks `run()`.
+> A handler that calls `engine.quit()` unblocks `run()`.
 
 ### A tiny end-to-end example
 
@@ -223,8 +230,8 @@ engine.run()
 ## List models
 
 To render a collection in a `ListView`/`Repeater`, build a **`qt.ListModel`** whose rows are Roxal
-**objects** — the row type's public properties become the model's **roles** (so a delegate binds them
-by name). No `roleNames()` boilerplate, no `data(row, role)` switch.
+**objects** — the row type's public properties become the model's **roles**, so a delegate binds them
+by name (no `roleNames()`/`data()` to write yourself).
 
 ```roxal
 import qt
@@ -279,17 +286,16 @@ Drive the model from Roxal:
 | `model.row_changed(i)` / `model.cell_changed(i, role)` | announce that you edited a row's properties |
 | `model.set(i, role, value)` | set a cell value and notify in one call |
 
-> List-model change notification is **explicit** — after editing a row object's properties, call
-> `model.row_changed(i)` (or `cell_changed`/`set`). (A single bindable object, below, auto-notifies;
-> a list of many rows is announced explicitly to avoid one subscription per cell.)
+> After editing a row object's properties directly, tell the view with `model.row_changed(i)` (or
+> `cell_changed`/`set`). The structural calls above notify on their own.
 
 ---
 
-## Bindable objects (the Q_PROPERTY analogue)
+## Bindable objects
 
 To expose a single Roxal object as a **bindable backend** (app state, a controller, settings), pass it
 to `set_context_property`. Its public properties become QML-bindable: QML reads them, binds to them,
-and writes them back — and **Roxal-side edits auto-update the bindings**.
+and writes them back — and **Roxal-side edits update the bindings automatically**.
 
 ```roxal
 import qt
@@ -327,14 +333,14 @@ Window {
         Text   { text: app.title }                              // ← reads app.title
         Slider { from: 0; to: 100; stepSize: 1
                  value: app.volume                              // ← reads app.volume
-                 onMoved: app.volume = value }                  // → writes app.volume (gated)
+                 onMoved: app.volume = value }                  // → writes app.volume
         Button { objectName: "resetBtn"; text: "Reset" }
     }
 }
 ```
 
-- **Reads/binds** come from the object's current property values; **QML writes** flow back through the
-  property (a `const` property is read-only and the write is ignored).
+- **Reads/binds** come from the object's current property values; **QML writes** flow back into the
+  object (a `const` property is read-only and the write is ignored).
 - **Roxal-side assignments auto-push** (`state.title = "X"` updates the binding). If you mutate a
   *contained* collection **in place** (e.g. `state.items.append(x)` — no reassignment), call
   **`qt.notify(state, "items")`** (or `qt.notify(state)` for all) to force a push.
@@ -344,34 +350,31 @@ Window {
 ## Roxal signals vs Qt signals
 
 This is the one piece of vocabulary that trips people up, because **both** Roxal and Qt use the word
-"signal" for **different** concepts:
+"signal" for **different** things:
 
 - **Roxal `signal`** is a **dataflow** primitive — a continuously-valued stream that other dataflow
   nodes consume. It has nothing to do with UI events.
-- **A Qt signal** is an **event notification** emitted by a QObject (e.g. `Button.clicked`,
+- **A Qt signal** is an **event notification** emitted by a UI object (e.g. `Button.clicked`,
   `Slider.valueChanged`).
 
-To avoid conflating them, the `qt` module **never** surfaces a Qt signal as a Roxal dataflow
-`signal()`. Instead, **Qt signals are mapped to Roxal events (and callbacks)**:
+The `qt` module **never** surfaces a Qt signal as a Roxal dataflow `signal()`. Instead, **Qt signals
+become Roxal events and callbacks**:
 
 | Qt concept | In Roxal (`qt` module) |
 |---|---|
-| Qt signal → slot (callback) | `item.onSignalName(handler)` — a synchronous callback |
+| Qt signal → slot (callback) | `item.onSignalName(handler)` — a callback |
 | Qt signal observed reactively | `when item.signalName occurs [as e]` — a Roxal **event** (payload = the signal's args) |
 | Roxal dataflow `signal()` | **unchanged** — still pure dataflow, unrelated to Qt |
 
 So when you read "the button's clicked **signal**", that's a **Qt** signal, and in Roxal you handle it
-as an event/callback — not with Roxal's `signal()` dataflow. (Mapping a changeable Qt property's
-`NOTIFY` to a continuous Roxal dataflow `signal()` is a possible future direction, but is deliberately
-*not* what the current bridge does.)
+as an event/callback — not with Roxal's `signal()` dataflow.
 
 ---
 
 ## Quieting Qt messages
 
 Qt and QML print diagnostics (warnings, QML `TypeError`s, etc.) to **stderr** by default, which can
-clutter a console you're also using for `print()`. The `qt` module can silence them or redirect them
-to a file (process-wide; Roxal has no general logging module yet):
+clutter a console you're also using for `print()`. Silence them or send them to a file:
 
 ```roxal
 qt.log_to_file('app.log')   # Qt/QML messages → append to app.log (out of the console)
@@ -379,19 +382,18 @@ qt.log_silence()            # discard all Qt/QML messages (fatal errors still ab
 qt.log_to_stderr()          # restore the default (messages → stderr)
 ```
 
-Call one early (e.g. right after `import qt`). The default is restored automatically when the UI run
-completes.
+Call one early (e.g. right after `import qt`).
 
 ## Notes & gotchas
 
-- **Single thread:** the VM and all Qt objects share the main thread. Don't touch Qt objects from
-  Roxal **actors**.
+- **Don't touch Qt from actors:** the UI runs on one thread; only use Qt items from your main flow,
+  not from Roxal **actors**.
 - **`objectName`, not `id`:** QML `id`s aren't runtime-findable; set `objectName` on items you reach
   from Roxal.
 - **Expose context properties *before* `load()`** so bindings see them when the QML is created.
 - **Inline QML strings:** use single-quoted Roxal strings (double-quoted strings interpolate `{...}`).
-- **Multi-line handlers:** write proc/closure bodies that contain statements (assignments) in the
-  block form:
+- **Multi-line handlers:** write a handler whose body is a statement (like an assignment) in block
+  form:
 
   ```roxal
   btn.onClicked(proc():
@@ -399,4 +401,4 @@ completes.
   )
   ```
 
-See `examples/qt/` for runnable demos (`signals`, `listmodel`, `bindable`).
+See `examples/qt/` for runnable demos (`hello`, `signals`, `listmodel`, `bindable`).

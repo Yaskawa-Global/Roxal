@@ -18,7 +18,7 @@ type AppState object:
 var engine = qt.Engine()
 var state = AppState()
 engine.set_context_property("app", state)     # auto-wraps `state` as a bindable object
-engine.load('examples/qt/bindable.qml')
+engine.load('bindable.qml')
 
 # Button → Roxal: mutate the object; the bound label + slider update automatically.
 var win = engine.find("win")

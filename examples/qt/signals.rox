@@ -13,7 +13,7 @@
 import qt
 
 var engine = qt.Engine()
-engine.load('examples/qt/signals.qml')
+engine.load('signals.qml')
 
 var btn    = engine.find("btn")
 var status = engine.find("status")

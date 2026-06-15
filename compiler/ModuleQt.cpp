@@ -27,6 +27,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <memory>
@@ -207,6 +208,64 @@ void resetQtLogHandler()
     s_logMode = QtLogMode::Default;
     if (s_logFile.is_open())
         s_logFile.close();
+}
+
+// ---- QML/asset path resolution (script-relative, with module-path fallback) ----
+// engine.load("ui.qml") resolves relative to the .rox script that called it (not the
+// process working directory), then falls back to the Roxal module search paths, then
+// the cwd. URLs (qrc:/, file:, scheme://) and absolute paths pass through unchanged.
+
+// Directory of the .rox script currently executing the call (empty if unknown).
+std::filesystem::path currentScriptDir()
+{
+    Thread* t = VM::thread.get();
+    if (!t || t->frames.empty())
+        return {};
+    const Value& closure = t->frames.back().closure;
+    if (!isClosure(closure))
+        return {};
+    ObjFunction* fn = asFunction(asClosure(closure)->function);
+    if (!fn || !fn->chunk)
+        return {};
+    std::filesystem::path src(toUTF8StdString(fn->chunk->sourceName));
+    return src.has_parent_path() ? src.parent_path() : std::filesystem::path{};
+}
+
+bool looksLikeUrl(const std::string& s)
+{
+    return s.rfind("qrc:", 0) == 0 || s.rfind("file:", 0) == 0 ||
+           s.find("://") != std::string::npos;
+}
+
+QUrl resolveQmlUrl(const std::string& rawPath, const std::vector<std::string>& modulePaths)
+{
+    namespace fs = std::filesystem;
+    if (looksLikeUrl(rawPath))
+        return QUrl(QString::fromStdString(rawPath));          // already a URL
+    const fs::path rel(rawPath);
+    if (rel.is_absolute())
+        return QUrl::fromLocalFile(QString::fromStdString(rawPath));
+
+    const fs::path scriptDir = currentScriptDir();
+    std::vector<fs::path> roots;
+    if (!scriptDir.empty())
+        roots.push_back(scriptDir);                            // (1) the calling script's dir
+    for (const auto& mp : modulePaths)
+        roots.emplace_back(mp);                                // (2) module search paths
+
+    std::error_code ec;
+    for (const auto& root : roots) {
+        const fs::path cand = root / rel;
+        if (fs::exists(cand, ec))
+            return QUrl::fromLocalFile(QString::fromStdString(cand.string()));
+    }
+    if (fs::exists(rel, ec))                                    // (3) cwd (legacy)
+        return QUrl::fromLocalFile(QString::fromStdString(rawPath));
+    // Not found anywhere — name the script-relative candidate so the load error is
+    // sensible (or the raw path if the script dir is unknown).
+    if (!scriptDir.empty())
+        return QUrl::fromLocalFile(QString::fromStdString((scriptDir / rel).string()));
+    return QUrl::fromLocalFile(QString::fromStdString(rawPath));
 }
 
 } // namespace
@@ -438,10 +497,14 @@ Value ModuleQt::engine_load_builtin(ArgsView args)
         throw std::invalid_argument("Engine.load(path) expects a string path");
 
     std::string path = toUTF8StdString(asStringObj(args[1])->s);
-    engine->load(QUrl::fromLocalFile(QString::fromStdString(path)));
+    // Resolve relative to the calling .rox script (then module paths, then cwd); URLs
+    // and absolute paths pass through.
+    QUrl url = resolveQmlUrl(path, vm().getModulePaths());
+    engine->load(url);
     if (engine->rootObjects().isEmpty())
         throw std::runtime_error("Engine.load(): failed to load QML from '" + path +
-                                 "' (root must be a Window)");
+                                 "' (resolved to " + url.toString().toStdString() +
+                                 "; root must be a Window)");
     connectRootWindowClose(engine, [this] { requestQuit(); });
     return Value::nilVal();
 }
@@ -453,7 +516,13 @@ Value ModuleQt::engine_load_string_builtin(ArgsView args)
         throw std::invalid_argument("Engine.load_string(qml) expects a string");
 
     std::string qml = toUTF8StdString(asStringObj(args[1])->s);
-    engine->loadData(QByteArray::fromStdString(qml));
+    // Treat the inline QML as if it lived next to the calling script, so its relative
+    // asset URLs (images, etc.) resolve relative to the script.
+    QUrl baseUrl;
+    const std::filesystem::path dir = currentScriptDir();
+    if (!dir.empty())
+        baseUrl = QUrl::fromLocalFile(QString::fromStdString((dir / "inline.qml").string()));
+    engine->loadData(QByteArray::fromStdString(qml), baseUrl);
     if (engine->rootObjects().isEmpty())
         throw std::runtime_error("Engine.load_string(): failed to load QML (root must be a Window)");
     connectRootWindowClose(engine, [this] { requestQuit(); });

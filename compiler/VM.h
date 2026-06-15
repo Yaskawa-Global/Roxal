@@ -144,6 +144,7 @@ public:
 
     void setDisassemblyOutput(bool outputBytecodeDisassembly);
     void appendModulePaths(const std::vector<std::string>& modulePaths);
+    const std::vector<std::string>& getModulePaths() const { return modulePaths; }
     void setScriptArguments(const std::vector<std::string>& args);
     const std::vector<std::string>& getScriptArguments() const { return scriptArguments; }
     void setCacheMode(CacheMode mode);

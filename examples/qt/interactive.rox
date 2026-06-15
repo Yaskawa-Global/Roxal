@@ -13,7 +13,7 @@
 import qt
 
 var engine = qt.Engine()
-engine.load('examples/qt/interactive.qml')
+engine.load('interactive.qml')
 
 # Find items by objectName (recursive from the engine root).
 var title = engine.find("title")
