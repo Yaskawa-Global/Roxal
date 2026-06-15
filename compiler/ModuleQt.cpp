@@ -22,9 +22,15 @@
 #include <QPointer>
 #include <QString>
 #include <QUrl>
+#include <QtGlobal>
+#include <QMessageLogContext>
 
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -133,6 +139,76 @@ void connectRootWindowClose(QQmlApplicationEngine* engine, std::function<void()>
     }
 }
 
+// ---- Qt/QML message handling (qt.log_to_file / log_silence / log_to_stderr) ----
+// A process-global qInstallMessageHandler that lets a Roxal script keep Qt/QML
+// diagnostics (warnings, QML TypeErrors, …) out of the print()/stdout stream — by
+// silencing them or redirecting them to a file. Roxal has no logging module yet, so
+// this lives in the qt module. Thread-safe (Qt may log from non-main threads).
+
+enum class QtLogMode { Default, Silence, File };
+QtLogMode        s_logMode = QtLogMode::Default;
+std::ofstream    s_logFile;
+std::mutex       s_logMutex;
+QtMessageHandler s_prevHandler   = nullptr;
+bool             s_handlerInstalled = false;
+
+std::string formatQtMsg(QtMsgType type, const QMessageLogContext& ctx, const QString& msg)
+{
+    const char* label = "Message";
+    switch (type) {
+        case QtDebugMsg:    label = "Debug";    break;
+        case QtInfoMsg:     label = "Info";     break;
+        case QtWarningMsg:  label = "Warning";  break;
+        case QtCriticalMsg: label = "Critical"; break;
+        case QtFatalMsg:    label = "Fatal";    break;
+    }
+    std::string out = std::string(label) + ": " + std::string(msg.toUtf8().constData());
+    if (ctx.file && ctx.file[0])
+        out += " (" + std::string(ctx.file) + ":" + std::to_string(ctx.line) + ")";
+    return out;
+}
+
+void roxalQtMessageHandler(QtMsgType type, const QMessageLogContext& ctx, const QString& msg)
+{
+    std::lock_guard<std::mutex> lock(s_logMutex);
+    const bool fatal = (type == QtFatalMsg);
+    if (!fatal && s_logMode == QtLogMode::Silence)
+        return;                                   // drop non-fatal messages
+    const std::string line = formatQtMsg(type, ctx, msg);
+    if (s_logMode == QtLogMode::File && s_logFile.is_open()) {
+        s_logFile << line << '\n';
+        s_logFile.flush();
+        if (fatal) std::fprintf(stderr, "%s\n", line.c_str());  // always surface a fatal
+    } else {
+        std::fprintf(stderr, "%s\n", line.c_str());
+    }
+    if (fatal)
+        std::abort();                             // preserve qFatal() semantics
+}
+
+// Install our handler if not already installed. CALLER MUST HOLD s_logMutex.
+void installQtLogHandler()
+{
+    if (!s_handlerInstalled) {
+        s_prevHandler = qInstallMessageHandler(roxalQtMessageHandler);
+        s_handlerInstalled = true;
+    }
+}
+
+// Restore Qt's default message handling and close any log file. Acquires s_logMutex.
+void resetQtLogHandler()
+{
+    std::lock_guard<std::mutex> lock(s_logMutex);
+    if (s_handlerInstalled) {
+        qInstallMessageHandler(s_prevHandler);
+        s_prevHandler = nullptr;
+        s_handlerInstalled = false;
+    }
+    s_logMode = QtLogMode::Default;
+    if (s_logFile.is_open())
+        s_logFile.close();
+}
+
 } // namespace
 
 // ============================================================
@@ -200,6 +276,10 @@ void ModuleQt::registerBuiltins(VM& vm)
     link("disconnect", [this](VM&, ArgsView a) { return qt_disconnect_builtin(a); });
 
     link("notify",     [this](VM&, ArgsView a) { return qt_notify_builtin(a); });
+
+    link("log_to_file",   [this](VM&, ArgsView a) { return qt_log_to_file_builtin(a); });
+    link("log_silence",   [this](VM&, ArgsView a) { return qt_log_silence_builtin(a); });
+    link("log_to_stderr", [this](VM&, ArgsView a) { return qt_log_to_stderr_builtin(a); });
 }
 
 // ============================================================
@@ -260,6 +340,9 @@ void ModuleQt::onModuleUnloading(VM& vm)
     // exit is safe (the OS reclaims it).
     vm.setHostEventLoop(nullptr);
     impl_->hostLoop.reset();
+    // Uninstall our Qt message handler so it isn't called during static teardown
+    // (it touches a static std::ofstream).
+    resetQtLogHandler();
 }
 
 void ModuleQt::teardownQt(VM& vm)
@@ -290,6 +373,9 @@ void ModuleQt::teardownQt(VM& vm)
     if (impl_->app && impl_->ownsApp)
         delete impl_->app.data();       // QPointer auto-nulls impl_->app afterwards
     impl_->ownsApp = false;
+
+    // Restore default Qt message handling (uninstall our handler, close any log file).
+    resetQtLogHandler();
 }
 
 // ============================================================
@@ -709,6 +795,40 @@ Value ModuleQt::qt_notify_builtin(ArgsView args)
         map->pushProperty(QString::fromStdString(toUTF8StdString(asStringObj(args[1])->s)));
     else
         map->pushAll();
+    return Value::nilVal();
+}
+
+// ---- Qt/QML message logging ----
+
+Value ModuleQt::qt_log_to_file_builtin(ArgsView args)
+{
+    if (args.size() < 1 || !isString(args[0]))
+        throw std::invalid_argument("qt.log_to_file(path) expects a string path");
+    std::string path = toUTF8StdString(asStringObj(args[0])->s);
+    std::lock_guard<std::mutex> lock(s_logMutex);
+    if (s_logFile.is_open())
+        s_logFile.close();
+    s_logFile.open(path, std::ios::out | std::ios::app);
+    if (!s_logFile.is_open())
+        throw std::runtime_error("qt.log_to_file: cannot open '" + path + "' for writing");
+    s_logMode = QtLogMode::File;
+    installQtLogHandler();   // caller holds s_logMutex
+    return Value::nilVal();
+}
+
+Value ModuleQt::qt_log_silence_builtin(ArgsView)
+{
+    std::lock_guard<std::mutex> lock(s_logMutex);
+    if (s_logFile.is_open())
+        s_logFile.close();
+    s_logMode = QtLogMode::Silence;
+    installQtLogHandler();   // caller holds s_logMutex
+    return Value::nilVal();
+}
+
+Value ModuleQt::qt_log_to_stderr_builtin(ArgsView)
+{
+    resetQtLogHandler();     // restores Qt's default handler + closes any log file
     return Value::nilVal();
 }
 

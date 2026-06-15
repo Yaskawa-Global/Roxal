@@ -304,7 +304,8 @@ qt_tests = ['qt_lifecycle', 'qt_load_file',           # P0: lifecycle
             'qt_disconnect', 'qt_signal_gc',
             'qt_model_basic', 'qt_model_qml', 'qt_model_edit',  # P3: list model
             'qt_model_struct', 'qt_model_gc',
-            'qt_bind_read', 'qt_bind_write', 'qt_bind_auto', 'qt_bind_gc']  # P4: bindable object
+            'qt_bind_read', 'qt_bind_write', 'qt_bind_auto', 'qt_bind_gc',  # P4: bindable object
+            'qt_log']  # Qt/QML message redirection
 # require Qt6 (ROXAL_ENABLE_QT); run headless via QT_QPA_PLATFORM=offscreen
 compute_server_tests = [
     'remote_actor_basic',

@@ -1,0 +1,24 @@
+// Qt/QML diagnostic messages (warnings, QML errors) can be redirected to a file so
+// they don't clutter the console. Here we redirect to a file, load QML that emits a
+// warning (a binding on an undefined name), then read the file back to confirm the
+// message was captured there.
+import qt
+import fileio
+
+var logpath = "/tmp/roxal_qt_log_test.log"
+
+# start from an empty log file
+var h = fileio.open(logpath, append=false, write=true)
+fileio.close(h)
+
+qt.log_to_file(logpath)
+
+var engine = qt.Engine()
+engine.load_string('import QtQuick\nimport QtQuick.Window\nWindow {\n objectName: "win"\n visible: true\n Text { text: missingThing.value }\n Timer { interval: 30; running: true; onTriggered: Qt.quit() }\n}\n')
+engine.run()
+
+qt.log_to_stderr()
+
+var content = fileio.read_file(logpath)
+var captured = "missingThing" in content
+print("captured: {captured}")

@@ -46,6 +46,25 @@ func notify(obj, name=nil):
   force a push after mutating a contained list/dict in place. With `name`, push just
   that property; otherwise push all. No-op if `obj` isn't exposed."""
 
+
+// Qt/QML diagnostic messages (warnings, QML TypeErrors, etc.) print to stderr by
+// default, which can clutter a console shared with print() output. These redirect or
+// silence them (process-wide; Roxal has no general logging module yet). Fatal errors
+// still abort. The default (stderr) is restored when the script's UI run completes.
+
+@builtin
+func log_to_file(path:string):
+  """Redirect Qt/QML messages to the file at `path` (appended, created if needed),
+  keeping them out of the console."""
+
+@builtin
+func log_silence():
+  """Discard all Qt/QML messages (fatal errors still abort)."""
+
+@builtin
+func log_to_stderr():
+  """Restore the default: Qt/QML messages print to stderr."""
+
 @builtin
 type Engine object:
   """A QML application engine: loads QML and runs the Qt UI loop."""

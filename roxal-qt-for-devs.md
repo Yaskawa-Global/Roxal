@@ -367,6 +367,21 @@ as an event/callback — not with Roxal's `signal()` dataflow. (Mapping a change
 
 ---
 
+## Quieting Qt messages
+
+Qt and QML print diagnostics (warnings, QML `TypeError`s, etc.) to **stderr** by default, which can
+clutter a console you're also using for `print()`. The `qt` module can silence them or redirect them
+to a file (process-wide; Roxal has no general logging module yet):
+
+```roxal
+qt.log_to_file('app.log')   # Qt/QML messages → append to app.log (out of the console)
+qt.log_silence()            # discard all Qt/QML messages (fatal errors still abort)
+qt.log_to_stderr()          # restore the default (messages → stderr)
+```
+
+Call one early (e.g. right after `import qt`). The default is restored automatically when the UI run
+completes.
+
 ## Notes & gotchas
 
 - **Single thread:** the VM and all Qt objects share the main thread. Don't touch Qt objects from

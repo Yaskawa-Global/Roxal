@@ -93,6 +93,11 @@ private:
 
     // Force-push a bindable object's property to QML (for in-place collection mutation).
     Value qt_notify_builtin(ArgsView args);
+
+    // Qt/QML diagnostic-message handling (keep Qt warnings out of the print() stream).
+    Value qt_log_to_file_builtin(ArgsView args);
+    Value qt_log_silence_builtin(ArgsView args);
+    Value qt_log_to_stderr_builtin(ArgsView args);
 };
 
 } // namespace roxal
