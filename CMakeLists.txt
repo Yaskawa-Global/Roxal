@@ -525,7 +525,9 @@ if(ROXAL_ENABLE_QT)
     add_dependencies(roxalqt generate_parser)
     # roxal_abi carries the SAME ABI definitions roxalcore uses — the single source of
     # truth that makes a host<->plugin class-layout mismatch impossible by construction.
-    target_link_libraries(roxalqt PRIVATE roxal_abi Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick)
+    # Qt6::CorePrivate brings the private headers (QMetaObjectBuilder) used to build the
+    # moc-free dynamic method bridge that makes Roxal object methods callable from QML.
+    target_link_libraries(roxalqt PRIVATE roxal_abi Qt6::Core Qt6::CorePrivate Qt6::Gui Qt6::Qml Qt6::Quick)
     target_compile_options(roxalqt PRIVATE
         $<$<CONFIG:DEBUG>:-fPIC -Wno-attributes -Werror=return-type -g -fmax-errors=1>
         $<$<CONFIG:RELEASE>:-O3>

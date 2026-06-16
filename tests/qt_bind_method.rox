@@ -1,0 +1,25 @@
+// QML calling a bound Roxal object's METHODS (moc-free, via the dynamic method bridge).
+// A bound object's public methods are exposed as callable values: QML calls app.bump()
+// (no-arg proc), app.add(10) (arg proc), and app.label() (a func whose return value reaches
+// QML). Method mutations also auto-notify the bound properties (app.n updates to match).
+import qt
+
+type Counter object:
+  var n :int = 0
+  proc bump():
+    n = n + 1
+  proc add(k:int):
+    n = n + k
+  func label() -> string:
+    return "n=" + n
+
+var engine = qt.Engine()
+var c = Counter()
+engine.set_context_property("app", c)
+engine.load_string('import QtQuick\nimport QtQuick.Window\nWindow {\n id: win\n objectName: "win"\n visible: true\n signal report(string s)\n Timer { interval: 30; running: true; onTriggered: { app.bump(); app.add(10); win.report("qml: " + app.label() + " app.n=" + app.n); Qt.quit() } }\n}\n')
+
+var win = engine.find("win")
+win.onReport(proc(s): print(s))
+
+engine.run()
+print("roxal: n={c.n} label={c.label()}")

@@ -9,14 +9,80 @@
 #include "QtBindable.h"
 
 #include <QVariant>
+#include <QVariantList>
+#include <QString>
+#include <QJSValue>
+#include <QJSEngine>
+#include <QQmlEngine>
+#include <QMetaObject>
+#include <QtCore/private/qmetaobjectbuilder_p.h>   // moc-free runtime metaobject
 
 #include <atomic>
+#include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 using namespace roxal;
+
+// ============================================================
+// RoxalMethodBridge — a moc-free dynamic QObject that makes a Roxal object's methods
+// callable from QML. It carries ONE runtime-built invokable, __call(name, args), which
+// QML reaches through the JS forwarder values installed on the property map; the call is
+// routed back into RoxalPropertyMap::callMethod → VM::invokeMethod. (This is the same
+// metaobject moc would generate for a Q_INVOKABLE, but constructed at runtime so the
+// plugin needs no moc / AUTOMOC — see QMetaObjectBuilder.)
+// ============================================================
+
+namespace roxal {
+
+class RoxalMethodBridge : public QObject {
+public:
+    RoxalMethodBridge(RoxalPropertyMap* map, std::shared_ptr<std::atomic<bool>> alive)
+        : map_(map), alive_(std::move(alive))
+    {
+        QMetaObjectBuilder b;
+        b.setClassName("RoxalMethodBridge");
+        b.setSuperClass(&QObject::staticMetaObject);
+        QMetaMethodBuilder mm = b.addMethod("__call(QString,QVariantList)");
+        mm.setReturnType("QVariant");
+        meta_ = b.toMetaObject();
+    }
+    ~RoxalMethodBridge() override { std::free(meta_); }
+
+    const QMetaObject* metaObject() const override { return meta_; }
+    void* qt_metacast(const char* clname) override {
+        if (clname && std::strcmp(clname, "RoxalMethodBridge") == 0)
+            return static_cast<void*>(this);
+        return QObject::qt_metacast(clname);
+    }
+    int qt_metacall(QMetaObject::Call c, int id, void** a) override {
+        id = QObject::qt_metacall(c, id, a);
+        if (id < 0) return id;
+        if (c == QMetaObject::InvokeMetaMethod) {
+            if (id == 0) {   // __call(QString name, QVariantList args) -> QVariant
+                QVariant result;
+                if (alive_ && alive_->load() && map_) {
+                    const QString& name = *reinterpret_cast<QString*>(a[1]);
+                    const QVariantList& args = *reinterpret_cast<QVariantList*>(a[2]);
+                    result = map_->callMethod(name, args);
+                }
+                if (a[0]) *reinterpret_cast<QVariant*>(a[0]) = result;
+            }
+            id -= 1;   // we declared exactly one method
+        }
+        return id;
+    }
+
+private:
+    RoxalPropertyMap* map_;                       // owner (bridge lifetime ⊆ map lifetime)
+    std::shared_ptr<std::atomic<bool>> alive_;    // no-op any late call past destruction
+    QMetaObject* meta_ = nullptr;
+};
+
+} // namespace roxal
 
 // ============================================================
 // RoxalPropertyMap
@@ -27,6 +93,7 @@ RoxalPropertyMap::RoxalPropertyMap(const Value& obj)
       obj_(obj), alive_(std::make_shared<std::atomic<bool>>(true))
 {
     buildRoles();
+    buildMethods();
     initValues();
     hookSignals();
 }
@@ -91,6 +158,68 @@ Value RoxalPropertyMap::readRole(const Role& role) const
         return status == ExecutionStatus::OK ? val : Value::nilVal();
     }
     return asObjectInstance(obj_)->getProperty(role.uname);
+}
+
+void RoxalPropertyMap::buildMethods()
+{
+    methodNames_.clear();
+    if (!isObjectInstance(obj_)) return;
+    ObjObjectType* t = asObjectType(asObjectInstance(obj_)->instanceType);
+    if (!t) return;
+    const icu::UnicodeString kGet("__get_"), kSet("__set_"), kInit("init");
+    for (const auto& mentry : t->methods) {
+        const auto& overloads = mentry.second.overloads;
+        if (overloads.size() != 1) continue;          // VM::invokeMethod resolves a UNIQUE method
+        const ObjObjectType::Method& m = overloads[0];
+        if (m.access != ast::Access::Public) continue; // public surface only
+        if (m.name == kInit) continue;                 // the constructor isn't a QML action
+        if (m.name.startsWith(kGet) || m.name.startsWith(kSet)) continue;  // computed-property accessors
+        if (m.name.startsWith("_")) continue;          // private/internal naming convention
+        methodNames_.push_back(m.name);
+    }
+}
+
+QVariant RoxalPropertyMap::callMethod(const QString& name, const QVariantList& args)
+{
+    if (!isObjectInstance(obj_)) return QVariant();
+    icu::UnicodeString uname = icu::UnicodeString::fromUTF8(name.toUtf8().constData());
+    std::vector<Value> vmArgs;
+    vmArgs.reserve(static_cast<size_t>(args.size()));
+    for (const QVariant& a : args) {
+        try { vmArgs.push_back(fromQVariant(a)); }
+        catch (...) { vmArgs.push_back(Value::nilVal()); }
+    }
+    // invokeMethod re-enters the VM dispatch loop (and is parked-callback safe). This always
+    // runs on the UI thread (QML invoked it), so there is no actor/thread-affinity concern.
+    auto [status, result] = VM::instance().invokeMethod(obj_, uname, vmArgs);
+    if (status != ExecutionStatus::OK) return QVariant();
+    try { return toQVariant(result); } catch (...) { return QVariant(); }
+}
+
+void RoxalPropertyMap::installMethods(QQmlEngine* engine)
+{
+    if (methodsInstalled_ || methodNames_.empty() || !engine) return;
+    methodsInstalled_ = true;
+
+    bridge_ = std::make_unique<RoxalMethodBridge>(this, alive_);
+    // C++-owned: the hub/map owns the bridge; JS must never garbage-collect it.
+    QQmlEngine::setObjectOwnership(bridge_.get(), QQmlEngine::CppOwnership);
+
+    QJSValue jsBridge = engine->newQObject(bridge_.get());
+    // Generic forwarder factory: (bridge, methodName) → a JS function that calls
+    // bridge.__call(methodName, [args...]). One per method, stored as the map value so
+    // QML can call `app.method(a, b)` natively.
+    QJSValue factory = engine->evaluate(
+        "(function(b, m){ return function(){ "
+        "return b.__call(m, Array.prototype.slice.call(arguments)); }; })");
+    if (!factory.isCallable()) return;
+
+    for (const auto& uname : methodNames_) {
+        QString qname = QString::fromStdString(toUTF8StdString(uname));
+        QJSValue fn = factory.call(QJSValueList{ jsBridge, QJSValue(qname) });
+        if (fn.isCallable())
+            insert(qname, QVariant::fromValue(fn));
+    }
 }
 
 void RoxalPropertyMap::initValues()

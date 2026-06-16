@@ -9,12 +9,17 @@
 #include <QQmlPropertyMap>
 #include <QString>
 #include <QVariant>
+#include <QVariantList>
 
 #include <atomic>
 #include <memory>
 #include <vector>
 
+class QQmlEngine;
+
 namespace roxal {
+
+class RoxalMethodBridge;   // moc-free dynamic QObject (QMetaObjectBuilder) — defined in the .cpp
 
 // A moc-free bindable wrapper that exposes ONE Roxal object's public properties to
 // QML as QQmlPropertyMap key→value pairs (the Q_PROPERTY-with-NOTIFY analogue):
@@ -41,6 +46,16 @@ public:
 
     const Value& objValue() const { return obj_; }   // for the hub's GC root provider
 
+    // Expose the object's public methods to QML as callable values: for each method, a JS
+    // forwarder is stored under its name so QML can call `app.method(args)` natively. The
+    // forwarders route through a per-map dynamic QObject bridge into VM::invokeMethod.
+    // Needs the QML engine (for JS values), so it's called at set_context_property time.
+    // Idempotent; assumes a single engine per exposed object.
+    void installMethods(QQmlEngine* engine);
+
+    // Invoke a Roxal method by name with QVariant args (called by the bridge from QML).
+    QVariant callMethod(const QString& name, const QVariantList& args);
+
 protected:
     QVariant updateValue(const QString& key, const QVariant& input) override;
 
@@ -53,6 +68,7 @@ private:
         int32_t backingHash { 0 };        // hash of the "_<name>" backing field (computed; auto-notify)
     };
     void buildRoles();
+    void buildMethods();      // collect public, non-overloaded, non-accessor method names
     void initValues();
     void hookSignals();
     const Role* roleByName(const QString& name) const;
@@ -61,8 +77,11 @@ private:
 
     Value obj_;                                   // wrapped ObjectInstance (traced by hub)
     std::vector<Role> roles_;
+    std::vector<icu::UnicodeString> methodNames_; // public methods exposed as callable values
     std::shared_ptr<std::atomic<bool>> alive_;    // guards signal callbacks past destruction
     QString suppressKey_;                         // re-entrancy guard during a QML write
+    std::unique_ptr<RoxalMethodBridge> bridge_;   // dynamic QObject for QML→method dispatch
+    bool methodsInstalled_ { false };
 };
 
 // Owns every live RoxalPropertyMap and keeps its wrapped object GC-alive via a GC

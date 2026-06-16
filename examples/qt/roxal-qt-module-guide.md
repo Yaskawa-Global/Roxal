@@ -356,6 +356,26 @@ Window {
   getter's value and writes flow through the setter (a get-only property is read-only). Its
   auto-push follows its own `_<name>` backing field, so a getter that derives from *other* fields
   won't refresh on its own — call `qt.notify(state, "name")` after changing those.
+- **Methods are callable from QML.** The object's public methods are exposed as callable values, so
+  QML can invoke them directly — `onClicked: app.reset()`, `onAccepted: app.submit(text)` — and a
+  `func`'s return value comes back to QML. Args and the return convert like everything else.
+
+```roxal
+type AppState object:
+  var title :string = "Ready"
+  proc reset(): title = "Ready"
+  proc submit(s :string): title = "Sent: " + s
+  func greeting() -> string: return "Hi, " + title
+```
+
+```qml
+Button   { text: "Reset";  onClicked: app.reset() }
+TextField { onAccepted: app.submit(text) }
+Text     { text: app.greeting() }          // a func's result reaches QML
+```
+
+> Only public, non-overloaded methods are exposed (an overloaded name is skipped, since the call is
+> resolved by name). Method bodies run on the main thread, same as everything else here.
 
 ---
 

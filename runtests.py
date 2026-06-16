@@ -327,6 +327,7 @@ qt_tests = ['qt_lifecycle', 'qt_load_file',           # P0: lifecycle
             'qt_model_struct', 'qt_model_gc',
             'qt_bind_read', 'qt_bind_write', 'qt_bind_auto', 'qt_bind_gc',  # P4: bindable object
             'qt_bind_computed',   # computed (accessor) properties as bound roles
+            'qt_bind_method',     # QML calling bound-object methods (moc-free bridge)
             'qt_actor_guard',     # Qt access from an actor thread is rejected
             'qt_log',             # Qt/QML message redirection
             'qt_load_relative']   # script-relative QML path resolution

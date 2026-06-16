@@ -686,6 +686,7 @@ Value ModuleQt::engine_set_context_property_builtin(ArgsView args)
         // become QML-bindable, read/write/notify). (ListModel/Engine handles are
         // caught above; this is for ordinary objects exposed as a backend/state.)
         RoxalPropertyMap* map = QtBindHub::instance().wrap(v);
+        map->installMethods(engine);   // expose the object's public methods as callable values
         engine->rootContext()->setContextProperty(name, static_cast<QObject*>(map));
     } else {
         engine->rootContext()->setContextProperty(name, toQVariant(v));
