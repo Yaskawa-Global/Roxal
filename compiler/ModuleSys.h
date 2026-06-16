@@ -37,6 +37,8 @@ public:
     Value stackdepth_builtin(VM& vm, ArgsView args);
     Value runtests_builtin(VM& vm, ArgsView args);
     Value invoke_method_builtin(VM& vm, ArgsView args);
+    Value watch_property_builtin(VM& vm, ArgsView args);
+    Value watch_count_builtin(VM& vm, ArgsView args);
     Value weakref_builtin(VM& vm, ArgsView args);
     Value weak_alive_builtin(VM& vm, ArgsView args);
     Value strongref_builtin(VM& vm, ArgsView args);

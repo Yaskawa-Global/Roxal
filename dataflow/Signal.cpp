@@ -88,25 +88,13 @@ Signal::Signal(double freq, Value initial, std::optional<std::string> name)
 
 void Signal::addValueChangedCallback(std::function<void(TimePoint, ptr<Signal>, const Value&)> callback)
 {
-    valueChangedCallbacks.push_back(callback);
+    m_changeNotifier.addCallback(std::move(callback));
 }
 
 
 void Signal::invokeValueChangedCallbacks(TimePoint t, const Value& v)
 {
-    for (auto& callback : valueChangedCallbacks) {
-        #ifdef DEBUG_BUILD
-        try {
-            callback(t, ptr_from_this(), v);
-        } catch(const std::exception& e) {
-            std::cerr << "Exception in signal "+name()+" callback " << e.what() << std::endl;
-        }
-        #else
-        try {
-            callback(t, ptr_from_this(), v);
-        } catch(...) {}
-        #endif
-    }
+    m_changeNotifier.notify(t, ptr_from_this(), v);
 }
 
 

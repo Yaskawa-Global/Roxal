@@ -2208,6 +2208,27 @@ void ObjSignal::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     type = ObjType::Signal;
 }
 
+// ---- ObjChangeNotifier ----
+// Like ObjSignal, shared (not cloned). C++ observers are transient: nothing meaningful
+// to serialize (and property slots only serialize values, not their signal/notifier).
+unique_ptr<Obj, UnreleasedObj> ObjChangeNotifier::clone(roxal::ptr<CloneContext> ctx) const {
+    (void)ctx;
+    return unique_ptr<Obj, UnreleasedObj>(const_cast<ObjChangeNotifier*>(this));
+}
+void ObjChangeNotifier::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const {
+    (void)ctx;
+    uint8_t tag = static_cast<uint8_t>(ObjType::ChangeNotifier);
+    out.write(reinterpret_cast<char*>(&tag), 1);
+}
+void ObjChangeNotifier::read(std::istream& in, roxal::ptr<SerializationContext> ctx) {
+    (void)ctx;
+    uint8_t tag; in.read(reinterpret_cast<char*>(&tag), 1);
+    if (tag != static_cast<uint8_t>(ObjType::ChangeNotifier))
+        throw std::runtime_error("ObjChangeNotifier::read mismatched tag");
+    notifier.callbacks.clear();
+    type = ObjType::ChangeNotifier;
+}
+
 ObjEventType::ObjEventType(const icu::UnicodeString& typeName)
     : name(typeName)
     , superType(Value::nilVal())
@@ -4749,6 +4770,15 @@ unique_ptr<ObjSignal, UnreleasedObj> roxal::newSignalObj(ptr<df::Signal> s)
     #endif
 }
 
+unique_ptr<ObjChangeNotifier, UnreleasedObj> roxal::newChangeNotifierObj()
+{
+    #ifdef DEBUG_BUILD
+    return newObj<ObjChangeNotifier>(__func__, __FILE__, __LINE__);
+    #else
+    return newObj<ObjChangeNotifier>();
+    #endif
+}
+
 std::string roxal::objSignalToString(const ObjSignal* os)
 {
     if (!os || !os->signal)
@@ -5671,14 +5701,15 @@ VariablesMap::MonitoredValue& ObjectInstance::propertySlot(int32_t hash)
     return (*properties_)[hash];
 }
 
-void ObjectInstance::assignProperty(int32_t hash, const Value& value)
+bool ObjectInstance::assignProperty(int32_t hash, const Value& value)
 {
     ensureMutable();
     CowGuard guard(control);
     if (guard.active()) saveVersion();
     ensureUnique();
-    (*properties_)[hash].assign(value);
+    bool changed = (*properties_)[hash].assign(value);
     if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+    return changed;
 }
 
 void ObjectInstance::emplaceProperty(int32_t hash, VariablesMap::MonitoredValue mv)
@@ -5720,6 +5751,27 @@ Value ObjectInstance::ensurePropertySignal(int32_t nameHash, const std::string& 
     if (it == properties_->end())
         return Value::nilVal();
     return it->second.ensureSignal(signalName);
+}
+
+void ObjectInstance::observePropertyChange(int32_t nameHash, const std::string& name,
+                                           ChangeNotifier::Callback callback)
+{
+    (void)name;
+    VariablesMap::MonitoredValue& slot = propertySlot(nameHash);  // MVCC-guarded, ensures the slot
+    Value& sig = slot.signal;
+    if (sig.isNil()) {
+        // No signal yet — install a lightweight notifier (no dataflow engine involved).
+        auto cn = newChangeNotifierObj();
+        cn->notifier.addCallback(std::move(callback));
+        sig = Value::objVal(std::move(cn));
+    } else if (isChangeNotifier(sig)) {
+        asChangeNotifier(sig)->notifier.addCallback(std::move(callback));
+    } else if (isSignal(sig)) {
+        // Property already has a full signal (e.g. used in `when … changes`): attach there.
+        ObjSignal* s = asSignal(sig);
+        if (s && s->signal)
+            s->signal->addValueChangedCallback(std::move(callback));
+    }
 }
 
 

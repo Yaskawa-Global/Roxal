@@ -32,6 +32,8 @@
 #include <optional>
 #include <stdexcept>
 #include <future>
+#include <atomic>
+#include <memory>
 #include <numeric>
 
 using namespace roxal;
@@ -1384,6 +1386,8 @@ void ModuleSys::registerBuiltins(VM& vm)
         addSys("_stackdepth", [this](VM& vm, ArgsView a){ return stackdepth_builtin(vm,a); });
         addSys("_runtests", [this](VM& vm, ArgsView a){ return runtests_builtin(vm,a); });
         addSys("_invoke_method", [this](VM& vm, ArgsView a){ return invoke_method_builtin(vm,a); });
+        addSys("_watch_property", [this](VM& vm, ArgsView a){ return watch_property_builtin(vm,a); });
+        addSys("_watch_count", [this](VM& vm, ArgsView a){ return watch_count_builtin(vm,a); });
         addSys("_weakref", [this](VM& vm, ArgsView a){ return weakref_builtin(vm,a); });
         addSys("_weak_alive", [this](VM& vm, ArgsView a){ return weak_alive_builtin(vm,a); });
         addSys("_strongref", [this](VM& vm, ArgsView a){ return strongref_builtin(vm,a); });
@@ -2258,6 +2262,41 @@ Value ModuleSys::invoke_method_builtin(VM& vm, ArgsView args)
     if (status != ExecutionStatus::OK)
         throw std::runtime_error("_invoke_method: failed to invoke method '" + toUTF8StdString(name) + "'");
     return result;
+}
+
+// Test-only counters for the ChangeNotifier path (driven by _watch_property/_watch_count).
+// Each entry is a small shared counter captured by the property's change callback.
+static std::vector<std::shared_ptr<std::atomic<int>>> s_watchCounters;
+
+Value ModuleSys::watch_property_builtin(VM& vm, ArgsView args)
+{
+    (void)vm;
+    if (args.size() != 2 || !isObjectInstance(args[0]) || !isString(args[1]))
+        throw std::invalid_argument("_watch_property(obj, name) expects an object and a property name");
+    ObjectInstance* obj = asObjectInstance(args[0]);
+    icu::UnicodeString name = asStringObj(args[1])->s;
+
+    auto counter = std::make_shared<std::atomic<int>>(0);
+    int32_t id = static_cast<int32_t>(s_watchCounters.size());
+    s_watchCounters.push_back(counter);
+
+    // Observe via the lightweight ChangeNotifier (no dataflow signal is created).
+    obj->observePropertyChange(name.hashCode(), toUTF8StdString(name),
+        [counter](TimePoint, ptr<df::Signal>, const Value&) {
+            counter->fetch_add(1, std::memory_order_relaxed);
+        });
+    return Value(id);
+}
+
+Value ModuleSys::watch_count_builtin(VM& vm, ArgsView args)
+{
+    (void)vm;
+    if (args.size() != 1 || !args[0].isInt())
+        throw std::invalid_argument("_watch_count(id) expects an integer watch id");
+    int32_t id = static_cast<int32_t>(args[0].asInt());
+    if (id < 0 || id >= static_cast<int32_t>(s_watchCounters.size()))
+        throw std::invalid_argument("_watch_count: invalid watch id");
+    return Value(static_cast<int32_t>(s_watchCounters[id]->load(std::memory_order_relaxed)));
 }
 
 Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
