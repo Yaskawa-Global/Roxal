@@ -70,15 +70,13 @@ void RoxalPropertyMap::hookSignals()
     std::shared_ptr<std::atomic<bool>> alive = alive_;
     RoxalPropertyMap* self = this;
     for (const auto& r : roles_) {
-        // Create the property's internal change signal and observe it from C++ (the
-        // pattern ModuleDDS uses). Fires synchronously on the VM/UI thread when a
-        // Roxal-side write changes the value (assign() gates unchanged writes).
-        Value sigVal = inst->ensurePropertySignal(r.nameHash, toUTF8StdString(r.uname));
-        if (!isSignal(sigVal)) continue;
-        ptr<df::Signal> sig = asSignal(sigVal)->signal;
-        if (!sig) continue;
+        // Observe the property's changes via the lightweight ChangeNotifier — binding an
+        // object to QML creates NO dataflow signal. Fires synchronously on the VM/UI
+        // thread when a Roxal-side write changes the value (assign() gates unchanged
+        // writes). If the property is later also used in a Roxal `when … changes`,
+        // ensureSignal() upgrades the notifier to a full signal and migrates this callback.
         Role role = r;   // capture by value
-        sig->addValueChangedCallback(
+        inst->observePropertyChange(r.nameHash, toUTF8StdString(r.uname),
             [alive, self, role](TimePoint, ptr<df::Signal>, const Value& v) {
                 if (!alive->load()) return;   // wrapper destroyed → ignore
                 self->onRoxalChange(role, v);

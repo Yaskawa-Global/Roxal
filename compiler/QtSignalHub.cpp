@@ -106,25 +106,21 @@ struct QtSignalHub::Impl : SimpleMarkSweepGC::ExternalRootProvider {
             roxal::scheduleEventHandlers(eventType.weakRef(), asEventType(eventType),
                                          instance, TimePoint::currentTime());
         }
-        // (a) Callback style: synchronous. The signal fires while the VM is parked
-        // in run() (threadSleep set); clear it around invokeClosure so the nested
-        // execute() runs the handler instead of re-parking, then re-establish the
-        // park — unless a quit was requested (by this handler or otherwise), in
-        // which case run() must stay un-parked.
+        // (a) Callback style: synchronous. The signal fires while the VM is parked in
+        // run() (threadSleep set). invokeClosure() now un-parks for the duration of each
+        // nested handler and restores the park on return (VM's ParkedInvokeScope), so the
+        // old manual save/clear/restore dance is no longer needed here. The one Qt-specific
+        // concern remains: a handler may request quit (qt.quit() → requestQuit() un-parks),
+        // but ParkedInvokeScope re-parks on return — so after running the handlers we must
+        // explicitly leave the thread un-parked when a quit is pending, else run() can't exit.
         if (!cbs.empty()) {
-            Thread* t = VM::thread.get();
-            const bool prevSleep = t ? t->threadSleep.load() : false;
-            const TimePoint prevUntil = t ? t->threadSleepUntil.load() : TimePoint::max();
-            if (t) t->threadSleep = false;
             for (Value& c : cbs) {
                 if (isClosure(c))
                     VM::instance().invokeClosure(asClosure(c), args);
             }
-            if (t) {
-                const bool reparked = prevSleep && !ModuleQt::quitRequested();
-                t->threadSleep = reparked;
-                if (reparked)
-                    t->threadSleepUntil = prevUntil;
+            if (ModuleQt::quitRequested()) {
+                if (Thread* t = VM::thread.get())
+                    t->threadSleep = false;
             }
         }
     }

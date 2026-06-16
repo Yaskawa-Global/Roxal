@@ -1,9 +1,14 @@
 // P4: the wrapped object survives a GC cycle when only the wrapper holds it. After
 // expose() returns, the sole Roxal reference to the object is dropped — only the
-// hub's external root provider keeps it (and its property signals) alive. We churn
+// hub's external root provider keeps it (and its property observers) alive. We churn
 // the heap + force collections, then a QML write (app.title = ...) routes through
 // updateValue into the object; if the provider hadn't kept it alive that would touch
 // freed memory.
+//
+// Also locks in the gc()-in-parked-callback fix: the report handler below runs while the
+// VM is parked in run() (the live pump). Calling gc() from there once hung (the GC
+// safepoint head-count double-counted the one physical thread across the re-entrant
+// execute()); it must now complete, with the bound object surviving the collection.
 import qt
 
 type AppState object:
@@ -28,7 +33,10 @@ gc()
 engine.load_string('import QtQuick\nimport QtQuick.Window\nWindow {\n id: win\n objectName: "win"\n visible: true\n signal report(string s)\n Text { id: t; objectName: "t"; text: app.title }\n Timer { interval: 30; running: true; onTriggered: { app.title = "Written"; win.report(t.text); Qt.quit() } }\n}\n')
 
 var win = engine.find("win")
-win.onReport(proc(s): print("report: {s}"))
+win.onReport(proc(s):
+  gc()                       # collect from inside a parked Qt callback — must not hang
+  print("report: {s}")
+)
 
 engine.run()
 print("bye")
