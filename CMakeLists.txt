@@ -340,13 +340,13 @@ if(ROXAL_ENABLE_MEDIA)
     list(APPEND COMPILER_SOURCES compiler/ModuleMedia.cpp)
 endif()
 if(ROXAL_ENABLE_QT)
-    list(APPEND COMPILER_SOURCES compiler/ModuleQt.cpp)
-    list(APPEND COMPILER_SOURCES compiler/ObjQtObject.cpp)
-    list(APPEND COMPILER_SOURCES compiler/ModuleQtConvert.cpp)
-    list(APPEND COMPILER_SOURCES compiler/QtSignalRelay.cpp)
-    list(APPEND COMPILER_SOURCES compiler/QtSignalHub.cpp)
-    list(APPEND COMPILER_SOURCES compiler/QtListModel.cpp)
-    list(APPEND COMPILER_SOURCES compiler/QtBindable.cpp)
+    list(APPEND COMPILER_SOURCES compiler/qt/ModuleQt.cpp)
+    list(APPEND COMPILER_SOURCES compiler/qt/ObjQtObject.cpp)
+    list(APPEND COMPILER_SOURCES compiler/qt/ModuleQtConvert.cpp)
+    list(APPEND COMPILER_SOURCES compiler/qt/QtSignalRelay.cpp)
+    list(APPEND COMPILER_SOURCES compiler/qt/QtSignalHub.cpp)
+    list(APPEND COMPILER_SOURCES compiler/qt/QtListModel.cpp)
+    list(APPEND COMPILER_SOURCES compiler/qt/QtBindable.cpp)
 endif()
 
 set(MAIN_SOURCE compiler/roxal.cpp)
@@ -394,6 +394,7 @@ include_directories(
     ${CMAKE_SOURCE_DIR}/compiler
     ${CMAKE_SOURCE_DIR}/compiler/grpc
     ${CMAKE_SOURCE_DIR}/compiler/dds
+    ${CMAKE_SOURCE_DIR}/compiler/qt
 )
 
 link_directories(
