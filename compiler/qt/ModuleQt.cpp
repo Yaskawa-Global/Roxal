@@ -75,6 +75,7 @@ struct QtHostLoop : roxal::HostEventLoop {
 // returns a guaranteed-non-null engine or throws.
 QQmlApplicationEngine* engineFromReceiver(ArgsView args, const char* method)
 {
+    ensureQtUiThread(method);   // Engine.* is main-thread only (covers all engine methods)
     if (args.size() < 1 || !isObjectInstance(args[0]))
         throw std::invalid_argument(std::string("Engine.") + method + " expects a receiver");
     ObjectInstance* inst = asObjectInstance(args[0]);
@@ -95,6 +96,7 @@ QQmlApplicationEngine* engineFromReceiver(ArgsView args, const char* method)
 // or throws.
 RoxalListModel* listModelFromReceiver(ArgsView args, const char* method)
 {
+    ensureQtUiThread(method);   // ListModel.* is main-thread only (covers all model methods)
     if (args.size() < 1 || !isObjectInstance(args[0]))
         throw std::invalid_argument(std::string("ListModel.") + method + " expects a receiver");
     ObjectInstance* inst = asObjectInstance(args[0]);
@@ -459,6 +461,7 @@ void ModuleQt::requestQuit()
 
 Value ModuleQt::engine_init_builtin(ArgsView args)
 {
+    ensureQtUiThread("Engine");   // constructing an engine off the UI thread is a bug too
     if (args.size() < 1 || !isObjectInstance(args[0]))
         throw std::invalid_argument("Engine.init expects a receiver");
     if (!impl_->app)
@@ -855,6 +858,7 @@ Value ModuleQt::listmodel_set_builtin(ArgsView args)
 
 Value ModuleQt::qt_notify_builtin(ArgsView args)
 {
+    ensureQtUiThread("notify");   // pushes to the QML property map (a UI-thread QObject)
     if (args.size() < 1 || !isObjectInstance(args[0]))
         throw std::invalid_argument("qt.notify(obj, name=nil) expects a Roxal object exposed via set_context_property");
     RoxalPropertyMap* map = QtBindHub::instance().lookup(asObjectInstance(args[0]));

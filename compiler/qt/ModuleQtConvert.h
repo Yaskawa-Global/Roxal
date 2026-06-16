@@ -25,6 +25,14 @@ QVariant toQVariant(const Value& v);
 Value fromQJSValue(const QJSValue& v, QJSEngine* engine);
 QJSValue toQJSValue(const Value& v, QJSEngine* engine);
 
+// Thread-affinity guard. Qt objects live on the main (UI) thread, but Roxal actors run
+// on their own threads — and a Qt handle can reach an actor (a message, a captured
+// closure). Every Qt-touching builtin calls this first so off-thread access fails fast
+// with a clear error instead of corrupting Qt's single-threaded state. `op` names the
+// attempted operation for the message. No-op when on the UI thread (or before the
+// QApplication exists). Throws std::runtime_error otherwise.
+void ensureQtUiThread(const char* op);
+
 } // namespace roxal
 
 #endif // ROXAL_ENABLE_QT

@@ -7,8 +7,6 @@ to QML.
 
 This guide assumes you know a little QML and just want to drive it from Roxal. Two things up front:
 
-- **One thread.** Your Roxal script and the UI run together on a single thread, so handlers fire
-  immediately. Don't touch Qt objects from Roxal **actors**.
 - **You block explicitly.** A window being open doesn't keep the program running — you call
   `engine.run()`, which returns when the last window closes (or the UI requests a quit).
 
@@ -401,7 +399,7 @@ Call one early (e.g. right after `import qt`).
 ## Notes & gotchas
 
 - **Don't touch Qt from actors:** the UI runs on one thread; only use Qt items from your main flow,
-  not from Roxal **actors**.
+  not from Roxal **actors** (or it will raise an exception).
 - **`objectName`, not `id`:** QML `id`s aren't runtime-findable; set `objectName` on items you reach
   from Roxal.
 - **Expose context properties *before* `load()`** so bindings see them when the QML is created.

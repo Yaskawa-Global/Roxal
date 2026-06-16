@@ -26,6 +26,7 @@ using namespace roxal;
 
 QObject* ObjQtObject::deref(const char* op) const
 {
+    ensureQtUiThread(op);   // reject actor/off-UI-thread access before touching the QObject
     QObject* o = qobj.data();
     if (!o)
         throw std::runtime_error(std::string("qt: ") + op + " on a destroyed Qt object");
@@ -94,6 +95,7 @@ static Value makeBoundMethod(const Value& self, std::string mname)
 bool ObjQtObject::tryGetDynamicProperty(const Value& self, const icu::UnicodeString& name, Value& out)
 {
     const std::string m = toUTF8StdString(name);
+    ensureQtUiThread(m.c_str());   // reject actor/off-UI-thread reads
     QObject* o = qobj.data();
 
     if (!o) {
@@ -219,6 +221,7 @@ bool ObjQtObject::tryInvokeDynamicMethod(const icu::UnicodeString& name, const V
                                          int argCount, Value& out)
 {
     const std::string m = toUTF8StdString(name);
+    ensureQtUiThread(m.c_str());   // reject actor/off-UI-thread method calls
 
     // valid() is the one operation that works on a destroyed handle.
     if (m == "valid" && argCount == 0) {

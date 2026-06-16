@@ -1,0 +1,21 @@
+// Thread-safety guard: Qt objects live on the main (UI) thread, but a Qt handle shares by
+// reference (like ObjSignal — clone returns the same handle) into an actor. The same read
+// that works on the main thread must be REJECTED from the actor thread with a clear error,
+// never silently corrupting Qt's single-threaded state. The actor catches the guard error
+// locally and reports it.
+import qt
+
+type Probe actor:
+  func probe(item) -> string:
+    try:
+      return "read=" + item.objectName
+    except e:
+      return "read=BLOCKED"
+
+var engine = qt.Engine()
+engine.load_string('import QtQuick\nimport QtQuick.Window\nWindow { objectName: "win"; visible: true }\n')
+var win = engine.find("win")
+var p = Probe()
+
+print("main: " + win.objectName)    # main thread → the read works
+print("actor: " + p.probe(win))     # actor thread → blocked (caught inside the actor)

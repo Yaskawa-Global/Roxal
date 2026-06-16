@@ -13,12 +13,27 @@
 #include <QJSValue>
 #include <QJSValueIterator>
 #include <QJSEngine>
+#include <QThread>
+#include <QCoreApplication>
 
 #include <cmath>
 #include <stdexcept>
 #include <string>
 
 using namespace roxal;
+
+void roxal::ensureQtUiThread(const char* op)
+{
+    QCoreApplication* app = QCoreApplication::instance();
+    // app->thread() is the thread the QGuiApplication was created on (the VM's main
+    // thread, set up at module load). Any other thread (an actor, the dataflow engine)
+    // touching Qt is a bug — fail fast rather than corrupt Qt's single-threaded state.
+    if (app && QThread::currentThread() != app->thread())
+        throw std::runtime_error(
+            std::string("qt: '") + op + "' may only be used on the main (UI) thread — Qt "
+            "objects are not accessible from actors. Send the actor's result back to the "
+            "main thread (a message / event) and update the UI from there.");
+}
 
 // ============================================================
 // QVariant <-> Value
