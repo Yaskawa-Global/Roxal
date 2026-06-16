@@ -1,0 +1,18 @@
+# Regression: gc() inside a NESTED execute() — a user method invoked via _invoke_method,
+# the same re-entrant VM path a native pump / event-handler callback uses — must not deadlock.
+# Root cause was the GC safepoint head-count (threadsAtSafepoint_ >= activeThreads_)
+# double-counting ONE physical thread across re-entrant execute() calls, so the nested
+# gc() waited forever for a "second" thread that was really the parked outer frame.
+# Fixed by counting only the outermost execute() per Thread (VM::execute outermostExecute).
+# Also exercises ParkedInvokeScope (invoke runs even though the caller may be parked).
+
+type Worker object:
+  var tag :string = "w"
+  func collect() -> string:
+    gc()                         # would hang before the fix
+    return "collected:" + tag
+
+var w = Worker("worker-1")
+print(_invoke_method(w, "collect", []))   # collected:worker-1
+gc()                                       # top-level gc still works afterwards
+print("top gc ok")

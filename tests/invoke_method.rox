@@ -1,7 +1,7 @@
 # Exercises VM::invokeMethod via the private _invoke_method builtin: a no-arg method,
 # a method with an arg, a proc that mutates `this` (proves the receiver is bound), and
 # the synthesized __get_/__set_ accessors of a computed property (the receiver-aware
-# path a module uses to read/write computed values, e.g. Qt model roles).
+# path a module uses to read/write computed values, e.g. computed/model-backed roles).
 
 type Greeter object:
   var name :string
