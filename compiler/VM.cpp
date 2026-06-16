@@ -3635,10 +3635,45 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
     return false;
 }
 
+namespace {
+// RAII: clear the calling thread's "parked" (threadSleep) state for the duration of a
+// re-entrant invoke, then restore it. A native pump (an event loop, processPendingEvents,
+// _invoke_method, ...) typically calls back into Roxal while the thread is parked inside
+// run()/wait()/await. The dispatch loop refuses to run instructions while parked (it would
+// block on sleepCondVar instead of running the callback), so the callback must run with
+// threadSleep == false. This guard subsumes the manual save/clear/restore "dance" that
+// every parked-callback caller previously had to perform by hand. When the thread is NOT
+// parked (the common case) it is a no-op: prev is false, so clear and restore do nothing.
+// Held only as a stack local for the duration of one re-entrant invoke; `t` is the
+// thread we are currently executing on (VM::thread), so it cannot be freed within the
+// scope. A raw pointer (matching BoundCallGuard above) is deliberate: a strong ptr<>
+// would perturb Thread teardown ordering, and capturing the ORIGINAL thread is required
+// so we restore the parked state on the same Thread even if VM::thread is reassigned
+// during the nested execute().
+struct ParkedInvokeScope {
+    Thread* t;
+    bool prevSleep;
+    TimePoint prevUntil;
+    explicit ParkedInvokeScope(Thread* th)
+        : t(th), prevSleep(th->threadSleep.load()), prevUntil(th->threadSleepUntil.load()) {
+        t->threadSleep.store(false);
+    }
+    ParkedInvokeScope(const ParkedInvokeScope&) = delete;
+    ParkedInvokeScope& operator=(const ParkedInvokeScope&) = delete;
+    ~ParkedInvokeScope() {
+        t->threadSleep.store(prevSleep);
+        t->threadSleepUntil.store(prevUntil);
+    }
+};
+}
+
 std::pair<ExecutionStatus,Value> VM::invokeClosure(ObjClosure* closure,
                                                     const std::vector<Value>& args,
                                                     TimePoint deadline)
 {
+    // Make this invoke safe to call from a parked native pump (see ParkedInvokeScope).
+    ParkedInvokeScope parkedScope(thread.get());
+
     // Push closure first, then arguments (to match OpCode::Call stack layout)
     push(Value::objRef(closure));
     for(const auto& a : args)
@@ -3674,6 +3709,43 @@ std::pair<ExecutionStatus,Value> VM::invokeClosure(ObjClosure* closure,
     // since the call() and execute() sequence manages the stack properly
 
     return result;
+}
+
+std::pair<ExecutionStatus,Value> VM::invokeMethod(const Value& receiver,
+                                                  const icu::UnicodeString& methodName,
+                                                  const std::vector<Value>& args,
+                                                  TimePoint deadline)
+{
+    // Receiver must be an object instance (computed getters/setters, model rows, …).
+    if (!isObjectInstance(receiver))
+        return { ExecutionStatus::RuntimeError, Value::nilVal() };
+
+    // Resolve a single (non-overloaded) user method, walking the inheritance chain.
+    const int32_t hash = methodName.hashCode();
+    ObjObjectType::Method* method = nullptr;
+    for (ObjObjectType* t = asObjectType(asObjectInstance(receiver)->instanceType); t != nullptr; ) {
+        method = t->findUniqueMethod(hash);
+        if (method != nullptr)
+            break;
+        t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
+    }
+    if (method == nullptr || !isClosure(method->closure))
+        return { ExecutionStatus::RuntimeError, Value::nilVal() };
+    ObjClosure* closure = asClosure(method->closure);
+    if (asFunction(closure->function)->builtinInfo)
+        return { ExecutionStatus::RuntimeError, Value::nilVal() };  // native methods unsupported
+
+    // Make this invoke safe to call from a parked native pump (see ParkedInvokeScope).
+    ParkedInvokeScope parkedScope(thread.get());
+
+    // Stack layout [receiver, args...]: the receiver slot becomes the method's frame
+    // slot 0 (`this`) — the same convention bound-method dispatch uses.
+    push(receiver);
+    for (const auto& a : args)
+        push(a);
+    if (!call(closure, CallSpec(static_cast<int>(args.size()))))
+        return { ExecutionStatus::RuntimeError, Value::nilVal() };
+    return execute(deadline);
 }
 
 
@@ -5394,11 +5466,22 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
         return std::make_pair(ExecutionStatus::OK, Value::nilVal()); // nothing to execute
 
     SimpleMarkSweepGC& valueGC = SimpleMarkSweepGC::instance();
-    valueGC.onThreadEnter();
+    // A re-entrant execute() on the SAME physical thread — e.g. a native pump (an event
+    // loop, processPendingEvents) invoking a Roxal callback, or _invoke_method calling a
+    // user method — must NOT register as a second GC thread. The safepoint head-count
+    // (threadsAtSafepoint_ >= activeThreads_) would then require this one physical thread
+    // to be "at a safepoint" twice, so a gc() inside the nested call waits forever for the
+    // parked outer frame. Only the OUTERMOST execute() per Thread joins the head-count;
+    // nested calls run under the registration the outer frame already holds. (execute_depth
+    // is still 0 here — it is incremented just below — so this reliably detects the outer.)
+    const bool outermostExecute = (thread->execute_depth == 0);
+    if (outermostExecute)
+        valueGC.onThreadEnter();
     struct ThreadExecutionGuard {
         SimpleMarkSweepGC& gc;
-        ~ThreadExecutionGuard() { gc.onThreadExit(); }
-    } executionGuard{valueGC};
+        bool active;
+        ~ThreadExecutionGuard() { if (active) gc.onThreadExit(); }
+    } executionGuard{valueGC, outermostExecute};
 
     if (valueGC.isCollectionRequested()) {
         valueGC.safepoint(*thread);

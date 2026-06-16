@@ -269,8 +269,8 @@ void DataflowEngine::copyInto(const ptr<Signal>& lhs, const ptr<Signal>& rhs)
 
     auto previousValues = lhs->values;
     lhs->values = rhs->values;
-    for(const auto& rhsCallback : rhs->valueChangedCallbacks)
-        lhs->valueChangedCallbacks.push_back(rhsCallback);
+    for(const auto& rhsCallback : rhs->m_changeNotifier.callbacks)
+        lhs->m_changeNotifier.addCallback(rhsCallback);
 
     lhs->isDerived = rhs->isDerived;
     lhs->baseSignal = rhs->baseSignal;

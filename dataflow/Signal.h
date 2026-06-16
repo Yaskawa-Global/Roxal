@@ -8,6 +8,7 @@
 #include "core/TimeDuration.h"
 
 #include "Value.h"
+#include "compiler/ChangeNotifier.h"
 
 namespace df {
 
@@ -132,7 +133,7 @@ protected:
 
     uint64_t clockCount = 0;
 
-    std::vector<std::function<void(TimePoint, ptr<Signal>, const Value&)>> valueChangedCallbacks;
+    roxal::ChangeNotifier m_changeNotifier;   // shared with bare property observers
 
     friend class DataflowEngine;
     friend class FuncNode;

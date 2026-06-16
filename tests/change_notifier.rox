@@ -1,0 +1,35 @@
+# Exercises the lightweight ObjChangeNotifier path via the private _watch_property/
+# _watch_count builtins. observePropertyChange installs a change notifier on a property
+# WITHOUT creating a dataflow signal; MonitoredValue::assign fires it only on a real
+# change (the same gate that suppresses no-op writes), and the notifier obj is shared
+# across the object's COW copies so a mutation through a proc alias still fires.
+
+type Counter object:
+  var n :int = 0
+  var label :string = "a"
+
+var c = Counter()
+var w = _watch_property(c, "n")
+var wl = _watch_property(c, "label")
+
+c.n = 1          # change -> fires
+c.n = 2          # change -> fires
+c.n = 2          # no-op  -> does NOT fire (gated)
+c.n = 3          # change -> fires
+print(_watch_count(w))     # 3
+
+c.label = "a"    # no-op  -> does NOT fire
+c.label = "b"    # change -> fires
+print(_watch_count(wl))    # 1
+
+# A second watcher on the same property: both fire on the next change.
+var w2 = _watch_property(c, "n")
+c.n = 10
+print(_watch_count(w))     # 4
+print(_watch_count(w2))    # 1
+
+# Mutation through a proc alias (object reference semantics; notifier shared across COW).
+proc bump(x:Counter):
+  x.n = 99
+bump(c)
+print(_watch_count(w))     # 5

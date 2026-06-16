@@ -146,12 +146,23 @@ VariablesMap::MonitoredValue::MonitoredValue()
 
 Value VariablesMap::MonitoredValue::ensureSignal(const std::string& signalName)
 {
-    if (!signal.isNil())
-        return signal;
+    if (!signal.isNil() && isSignal(signal))
+        return signal;   // already a full dataflow signal
 
     std::string name = signalName.empty() ? std::string("variable") : signalName;
     auto sig = df::Signal::newSourceSignal(0.0, value, name);
     sig->setInternal(true);
+
+    // Upgrade: if a lightweight ChangeNotifier was already observing this property
+    // (e.g. a C++ binding), migrate its observers onto the new signal so they keep
+    // firing once the property also becomes a Roxal signal (`when … changes`).
+    if (!signal.isNil() && isChangeNotifier(signal)) {
+        ObjChangeNotifier* cn = asChangeNotifier(signal);
+        for (auto& cb : cn->notifier.callbacks)
+            sig->addValueChangedCallback(std::move(cb));
+        cn->notifier.callbacks.clear();
+    }
+
     signal = Value::signalVal(sig);
     return signal;
 }
@@ -167,10 +178,15 @@ bool VariablesMap::MonitoredValue::assign(const Value& newValue)
 
     value = newValue;
 
-    if (!signal.isNil() && isSignal(signal)) {
-        ObjSignal* sigObj = asSignal(signal);
-        if (sigObj && sigObj->signal)
-            sigObj->signal->set(newValue);
+    // Fire whichever change-observer the slot holds (gated above: only on real change).
+    if (!signal.isNil()) {
+        if (isSignal(signal)) {
+            ObjSignal* sigObj = asSignal(signal);
+            if (sigObj && sigObj->signal)
+                sigObj->signal->set(newValue);
+        } else if (isChangeNotifier(signal)) {
+            asChangeNotifier(signal)->notifier.notify(TimePoint::currentTime(), ptr<df::Signal>(), newValue);
+        }
     }
 
     return true;

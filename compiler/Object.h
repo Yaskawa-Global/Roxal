@@ -28,6 +28,7 @@
 #include <core/types.h>
 #include "Chunk.h"
 #include "Value.h"
+#include "ChangeNotifier.h"
 #include "SimpleMarkSweepGC.h"
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
@@ -103,7 +104,8 @@ enum class ObjType {
     Exception,
     OverloadSet,
     Combinator,
-    QtObject   // qt module: QPointer<QObject> wrapper (defined in the qt module)
+    QtObject,        // qt module: QPointer<QObject> wrapper (defined in the qt module)
+    ChangeNotifier   // lightweight C++ property-change observer (no full dataflow signal)
 };
 
 /// Returns true if the object type is user-mutable and can hold Value references
@@ -1055,6 +1057,30 @@ unique_ptr<ObjSignal, UnreleasedObj> newSignalObj(ptr<df::Signal> s);
 std::string objSignalToString(const ObjSignal* os);
 
 
+// A lightweight property-change observer that a MonitoredValue slot can hold INSTEAD
+// of a full dataflow ObjSignal, so C++ can be notified of a property change without
+// creating/registering a df::Signal. Holds a shared ChangeNotifier (C++ callbacks).
+// Internal: never exposed to Roxal code, only lives in property slots; the callbacks
+// are C++ functions (no Roxal Values), so trace() is empty and it isn't serialized.
+struct ObjChangeNotifier : public Obj {
+    ObjChangeNotifier() { type = ObjType::ChangeNotifier; }
+    virtual ~ObjChangeNotifier() {}
+
+    ChangeNotifier notifier;
+
+    void trace(ValueVisitor& visitor) const override { (void)visitor; }
+    void dropReferences() override { notifier.callbacks.clear(); }
+    unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
+    void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
+    void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+};
+
+inline bool isChangeNotifier(const Value& v) { return isObjType(v, ObjType::ChangeNotifier); }
+inline ObjChangeNotifier* asChangeNotifier(const Value& v) { return static_cast<ObjChangeNotifier*>(v.asObj()); }
+
+unique_ptr<ObjChangeNotifier, UnreleasedObj> newChangeNotifierObj();
+
+
 //
 // event types and instances
 
@@ -1903,7 +1929,9 @@ struct ObjectInstance : public Obj
     bool hasProperty(int32_t hash) const { return properties_->contains(hash); }
     // Returns a reference to the slot, creating it if it doesn't exist (like operator[])
     VariablesMap::MonitoredValue& propertySlot(int32_t hash);       // MVCC-guarded
-    void assignProperty(int32_t hash, const Value& value);          // MVCC-guarded
+    // Assign a property; returns true if the value actually changed (from
+    // MonitoredValue::assign, which gates unchanged writes). MVCC-guarded.
+    bool assignProperty(int32_t hash, const Value& value);
     void emplaceProperty(int32_t hash, VariablesMap::MonitoredValue mv);  // MVCC-guarded
     void clearProperties() { ensureUnique(); properties_->clear(); }
 
@@ -1918,6 +1946,14 @@ struct ObjectInstance : public Obj
     Value ensurePropertySignal(int32_t nameHash, const std::string& signalName);
     Value ensurePropertySignal(const icu::UnicodeString& name, const std::string& signalName)
       { return ensurePropertySignal(name.hashCode(), signalName); }
+
+    // Register a C++ observer fired (synchronously, on assign) when property
+    // `nameHash` changes — WITHOUT creating a full dataflow signal. Creates a
+    // lightweight ObjChangeNotifier in the slot, or attaches to an existing
+    // signal/notifier. MVCC-guarded. (The qt module uses this to bind property
+    // changes to QML without engaging the dataflow engine.)
+    void observePropertyChange(int32_t nameHash, const std::string& name,
+                               ChangeNotifier::Callback callback);
 
     unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
     unique_ptr<Obj, UnreleasedObj> shallowClone() const override;
