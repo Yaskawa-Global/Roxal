@@ -869,6 +869,66 @@ execution: it re-acquires the mutex briefly for each entry mutation
 (constructing the instance, marking `loaded=true`) and works against a local
 `ptr<BuiltinModule>` the rest of the time.
 
+### Native module plugins (the `qt` module)
+
+Most native modules are compiled into `roxalcore` and so into the `roxal`
+binary. The **`qt` module is different**: it builds as a separate shared object
+**`libroxalqt.so`** that the binary `dlopen`s only on the first `import qt`. The
+goal is a *single distributable binary that runs on machines without Qt
+installed* — the `roxal` binary carries **no `NEEDED` Qt entry**; Qt (and the
+plugin) are touched only when a script actually uses the UI.
+
+How it fits together:
+
+- **Build split** (`CMakeLists.txt`). `compiler/qt/*.cpp` compile into the
+  `roxalqt` SHARED target (links `Qt6::*`, **not** `roxalcore`), output beside
+  the binary. `roxalcore` no longer compiles or links any Qt. The Roxal-level
+  `import` is already lazy; this just changes *where the code lives*.
+
+- **Factory** (`loadQtPluginModule()` in `VM.cpp`). The lazy `qt` factory, on
+  first import, `dlopen`s `libroxalqt.so` — searching the executable's directory
+  first, then the module search paths, then the bare name (loader rpath /
+  `LD_LIBRARY_PATH`) — with `RTLD_NOW | RTLD_LOCAL`, then `dlsym`s the C entry
+  point and wraps the result. The handle is cached for the process lifetime and
+  **never `dlclose`d** (Qt installs static state + `atexit` handlers).
+
+- **C entry point** (`compiler/qt/QtPlugin.cpp`).
+  `extern "C" roxal::BuiltinModule* roxal_qt_create_module()` returns
+  `new ModuleQt()`; the core adopts it via `ptr<BuiltinModule>::from_raw` (the
+  `shared_ptr` control block crosses the `.so` boundary safely, and `ModuleQt`'s
+  virtual destructor dispatches the eventual `delete` back into the plugin).
+
+- **Host-exports — single-singleton invariant.** The plugin references core
+  symbols (VM/GC/Object/…) but doesn't link `roxalcore`; they resolve at
+  `dlopen` time from the **executable**, which is linked with `ENABLE_EXPORTS`
+  (`-rdynamic`). This is load-bearing: `VM::instance()`, `SimpleMarkSweepGC::
+  instance()`, and `DataflowEngine::instance()` are Meyers singletons, and
+  `-rdynamic` makes the plugin bind to the executable's copies (the VM static is
+  even emitted `STB_GNU_UNIQUE`), so there is exactly **one** GC/VM across the
+  boundary. Without `-rdynamic` the plugin would get its *own* second GC/VM —
+  silent corruption.
+
+- **ABI consistency — `roxal_abi`.** Because the plugin shares core C++ *types*
+  with the host across the boundary, it must be compiled with the **identical**
+  layout-affecting preprocessor defines as `roxalcore` — any `#ifdef`-guarded
+  member (e.g. under `ROXAL_ENABLE_GRPC`, `ROXAL_COMPUTE_SERVER`) shifts class
+  layouts and corrupts memory. This is enforced structurally: the `roxal_abi`
+  INTERFACE target is the single source of truth for those defines, consumed by
+  `roxalcore` (PUBLIC, so the exe inherits) **and** `roxalqt`. (This bug bit once
+  during development — `ModuleQt::onModuleLoaded` wrote `VM::m_hostEventLoop` at
+  a layout offset that differed between plugin and core — which is why the shared
+  target exists.)
+
+- **Clean failure.** `loadQtPluginModule()` throws `std::runtime_error` if the
+  plugin or its Qt runtime can't be loaded; `RoxalCompiler`'s import resolution
+  catches it and emits a normal `import 'qt' failed: …` compile error rather than
+  crashing. `runtests.py` guards the distributable property by asserting the
+  `roxal` binary has no direct Qt `NEEDED` entry whenever the build supports qt.
+
+This is Linux/ELF-specific (host-exports). A Windows or fully-decoupled port
+would instead make `roxalcore` itself a shared library that the binary and the
+plugin both link.
+
 ### Bytecode cache (`.roc`)
 
 Compiled modules are cached as `.roc` files next to their `.rox` source (the

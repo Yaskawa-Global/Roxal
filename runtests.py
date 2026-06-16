@@ -63,6 +63,26 @@ def detect_features(roxal_binary: str) -> Set[str]:
     return {entry for entry in entries if entry}
 
 
+def direct_needed_libs(binary: str):
+    """Return the ELF DT_NEEDED (direct) shared-library names of `binary`, or None if no
+    reader tool (objdump/readelf) is available."""
+    for cmd in (['objdump', '-p', binary], ['readelf', '-d', binary]):
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, check=False).stdout
+        except FileNotFoundError:
+            continue
+        needed = []
+        for line in out.splitlines():
+            if 'NEEDED' not in line:
+                continue
+            if '[' in line and ']' in line:        # readelf:  ... Shared library: [libfoo.so.1]
+                needed.append(line[line.index('[') + 1:line.index(']')])
+            else:                                   # objdump:  NEEDED   libfoo.so.1
+                needed.append(line.split()[-1])
+        return needed
+    return None
+
+
 def is_lfs_pointer(path: str) -> bool:
     """Check if a file is a Git LFS pointer rather than actual content."""
     try:
@@ -431,6 +451,24 @@ has_socket = 'socket' in features
 has_nn = 'nn' in features
 has_compute_server = 'server' in features
 has_qt = 'qt' in features
+
+# Distributable-property guard: when this build supports qt (via the dlopen'd plugin),
+# the roxal binary itself must NOT directly depend on Qt — otherwise it won't start on
+# machines without Qt, defeating the whole point of the plugin split. Fail loudly if Qt
+# ever creeps back into the binary's NEEDED entries.
+if has_qt:
+    needed = direct_needed_libs(roxal)
+    if needed is None:
+        print("Note: skipping no-Qt-dependency check (no objdump/readelf available).")
+    else:
+        qt_needed = [n for n in needed if 'Qt' in n or n.startswith('libroxalqt')]
+        if qt_needed:
+            print(f"CHECK FAILED: roxal binary directly depends on Qt ({', '.join(qt_needed)}); "
+                  "the qt module must remain a dlopen'd plugin (libroxalqt.so), not linked in.")
+            unexpected_failures.append('no_qt_dependency')
+        else:
+            print("Check: roxal binary carries no direct Qt dependency (qt loads as a plugin). OK")
+
 if not has_grpc and any(test in tests for test in grpc_tests):
     print("Skipping gRPC tests (feature not enabled).")
     tests = [t for t in tests if t not in grpc_tests]

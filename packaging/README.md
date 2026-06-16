@@ -139,3 +139,19 @@ printf "import ai.nn\nprint('ai.nn loaded')\n" | roxal
 | `/usr/lib/roxal/libddsc*` | Bundled CycloneDDS libraries |
 | `/usr/lib/roxal/libonnxruntime*` | Bundled ONNX Runtime libraries (CPU; GPU if CUDA provider included) |
 | `/etc/ld.so.conf.d/roxal.conf` | Tells the dynamic linker about `/usr/lib/roxal` |
+
+## Qt module (optional UI plugin)
+
+The `qt` module is **not** linked into the `roxal` binary — when built with
+`-DROXAL_ENABLE_QT=ON` it produces a separate **`libroxalqt.so`** that the binary `dlopen`s only
+when a script runs `import qt`. The base `roxal` package therefore carries **no Qt dependency**
+and runs on machines without Qt; only scripts that drive a UI need Qt present.
+
+`build-deb.sh` does **not** bundle the Qt plugin today (the base package stays Qt-free). To
+distribute Qt support, ship it as a **separate `roxal-qt` package** (a follow-up):
+
+- install `libroxalqt.so` into `/usr/lib/roxal/` (already on the binary's rpath), and
+- add a `Depends:` on the Qt 6 runtime (`libqt6core6`, `libqt6qml6`, `libqt6quick6`, …).
+
+A user who installs only `roxal` gets a clean *"import 'qt' failed: … libroxalqt.so … cannot
+open shared object file"* error if a script imports `qt`; installing `roxal-qt` makes it work.

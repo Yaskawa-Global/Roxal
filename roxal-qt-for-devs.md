@@ -29,6 +29,16 @@ cmake --build build/ -j4
 Run a script the usual way: `./build/roxal myapp.rox`. For headless/CI runs, set
 `QT_QPA_PLATFORM=offscreen`.
 
+### Running and shipping qt scripts
+
+The `qt` module is optional and loaded **at runtime**, so a Qt-enabled build produces a
+`libroxalqt.so` next to the `roxal` binary. To run a script that does `import qt` you need
+**Qt 6 installed** and that `libroxalqt.so` present (it's found automatically when kept beside
+the binary). Scripts that don't `import qt` run fine without Qt — the base `roxal` doesn't
+depend on it. If you `import qt` while Qt or the plugin is missing, you get a clear error at
+that import (not a crash): `import 'qt' failed: … libroxalqt.so … cannot open shared object
+file`.
+
 ---
 
 ## Hello, world
