@@ -1,0 +1,32 @@
+// Step 4: computed (accessor) properties as bound QML roles. `greeting` has a transforming
+// getter (appends "!") + a setter that writes its backing field; `stamp` is get-only
+// (read-only). Exercises: QML reads the COMPUTED value (the getter runs — not the raw
+// backing field), QML writes route through the setter, a write to the get-only property is
+// rejected, and a Roxal-side change to a computed property auto-pushes to QML.
+import qt
+
+type Greeter object:
+  var greeting :string:
+    get:
+      return _greeting + "!"
+    set:
+      _greeting = value
+  var stamp :string = "v1":
+    get:
+      return "[" + _stamp + "]"
+
+var engine = qt.Engine()
+var g = Greeter()
+g.greeting = "Hi"                  # via the setter → _greeting = "Hi"
+engine.set_context_property("app", g)
+engine.load_string('import QtQuick\nimport QtQuick.Window\nWindow {\n id: win\n objectName: "win"\n visible: true\n signal tick()\n signal report(string s)\n Text { id: t; objectName: "t"; text: app.greeting + "|" + app.stamp }\n Timer { interval: 30; running: true; onTriggered: { win.report("init=" + t.text); app.greeting = "Bob"; app.stamp = "X"; win.report("write=" + t.text); win.tick(); win.report("auto=" + t.text); Qt.quit() } }\n}\n')
+
+var win = engine.find("win")
+win.onTick(proc():
+  g.greeting = "Zed"               # Roxal edit to a computed property → auto-pushes to QML
+)
+win.onReport(proc(s): print(s))
+
+engine.run()
+print("roxal greeting={g.greeting} stamp={g.stamp}")
+print("bye")

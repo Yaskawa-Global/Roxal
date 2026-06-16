@@ -354,6 +354,10 @@ Window {
 - **Roxal-side assignments auto-push** (`state.title = "X"` updates the binding). If you mutate a
   *contained* collection **in place** (e.g. `state.items.append(x)` — no reassignment), call
   **`qt.notify(state, "items")`** (or `qt.notify(state)` for all) to force a push.
+- **Computed properties bind too.** A property with `get:`/`set:` accessors is a role: QML reads the
+  getter's value and writes flow through the setter (a get-only property is read-only). Its
+  auto-push follows its own `_<name>` backing field, so a getter that derives from *other* fields
+  won't refresh on its own — call `qt.notify(state, "name")` after changing those.
 
 ---
 

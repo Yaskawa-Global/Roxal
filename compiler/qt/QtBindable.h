@@ -18,11 +18,15 @@ namespace roxal {
 
 // A moc-free bindable wrapper that exposes ONE Roxal object's public properties to
 // QML as QQmlPropertyMap key→value pairs (the Q_PROPERTY-with-NOTIFY analogue):
-//  - init/read: getProperty → toQVariant, inserted under each property name.
-//  - QML write: updateValue() routes to the property through Roxal's gated assign()
-//    (const properties are read-only).
-//  - Roxal edit: each property's change signal is observed (ensurePropertySignal +
-//    addValueChangedCallback) and the new value pushed via insert() so QML re-binds.
+//  - init/read: each role is read and inserted under its property name — a stored
+//    property via getProperty, a computed (accessor) property via its __get_ method.
+//  - QML write: updateValue() routes to the property — a stored property through Roxal's
+//    gated assign(), a computed one through its __set_ method (get-only → read-only).
+//  - Roxal edit: each property's change is observed via a lightweight ChangeNotifier (a
+//    computed property observes its `_<name>` backing field) and the new value pushed via
+//    insert() so QML re-binds.
+// Stored vs computed: stored (`var`) properties surface in orderedPublicProperties();
+// computed (accessor) ones don't — they're discovered from their __get_/__set_ methods.
 // moc-free: only the virtual updateValue() is overridden; no Q_OBJECT/Q_PROPERTY.
 class RoxalPropertyMap : public QQmlPropertyMap {
 public:
@@ -41,12 +45,19 @@ protected:
     QVariant updateValue(const QString& key, const QVariant& input) override;
 
 private:
-    struct Role { QString name; icu::UnicodeString uname; int32_t nameHash; bool editable; };
+    struct Role {
+        QString name; icu::UnicodeString uname; int32_t nameHash; bool editable;
+        bool computed { false };          // accessor property: read via __get_, write via __set_
+        icu::UnicodeString getterName;    // "__get_<name>"  (computed only)
+        icu::UnicodeString setterName;    // "__set_<name>"  (computed only)
+        int32_t backingHash { 0 };        // hash of the "_<name>" backing field (computed; auto-notify)
+    };
     void buildRoles();
     void initValues();
     void hookSignals();
     const Role* roleByName(const QString& name) const;
-    void onRoxalChange(const Role& role, const Value& v);
+    Value readRole(const Role& role) const;   // getter (computed) or stored slot (plain)
+    void onRoxalChange(const Role& role);     // re-read the role and push to QML
 
     Value obj_;                                   // wrapped ObjectInstance (traced by hub)
     std::vector<Role> roles_;

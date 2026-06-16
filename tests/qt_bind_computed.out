@@ -1,0 +1,5 @@
+init=Hi!|[v1]
+write=Bob!|[v1]
+auto=Zed!|[v1]
+roxal greeting=Zed! stamp=[v1]
+bye
