@@ -339,15 +339,9 @@ endif()
 if(ROXAL_ENABLE_MEDIA)
     list(APPEND COMPILER_SOURCES compiler/ModuleMedia.cpp)
 endif()
-if(ROXAL_ENABLE_QT)
-    list(APPEND COMPILER_SOURCES compiler/qt/ModuleQt.cpp)
-    list(APPEND COMPILER_SOURCES compiler/qt/ObjQtObject.cpp)
-    list(APPEND COMPILER_SOURCES compiler/qt/ModuleQtConvert.cpp)
-    list(APPEND COMPILER_SOURCES compiler/qt/QtSignalRelay.cpp)
-    list(APPEND COMPILER_SOURCES compiler/qt/QtSignalHub.cpp)
-    list(APPEND COMPILER_SOURCES compiler/qt/QtListModel.cpp)
-    list(APPEND COMPILER_SOURCES compiler/qt/QtBindable.cpp)
-endif()
+# NOTE: the qt module is NOT compiled into roxalcore — it builds as a separate
+# dlopen'd plugin (libroxalqt.so, defined below) so the roxal binary carries no Qt
+# dependency. The core only registers a factory that loads that plugin on `import qt`.
 
 set(MAIN_SOURCE compiler/roxal.cpp)
 
@@ -438,6 +432,33 @@ target_compile_definitions(roxalast PRIVATE
 )
 
 
+# ---------------------------------------------------------------------------
+# roxal_abi — the SINGLE source of truth for ABI-affecting compile definitions.
+# Every target that shares core C++ types across a binary boundary (roxalcore, the
+# roxal executable, and the dlopen'd qt plugin) consumes this, so they can never
+# disagree on the feature #defines that determine class layout. A divergence would
+# silently corrupt memory across the host<->plugin boundary (it did, once, before
+# this existed). Add new feature flags HERE, never on an individual target.
+# ---------------------------------------------------------------------------
+add_library(roxal_abi INTERFACE)
+target_compile_definitions(roxal_abi INTERFACE
+    $<$<CONFIG:DEBUG>:DEBUG_BUILD>
+    $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
+    $<$<BOOL:${ROXAL_ENABLE_GRPC}>:ROXAL_ENABLE_GRPC>
+    $<$<BOOL:${ROXAL_ENABLE_DDS}>:ROXAL_ENABLE_DDS>
+    $<$<BOOL:${ROXAL_ENABLE_REGEX}>:ROXAL_ENABLE_REGEX>
+    $<$<BOOL:${ROXAL_ENABLE_XML}>:ROXAL_ENABLE_XML>
+    $<$<BOOL:${ROXAL_ENABLE_SOCKET}>:ROXAL_ENABLE_SOCKET>
+    $<$<BOOL:${ROXAL_ENABLE_ONNX}>:ROXAL_ENABLE_ONNX>
+    $<$<BOOL:${ROXAL_ENABLE_AI_NN}>:ROXAL_ENABLE_AI_NN>
+    $<$<BOOL:${ROXAL_ENABLE_MEDIA}>:ROXAL_ENABLE_MEDIA>
+    $<$<BOOL:${ROXAL_ENABLE_QT}>:ROXAL_ENABLE_QT>
+    $<$<BOOL:${ROXAL_COMPUTE_SERVER}>:ROXAL_COMPUTE_SERVER>
+    ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
+    ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
+    ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"
+)
+
 # Build the static library containing the core compiler and VM
 add_library(roxalcore STATIC ${CORE_SOURCES} ${COMPILER_SOURCES} ${GENERATED_SOURCES})
 set_target_properties(roxalcore PROPERTIES OUTPUT_NAME roxal)
@@ -447,6 +468,7 @@ add_dependencies(roxalcore generate_parser)
 
 target_link_libraries(roxalcore
     PUBLIC
+        roxal_abi        # shared ABI definitions; PUBLIC so the roxal exe inherits them too
         antlr4-runtime
         icuio
         icui18n
@@ -467,10 +489,8 @@ target_link_libraries(roxalcore
         $<$<BOOL:${ROXAL_ENABLE_ONNX}>:${ONNXRUNTIME_LIBRARY}>
         $<$<BOOL:${ROXAL_ENABLE_MEDIA}>:PNG::PNG>
         $<$<BOOL:${ROXAL_ENABLE_MEDIA}>:JPEG::JPEG>
-        $<$<BOOL:${ROXAL_ENABLE_QT}>:Qt6::Core>
-        $<$<BOOL:${ROXAL_ENABLE_QT}>:Qt6::Gui>
-        $<$<BOOL:${ROXAL_ENABLE_QT}>:Qt6::Qml>
-        $<$<BOOL:${ROXAL_ENABLE_QT}>:Qt6::Quick>
+        # Qt is intentionally NOT linked here — the qt module is a dlopen'd plugin
+        # (libroxalqt.so), so roxalcore and the roxal binary carry no Qt dependency.
 )
 
 
@@ -480,50 +500,57 @@ target_compile_options(roxalcore PRIVATE
     $<$<CONFIG:RELEASE>:-O3>
 )
 
-# Set compile definitions based on the build type
-target_compile_definitions(roxalcore PRIVATE
-    $<$<CONFIG:DEBUG>:DEBUG_BUILD>
-    $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
-    $<$<BOOL:${ROXAL_ENABLE_GRPC}>:ROXAL_ENABLE_GRPC>
-    $<$<BOOL:${ROXAL_ENABLE_DDS}>:ROXAL_ENABLE_DDS>
-    $<$<BOOL:${ROXAL_ENABLE_REGEX}>:ROXAL_ENABLE_REGEX>
-    $<$<BOOL:${ROXAL_ENABLE_XML}>:ROXAL_ENABLE_XML>
-    $<$<BOOL:${ROXAL_ENABLE_SOCKET}>:ROXAL_ENABLE_SOCKET>
-    $<$<BOOL:${ROXAL_ENABLE_ONNX}>:ROXAL_ENABLE_ONNX>
-    $<$<BOOL:${ROXAL_ENABLE_AI_NN}>:ROXAL_ENABLE_AI_NN>
-    $<$<BOOL:${ROXAL_ENABLE_MEDIA}>:ROXAL_ENABLE_MEDIA>
-    $<$<BOOL:${ROXAL_ENABLE_QT}>:ROXAL_ENABLE_QT>
-    $<$<BOOL:${ROXAL_COMPUTE_SERVER}>:ROXAL_COMPUTE_SERVER>
-    ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
-    ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
-    ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"
-)
+# Compile definitions come from roxal_abi (linked PUBLIC above) — the single shared
+# source of truth, so roxalcore, the roxal exe, and the qt plugin can never diverge.
+
+
+# ---------------------------------------------------------------------------
+# qt module plugin (libroxalqt.so) — built only when ROXAL_ENABLE_QT is ON.
+# Links Qt6 but NOT roxalcore: the core VM/GC/Object/... symbols it references are
+# left undefined at link time (shared libs allow that) and resolved at dlopen time
+# from the roxal executable (built with ENABLE_EXPORTS). The roxal binary therefore
+# carries no Qt dependency; Qt is only touched when a script does `import qt`.
+# ---------------------------------------------------------------------------
+if(ROXAL_ENABLE_QT)
+    add_library(roxalqt SHARED
+        compiler/qt/ModuleQt.cpp
+        compiler/qt/ObjQtObject.cpp
+        compiler/qt/ModuleQtConvert.cpp
+        compiler/qt/QtSignalRelay.cpp
+        compiler/qt/QtSignalHub.cpp
+        compiler/qt/QtListModel.cpp
+        compiler/qt/QtBindable.cpp
+        compiler/qt/QtPlugin.cpp
+    )
+    add_dependencies(roxalqt generate_parser)
+    # roxal_abi carries the SAME ABI definitions roxalcore uses — the single source of
+    # truth that makes a host<->plugin class-layout mismatch impossible by construction.
+    target_link_libraries(roxalqt PRIVATE roxal_abi Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick)
+    target_compile_options(roxalqt PRIVATE
+        $<$<CONFIG:DEBUG>:-fPIC -Wno-attributes -Werror=return-type -g -fmax-errors=1>
+        $<$<CONFIG:RELEASE>:-O3>
+    )
+    # Build the plugin next to the roxal binary so the dlopen factory (which searches
+    # the executable's directory first) finds it without extra configuration.
+    set_target_properties(roxalqt PROPERTIES LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+endif()
 
 
 if(ROXAL_BUILD_MAIN)
     add_executable(roxal ${MAIN_SOURCE})
     target_link_libraries(roxal PRIVATE roxalcore boost_program_options)
+    # Export the executable's dynamic symbols (-rdynamic) so the dlopen'd qt plugin
+    # (libroxalqt.so) resolves the core VM/GC/Object/... symbols from the running
+    # binary — keeping a SINGLE copy of the GC/VM singletons across the boundary.
+    if(ROXAL_ENABLE_QT)
+        set_target_properties(roxal PROPERTIES ENABLE_EXPORTS ON)
+    endif()
     target_compile_options(roxal PRIVATE
         $<$<CONFIG:DEBUG>:-fPIC -Wno-attributes -Werror=return-type -g -fmax-errors=1>
         $<$<CONFIG:RELEASE>:-O3>
     )
-    target_compile_definitions(roxal PRIVATE
-        $<$<CONFIG:DEBUG>:DEBUG_BUILD>
-        $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
-        $<$<BOOL:${ROXAL_ENABLE_GRPC}>:ROXAL_ENABLE_GRPC>
-        $<$<BOOL:${ROXAL_ENABLE_DDS}>:ROXAL_ENABLE_DDS>
-        $<$<BOOL:${ROXAL_ENABLE_REGEX}>:ROXAL_ENABLE_REGEX>
-        $<$<BOOL:${ROXAL_ENABLE_XML}>:ROXAL_ENABLE_XML>
-        $<$<BOOL:${ROXAL_ENABLE_SOCKET}>:ROXAL_ENABLE_SOCKET>
-        $<$<BOOL:${ROXAL_ENABLE_ONNX}>:ROXAL_ENABLE_ONNX>
-        $<$<BOOL:${ROXAL_ENABLE_AI_NN}>:ROXAL_ENABLE_AI_NN>
-        $<$<BOOL:${ROXAL_ENABLE_MEDIA}>:ROXAL_ENABLE_MEDIA>
-        $<$<BOOL:${ROXAL_ENABLE_QT}>:ROXAL_ENABLE_QT>
-        $<$<BOOL:${ROXAL_COMPUTE_SERVER}>:ROXAL_COMPUTE_SERVER>
-        ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
-        ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
-        ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"
-    )
+    # Compile definitions are inherited from roxal_abi via roxalcore (linked PUBLIC),
+    # the single shared source of truth — see the roxal_abi target above.
 
     add_test(NAME RoxalSourceTests
         COMMAND python3 ${CMAKE_SOURCE_DIR}/runtests.py

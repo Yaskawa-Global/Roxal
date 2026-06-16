@@ -61,6 +61,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <atomic>
+#include <dlfcn.h>   // dlopen the qt module plugin on `import qt`
 
 using namespace roxal;
 
@@ -150,6 +151,54 @@ std::filesystem::path resolveExecutablePath()
     return link;
 #endif
 }
+
+#ifdef ROXAL_ENABLE_QT
+// Load the qt module from its dlopen'd plugin (libroxalqt.so). The roxal binary links no
+// Qt; the plugin (built beside the executable) carries the qt module + its Qt6 deps and is
+// opened only here, on the first `import qt`. Core symbols the plugin references resolve
+// from this executable (linked with -rdynamic / ENABLE_EXPORTS). Throws a descriptive
+// std::runtime_error if the plugin or its Qt runtime can't be loaded — the import path
+// turns that into a clean compile error. The handle is intentionally never dlclose'd
+// (Qt installs static state + atexit handlers that must outlive the process's teardown).
+ptr<BuiltinModule> loadQtPluginModule()
+{
+    using CreateFn = BuiltinModule* (*)();
+    static void* handle = nullptr;
+    static CreateFn create = nullptr;
+
+    if (!create) {
+        std::vector<std::string> candidates;
+        const auto exePath = resolveExecutablePath();
+        if (!exePath.empty())
+            candidates.push_back((exePath.parent_path() / "libroxalqt.so").string());
+        for (const auto& p : VM::instance().getModulePaths())
+            candidates.push_back((std::filesystem::path(p) / "libroxalqt.so").string());
+        candidates.push_back("libroxalqt.so");  // loader search: rpath / LD_LIBRARY_PATH / ldconfig
+
+        std::string lastErr = "not found";
+        for (const auto& cand : candidates) {
+            dlerror();  // clear any stale error
+            handle = dlopen(cand.c_str(), RTLD_NOW | RTLD_LOCAL);
+            if (handle) break;
+            if (const char* e = dlerror()) lastErr = e;
+        }
+        if (!handle)
+            throw std::runtime_error(
+                "the 'qt' module requires the Qt plugin (libroxalqt.so) and the Qt6 runtime "
+                "libraries, which could not be loaded: " + lastErr);
+
+        create = reinterpret_cast<CreateFn>(dlsym(handle, "roxal_qt_create_module"));
+        if (!create)
+            throw std::runtime_error(
+                "the 'qt' plugin (libroxalqt.so) is missing its roxal_qt_create_module entry point");
+    }
+
+    BuiltinModule* mod = create();
+    if (!mod)
+        throw std::runtime_error("the 'qt' plugin failed to create its module instance");
+    return ptr<BuiltinModule>::from_raw(mod);
+}
+#endif // ROXAL_ENABLE_QT
 
 } // namespace
 
@@ -1168,7 +1217,8 @@ VM::VM()
     lazyModuleRegistry.registerFactory("media", []{ return make_ptr<ModuleMedia>(); });
     #endif
     #ifdef ROXAL_ENABLE_QT
-    lazyModuleRegistry.registerFactory("qt", []{ return make_ptr<ModuleQt>(); });
+    // qt is a dlopen'd plugin (libroxalqt.so), loaded on first import — not linked in.
+    lazyModuleRegistry.registerFactory("qt", []{ return loadQtPluginModule(); });
     #endif
 
     std::vector<std::string> stagedModulePaths;

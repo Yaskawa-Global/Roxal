@@ -941,7 +941,16 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
             if (i > 0) joinedModName += ".";
             joinedModName += ast->packages[i];
         }
-        if (VM::instance().getBuiltinModuleType(joinedModName).isNonNil()) {
+        bool isBuiltinModule = false;
+        try {
+            isBuiltinModule = VM::instance().getBuiltinModuleType(joinedModName).isNonNil();
+        } catch (const std::exception& e) {
+            // A registered module whose backend failed to load (e.g. the qt plugin or its
+            // Qt runtime is absent). Surface a clean import error rather than crashing.
+            error("import '" + toUTF8StdString(joinedModName) + "' failed: " + e.what());
+            return {};
+        }
+        if (isBuiltinModule) {
             builtinRegistryKey = joinedModName;
             module.name = ast->packages.back();  // leaf name for module hierarchy
             builtinModule = true;

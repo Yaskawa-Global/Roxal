@@ -39,9 +39,9 @@
 #ifdef ROXAL_ENABLE_MEDIA
 #include "ModuleMedia.h"
 #endif
-#ifdef ROXAL_ENABLE_QT
-#include "ModuleQt.h"
-#endif
+// NOTE: the qt module (ModuleQt) is a dlopen'd plugin, not part of the core build, so
+// its header is deliberately NOT included here — the core only loads it via a C entry
+// point (roxal_qt_create_module) resolved at runtime. See the qt factory in VM.cpp.
 #include <ffi.h>
 #include <vector>
 
