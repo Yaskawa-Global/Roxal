@@ -32,6 +32,8 @@
 #include <QQmlEngine>
 #include <QQuickItem>
 #include <QVariantMap>
+#include <QTimer>
+#include <QElapsedTimer>
 
 #include <cstdio>
 #include <cstdlib>
@@ -426,6 +428,7 @@ void ModuleQt::registerBuiltins(VM& vm)
     linkMethod("Engine", "load",        [this](VM&, ArgsView a) { return engine_load_builtin(a); });
     linkMethod("Engine", "load_string", [this](VM&, ArgsView a) { return engine_load_string_builtin(a); });
     linkMethod("Engine", "run",         [this](VM&, ArgsView a) { return engine_run_builtin(a); });
+    linkMethod("Engine", "run_for",     [this](VM&, ArgsView a) { return engine_run_for_builtin(a); });
     linkMethod("Engine", "quit",        [this](VM&, ArgsView a) { return engine_quit_builtin(a); });
     linkMethod("Engine", "find",        [this](VM&, ArgsView a) { return engine_find_builtin(a); });
     linkMethod("Engine", "root",        [this](VM&, ArgsView a) { return engine_root_builtin(a); });
@@ -479,6 +482,9 @@ void ModuleQt::registerBuiltins(VM& vm)
     link("connect",    [this](VM&, ArgsView a) { return qt_connect_builtin(a); });
     link("on",         [this](VM&, ArgsView a) { return qt_on_builtin(a); });
     link("disconnect", [this](VM&, ArgsView a) { return qt_disconnect_builtin(a); });
+
+    link("process_events", [this](VM&, ArgsView a) { return qt_process_events_builtin(a); });
+    link("every",          [this](VM&, ArgsView a) { return qt_every_builtin(a); });
 
     link("notify",     [this](VM&, ArgsView a) { return qt_notify_builtin(a); });
 
@@ -697,6 +703,32 @@ Value ModuleQt::engine_run_builtin(ArgsView args)
     return Value::nilVal();
 }
 
+Value ModuleQt::engine_run_for_builtin(ArgsView args)
+{
+    engineFromReceiver(args, "run_for"); // validate receiver + UI-thread guard
+    if (args.size() < 2 || !args[1].isNumber())
+        throw std::invalid_argument("Engine.run_for(ms) expects a number of milliseconds");
+    int ms = args[1].isInt() ? static_cast<int>(args[1].asInt())
+                             : static_cast<int>(args[1].asReal());
+
+    // Bounded cooperative pump: service Qt events (repaints, queued signals, qt.every
+    // timers) for up to `ms`, then return — no parking. For interactive/REPL use, so
+    // the script keeps control. Returns early if a quit (window close) is requested.
+    if (ms <= 0) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents);
+        return Value::nilVal();
+    }
+    QElapsedTimer elapsed;
+    elapsed.start();
+    while (!impl_->quitRequested) {
+        qint64 remaining = ms - elapsed.elapsed();
+        if (remaining <= 0) break;
+        QCoreApplication::processEvents(QEventLoop::AllEvents | QEventLoop::WaitForMoreEvents,
+                                        static_cast<int>(remaining));
+    }
+    return Value::nilVal();
+}
+
 Value ModuleQt::engine_quit_builtin(ArgsView args)
 {
     engineFromReceiver(args, "quit"); // validate receiver
@@ -896,6 +928,53 @@ Value ModuleQt::qt_disconnect_builtin(ArgsView args)
         throw std::invalid_argument("qt.disconnect(connection) expects a connection id (from qt.connect / item.onSig)");
     QtSignalHub::instance().disconnectId(static_cast<int>(args[0].asInt()));
     return Value::nilVal();
+}
+
+// ---- Cooperative pumping for interactive / REPL use ----
+// Without run()'s park, the Qt event loop never spins, so a loaded UI doesn't paint
+// and queued signals/timers don't fire. These let a script (or the REPL) advance Qt
+// on demand: a one-shot drain, a bounded pump, and a periodic Roxal timer.
+
+Value ModuleQt::qt_process_events_builtin(ArgsView args)
+{
+    ensureQtUiThread("qt.process_events");
+    // Drain all currently-pending Qt events (repaints, queued signals/callbacks) and
+    // return. With an optional max_ms, process for up to that many milliseconds.
+    if (args.size() >= 1 && !args[0].isNil()) {
+        if (!args[0].isNumber())
+            throw std::invalid_argument("qt.process_events(max_ms) expects a number of milliseconds or nil");
+        int maxMs = args[0].isInt() ? static_cast<int>(args[0].asInt())
+                                    : static_cast<int>(args[0].asReal());
+        QCoreApplication::processEvents(QEventLoop::AllEvents, maxMs);
+    } else {
+        QCoreApplication::processEvents(QEventLoop::AllEvents);
+    }
+    return Value::nilVal();
+}
+
+Value ModuleQt::qt_every_builtin(ArgsView args)
+{
+    ensureQtUiThread("qt.every");
+    if (args.size() < 2 || !args[0].isNumber() || !isClosure(args[1]))
+        throw std::invalid_argument("qt.every(ms, handler) expects an interval in ms and a callable");
+    if (!impl_->app)
+        throw std::runtime_error("qt.every(): Qt application not initialized");
+    int ms = args[0].isInt() ? static_cast<int>(args[0].asInt())
+                             : static_cast<int>(args[0].asReal());
+    if (ms < 0)
+        throw std::invalid_argument("qt.every(ms, handler): ms must be >= 0");
+
+    // The QTimer is owned by Qt (parented to the application); the returned item handle
+    // is non-owning, so the user can timer.stop()/start() or set timer.interval, and it
+    // is destroyed at teardown. The handler fires (on this UI thread) whenever Qt is
+    // pumped — under run(), run_for(), or process_events(). The signal hub keeps the
+    // closure alive while connected.
+    auto* timer = new QTimer(impl_->app);
+    timer->setInterval(ms);
+    QMetaMethod sig = findQtSignal(timer, "timeout");
+    QtSignalHub::instance().connectCallback(timer, sig, args[1]);
+    timer->start();
+    return qtObjectValue(timer);
 }
 
 // ============================================================

@@ -1,0 +1,25 @@
+// Cooperative pumping for interactive/REPL use: qt.every + engine.run_for + qt.process_events.
+// A qt.every timer increments a Roxal counter on the main thread whenever the Qt loop is
+// pumped; run_for pumps for a bounded time (no run() park); stopping the returned timer handle
+// halts it. Headless via QT_QPA_PLATFORM=offscreen. Asserts are booleans, not exact tick counts.
+import qt
+
+var e = qt.Engine()
+var ticks = 0
+# a handler that bumps the counter, fired ~every 5ms while the Qt loop is pumped
+var timer = qt.every(5, proc():
+  ticks = ticks + 1
+)
+
+e.run_for(100)                                        # pump ~100ms → the timer fires
+var fired = ticks > 0
+print("timer fired: {fired}")                         # true
+
+timer.stop()                                          # the handle is a live Qt item: stop it
+var n = ticks
+e.run_for(40)                                         # pump again — no more ticks
+var stayed = ticks == n
+print("stopped cleanly: {stayed}")                    # true
+
+qt.process_events()                                   # one-shot drain runs without error
+print("done")

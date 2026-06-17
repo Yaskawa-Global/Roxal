@@ -39,6 +39,26 @@ func on(item, name:string):
 func disconnect(connection):
   """Remove a signal callback connection (the id returned by connect / item.onName)."""
 
+
+// Cooperative pumping — drive a UI interactively (e.g. from the REPL) without run().
+// Property reads/writes already take effect immediately; pumping is what lets the UI
+// repaint and lets queued signal handlers / qt.every timers fire.
+
+@builtin
+func process_events(max_ms=nil):
+  """Service all currently-pending Qt events once (repaints, queued signal handlers /
+  callbacks) and return — a one-shot pump. With `max_ms`, process for up to that many
+  milliseconds. Handy at the REPL: set a property, then process_events() to see it, or
+  to let a queued click handler run. See also engine.run_for() for a timed pump."""
+
+@builtin
+func every(ms, handler):
+  """Call `handler` (no args) about every `ms` milliseconds while the Qt loop is being
+  pumped — under run(), engine.run_for(), or after process_events(). Returns a timer
+  item handle: stop it with `timer.stop()` (resume with `timer.start()`, retime with
+  `timer.interval = ms`). Runs on the main UI thread, so the handler may touch Qt
+  items freely."""
+
 @builtin
 func notify(obj, name=nil):
   """Push a change of `obj` (a Roxal object exposed to QML via set_context_property)
@@ -87,6 +107,14 @@ type Engine object:
   proc run():
     """Block until the last window closes or QML Qt.quit() is requested, pumping
     the Qt UI loop meanwhile. Returns so the script can finish and tear down."""
+
+  @builtin
+  proc run_for(ms):
+    """Pump the Qt UI loop for about `ms` milliseconds, then return — a bounded,
+    non-blocking alternative to run() for interactive / REPL use (the script keeps
+    control). Services repaints, queued signal handlers, and qt.every timers while it
+    runs; returns early if a window is closed. Use ms<=0 to just drain pending events
+    once (like qt.process_events())."""
 
   @builtin
   proc quit():

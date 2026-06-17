@@ -97,6 +97,7 @@ clashes with QML's braces.)
 | `engine.load(path)` | Load QML from a file. The root object must be a `Window`. |
 | `engine.load_string(qml)` | Load QML from an inline string. |
 | `engine.run()` | Block until the last window closes / `Qt.quit()`. |
+| `engine.run_for(ms)` | Pump the UI for ~`ms` and return (non-blocking; for interactive/REPL use). |
 | `engine.quit()` | Ask `run()` to unblock (e.g. from a handler). |
 | `engine.find(name)` | Find an item by `objectName` anywhere in the tree (nil if not found). |
 | `engine.root()` | The root object as an item handle. |
@@ -123,6 +124,45 @@ given. `engine.load_string(qml)` treats the inline QML as if it lived next to th
 relative asset URLs resolve there too.
 
 So: keep QML and assets next to your `.rox` and reference them by bare relative name.
+
+### Driving a UI interactively (without `run()`)
+
+`run()` hands the thread to the UI until the window closes — which is what an app wants, but not what
+you want at a REPL, where you'd like to load a UI and then poke at it live. The catch: until the Qt
+loop is pumped, a loaded window doesn't paint and queued handlers don't fire. Three calls let you
+pump it **on demand** instead, so the script (or REPL) keeps control:
+
+| Call | What it does |
+|---|---|
+| `qt.process_events(max_ms=nil)` | Service all pending Qt events once (repaint, queued handlers) and return. |
+| `engine.run_for(ms)` | Pump for ~`ms` then return (e.g. to let an animation play a beat). |
+| `qt.every(ms, fn)` | Call `fn()` ~every `ms` while the loop is pumped; returns a timer handle to `stop()`. |
+
+```roxal
+import qt
+var e = qt.Engine()
+e.load("ui.qml")
+qt.process_events()            # the window maps and paints
+
+var slider = e.find("volume")
+slider.value = 80              # the write lands immediately…
+qt.process_events()            # …and now you see it repaint
+
+print(slider.value)           # reads are always live — no pump needed
+
+# A periodic Roxal callback on the UI thread (fires while the loop is pumped):
+var t = qt.every(500, proc():
+  print("tick")
+)
+e.run_for(2000)                # ~4 ticks, then return
+t.stop()
+```
+
+Property **reads** are live regardless; **writes** take effect in the item immediately — pumping is
+what makes the repaint and any queued signal handlers actually happen. `qt.every`'s callback runs on
+the main UI thread, so it may touch Qt items freely. (For a *continuously* live prompt — the window
+responsive while you think — you'd integrate stdin into the event loop; these one-shots are the
+simpler building block.)
 
 ---
 

@@ -332,6 +332,7 @@ qt_tests = ['qt_lifecycle', 'qt_load_file',           # P0: lifecycle
             'qt_tree_basic', 'qt_tree_edit', 'qt_tree_gc', 'qt_tree_qml',  # tree model (QAbstractItemModel)
             'qt_sortfilter_basic', 'qt_sortfilter_qml',  # sort/filter proxy (QSortFilterProxyModel)
             'qt_dynamic_create',  # runtime item instantiation (qt.Component)
+            'qt_timer',           # cooperative pumping: qt.every / run_for / process_events
             'qt_actor_guard',     # Qt access from an actor thread is rejected
             'qt_log',             # Qt/QML message redirection
             'qt_load_relative']   # script-relative QML path resolution
