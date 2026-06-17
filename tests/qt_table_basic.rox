@@ -1,0 +1,32 @@
+// Pure-Roxal test for qt.TableModel: a QAbstractTableModel over row objects with chosen
+// columns. Exercises count/column_count, row access, append/remove, set (cell write),
+// columns=nil (all properties), and column validation. Headless.
+import qt
+
+type Part object:
+  var name   :string
+  var qty    :int
+  var status :string
+
+# Explicit columns: a [name, header] pair and a bare property name.
+var m = qt.TableModel(Part, [["name", "Part"], "qty", ["status", "Status"]], [
+  Part("Gripper", 3, "OK"),
+  Part("Sensor", 1, "Low"),
+])
+print("rows: {m.count()}")               # 2
+print("cols: {m.column_count()}")        # 3
+print("r0: " + m.row(0).name + " / " + m.row(0).status)   # Gripper / OK
+
+m.append(Part("Pump", 0, "Out"))
+print("after append: {m.count()}")       # 3
+
+m.set(1, "qty", 9)                        # write a cell (Sensor's qty)
+print("sensor qty: {m.row(1).qty}")      # 9
+
+m.remove(0)                               # drop Gripper
+print("after remove: {m.count()}")       # 2
+print("first now: " + m.row(0).name)     # Sensor
+
+# nil columns → every public property becomes a column
+var m2 = qt.TableModel(Part, nil, [Part("A", 1, "x")])
+print("auto cols: {m2.column_count()}")  # 3

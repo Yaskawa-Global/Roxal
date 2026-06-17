@@ -1,0 +1,23 @@
+// A qt.TableModel feeds a QML TableView: the chosen columns reach QML as cells (model.display),
+// and TableView.rows/columns reflect the model's dimensions. A Timer reads two cells + the
+// dimensions back via a P2 signal. Headless via QT_QPA_PLATFORM=offscreen.
+import qt
+
+type Part object:
+  var name :string
+  var qty  :int
+
+var inv = qt.TableModel(Part, [["name", "Part"], ["qty", "Qty"]], [
+  Part("Gripper", 3),
+  Part("Sensor", 1),
+])
+
+var engine = qt.Engine()
+engine.set_context_property("inv", inv)
+engine.load_string('import QtQuick\nimport QtQuick.Window\nWindow {\n id: win\n objectName: "win"\n visible: true\n width: 320\n height: 200\n property string c00: ""\n property string c10: ""\n signal report(string s)\n TableView {\n  id: tv\n  anchors.fill: parent\n  model: inv\n  delegate: Item {\n   implicitWidth: 120\n   implicitHeight: 28\n   Text { text: model.display }\n   Component.onCompleted: { if (row === 0 && column === 0) win.c00 = model.display; if (row === 1 && column === 0) win.c10 = model.display }\n  }\n }\n Timer { interval: 60; running: true; onTriggered: { win.report(tv.rows + "x" + tv.columns + " " + win.c00 + "," + win.c10); Qt.quit() } }\n}\n')
+
+var win = engine.find("win")
+win.onReport(proc(s): print("report: {s}"))
+
+engine.run()
+print("done")

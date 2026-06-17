@@ -1,0 +1,8 @@
+rows: 2
+cols: 3
+r0: Gripper / OK
+after append: 3
+sensor qty: 9
+after remove: 2
+first now: Sensor
+auto cols: 3

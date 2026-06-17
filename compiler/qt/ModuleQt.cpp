@@ -8,6 +8,7 @@
 #include "QtSignalHub.h"
 #include "QtListModel.h"
 #include "QtTreeModel.h"
+#include "QtTableModel.h"
 #include "QtBindable.h"
 
 #include <QGuiApplication>
@@ -34,7 +35,6 @@
 #include <QVariantMap>
 #include <QTimer>
 #include <QElapsedTimer>
-#include <QQuickStyle>
 #include <QStringList>
 #include <QLibraryInfo>
 #include <QDir>
@@ -169,6 +169,38 @@ RoxalTreeModel* roxalTreeModelPtr(const Value& v)
     Value nativeVal = inst->getProperty("_native");
     if (!isForeignPtr(nativeVal)) return nullptr;
     auto* handle = static_cast<QPointer<RoxalTreeModel>*>(asForeignPtr(nativeVal)->ptr);
+    return handle ? handle->data() : nullptr;
+}
+
+// Resolve the RoxalTableModel a TableModel receiver (args[0]) wraps (same pattern).
+RoxalTableModel* tableModelFromReceiver(ArgsView args, const char* method)
+{
+    ensureQtUiThread(method);   // TableModel.* is main-thread only
+    if (args.size() < 1 || !isObjectInstance(args[0]))
+        throw std::invalid_argument(std::string("TableModel.") + method + " expects a receiver");
+    ObjectInstance* inst = asObjectInstance(args[0]);
+    Value nativeVal = inst->getProperty("_native");
+    if (!isForeignPtr(nativeVal))
+        throw std::runtime_error(std::string("TableModel.") + method +
+                                 "(): model not initialized (call qt.TableModel(type) first)");
+    auto* handle = static_cast<QPointer<RoxalTableModel>*>(asForeignPtr(nativeVal)->ptr);
+    RoxalTableModel* model = handle ? handle->data() : nullptr;
+    if (!model)
+        throw std::runtime_error(std::string("TableModel.") + method +
+                                 "(): model is no longer valid");
+    return model;
+}
+
+// If `v` is a qt.TableModel handle, return its backing RoxalTableModel (else nullptr).
+RoxalTableModel* roxalTableModelPtr(const Value& v)
+{
+    if (!isObjectInstance(v)) return nullptr;
+    ObjectInstance* inst = asObjectInstance(v);
+    if (!isObjectType(inst->instanceType)) return nullptr;
+    if (asObjectType(inst->instanceType)->name != icu::UnicodeString("TableModel")) return nullptr;
+    Value nativeVal = inst->getProperty("_native");
+    if (!isForeignPtr(nativeVal)) return nullptr;
+    auto* handle = static_cast<QPointer<RoxalTableModel>*>(asForeignPtr(nativeVal)->ptr);
     return handle ? handle->data() : nullptr;
 }
 
@@ -471,6 +503,22 @@ void ModuleQt::registerBuiltins(VM& vm)
     linkMethod("TreeModel", "node_changed",[this](VM&, ArgsView a) { return treemodel_node_changed_builtin(a); });
     linkMethod("TreeModel", "cell_changed",[this](VM&, ArgsView a) { return treemodel_cell_changed_builtin(a); });
     linkMethod("TreeModel", "set",         [this](VM&, ArgsView a) { return treemodel_set_builtin(a); });
+
+    linkMethod("TableModel", "init",         [this](VM&, ArgsView a) { return tablemodel_init_builtin(a); });
+    linkMethod("TableModel", "count",        [this](VM&, ArgsView a) { return tablemodel_count_builtin(a); });
+    linkMethod("TableModel", "column_count", [this](VM&, ArgsView a) { return tablemodel_column_count_builtin(a); });
+    linkMethod("TableModel", "row",          [this](VM&, ArgsView a) { return tablemodel_row_builtin(a); });
+    linkMethod("TableModel", "append",       [this](VM&, ArgsView a) { return tablemodel_append_builtin(a); });
+    linkMethod("TableModel", "insert",       [this](VM&, ArgsView a) { return tablemodel_insert_builtin(a); });
+    linkMethod("TableModel", "remove",       [this](VM&, ArgsView a) { return tablemodel_remove_builtin(a); });
+    linkMethod("TableModel", "move",         [this](VM&, ArgsView a) { return tablemodel_move_builtin(a); });
+    linkMethod("TableModel", "clear",        [this](VM&, ArgsView a) { return tablemodel_clear_builtin(a); });
+    linkMethod("TableModel", "set_rows",     [this](VM&, ArgsView a) { return tablemodel_set_rows_builtin(a); });
+    linkMethod("TableModel", "begin_reset",  [this](VM&, ArgsView a) { return tablemodel_begin_reset_builtin(a); });
+    linkMethod("TableModel", "end_reset",    [this](VM&, ArgsView a) { return tablemodel_end_reset_builtin(a); });
+    linkMethod("TableModel", "row_changed",  [this](VM&, ArgsView a) { return tablemodel_row_changed_builtin(a); });
+    linkMethod("TableModel", "cell_changed", [this](VM&, ArgsView a) { return tablemodel_cell_changed_builtin(a); });
+    linkMethod("TableModel", "set",          [this](VM&, ArgsView a) { return tablemodel_set_builtin(a); });
 
     linkMethod("SortFilterModel", "init",         [this](VM&, ArgsView a) { return sortfilter_init_builtin(a); });
     linkMethod("SortFilterModel", "sort_by",      [this](VM&, ArgsView a) { return sortfilter_sort_by_builtin(a); });
@@ -1007,8 +1055,12 @@ Value ModuleQt::qt_set_style_builtin(ArgsView args)
             throw std::runtime_error("qt.set_style: unknown style '" + name.toStdString() +
                                      "'. Available: " + styles.join(", ").toStdString());
     }
-    // No effect once a Controls item has been created, so this must run before load().
-    QQuickStyle::setStyle(name);
+    // Select the style via the environment variable Qt Quick Controls reads when it first
+    // resolves its style (at QML load). We deliberately do NOT link QtQuickControls2 to call
+    // QQuickStyle::setStyle(): linking it makes the style resolve at plugin-load (import qt),
+    // before this runs, locking it. Setting the env var keeps the style unresolved until
+    // load(), so it must (as documented) be called before load()/load_string().
+    qputenv("QT_QUICK_CONTROLS_STYLE", name.toUtf8());
     return Value::nilVal();
 }
 
@@ -1027,6 +1079,8 @@ Value ModuleQt::engine_set_context_property_builtin(ArgsView args)
         engine->rootContext()->setContextProperty(name, static_cast<QObject*>(model));
     } else if (RoxalTreeModel* tree = roxalTreeModelPtr(v)) {
         engine->rootContext()->setContextProperty(name, static_cast<QObject*>(tree));
+    } else if (RoxalTableModel* table = roxalTableModelPtr(v)) {
+        engine->rootContext()->setContextProperty(name, static_cast<QObject*>(table));
     } else if (QSortFilterProxyModel* proxy = roxalSortFilterPtr(v)) {
         engine->rootContext()->setContextProperty(name, static_cast<QObject*>(proxy));
     } else if (isQtObject(v)) {
@@ -1356,6 +1410,210 @@ Value ModuleQt::treemodel_set_builtin(ArgsView args)
     if (args.size() < 4 || !isString(args[2]))
         throw std::invalid_argument("TreeModel.set(node, role, value) expects a node, a string role, and a value");
     m->setCell(args[1], QByteArray::fromStdString(toUTF8StdString(asStringObj(args[2])->s)), args[3]);
+    return Value::nilVal();
+}
+
+// ---- qt.TableModel builtins (a QAbstractTableModel over row objects + columns) ----
+
+Value ModuleQt::tablemodel_init_builtin(ArgsView args)
+{
+    if (args.size() < 2 || !isObjectInstance(args[0]))
+        throw std::invalid_argument("qt.TableModel(row_type) expects a receiver and a row type");
+    ObjectInstance* inst = asObjectInstance(args[0]);
+
+    Value rowTypeVal = args[1];
+    if (!isObjectType(rowTypeVal))
+        throw std::invalid_argument("qt.TableModel(row_type): the argument must be a type");
+    ObjObjectType* rowType = asObjectType(rowTypeVal);
+    if (rowType->isActor || rowType->isEnumeration)
+        throw std::invalid_argument("qt.TableModel(row_type): row type must be an object type or interface "
+                                    "(not an actor or enum)");
+
+    Value columns = (args.size() >= 3) ? args[2] : Value::nilVal();   // nil = all properties
+
+    // Validate the column spec HERE (in the builtin body) so a bad spec is a catchable
+    // Roxal exception — the same check deeper in createTable/buildColumns wouldn't reach a
+    // try/except. Mirrors RoxalTableModel::buildColumns; that call then can't fault.
+    if (!columns.isNil()) {
+        if (!isList(columns))
+            throw std::runtime_error("qt.TableModel: columns must be a list (or nil for all properties)");
+        const auto props = rowType->orderedPublicProperties();
+        auto hasProp = [&](const icu::UnicodeString& name) {
+            for (const auto& pv : props)
+                if (pv.property->name == name) return true;
+            return false;
+        };
+        ObjList* cl = asList(columns);
+        for (int32_t i = 0; i < cl->length(); ++i) {
+            Value e = cl->getElement(static_cast<size_t>(i));
+            icu::UnicodeString prop;
+            if (isString(e)) {
+                prop = asStringObj(e)->s;
+            } else if (isList(e)) {
+                ObjList* pair = asList(e);
+                if (pair->length() < 2 || !isString(pair->getElement(0)) || !isString(pair->getElement(1)))
+                    throw std::runtime_error("qt.TableModel: a column must be a property name or a "
+                                             "[name, header] pair of strings");
+                prop = asStringObj(pair->getElement(0))->s;
+            } else {
+                throw std::runtime_error("qt.TableModel: a column must be a property name (string) "
+                                         "or a [name, header] pair");
+            }
+            if (!hasProp(prop))
+                throw std::runtime_error("qt.TableModel: column '" + toUTF8StdString(prop) +
+                                         "' is not a public property of the row type");
+        }
+    }
+
+    // Build the model's own row list, optionally seeded with `initial` (arg 3).
+    auto listObj = newListObj();
+    ObjList* rowList = listObj.get();
+    Value rows = Value::objVal(std::move(listObj));
+    if (args.size() >= 4 && !args[3].isNil()) {
+        if (!isList(args[3]))
+            throw std::invalid_argument("qt.TableModel(row_type, columns, initial): initial must be a list of rows");
+        ObjList* seed = asList(args[3]);
+        for (int32_t i = 0; i < seed->length(); ++i) {
+            Value e = seed->getElement(static_cast<size_t>(i));
+            if (!isObjectInstance(e) ||
+                !isSubtypeOf(asObjectType(asObjectInstance(e)->instanceType), rowType))
+                throw std::runtime_error("qt.TableModel: an initial row does not match the row type");
+            rowList->append(e);
+        }
+    }
+
+    // createTable parses/validates `columns` (throws on a bad column spec).
+    RoxalTableModel* model = QtModelHub::instance().createTable(rowTypeVal, columns, rows);
+
+    auto* handle = new QPointer<RoxalTableModel>(model);
+    auto fp = newForeignPtrObj(static_cast<void*>(handle));
+    fp->registerCleanup([](void* p) {
+        delete static_cast<QPointer<RoxalTableModel>*>(p);
+    });
+    inst->setProperty("_native", Value::objVal(std::move(fp)));
+    return Value::nilVal();
+}
+
+Value ModuleQt::tablemodel_count_builtin(ArgsView args)
+{
+    return Value::intVal(tableModelFromReceiver(args, "count")->count());
+}
+
+Value ModuleQt::tablemodel_column_count_builtin(ArgsView args)
+{
+    return Value::intVal(tableModelFromReceiver(args, "column_count")->columns());
+}
+
+Value ModuleQt::tablemodel_row_builtin(ArgsView args)
+{
+    RoxalTableModel* m = tableModelFromReceiver(args, "row");
+    if (args.size() < 2 || !args[1].isInt())
+        throw std::invalid_argument("TableModel.row(i) expects an int index");
+    return m->rowAt(static_cast<int>(args[1].asInt()));
+}
+
+Value ModuleQt::tablemodel_append_builtin(ArgsView args)
+{
+    RoxalTableModel* m = tableModelFromReceiver(args, "append");
+    if (args.size() < 2 || !isObjectInstance(args[1]))
+        throw std::invalid_argument("TableModel.append(row) expects a row object");
+    if (!m->admits(args[1]))
+        throw std::runtime_error("TableModel.append: the row does not match the model's row type");
+    m->appendRow(args[1]);
+    return Value::nilVal();
+}
+
+Value ModuleQt::tablemodel_insert_builtin(ArgsView args)
+{
+    RoxalTableModel* m = tableModelFromReceiver(args, "insert");
+    if (args.size() < 3 || !args[1].isInt() || !isObjectInstance(args[2]))
+        throw std::invalid_argument("TableModel.insert(i, row) expects an int index and a row object");
+    if (!m->admits(args[2]))
+        throw std::runtime_error("TableModel.insert: the row does not match the model's row type");
+    m->insertRow(static_cast<int>(args[1].asInt()), args[2]);
+    return Value::nilVal();
+}
+
+Value ModuleQt::tablemodel_remove_builtin(ArgsView args)
+{
+    RoxalTableModel* m = tableModelFromReceiver(args, "remove");
+    if (args.size() < 2 || !args[1].isInt())
+        throw std::invalid_argument("TableModel.remove(i) expects an int index");
+    m->removeRow(static_cast<int>(args[1].asInt()));
+    return Value::nilVal();
+}
+
+Value ModuleQt::tablemodel_move_builtin(ArgsView args)
+{
+    RoxalTableModel* m = tableModelFromReceiver(args, "move");
+    if (args.size() < 3 || !args[1].isInt() || !args[2].isInt())
+        throw std::invalid_argument("TableModel.move(from, to) expects two int indices");
+    m->moveRow(static_cast<int>(args[1].asInt()), static_cast<int>(args[2].asInt()));
+    return Value::nilVal();
+}
+
+Value ModuleQt::tablemodel_clear_builtin(ArgsView args)
+{
+    tableModelFromReceiver(args, "clear")->clearRows();
+    return Value::nilVal();
+}
+
+Value ModuleQt::tablemodel_set_rows_builtin(ArgsView args)
+{
+    RoxalTableModel* m = tableModelFromReceiver(args, "set_rows");
+    if (args.size() < 2 || !isList(args[1]))
+        throw std::invalid_argument("TableModel.set_rows(rows) expects a list of rows");
+    ObjList* src = asList(args[1]);
+    std::vector<Value> rows;
+    rows.reserve(static_cast<size_t>(src->length()));
+    for (int32_t i = 0; i < src->length(); ++i) {
+        Value e = src->getElement(static_cast<size_t>(i));
+        if (!m->admits(e))
+            throw std::runtime_error("TableModel.set_rows: a row does not match the model's row type");
+        rows.push_back(e);
+    }
+    m->setRows(rows);
+    return Value::nilVal();
+}
+
+Value ModuleQt::tablemodel_begin_reset_builtin(ArgsView args)
+{
+    tableModelFromReceiver(args, "begin_reset")->beginResetBatch();
+    return Value::nilVal();
+}
+
+Value ModuleQt::tablemodel_end_reset_builtin(ArgsView args)
+{
+    tableModelFromReceiver(args, "end_reset")->endResetBatch();
+    return Value::nilVal();
+}
+
+Value ModuleQt::tablemodel_row_changed_builtin(ArgsView args)
+{
+    RoxalTableModel* m = tableModelFromReceiver(args, "row_changed");
+    if (args.size() < 2 || !args[1].isInt())
+        throw std::invalid_argument("TableModel.row_changed(i) expects an int index");
+    m->rowChanged(static_cast<int>(args[1].asInt()));
+    return Value::nilVal();
+}
+
+Value ModuleQt::tablemodel_cell_changed_builtin(ArgsView args)
+{
+    RoxalTableModel* m = tableModelFromReceiver(args, "cell_changed");
+    if (args.size() < 3 || !args[1].isInt() || !isString(args[2]))
+        throw std::invalid_argument("TableModel.cell_changed(i, column) expects an int index and a column name");
+    m->cellChanged(static_cast<int>(args[1].asInt()),
+                   QByteArray::fromStdString(toUTF8StdString(asStringObj(args[2])->s)));
+    return Value::nilVal();
+}
+
+Value ModuleQt::tablemodel_set_builtin(ArgsView args)
+{
+    RoxalTableModel* m = tableModelFromReceiver(args, "set");
+    if (args.size() < 4 || !args[1].isInt() || !isString(args[2]))
+        throw std::invalid_argument("TableModel.set(i, column, value) expects an int index, a column name, and a value");
+    m->setCell(static_cast<int>(args[1].asInt()),
+               QByteArray::fromStdString(toUTF8StdString(asStringObj(args[2])->s)), args[3]);
     return Value::nilVal();
 }
 

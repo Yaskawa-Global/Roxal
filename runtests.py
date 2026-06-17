@@ -331,6 +331,7 @@ qt_tests = ['qt_lifecycle', 'qt_load_file',           # P0: lifecycle
             'qt_callback_error', 'qt_callback_catch',  # handler-exception behavior (fail-loud / catch)
             'qt_tree_basic', 'qt_tree_edit', 'qt_tree_gc', 'qt_tree_qml',  # tree model (QAbstractItemModel)
             'qt_sortfilter_basic', 'qt_sortfilter_qml',  # sort/filter proxy (QSortFilterProxyModel)
+            'qt_table_basic', 'qt_table_qml', 'qt_table_gc', 'qt_table_badcol',  # table model (QAbstractTableModel)
             'qt_dynamic_create',  # runtime item instantiation (qt.Component)
             'qt_timer',           # cooperative pumping: qt.every / run_for / process_events
             'qt_style',           # qt.set_style (Qt Quick Controls style selection)

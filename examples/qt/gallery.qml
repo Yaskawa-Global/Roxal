@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Window
 import QtQuick.Controls
 import QtQuick.Layouts
-import Qt.labs.qmlmodels
 
 // A wide "widget gallery": an ApplicationWindow with a TabBar header, a status-bar footer,
 // and a page per category showing off Qt Quick Controls + visual items. It is driven from
@@ -23,6 +22,7 @@ ApplicationWindow {
     // UI -> Roxal.
     signal logRequested(string msg)     // "something happened" — Roxal logs it
     signal addItemRequested(string text) // add a row to the Lists model (Roxal owns it)
+    signal restockRequested()            // top up the Table model's low/out items (Roxal owns it)
 
     // Roxal -> UI (called from Roxal handlers).
     function logLine(s) {
@@ -190,16 +190,24 @@ ApplicationWindow {
         }
 
         // ============================== Table ==============================
+        // A TableView backed by a Roxal qt.TableModel (the context property `inventory`).
+        // Headers come from the model; "Restock" asks Roxal to top up the low/out rows.
         Item {
             ColumnLayout {
                 anchors.fill: parent
                 anchors.margins: 12
-                spacing: 0
+                spacing: 8
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label { text: "Inventory — a Roxal qt.TableModel"; Layout.fillWidth: true }
+                    Button { text: "Restock"; onClicked: win.restockRequested() }
+                }
 
                 HorizontalHeaderView {
                     id: hHeader
                     Layout.fillWidth: true
-                    syncView: inventory
+                    syncView: invTable
                     clip: true
                     delegate: Rectangle {
                         implicitHeight: 34
@@ -208,40 +216,28 @@ ApplicationWindow {
                             anchors.centerIn: parent
                             color: "#e5e7eb"
                             font.bold: true
-                            text: ["Part", "Qty", "Status"][index]
+                            text: display              // header text supplied by the model
                         }
                     }
                 }
 
                 TableView {
-                    id: inventory
+                    id: invTable
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
                     columnSpacing: 1
                     rowSpacing: 1
                     ScrollBar.vertical: ScrollBar {}
-                    model: TableModel {
-                        TableModelColumn { display: "name" }
-                        TableModelColumn { display: "qty" }
-                        TableModelColumn { display: "status" }
-                        rows: [
-                            { name: "Gripper",        qty: 3, status: "OK" },
-                            { name: "Base plate",     qty: 5, status: "OK" },
-                            { name: "Wrist sensor",   qty: 1, status: "Low" },
-                            { name: "Shoulder motor", qty: 4, status: "OK" },
-                            { name: "Elbow joint",    qty: 2, status: "Check" },
-                            { name: "Coolant pump",   qty: 0, status: "Out" }
-                        ]
-                    }
+                    model: inventory               // a Roxal qt.TableModel
                     delegate: Rectangle {
                         implicitWidth: 150
                         implicitHeight: 36
                         color: row % 2 ? "#0f172a" : "#111c33"
                         Label {
                             anchors.centerIn: parent
-                            color: (column === 2 && (display === "Low" || display === "Out")) ? "#f87171" : "#dbeafe"
-                            text: display
+                            color: (column === 2 && model.display !== "OK") ? "#f87171" : "#dbeafe"
+                            text: model.display
                         }
                     }
                 }

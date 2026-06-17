@@ -7,6 +7,7 @@
 #include "ModuleQtConvert.h"
 #include "QtListModel.h"
 #include "QtTreeModel.h"   // QtModelHub also owns + GC-roots tree models
+#include "QtTableModel.h"  // … and table models
 
 #include <QVariant>
 #include <QModelIndex>
@@ -248,6 +249,7 @@ bool RoxalListModel::setCell(int row, const QByteArray& roleName, const Value& v
 struct QtModelHub::Impl : SimpleMarkSweepGC::ExternalRootProvider {
     std::vector<std::unique_ptr<RoxalListModel>> models;
     std::vector<std::unique_ptr<RoxalTreeModel>> treeModels;
+    std::vector<std::unique_ptr<RoxalTableModel>> tableModels;
     std::vector<std::unique_ptr<QSortFilterProxyModel>> proxies;   // qt.SortFilterModel
     bool rootRegistered { false };
 
@@ -264,6 +266,11 @@ struct QtModelHub::Impl : SimpleMarkSweepGC::ExternalRootProvider {
             if (!m) continue;
             visitor.visit(m->typeValue());
             visitor.visit(m->rootsValue());
+        }
+        for (auto& m : tableModels) {
+            if (!m) continue;
+            visitor.visit(m->typeValue());
+            visitor.visit(m->rowsValue());
         }
     }
 };
@@ -290,6 +297,7 @@ void QtModelHub::shutdown()
     impl_->proxies.clear();      // proxies first — never outlive their source models
     impl_->models.clear();       // delete the QAbstract*Models while Qt is still alive
     impl_->treeModels.clear();
+    impl_->tableModels.clear();
     if (impl_->rootRegistered) {
         SimpleMarkSweepGC::instance().unregisterExternalRootProvider(impl_.get());
         impl_->rootRegistered = false;
@@ -309,6 +317,17 @@ RoxalTreeModel* QtModelHub::createTree(const Value& rowType, const Value& roots)
     auto m = std::make_unique<RoxalTreeModel>(rowType, roots);
     RoxalTreeModel* raw = m.get();
     impl_->treeModels.push_back(std::move(m));
+    return raw;
+}
+
+RoxalTableModel* QtModelHub::createTable(const Value& rowType, const Value& columns, const Value& rows)
+{
+    auto m = std::make_unique<RoxalTableModel>(rowType, rows);
+    // Columns are pre-validated by the tablemodel_init builtin (a throw from here, deep in
+    // a hub call, wouldn't reach a Roxal try/except), so buildColumns won't fault.
+    m->buildColumns(columns);
+    RoxalTableModel* raw = m.get();
+    impl_->tableModels.push_back(std::move(m));
     return raw;
 }
 

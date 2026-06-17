@@ -1,0 +1,7 @@
+// A column that isn't a public property of the row type is rejected at construction.
+import qt
+type Part object:
+  var name :string
+  var qty  :int
+var m = qt.TableModel(Part, ["name", "nonesuch"])
+print("should not reach here")

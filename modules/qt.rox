@@ -319,6 +319,84 @@ type TreeModel object:
 
 
 @builtin
+type TableModel object:
+  """A table model for a QML TableView, backed by Roxal row objects. Each row is an object
+  instance; you choose which of its properties are columns (and in what order), each with a
+  header. A TableView delegate binds the cell value as `model.display` (the column comes from
+  the delegate's `column`); a HorizontalHeaderView shows the headers. A writable column is
+  editable from the UI, a `const` column is read-only."""
+
+  var _native   // ForeignPtr to the C++ RoxalTableModel (module-owned)
+
+  @builtin
+  proc init(row_type, columns=nil, initial=nil):
+    """Create a table model whose rows are instances of `row_type`. `columns` selects the
+    columns: a list whose entries are either a property name (e.g. "qty" — the header is the
+    name) or a `[name, header]` pair (e.g. ["qty", "Quantity"]); nil uses all of the type's
+    public properties in declared order. Optionally seed with `initial`, a list of rows (each
+    an instance of / implementing `row_type`)."""
+
+  @builtin
+  func count() -> int:
+    """The number of rows."""
+
+  @builtin
+  func column_count() -> int:
+    """The number of columns."""
+
+  @builtin
+  func row(i:int):
+    """The row object at row index `i` (nil if out of range)."""
+
+  @builtin
+  proc append(row):
+    """Append a row to the end of the model."""
+
+  @builtin
+  proc insert(i:int, row):
+    """Insert `row` before row index `i`."""
+
+  @builtin
+  proc remove(i:int):
+    """Remove the row at index `i`."""
+
+  @builtin
+  proc move(from_index:int, to_index:int):
+    """Move the row at `from_index` to `to_index`."""
+
+  @builtin
+  proc clear():
+    """Remove all rows."""
+
+  @builtin
+  proc set_rows(rows):
+    """Replace all rows with the rows in `rows` (a single model reset)."""
+
+  @builtin
+  proc begin_reset():
+    """Begin a batch structural change; pair with end_reset(). Mutators called in
+    between are coalesced into a single model reset (no per-operation signals)."""
+
+  @builtin
+  proc end_reset():
+    """End a begin_reset() batch."""
+
+  @builtin
+  proc row_changed(i:int):
+    """Notify the view that every column of row `i` changed (call after editing the row
+    object's properties directly)."""
+
+  @builtin
+  proc cell_changed(i:int, column:string):
+    """Notify the view that `column` (a column's property name) of row `i` changed."""
+
+  @builtin
+  proc set(i:int, column:string, value):
+    """Set `column` (a column's property name) of row `i` to `value` and notify the view
+    (a no-op if unchanged)."""
+
+
+@builtin
 type SortFilterModel object:
   """A sorted / filtered view over a qt.ListModel for a QML ListView, without changing the
   underlying model. Sort by a role and/or filter rows by a role substring; the view tracks

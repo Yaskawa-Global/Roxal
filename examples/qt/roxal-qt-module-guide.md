@@ -457,6 +457,46 @@ The API mirrors the list model but is node-addressed: `count(parent)`, `child(pa
 **through these calls** so the view is notified (v1 doesn't observe direct edits to a node's
 `children` list).
 
+### Table models
+
+For a QML `TableView` with real columns, use **`qt.TableModel`**. Like the list model the rows are
+Roxal objects, but you pick which properties are **columns** (and in what order), each with a
+header — so a row type can carry more than the table shows:
+
+```roxal
+type Part object:
+  var name   :string
+  var qty    :int
+  var status :string
+
+# Columns: a [property, header] pair or a bare property name (header = the name).
+var inv = qt.TableModel(Part, [["name", "Part"], "qty", ["status", "Status"]], [
+  Part("Gripper", 3, "OK"),
+  Part("Wrist sensor", 1, "Low"),
+])
+engine.set_context_property("inv", inv)
+```
+
+```qml
+HorizontalHeaderView { id: header; syncView: table }   // titles come from the model's headers
+TableView {
+    id: table
+    model: inv
+    delegate: Rectangle {
+        implicitWidth: 140; implicitHeight: 32
+        Text { anchors.centerIn: parent; text: model.display }   // the cell value; column = the delegate's `column`
+    }
+}
+```
+
+A delegate binds the cell value as **`model.display`** (the column is the delegate's `column`); a
+`HorizontalHeaderView` reads the column **headers** from the model. `nil` columns means "every
+public property, in order". The rest of the API mirrors the list model — `count()`,
+`column_count()`, `row(i)`, `append`/`insert`/`remove`/`move`/`clear`, `set_rows`, the
+`begin_reset()`/`end_reset()` batch, and `row_changed(i)` / `cell_changed(i, column)` /
+`set(i, column, value)` (where `column` is a column's property name). A writable column is
+editable from the UI; a `const` one is read-only.
+
 ---
 
 ## Bindable objects

@@ -105,6 +105,24 @@ private:
     Value treemodel_cell_changed_builtin(ArgsView args);
     Value treemodel_set_builtin(ArgsView args);
 
+    // TableModel methods (args[0] = receiver TableModel instance). A moc-free
+    // QAbstractTableModel over row objects; columns map to selected row properties.
+    Value tablemodel_init_builtin(ArgsView args);
+    Value tablemodel_count_builtin(ArgsView args);
+    Value tablemodel_column_count_builtin(ArgsView args);
+    Value tablemodel_row_builtin(ArgsView args);
+    Value tablemodel_append_builtin(ArgsView args);
+    Value tablemodel_insert_builtin(ArgsView args);
+    Value tablemodel_remove_builtin(ArgsView args);
+    Value tablemodel_move_builtin(ArgsView args);
+    Value tablemodel_clear_builtin(ArgsView args);
+    Value tablemodel_set_rows_builtin(ArgsView args);
+    Value tablemodel_begin_reset_builtin(ArgsView args);
+    Value tablemodel_end_reset_builtin(ArgsView args);
+    Value tablemodel_row_changed_builtin(ArgsView args);
+    Value tablemodel_cell_changed_builtin(ArgsView args);
+    Value tablemodel_set_builtin(ArgsView args);
+
     // SortFilterModel methods (args[0] = receiver). A QSortFilterProxyModel over a
     // qt.ListModel: role-based sort + case-insensitive substring filter.
     Value sortfilter_init_builtin(ArgsView args);

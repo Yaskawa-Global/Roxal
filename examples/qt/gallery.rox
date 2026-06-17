@@ -2,9 +2,10 @@
 # category (Inputs, Lists, Table, Gallery, Log), showing off many Qt Quick Controls and
 # visual items (combo box, radio buttons, checkboxes, switch, sliders, spin box, dial,
 # range slider, progress bars, busy indicator, tumbler, gradients/rounded rects/borders,
-# ListView, TableView, ScrollView, TextArea, …). Driven from Roxal: the Lists page is
-# backed by a qt.ListModel Roxal owns, and every interaction emits a signal Roxal logs
-# (to the footer status bar and the Log page).
+# ListView, TableView, ScrollView, TextArea, …) in the Fusion style (qt.set_style). Driven
+# from Roxal: the Lists page is backed by a qt.ListModel and the Table page by a qt.TableModel
+# Roxal owns (Restock mutates it live), and every interaction emits a signal Roxal logs (to
+# the footer status bar and the Log page).
 #
 # Build (Qt is an optional module, OFF by default):
 #   cmake -B build/ -DROXAL_ENABLE_QT=ON -DCMAKE_PREFIX_PATH=/opt/Qt/6.8.3/gcc_64
@@ -14,10 +15,19 @@
 
 import qt
 
+# Set the theme before loading any QML
+qt.set_style("Imagine")
+
 # A row type for the Lists model — its public properties become the ListView roles.
 type Part object:
   var name :string
   var qty  :int
+
+# A row type for the Table model — we expose a subset/order of its properties as columns.
+type Stock object:
+  var name   :string
+  var qty    :int
+  var status :string
 
 var engine = qt.Engine()
 
@@ -30,6 +40,19 @@ var parts = qt.ListModel(Part, [
   Part("Elbow joint", 2),
 ])
 engine.set_context_property("parts", parts)
+
+# Roxal owns the Table model too; the Table tab's TableView binds it as `inventory`.
+# Columns pick the properties + headers; `status` drives a conditional cell colour in QML.
+var inventory = qt.TableModel(Stock, [["name", "Part"], ["qty", "Qty"], ["status", "Status"]], [
+  Stock("Gripper", 3, "OK"),
+  Stock("Base plate", 5, "OK"),
+  Stock("Wrist sensor", 1, "Low"),
+  Stock("Shoulder motor", 4, "OK"),
+  Stock("Elbow joint", 2, "Check"),
+  Stock("Coolant pump", 0, "Out"),
+])
+engine.set_context_property("inventory", inventory)
+
 engine.load('gallery.qml')
 
 var win    = engine.find("win")
@@ -50,6 +73,23 @@ win.onAddItemRequested(proc(text):
     events = events + 1
     win.logLine("[{events}] added part: {text}")
     status.text = "{events} events · added {text}"
+)
+
+# The Table "Restock" button asks Roxal to top up any low/out item — set() writes the cell
+# back through the row object and notifies the TableView, which updates live.
+win.onRestockRequested(proc():
+  var restocked = 0
+  var i = 0
+  while i < inventory.count():
+    var r = inventory.row(i)
+    if r.qty == 0 or r.status == "Low" or r.status == "Out" or r.status == "Check":
+      inventory.set(i, "qty", 6)
+      inventory.set(i, "status", "OK")
+      restocked = restocked + 1
+    i = i + 1
+  events = events + 1
+  win.logLine("[{events}] restocked {restocked} item(s)")
+  status.text = "{events} events · restocked {restocked}"
 )
 
 print("Roxal × Qt Quick widget gallery — click around the tabs; close the window to exit")
