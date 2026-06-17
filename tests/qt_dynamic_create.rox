@@ -1,0 +1,43 @@
+// Runtime item instantiation via qt.Component: compile a QML snippet once, then spawn
+// items from it under a chosen parent with initial properties — QML's Qt.createComponent
+// + createObject pattern. Headless via QT_QPA_PLATFORM=offscreen; no run() needed because
+// instantiation is synchronous.
+import qt
+
+var engine = qt.Engine()
+engine.load_string('import QtQuick\nimport QtQuick.Window\nWindow {\n objectName: "win"\n visible: true\n Item { objectName: "box" }\n}\n')
+
+# Compile a reusable component (a labelled marker rectangle) once.
+var marker = engine.create_component_string('import QtQuick\nRectangle {\n property string label: ""\n property int slot: 0\n width: 10\n height: 10\n}\n')
+
+var box = engine.find("box")
+
+# Instantiate under the box with initial properties (applied before completion).
+var a = marker.create(box, {"label": "joint-1", "slot": 7})
+print("a.label = {a.label}")          # joint-1
+print("a.slot = {a.slot}")            # 7
+
+# Post-create mutation works — it's an ordinary item handle now.
+a.label = "renamed"
+print("a.label2 = {a.label}")         # renamed
+
+# It's parented under the box (visual + ownership).
+var p = a.parent
+var parented = p != nil and p.objectName == "box"
+print("a parented under box = {parented}")   # true
+
+# A second instance from the same component, detached (nil parent → engine-owned).
+var b = marker.create()
+var bIsItem = b != nil
+print("b is item = {bIsItem}")        # true
+print("b.label default = '{b.label}'") # '' (empty default)
+
+# A bad QML snippet raises a catchable error.
+var raised = false
+try:
+  engine.create_component_string("this is not valid qml {")
+except e:
+  raised = true
+print("bad qml raised = {raised}")    # true
+
+print("done")

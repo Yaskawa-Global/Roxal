@@ -107,6 +107,37 @@ type Engine object:
     """Expose `value` to QML under `name` (e.g. a qt.ListModel for a ListView, a Qt
     item handle, or a plain value). Call before load(); QML then references `name`."""
 
+  @builtin
+  func create_component(path:string):
+    """Compile a reusable qt.Component from the QML file at `path` (resolved like
+    load()). Instantiate items from it with Component.create(). Raises on a compile
+    error."""
+
+  @builtin
+  func create_component_string(qml:string):
+    """Compile a reusable qt.Component from an inline QML `qml` string (its relative
+    asset URLs / imports resolve next to the calling script, like load_string()).
+    Raises on a compile error."""
+
+
+@builtin
+type Component object:
+  """A reusable QML component compiled from a file or inline source, obtained from an
+  Engine (engine.create_component / create_component_string). Instantiate items from it
+  at runtime with create(), QML's Qt.createComponent + createObject pattern."""
+
+  var _native   // ForeignPtr to the C++ QQmlComponent (engine-owned)
+
+  @builtin
+  func create(parent=nil, props=nil):
+    """Instantiate the component, returning a Qt item handle (like engine.find()).
+    `props` is an optional dict of initial property values, set before the item is
+    completed (so its bindings see them). With a non-nil `parent` item, the new item is
+    parented to it — for ownership (destroyed with the parent) and, for visual items, for
+    layout (it appears under the parent). With `parent` nil, the item is owned by the
+    engine (kept alive until teardown) so you can parent it yourself later. Raises if
+    instantiation fails."""
+
 
 @builtin
 type ListModel object:

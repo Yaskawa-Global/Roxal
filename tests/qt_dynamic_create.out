@@ -1,0 +1,8 @@
+a.label = joint-1
+a.slot = 7
+a.label2 = renamed
+a parented under box = true
+b is item = true
+b.label default = ''
+bad qml raised = true
+done

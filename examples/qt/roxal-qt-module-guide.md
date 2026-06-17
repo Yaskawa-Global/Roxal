@@ -160,6 +160,42 @@ exception**.
 
 ---
 
+## Creating items dynamically
+
+Sometimes the items you need aren't in the loaded QML — you want to spawn them at runtime (a marker
+per detected object, a row of buttons, a node per robot joint). Compile a QML snippet once into a
+**`qt.Component`**, then `create()` items from it under a chosen parent — Roxal's version of QML's
+`Qt.createComponent` + `createObject`.
+
+```roxal
+# Compile once — from a .qml file…
+var marker = engine.create_component("Marker.qml")
+# …or from inline QML:
+var marker = engine.create_component_string("""
+    import QtQuick
+    Rectangle { property string label: ""; width: 20; height: 20; radius: 10; color: "tomato" }
+""")
+
+var box = engine.find("box")                 # a container Item in the loaded QML
+
+# Spawn an instance under the box, with initial property values:
+var m = marker.create(box, {"label": "joint-1", "x": 10, "y": 40})
+m.color = "steelblue"                        # it's an ordinary item handle afterward
+```
+
+- `create(parent, props)` returns an item handle just like `find()`. `props` (optional) is a dict of
+  initial property values, applied **before** the item is completed so its bindings see them.
+- With a **`parent`** item, the new item is parented to it — for ownership (it's destroyed with the
+  parent) and, for visual items, for layout (it appears inside the parent). Pass **`nil`** to create a
+  detached item (owned by the engine); parent it yourself later.
+- A compile error in the QML (in `create_component*`) or a failed instantiation (in `create`) raises a
+  **catchable Roxal exception**.
+
+One `qt.Component` makes as many items as you like — compile in setup, `create()` in a loop. See
+[examples/qt/dynamic.rox](dynamic.rox).
+
+---
+
 ## Reacting to Qt signals (events & callbacks)
 
 A Qt/QML signal (a button's `clicked`, a slider's `valueChanged`, a custom QML `signal`) reaches Roxal

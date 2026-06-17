@@ -1,0 +1,37 @@
+# Demo: spawn QML items at runtime with qt.Component (compile once, create many).
+#
+# A qt.Component is a QML snippet compiled once; create(parent, props) instantiates an item
+# from it under a parent, with initial property values — QML's Qt.createComponent +
+# createObject. Here each "Add joint" click asks Roxal (via a signal) to create a numbered
+# marker rectangle inside the Flow container, so the markers lay themselves out and are owned
+# by (and destroyed with) the container.
+#
+# Build (Qt is an optional module, OFF by default):
+#   cmake -B build/ -DROXAL_ENABLE_QT=ON -DCMAKE_PREFIX_PATH=/opt/Qt/6.8.3/gcc_64
+#   cmake --build build/ -j4
+# Run from the repo root (needs an X11 display):
+#   ./build/roxal examples/qt/dynamic.rox
+
+import qt
+
+var engine = qt.Engine()
+engine.load('dynamic.qml')
+
+# Compile the marker component ONCE; each create() spawns a fresh instance from it.
+var marker = engine.create_component_string('import QtQuick\nRectangle {\n property string label: ""\n width: 64\n height: 64\n radius: 8\n color: "#1e293b"\n border.color: "#38bdf8"\n border.width: 2\n Text { anchors.centerIn: parent; text: parent.label; color: "#e2e8f0"; font.pixelSize: 18 }\n}\n')
+
+var canvas = engine.find("canvas")
+var status = engine.find("status")
+var count = 0
+
+# UI → Roxal: spawn one marker per click, into the canvas, with an incrementing label.
+var win = engine.find("win")
+win.onAddRequested(proc():
+  count = count + 1
+  marker.create(canvas, {"label": "J{count}"})
+  status.text = "{count} marker(s)"
+)
+
+print("ready — click “Add joint” to spawn markers; close the window to exit")
+engine.run()
+print("bye")

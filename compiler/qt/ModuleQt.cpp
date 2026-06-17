@@ -28,6 +28,10 @@
 #include <QSortFilterProxyModel>
 #include <QModelIndex>
 #include <QHash>
+#include <QQmlComponent>
+#include <QQmlEngine>
+#include <QQuickItem>
+#include <QVariantMap>
 
 #include <cstdio>
 #include <cstdlib>
@@ -201,6 +205,43 @@ static int sortFilterRoleInt(QSortFilterProxyModel* proxy, const QByteArray& nam
     for (auto it = roles.constBegin(); it != roles.constEnd(); ++it)
         if (it.value() == name) return it.key();
     return -1;
+}
+
+// Resolve the QQmlComponent a Component receiver (args[0]) wraps (same _native /
+// QPointer-in-ForeignPtr pattern; the component is parented to its engine). Returns
+// a guaranteed-non-null component or throws.
+QQmlComponent* componentFromReceiver(ArgsView args, const char* method)
+{
+    ensureQtUiThread(method);   // Component.* is main-thread only
+    if (args.size() < 1 || !isObjectInstance(args[0]))
+        throw std::invalid_argument(std::string("Component.") + method + " expects a receiver");
+    ObjectInstance* inst = asObjectInstance(args[0]);
+    Value nativeVal = inst->getProperty("_native");
+    if (!isForeignPtr(nativeVal))
+        throw std::runtime_error(std::string("Component.") + method +
+                                 "(): not a component (create one via engine.create_component())");
+    auto* handle = static_cast<QPointer<QQmlComponent>*>(asForeignPtr(nativeVal)->ptr);
+    QQmlComponent* comp = handle ? handle->data() : nullptr;
+    if (!comp)
+        throw std::runtime_error(std::string("Component.") + method +
+                                 "(): component is no longer valid (its engine was destroyed)");
+    return comp;
+}
+
+// Mint a fresh qt.Component instance wrapping `comp`. `componentType` is the
+// module's Component ObjObjectType. The QQmlComponent is owned by Qt (parented to
+// its engine); _native is a non-owning, auto-nulling QPointer inside a ForeignPtr
+// (mirrors Engine/model handles), so GC collecting the wrapper never deletes it.
+Value makeComponentValue(const Value& componentType, QQmlComponent* comp)
+{
+    auto inst = newObjectInstance(componentType);
+    auto* handle = new QPointer<QQmlComponent>(comp);
+    auto fp = newForeignPtrObj(static_cast<void*>(handle));
+    fp->registerCleanup([](void* p) {
+        delete static_cast<QPointer<QQmlComponent>*>(p);
+    });
+    inst->setProperty("_native", Value::objVal(std::move(fp)));
+    return Value::objVal(std::move(inst));
 }
 
 // Connect each top-level window's `closing` signal so that closing a window
@@ -389,6 +430,10 @@ void ModuleQt::registerBuiltins(VM& vm)
     linkMethod("Engine", "find",        [this](VM&, ArgsView a) { return engine_find_builtin(a); });
     linkMethod("Engine", "root",        [this](VM&, ArgsView a) { return engine_root_builtin(a); });
     linkMethod("Engine", "set_context_property", [this](VM&, ArgsView a) { return engine_set_context_property_builtin(a); });
+    linkMethod("Engine", "create_component",        [this](VM&, ArgsView a) { return engine_create_component_builtin(a); });
+    linkMethod("Engine", "create_component_string", [this](VM&, ArgsView a) { return engine_create_component_string_builtin(a); });
+
+    linkMethod("Component", "create", [this](VM&, ArgsView a) { return component_create_builtin(a); });
 
     linkMethod("ListModel", "init",        [this](VM&, ArgsView a) { return listmodel_init_builtin(a); });
     linkMethod("ListModel", "count",       [this](VM&, ArgsView a) { return listmodel_count_builtin(a); });
@@ -685,6 +730,94 @@ Value ModuleQt::engine_root_builtin(ArgsView args)
     if (roots.isEmpty())
         return Value::nilVal();
     return qtObjectValue(roots.first());
+}
+
+// ---- Dynamic object creation: engine.create_component(_string) + Component.create ----
+
+namespace {
+// Look up the module's `Component` ObjObjectType (declared in qt.rox).
+Value componentTypeOf(const Value& moduleTypeVal)
+{
+    auto typeOpt = asModuleType(moduleTypeVal)->vars.load(toUnicodeString("Component"));
+    if (!typeOpt.has_value() || !isObjectType(typeOpt.value()))
+        throw std::runtime_error("qt: the Component type is unavailable (qt.rox not loaded?)");
+    return typeOpt.value();
+}
+} // namespace
+
+Value ModuleQt::engine_create_component_builtin(ArgsView args)
+{
+    QQmlApplicationEngine* engine = engineFromReceiver(args, "create_component");
+    if (args.size() < 2 || !isString(args[1]))
+        throw std::invalid_argument("Engine.create_component(path) expects a string path");
+
+    std::string path = toUTF8StdString(asStringObj(args[1])->s);
+    QUrl url = resolveQmlUrl(path, vm().getModulePaths());
+    // Parent the component to the engine so Qt owns it (it dies with the engine).
+    auto* comp = new QQmlComponent(engine, url, engine);
+    if (comp->isError())
+        throw std::runtime_error("Engine.create_component(): " + comp->errorString().toStdString());
+    return makeComponentValue(componentTypeOf(moduleType()), comp);
+}
+
+Value ModuleQt::engine_create_component_string_builtin(ArgsView args)
+{
+    QQmlApplicationEngine* engine = engineFromReceiver(args, "create_component_string");
+    if (args.size() < 2 || !isString(args[1]))
+        throw std::invalid_argument("Engine.create_component_string(qml) expects a string");
+
+    std::string qml = toUTF8StdString(asStringObj(args[1])->s);
+    // Base URL = the calling script's dir, so the snippet's relative asset URLs and
+    // imports resolve like load_string().
+    QUrl baseUrl;
+    const std::filesystem::path dir = currentScriptDir();
+    if (!dir.empty())
+        baseUrl = QUrl::fromLocalFile(QString::fromStdString((dir / "inline.qml").string()));
+    auto* comp = new QQmlComponent(engine, engine);   // parented to the engine
+    comp->setData(QByteArray::fromStdString(qml), baseUrl);
+    if (comp->isError())
+        throw std::runtime_error("Engine.create_component_string(): " + comp->errorString().toStdString());
+    return makeComponentValue(componentTypeOf(moduleType()), comp);
+}
+
+Value ModuleQt::component_create_builtin(ArgsView args)
+{
+    QQmlComponent* comp = componentFromReceiver(args, "create");
+    Value parentVal = (args.size() >= 2) ? args[1] : Value::nilVal();
+    Value propsVal  = (args.size() >= 3) ? args[2] : Value::nilVal();
+
+    if (!parentVal.isNil() && !isQtObject(parentVal))
+        throw std::invalid_argument("Component.create(parent, props): parent must be a Qt item handle or nil");
+    if (!propsVal.isNil() && !isDict(propsVal))
+        throw std::invalid_argument("Component.create(parent, props): props must be a dict or nil");
+
+    // Initial property values are applied before completion, so bindings see them.
+    QVariantMap initialProps;
+    if (isDict(propsVal))
+        initialProps = toQVariant(propsVal).toMap();
+
+    QQmlContext* ctx = comp->engine() ? comp->engine()->rootContext() : nullptr;
+    QObject* obj = comp->createWithInitialProperties(initialProps, ctx);
+    if (!obj) {
+        std::string detail = comp->isError() ? comp->errorString().toStdString()
+                                             : std::string("createWithInitialProperties returned null");
+        throw std::runtime_error("Component.create(): " + detail);
+    }
+
+    // Keep the object on the C++ side: QML's JS GC must never delete it under us.
+    QQmlEngine::setObjectOwnership(obj, QQmlEngine::CppOwnership);
+
+    if (isQtObject(parentVal)) {
+        QObject* parentObj = asQtObject(parentVal)->deref("Component.create");
+        obj->setParent(parentObj);                              // ownership: freed with parent
+        if (auto* pItem = qobject_cast<QQuickItem*>(parentObj))
+            if (auto* cItem = qobject_cast<QQuickItem*>(obj))
+                cItem->setParentItem(pItem);                    // layout: appears under parent
+    } else {
+        // Detached: owned by the engine so it doesn't leak (lives until teardown).
+        obj->setParent(comp->engine());
+    }
+    return qtObjectValue(obj);
 }
 
 // ---- Module-level escape hatches: qt.get / qt.set / qt.call ----

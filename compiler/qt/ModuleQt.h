@@ -63,6 +63,12 @@ private:
     Value engine_find_builtin(ArgsView args);
     Value engine_root_builtin(ArgsView args);
     Value engine_set_context_property_builtin(ArgsView args);
+    Value engine_create_component_builtin(ArgsView args);
+    Value engine_create_component_string_builtin(ArgsView args);
+
+    // Component methods (args[0] = receiver Component instance). A reusable compiled
+    // QQmlComponent; create() instantiates items dynamically under a chosen parent.
+    Value component_create_builtin(ArgsView args);
 
     // ListModel methods (args[0] = receiver ListModel instance). A QAbstractListModel
     // shim backed by a Roxal list of row objects; roles = the row type's properties.
