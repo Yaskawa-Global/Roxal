@@ -519,6 +519,7 @@ if(ROXAL_ENABLE_QT)
         compiler/qt/QtSignalRelay.cpp
         compiler/qt/QtSignalHub.cpp
         compiler/qt/QtListModel.cpp
+        compiler/qt/QtTreeModel.cpp
         compiler/qt/QtBindable.cpp
         compiler/qt/QtPlugin.cpp
     )

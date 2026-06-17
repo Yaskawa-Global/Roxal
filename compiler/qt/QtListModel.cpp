@@ -6,6 +6,7 @@
 #include "SimpleMarkSweepGC.h"
 #include "ModuleQtConvert.h"
 #include "QtListModel.h"
+#include "QtTreeModel.h"   // QtModelHub also owns + GC-roots tree models
 
 #include <QVariant>
 #include <QModelIndex>
@@ -245,9 +246,10 @@ bool RoxalListModel::setCell(int row, const QByteArray& roleName, const Value& v
 
 struct QtModelHub::Impl : SimpleMarkSweepGC::ExternalRootProvider {
     std::vector<std::unique_ptr<RoxalListModel>> models;
+    std::vector<std::unique_ptr<RoxalTreeModel>> treeModels;
     bool rootRegistered { false };
 
-    // Keep each live model's row list (and its elements, transitively) + row type
+    // Keep each live model's rows/roots (and their elements, transitively) + row type
     // reachable. These Values are held by C++ (a non-Obj QObject), so the mark-sweep
     // collector can't see them without this.
     void visitRoots(ValueVisitor& visitor) override {
@@ -255,6 +257,11 @@ struct QtModelHub::Impl : SimpleMarkSweepGC::ExternalRootProvider {
             if (!m) continue;
             visitor.visit(m->typeValue());
             visitor.visit(m->rowsValue());
+        }
+        for (auto& m : treeModels) {
+            if (!m) continue;
+            visitor.visit(m->typeValue());
+            visitor.visit(m->rootsValue());
         }
     }
 };
@@ -278,7 +285,8 @@ void QtModelHub::init()
 
 void QtModelHub::shutdown()
 {
-    impl_->models.clear();   // delete the QAbstractListModels while Qt is still alive
+    impl_->models.clear();       // delete the QAbstract*Models while Qt is still alive
+    impl_->treeModels.clear();
     if (impl_->rootRegistered) {
         SimpleMarkSweepGC::instance().unregisterExternalRootProvider(impl_.get());
         impl_->rootRegistered = false;
@@ -290,6 +298,14 @@ RoxalListModel* QtModelHub::create(const Value& rowType, const Value& rows)
     auto m = std::make_unique<RoxalListModel>(rowType, rows);
     RoxalListModel* raw = m.get();
     impl_->models.push_back(std::move(m));
+    return raw;
+}
+
+RoxalTreeModel* QtModelHub::createTree(const Value& rowType, const Value& roots)
+{
+    auto m = std::make_unique<RoxalTreeModel>(rowType, roots);
+    RoxalTreeModel* raw = m.get();
+    impl_->treeModels.push_back(std::move(m));
     return raw;
 }
 

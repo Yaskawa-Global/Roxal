@@ -1,0 +1,44 @@
+// Pure-Roxal structural test for qt.TreeModel: a node has a `children` list (excluded from
+// the roles). Build a tree, then exercise count/child/parent_of and append/insert/remove/
+// move/clear at the root level and under a parent node.
+import qt
+
+type Node object:
+  var name :string
+  var children :list = []
+
+func names(tree, parent) -> string:
+  var s = ""
+  var i = 0
+  while i < tree.count(parent):
+    s = s + tree.child(parent, i).name
+    i = i + 1
+  return s
+
+var root1 = Node("R1")
+var root2 = Node("R2")
+var tree = qt.TreeModel(Node, [root1, root2])
+print("roots: " + names(tree, nil))            # R1R2
+
+var c1 = Node("C1")
+var c3 = Node("C3")
+tree.append(root1, c1)
+tree.append(root1, c3)
+tree.insert(root1, 1, Node("C2"))
+print("root1 kids: " + names(tree, root1))     # C1C2C3
+
+var g = Node("G")
+tree.append(c1, g)
+print("c1 kids: " + names(tree, c1))           # G
+print("parent_of(g): " + tree.parent_of(g).name)   # C1
+var rootHasNoParent = tree.parent_of(root1) == nil
+print("parent_of(root1) is nil: {rootHasNoParent}")  # true
+
+tree.move(root1, 0, 2)
+print("root1 after move: " + names(tree, root1))    # C2C3C1
+tree.remove(root1, 0)
+print("root1 after remove: " + names(tree, root1))  # C3C1
+tree.clear(root1)
+print("root1 after clear: {tree.count(root1)}")     # 0
+tree.clear()
+print("roots after clear: {tree.count()}")          # 0

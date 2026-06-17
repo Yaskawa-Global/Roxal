@@ -1,0 +1,9 @@
+roots: R1R2
+root1 kids: C1C2C3
+c1 kids: G
+parent_of(g): C1
+parent_of(root1) is nil: true
+root1 after move: C2C3C1
+root1 after remove: C3C1
+root1 after clear: 0
+roots after clear: 0

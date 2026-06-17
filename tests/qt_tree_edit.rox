@@ -1,0 +1,20 @@
+// TreeModel data API: set(node, role, value) writes the node's property; node_changed /
+// cell_changed announce direct edits (no-ops without a view, but must not error).
+import qt
+
+type Node object:
+  var label :string
+  var children :list = []
+
+var root = Node("root")
+var child = Node("child")
+var tree = qt.TreeModel(Node, [root])
+tree.append(root, child)
+
+tree.set(child, "label", "edited")
+print("label: {child.label}")          # edited
+
+child.label = "direct"                  # mutate the node object directly
+tree.node_changed(child)
+tree.cell_changed(child, "label")
+print("label2: {child.label}")          # direct

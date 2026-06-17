@@ -178,3 +178,75 @@ type ListModel object:
   @builtin
   proc set(i:int, role:string, value):
     """Set `role` of row `i` to `value` and notify the view (a no-op if unchanged)."""
+
+
+@builtin
+type TreeModel object:
+  """A tree model for a QML TreeView, backed by Roxal node objects. A node is an object
+  instance; its child nodes live in a `children` list property (which is structural, so
+  it is NOT a role). The node type's OTHER public properties are the roles, bound in a
+  delegate by name (e.g. `model.<property>`). All operations take a parent node (or nil
+  for the root level)."""
+
+  var _native   // ForeignPtr to the C++ RoxalTreeModel (module-owned)
+
+  @builtin
+  proc init(node_type, roots=nil):
+    """Create a tree model whose nodes are instances of `node_type`. Each node's child
+    nodes are in its `children` list. Optionally seed with `roots`, a list of top-level
+    nodes (each an instance of / implementing `node_type`); their subtrees come along in
+    the node objects' `children`."""
+
+  @builtin
+  func count(parent=nil) -> int:
+    """The number of children of `parent` (the root-level count if `parent` is nil)."""
+
+  @builtin
+  func child(parent, i:int):
+    """The `i`-th child of `parent` (or the `i`-th root if `parent` is nil); nil if OOB."""
+
+  @builtin
+  func parent_of(node):
+    """The parent node of `node` (nil if `node` is a root or not in the tree)."""
+
+  @builtin
+  proc append(parent, node):
+    """Append `node` as a child of `parent` (a root if `parent` is nil)."""
+
+  @builtin
+  proc insert(parent, i:int, node):
+    """Insert `node` before child index `i` of `parent` (a root if `parent` is nil)."""
+
+  @builtin
+  proc remove(parent, i:int):
+    """Remove child `i` of `parent` (a root if `parent` is nil)."""
+
+  @builtin
+  proc move(parent, from_index:int, to_index:int):
+    """Move a child of `parent` from `from_index` to `to_index`."""
+
+  @builtin
+  proc clear(parent=nil):
+    """Remove all children of `parent` (all roots if `parent` is nil)."""
+
+  @builtin
+  proc begin_reset():
+    """Begin a batch structural change; pair with end_reset(). Mutators called in
+    between are coalesced into a single model reset (no per-operation signals)."""
+
+  @builtin
+  proc end_reset():
+    """End a begin_reset() batch."""
+
+  @builtin
+  proc node_changed(node):
+    """Notify the view that every role of `node` changed (call after editing the node
+    object's properties directly)."""
+
+  @builtin
+  proc cell_changed(node, role:string):
+    """Notify the view that `role` of `node` changed."""
+
+  @builtin
+  proc set(node, role:string, value):
+    """Set `role` of `node` to `value` and notify the view (a no-op if unchanged)."""

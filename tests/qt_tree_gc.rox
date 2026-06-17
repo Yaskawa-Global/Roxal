@@ -1,0 +1,29 @@
+// Tree nodes survive a GC cycle — after build() returns they're unreachable from any Roxal
+// root; only QtModelHub's external root provider (via the model's roots) keeps them alive.
+import qt
+
+type Node object:
+  var name :string
+  var children :list = []
+
+proc build(tree):
+  var root = Node("Root")
+  tree.append(nil, root)
+  tree.append(root, Node("Child1"))
+  tree.append(root, Node("Child2"))
+
+var tree = qt.TreeModel(Node)
+build(tree)
+
+var i = 0
+while i < 5000:
+  var tmp = [i, i + 1, i + 2]
+  i = i + 1
+gc()
+gc()
+
+print("roots: {tree.count()}")               # 1
+var root = tree.child(nil, 0)
+print("root: {root.name}")                    # Root
+print("root kids: {tree.count(root)}")        # 2
+print("child0: {tree.child(root, 0).name}")   # Child1

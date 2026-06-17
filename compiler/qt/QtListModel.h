@@ -16,6 +16,8 @@
 
 namespace roxal {
 
+class RoxalTreeModel;   // QtTreeModel.h — also owned + GC-rooted by QtModelHub
+
 // A moc-free QAbstractListModel backed by a Roxal list of row objects. The row
 // type's public properties are the roles (Qt::UserRole+1+i, in declared order):
 // data() reads them with getProperty (a cheap map lookup, no VM call — safe during
@@ -91,8 +93,9 @@ public:
     void shutdown();  // delete the models + unregister the root provider
 
     // Create + own a model; returns a non-owning pointer (the hub owns it until
-    // shutdown; the qt.ListModel handle holds a QPointer to it).
+    // shutdown; the qt.ListModel / qt.TreeModel handle holds a QPointer to it).
     RoxalListModel* create(const Value& rowType, const Value& rows);
+    RoxalTreeModel* createTree(const Value& rowType, const Value& roots);
 
 private:
     QtModelHub();

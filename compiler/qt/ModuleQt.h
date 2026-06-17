@@ -81,6 +81,23 @@ private:
     Value listmodel_cell_changed_builtin(ArgsView args);
     Value listmodel_set_builtin(ArgsView args);
 
+    // TreeModel methods (args[0] = receiver TreeModel instance). A moc-free
+    // QAbstractItemModel over a tree of node objects (children in a `children` list).
+    Value treemodel_init_builtin(ArgsView args);
+    Value treemodel_count_builtin(ArgsView args);
+    Value treemodel_child_builtin(ArgsView args);
+    Value treemodel_parent_of_builtin(ArgsView args);
+    Value treemodel_append_builtin(ArgsView args);
+    Value treemodel_insert_builtin(ArgsView args);
+    Value treemodel_remove_builtin(ArgsView args);
+    Value treemodel_move_builtin(ArgsView args);
+    Value treemodel_clear_builtin(ArgsView args);
+    Value treemodel_begin_reset_builtin(ArgsView args);
+    Value treemodel_end_reset_builtin(ArgsView args);
+    Value treemodel_node_changed_builtin(ArgsView args);
+    Value treemodel_cell_changed_builtin(ArgsView args);
+    Value treemodel_set_builtin(ArgsView args);
+
     // Module-level escape hatches for non-identifier / fully-dynamic names.
     Value qt_get_builtin(ArgsView args);
     Value qt_set_builtin(ArgsView args);

@@ -7,6 +7,7 @@
 #include "ObjQtObject.h"
 #include "QtSignalHub.h"
 #include "QtListModel.h"
+#include "QtTreeModel.h"
 #include "QtBindable.h"
 
 #include <QGuiApplication>
@@ -123,6 +124,38 @@ RoxalListModel* roxalListModelPtr(const Value& v)
     Value nativeVal = inst->getProperty("_native");
     if (!isForeignPtr(nativeVal)) return nullptr;
     auto* handle = static_cast<QPointer<RoxalListModel>*>(asForeignPtr(nativeVal)->ptr);
+    return handle ? handle->data() : nullptr;
+}
+
+// Resolve the RoxalTreeModel a TreeModel receiver (args[0]) wraps (same pattern).
+RoxalTreeModel* treeModelFromReceiver(ArgsView args, const char* method)
+{
+    ensureQtUiThread(method);   // TreeModel.* is main-thread only
+    if (args.size() < 1 || !isObjectInstance(args[0]))
+        throw std::invalid_argument(std::string("TreeModel.") + method + " expects a receiver");
+    ObjectInstance* inst = asObjectInstance(args[0]);
+    Value nativeVal = inst->getProperty("_native");
+    if (!isForeignPtr(nativeVal))
+        throw std::runtime_error(std::string("TreeModel.") + method +
+                                 "(): model not initialized (call qt.TreeModel(type) first)");
+    auto* handle = static_cast<QPointer<RoxalTreeModel>*>(asForeignPtr(nativeVal)->ptr);
+    RoxalTreeModel* model = handle ? handle->data() : nullptr;
+    if (!model)
+        throw std::runtime_error(std::string("TreeModel.") + method +
+                                 "(): model is no longer valid");
+    return model;
+}
+
+// If `v` is a qt.TreeModel handle, return its backing RoxalTreeModel (else nullptr).
+RoxalTreeModel* roxalTreeModelPtr(const Value& v)
+{
+    if (!isObjectInstance(v)) return nullptr;
+    ObjectInstance* inst = asObjectInstance(v);
+    if (!isObjectType(inst->instanceType)) return nullptr;
+    if (asObjectType(inst->instanceType)->name != icu::UnicodeString("TreeModel")) return nullptr;
+    Value nativeVal = inst->getProperty("_native");
+    if (!isForeignPtr(nativeVal)) return nullptr;
+    auto* handle = static_cast<QPointer<RoxalTreeModel>*>(asForeignPtr(nativeVal)->ptr);
     return handle ? handle->data() : nullptr;
 }
 
@@ -327,6 +360,21 @@ void ModuleQt::registerBuiltins(VM& vm)
     linkMethod("ListModel", "row_changed", [this](VM&, ArgsView a) { return listmodel_row_changed_builtin(a); });
     linkMethod("ListModel", "cell_changed",[this](VM&, ArgsView a) { return listmodel_cell_changed_builtin(a); });
     linkMethod("ListModel", "set",         [this](VM&, ArgsView a) { return listmodel_set_builtin(a); });
+
+    linkMethod("TreeModel", "init",        [this](VM&, ArgsView a) { return treemodel_init_builtin(a); });
+    linkMethod("TreeModel", "count",       [this](VM&, ArgsView a) { return treemodel_count_builtin(a); });
+    linkMethod("TreeModel", "child",       [this](VM&, ArgsView a) { return treemodel_child_builtin(a); });
+    linkMethod("TreeModel", "parent_of",   [this](VM&, ArgsView a) { return treemodel_parent_of_builtin(a); });
+    linkMethod("TreeModel", "append",      [this](VM&, ArgsView a) { return treemodel_append_builtin(a); });
+    linkMethod("TreeModel", "insert",      [this](VM&, ArgsView a) { return treemodel_insert_builtin(a); });
+    linkMethod("TreeModel", "remove",      [this](VM&, ArgsView a) { return treemodel_remove_builtin(a); });
+    linkMethod("TreeModel", "move",        [this](VM&, ArgsView a) { return treemodel_move_builtin(a); });
+    linkMethod("TreeModel", "clear",       [this](VM&, ArgsView a) { return treemodel_clear_builtin(a); });
+    linkMethod("TreeModel", "begin_reset", [this](VM&, ArgsView a) { return treemodel_begin_reset_builtin(a); });
+    linkMethod("TreeModel", "end_reset",   [this](VM&, ArgsView a) { return treemodel_end_reset_builtin(a); });
+    linkMethod("TreeModel", "node_changed",[this](VM&, ArgsView a) { return treemodel_node_changed_builtin(a); });
+    linkMethod("TreeModel", "cell_changed",[this](VM&, ArgsView a) { return treemodel_cell_changed_builtin(a); });
+    linkMethod("TreeModel", "set",         [this](VM&, ArgsView a) { return treemodel_set_builtin(a); });
 
     link("get",  [this](VM&, ArgsView a) { return qt_get_builtin(a); });
     link("set",  [this](VM&, ArgsView a) { return qt_set_builtin(a); });
@@ -679,6 +727,8 @@ Value ModuleQt::engine_set_context_property_builtin(ArgsView args)
     const Value& v = args[2];
     if (RoxalListModel* model = roxalListModelPtr(v)) {
         engine->rootContext()->setContextProperty(name, static_cast<QObject*>(model));
+    } else if (RoxalTreeModel* tree = roxalTreeModelPtr(v)) {
+        engine->rootContext()->setContextProperty(name, static_cast<QObject*>(tree));
     } else if (isQtObject(v)) {
         engine->rootContext()->setContextProperty(name, asQtObject(v)->deref("set_context_property"));
     } else if (isObjectInstance(v)) {
@@ -854,6 +904,158 @@ Value ModuleQt::listmodel_set_builtin(ArgsView args)
     model->setCell(static_cast<int>(args[1].asInt()),
                    QByteArray::fromStdString(toUTF8StdString(asStringObj(args[2])->s)),
                    args[3]);
+    return Value::nilVal();
+}
+
+// ---- qt.TreeModel builtins (by node object; nil parent = root level) ----
+
+Value ModuleQt::treemodel_init_builtin(ArgsView args)
+{
+    if (args.size() < 2 || !isObjectInstance(args[0]))
+        throw std::invalid_argument("qt.TreeModel(node_type) expects a receiver and a node type");
+    ObjectInstance* inst = asObjectInstance(args[0]);
+
+    Value rowTypeVal = args[1];
+    if (!isObjectType(rowTypeVal))
+        throw std::invalid_argument("qt.TreeModel(node_type): the argument must be a type");
+    ObjObjectType* rowType = asObjectType(rowTypeVal);
+    if (rowType->isActor || rowType->isEnumeration)
+        throw std::invalid_argument("qt.TreeModel(node_type): node type must be an object type or interface "
+                                    "(not an actor or enum)");
+
+    // The model owns a root list, optionally seeded with `roots` (each a node instance;
+    // its `children` subtree comes along in the node objects).
+    auto listObj = newListObj();
+    ObjList* rootList = listObj.get();
+    Value roots = Value::objVal(std::move(listObj));
+    if (args.size() >= 3 && !args[2].isNil()) {
+        if (!isList(args[2]))
+            throw std::invalid_argument("qt.TreeModel(node_type, roots): roots must be a list of nodes");
+        ObjList* seed = asList(args[2]);
+        for (int32_t i = 0; i < seed->length(); ++i) {
+            Value e = seed->getElement(static_cast<size_t>(i));
+            if (!isObjectInstance(e) ||
+                !isSubtypeOf(asObjectType(asObjectInstance(e)->instanceType), rowType))
+                throw std::runtime_error("qt.TreeModel: a root node does not match the node type");
+            rootList->append(e);
+        }
+    }
+
+    RoxalTreeModel* model = QtModelHub::instance().createTree(rowTypeVal, roots);
+    auto* handle = new QPointer<RoxalTreeModel>(model);
+    auto fp = newForeignPtrObj(static_cast<void*>(handle));
+    fp->registerCleanup([](void* p) {
+        delete static_cast<QPointer<RoxalTreeModel>*>(p);
+    });
+    inst->setProperty("_native", Value::objVal(std::move(fp)));
+    return Value::nilVal();
+}
+
+Value ModuleQt::treemodel_count_builtin(ArgsView args)
+{
+    RoxalTreeModel* m = treeModelFromReceiver(args, "count");
+    return Value::intVal(m->childCount(args.size() >= 2 ? args[1] : Value::nilVal()));
+}
+
+Value ModuleQt::treemodel_child_builtin(ArgsView args)
+{
+    RoxalTreeModel* m = treeModelFromReceiver(args, "child");
+    if (args.size() < 3 || !args[2].isInt())
+        throw std::invalid_argument("TreeModel.child(parent, i) expects a parent (or nil) and an int index");
+    return m->childAt(args[1], static_cast<int>(args[2].asInt()));
+}
+
+Value ModuleQt::treemodel_parent_of_builtin(ArgsView args)
+{
+    RoxalTreeModel* m = treeModelFromReceiver(args, "parent_of");
+    if (args.size() < 2)
+        throw std::invalid_argument("TreeModel.parent_of(node) expects a node");
+    return m->parentOf(args[1]);
+}
+
+Value ModuleQt::treemodel_append_builtin(ArgsView args)
+{
+    RoxalTreeModel* m = treeModelFromReceiver(args, "append");
+    if (args.size() < 3 || !isObjectInstance(args[2]))
+        throw std::invalid_argument("TreeModel.append(parent, node) expects a parent (or nil) and a node object");
+    if (!m->admits(args[2]))
+        throw std::runtime_error("TreeModel.append: the node does not match the model's node type");
+    m->appendChild(args[1], args[2]);
+    return Value::nilVal();
+}
+
+Value ModuleQt::treemodel_insert_builtin(ArgsView args)
+{
+    RoxalTreeModel* m = treeModelFromReceiver(args, "insert");
+    if (args.size() < 4 || !args[2].isInt() || !isObjectInstance(args[3]))
+        throw std::invalid_argument("TreeModel.insert(parent, i, node) expects a parent (or nil), an int index, and a node");
+    if (!m->admits(args[3]))
+        throw std::runtime_error("TreeModel.insert: the node does not match the model's node type");
+    m->insertChild(args[1], static_cast<int>(args[2].asInt()), args[3]);
+    return Value::nilVal();
+}
+
+Value ModuleQt::treemodel_remove_builtin(ArgsView args)
+{
+    RoxalTreeModel* m = treeModelFromReceiver(args, "remove");
+    if (args.size() < 3 || !args[2].isInt())
+        throw std::invalid_argument("TreeModel.remove(parent, i) expects a parent (or nil) and an int index");
+    m->removeChild(args[1], static_cast<int>(args[2].asInt()));
+    return Value::nilVal();
+}
+
+Value ModuleQt::treemodel_move_builtin(ArgsView args)
+{
+    RoxalTreeModel* m = treeModelFromReceiver(args, "move");
+    if (args.size() < 4 || !args[2].isInt() || !args[3].isInt())
+        throw std::invalid_argument("TreeModel.move(parent, from, to) expects a parent (or nil) and two int indices");
+    m->moveChild(args[1], static_cast<int>(args[2].asInt()), static_cast<int>(args[3].asInt()));
+    return Value::nilVal();
+}
+
+Value ModuleQt::treemodel_clear_builtin(ArgsView args)
+{
+    RoxalTreeModel* m = treeModelFromReceiver(args, "clear");
+    m->clearChildren(args.size() >= 2 ? args[1] : Value::nilVal());
+    return Value::nilVal();
+}
+
+Value ModuleQt::treemodel_begin_reset_builtin(ArgsView args)
+{
+    treeModelFromReceiver(args, "begin_reset")->beginResetBatch();
+    return Value::nilVal();
+}
+
+Value ModuleQt::treemodel_end_reset_builtin(ArgsView args)
+{
+    treeModelFromReceiver(args, "end_reset")->endResetBatch();
+    return Value::nilVal();
+}
+
+Value ModuleQt::treemodel_node_changed_builtin(ArgsView args)
+{
+    RoxalTreeModel* m = treeModelFromReceiver(args, "node_changed");
+    if (args.size() < 2)
+        throw std::invalid_argument("TreeModel.node_changed(node) expects a node");
+    m->nodeChanged(args[1]);
+    return Value::nilVal();
+}
+
+Value ModuleQt::treemodel_cell_changed_builtin(ArgsView args)
+{
+    RoxalTreeModel* m = treeModelFromReceiver(args, "cell_changed");
+    if (args.size() < 3 || !isString(args[2]))
+        throw std::invalid_argument("TreeModel.cell_changed(node, role) expects a node and a string role");
+    m->cellChanged(args[1], QByteArray::fromStdString(toUTF8StdString(asStringObj(args[2])->s)));
+    return Value::nilVal();
+}
+
+Value ModuleQt::treemodel_set_builtin(ArgsView args)
+{
+    RoxalTreeModel* m = treeModelFromReceiver(args, "set");
+    if (args.size() < 4 || !isString(args[2]))
+        throw std::invalid_argument("TreeModel.set(node, role, value) expects a node, a string role, and a value");
+    m->setCell(args[1], QByteArray::fromStdString(toUTF8StdString(asStringObj(args[2])->s)), args[3]);
     return Value::nilVal();
 }
 

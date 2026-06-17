@@ -1,0 +1,26 @@
+// A qt.TreeModel drives a QML TreeView: the model's index/parent/rowCount/data/roleNames are
+// exercised by a real hierarchical view. A delegate binds the `name` role; a Timer expands the
+// whole tree (tick 1) then reports the flattened visible row count (tick 2) — which equals the
+// total node count, proving the hierarchy was navigated. Headless via QT_QPA_PLATFORM=offscreen.
+import qt
+
+type Node object:
+  var name :string
+  var children :list = []
+
+var r1 = Node("R1")
+var r2 = Node("R2")
+var tree = qt.TreeModel(Node, [r1, r2])
+tree.append(r1, Node("C1"))
+tree.append(r1, Node("C2"))
+tree.append(r2, Node("C3"))     # 5 nodes total: R1, R2, C1, C2, C3
+
+var engine = qt.Engine()
+engine.set_context_property("tree", tree)
+engine.load_string('import QtQuick\nimport QtQuick.Window\nWindow {\n id: win\n objectName: "win"\n visible: true\n width: 200; height: 400\n signal report(string s)\n property int ticks: 0\n TreeView {\n id: tv\n objectName: "tv"\n anchors.fill: parent\n model: tree\n delegate: Item {\n implicitWidth: 100; implicitHeight: 18\n required property int depth\n required property bool expanded\n required property string name\n Text { text: name }\n }\n }\n Timer { interval: 40; running: true; repeat: true; onTriggered: { win.ticks++; if (win.ticks === 1) { tv.expandRecursively() } else { win.report("rows=" + tv.rows); Qt.quit() } } }\n}\n')
+
+var win = engine.find("win")
+win.onReport(proc(s): print(s))
+
+engine.run()
+print("done")

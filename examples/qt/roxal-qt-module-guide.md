@@ -197,6 +197,21 @@ hatches: `qt.connect(item, "clicked", handler)` (returns a connection id), `qt.o
 
 > A handler that calls `engine.quit()` unblocks `run()`.
 
+### When a handler raises
+
+If a handler lets an exception escape, it's **not** swallowed: it aborts `engine.run()` and
+surfaces as an uncaught exception (fail-loud), and any remaining handlers for that signal are
+skipped. To keep the UI running instead, **catch inside the handler**:
+
+```roxal
+btn.onClicked(proc():
+  try:
+    doRiskyThing()
+  except e:
+    status.text = "Error: " + string(e)   # handled — run() keeps going
+)
+```
+
 ### A tiny end-to-end example
 
 ```qml
@@ -296,6 +311,39 @@ Drive the model from Roxal:
 
 > After editing a row object's properties directly, tell the view with `model.row_changed(i)` (or
 > `cell_changed`/`set`). The structural calls above notify on their own.
+
+### Tree models
+
+For hierarchical data in a QML `TreeView`, use **`qt.TreeModel`** — the same idea, but each node's
+child nodes live in a **`children` list property** (which is structural, so it is *not* a role; the
+node's *other* public properties are the roles). All operations take a **parent node** (or `nil` for
+the root level):
+
+```roxal
+type Node object:
+  var name :string
+  var children :list = []        # subtree — excluded from the roles
+
+var root = Node("base")
+var tree = qt.TreeModel(Node, [root])   # roots: optional list of top-level nodes
+tree.append(root, Node("link1"))        # add a child under `root`
+tree.append(root, Node("link2"))
+engine.set_context_property("scene", tree)
+```
+
+```qml
+TreeView {
+    model: scene
+    delegate: TreeViewDelegate { text: name }    // `name` is the role
+}
+```
+
+The API mirrors the list model but is node-addressed: `count(parent)`, `child(parent, i)`,
+`parent_of(node)`, `append(parent, node)` / `insert(parent, i, node)` / `remove(parent, i)` /
+`move(parent, from, to)` / `clear(parent)`, the `begin_reset()`/`end_reset()` batch, and
+`node_changed(node)` / `cell_changed(node, role)` / `set(node, role, value)`. Mutate the tree
+**through these calls** so the view is notified (v1 doesn't observe direct edits to a node's
+`children` list).
 
 ---
 
