@@ -37,12 +37,21 @@ walk-through see [roxal-qt-module-guide.md](roxal-qt-module-guide.md).
 | [treeview](treeview.rox) | A `qt.TreeModel` in a QML `TreeView` | Click **Add joint to the tip** → a node is appended down the chain; expand/collapse to see it. |
 | [dynamic](dynamic.rox) | **Runtime creation** — `engine.create_component` + `Component.create` | Click **Add joint** → a numbered marker is spawned into the container. |
 | [teapot](teapot.rox) | **3D** — Qt Quick 3D renders the Utah teapot (`RuntimeLoader`); drag to orbit | **Cycle tint** / **Pause** the spin (Roxal-driven); needs an OpenGL display. |
+| [gallery](gallery.rox) | **Widget gallery** — a tabbed `ApplicationWindow` showing off many Qt Quick Controls + visual items | Click the **Inputs / Lists / Table / Gallery / Log** tabs; every interaction is logged by Roxal (footer + Log tab). |
 
 The 3D example uses **Qt Quick 3D** (the modern Qt 6 3D module — not the older Qt 3D /
 `Qt3DExtras`). The mesh [teapot.obj](teapot.obj) (the Utah/Newell teapot) is loaded at runtime by
 `QtQuick3D.AssetUtils.RuntimeLoader`, and Qt Quick 3D is pulled in purely as a QML import — so the
 `roxal` binary stays Qt-free, exactly like the 2D examples. It needs a real OpenGL-capable display
 (it won't render under `QT_QPA_PLATFORM=offscreen`).
+
+The **gallery** is the broad tour: a `TabBar` over a `StackLayout`, an `ApplicationWindow` header/
+footer status bar, and across the tabs — `TextField`, `ComboBox`, `SpinBox`, `Slider`, `Switch`,
+`CheckBox`, `RadioButton`, `GroupBox`, `Frame`; a `ListView` over a Roxal `qt.ListModel`; a
+`TableView` + `HorizontalHeaderView` over a `TableModel`; gradient/rounded/bordered `Rectangle`s,
+`ProgressBar` (incl. indeterminate), `BusyIndicator`, `PageIndicator`, `Dial`, `RangeSlider`,
+`Tumbler`; and a `ScrollView` + `TextArea` event log. Roxal owns the list model and logs every
+interaction to the footer and the Log tab.
 
 ## Smoke-testing the UI paths
 

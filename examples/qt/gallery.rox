@@ -1,0 +1,57 @@
+# Demo: a wide "widget gallery" — an ApplicationWindow with a TabBar and a page per
+# category (Inputs, Lists, Table, Gallery, Log), showing off many Qt Quick Controls and
+# visual items (combo box, radio buttons, checkboxes, switch, sliders, spin box, dial,
+# range slider, progress bars, busy indicator, tumbler, gradients/rounded rects/borders,
+# ListView, TableView, ScrollView, TextArea, …). Driven from Roxal: the Lists page is
+# backed by a qt.ListModel Roxal owns, and every interaction emits a signal Roxal logs
+# (to the footer status bar and the Log page).
+#
+# Build (Qt is an optional module, OFF by default):
+#   cmake -B build/ -DROXAL_ENABLE_QT=ON -DCMAKE_PREFIX_PATH=/opt/Qt/6.8.3/gcc_64
+#   cmake --build build/ -j4
+# Run from the repo root (needs an X11 display):
+#   ./build/roxal examples/qt/gallery.rox
+
+import qt
+
+# A row type for the Lists model — its public properties become the ListView roles.
+type Part object:
+  var name :string
+  var qty  :int
+
+var engine = qt.Engine()
+
+# Roxal owns the Lists model; QML's ListView binds it as the context property `parts`.
+var parts = qt.ListModel(Part, [
+  Part("Gripper", 3),
+  Part("Base plate", 5),
+  Part("Wrist sensor", 1),
+  Part("Shoulder motor", 4),
+  Part("Elbow joint", 2),
+])
+engine.set_context_property("parts", parts)
+engine.load('gallery.qml')
+
+var win    = engine.find("win")
+var status = engine.find("status")
+var events = 0
+
+# Every control routes its change here; Roxal logs it to the footer + the Log page.
+win.onLogRequested(proc(msg):
+  events = events + 1
+  win.logLine("[{events}] {msg}")
+  status.text = "{events} events · last: {msg}"
+)
+
+# The Lists "Add" button asks Roxal to append a row to the model it owns.
+win.onAddItemRequested(proc(text):
+  if text != "":
+    parts.append(Part(text, 1))
+    events = events + 1
+    win.logLine("[{events}] added part: {text}")
+    status.text = "{events} events · added {text}"
+)
+
+print("Roxal × Qt Quick widget gallery — click around the tabs; close the window to exit")
+engine.run()
+print("bye")
