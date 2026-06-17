@@ -1,5 +1,8 @@
 # Roxal + Qt/QML — Building UIs from Roxal
 
+> ⚠️ **Experimental.** The `qt` module is new and not yet exercised by any large application, so
+> expect missing features, rough edges, and latent bugs. The API may change.
+
 The optional **`qt` module** lets you build **QML / QtQuick** user interfaces and drive them from
 Roxal. You author the UI in QML as usual; from Roxal you load it, find items, read and write their
 properties, call their methods, react to their signals, fill list models, and bind plain Roxal objects

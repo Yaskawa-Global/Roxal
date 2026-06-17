@@ -1,5 +1,9 @@
 # Roxal `qt` examples
 
+> ⚠️ **Experimental.** The `qt` module is new and not yet exercised by any large
+> application, so expect missing features, rough edges, and latent bugs. The API may
+> change.
+
 QML/QtQuick UIs driven from Roxal. The `qt` module is **optional** and OFF by
 default; build with it enabled and point CMake at a desktop Qt 6 install:
 

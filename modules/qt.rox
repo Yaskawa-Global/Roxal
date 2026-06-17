@@ -1,5 +1,8 @@
 // qt — drive a QML/QtQuick UI from Roxal (Qt 6).
 //
+// EXPERIMENTAL: this module is new and not yet exercised by a large application, so
+// expect missing features, rough edges, and latent bugs; the API may still change.
+//
 // The VM stays in control: Qt is pumped cooperatively on the main thread (no
 // Qt exec()), so the single Roxal/UI thread runs both the script and all Qt
 // event handling. An Engine loads QML (root must be a Window) and run() blocks
