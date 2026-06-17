@@ -1,0 +1,52 @@
+# Demo: a QML TreeView backed by a Roxal qt.TreeModel (hierarchical data).
+#
+# A node is a Roxal object (Node); its `children` list holds its child nodes (the tree
+# structure, excluded from the roles) and its other public properties (here `name`) are the
+# roles — so the QML delegate binds the `name` role with no roleNames() boilerplate. The
+# "Add joint" button asks Roxal — via a signal — to append a child to the current tip node,
+# growing the kinematic chain live (Roxal logic → model → view).
+#
+# Build (Qt is an optional module, OFF by default):
+#   cmake -B build/ -DROXAL_ENABLE_QT=ON -DCMAKE_PREFIX_PATH=/opt/Qt/6.8.3/gcc_64
+#   cmake --build build/ -j4
+# Run from the repo root (needs an X11 display):
+#   ./build/roxal examples/qt/treeview.rox
+
+import qt
+
+# A node type — its public properties (name) become the roles; `children` is structural.
+type Node object:
+  var name :string
+  var children :list = []
+
+var engine = qt.Engine()
+
+# Build a little kinematic tree: base → shoulder → elbow, plus a base sensor.
+var base     = Node("base")
+var shoulder = Node("shoulder")
+var elbow    = Node("elbow")
+var sensor   = Node("sensor")
+var tree = qt.TreeModel(Node, [base])
+tree.append(base, shoulder)
+tree.append(shoulder, elbow)
+tree.append(base, sensor)
+
+engine.set_context_property("scene", tree)
+engine.load('treeview.qml')
+
+# Button → Roxal: grow the chain by appending a child to the current tip (the elbow, then
+# each newly-added joint). Demonstrates tree.append(parent_node, child) updating the view.
+var tip = elbow
+var n = 0
+var win = engine.find("win")
+win.onGrowRequested(proc():
+  n = n + 1
+  var joint = Node("joint{n}")
+  tree.append(tip, joint)
+  tip = joint                       # the new joint becomes the tip
+  print("grew the chain → tip is now {tip.name}")
+)
+
+print("ready — click 'Add joint' to grow the tree; close the window to exit")
+engine.run()
+print("bye")
