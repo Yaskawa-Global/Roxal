@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.12)
 
-project(roxal VERSION 0.8.18 LANGUAGES CXX C)
+project(roxal VERSION 0.8.19 LANGUAGES CXX C)
 set(ROXAL_PRERELEASE "pre" CACHE STRING "SemVer prerelease label (e.g. alpha.1, rc.1)")
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -256,7 +256,7 @@ endif()
 # Qt6 for the qt module (QML/QtQuick UI). Point find_package at a desktop Qt6
 # install via -DCMAKE_PREFIX_PATH=/path/to/Qt/<ver>/gcc_64 (or set Qt6_DIR).
 if(ROXAL_ENABLE_QT)
-    find_package(Qt6 COMPONENTS Core Gui Qml Quick REQUIRED)
+    find_package(Qt6 COMPONENTS Core Gui Qml Quick QuickControls2 REQUIRED)
 endif()
 
 # Detect libffi via pkg-config so that include and library paths
@@ -528,7 +528,7 @@ if(ROXAL_ENABLE_QT)
     # truth that makes a host<->plugin class-layout mismatch impossible by construction.
     # Qt6::CorePrivate brings the private headers (QMetaObjectBuilder) used to build the
     # moc-free dynamic method bridge that makes Roxal object methods callable from QML.
-    target_link_libraries(roxalqt PRIVATE roxal_abi Qt6::Core Qt6::CorePrivate Qt6::Gui Qt6::Qml Qt6::Quick)
+    target_link_libraries(roxalqt PRIVATE roxal_abi Qt6::Core Qt6::CorePrivate Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2)
     target_compile_options(roxalqt PRIVATE
         $<$<CONFIG:DEBUG>:-fPIC -Wno-attributes -Werror=return-type -g -fmax-errors=1>
         $<$<CONFIG:RELEASE>:-O3>

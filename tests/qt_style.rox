@@ -1,0 +1,16 @@
+// qt.set_style selects the Qt Quick Controls style before any UI loads. A valid style
+// (case-insensitive) is accepted; an unknown one raises a catchable error. Headless.
+import qt
+
+qt.set_style("Fusion")
+print("fusion ok")
+
+qt.set_style("basic")          # case-insensitive — canonicalised to "Basic"
+print("basic ok")
+
+var raised = false
+try:
+  qt.set_style("Nonesuch")
+except e:
+  raised = true
+print("bad raised: {raised}")

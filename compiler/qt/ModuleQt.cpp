@@ -34,6 +34,10 @@
 #include <QVariantMap>
 #include <QTimer>
 #include <QElapsedTimer>
+#include <QQuickStyle>
+#include <QStringList>
+#include <QLibraryInfo>
+#include <QDir>
 
 #include <cstdio>
 #include <cstdlib>
@@ -485,6 +489,7 @@ void ModuleQt::registerBuiltins(VM& vm)
 
     link("process_events", [this](VM&, ArgsView a) { return qt_process_events_builtin(a); });
     link("every",          [this](VM&, ArgsView a) { return qt_every_builtin(a); });
+    link("set_style",      [this](VM&, ArgsView a) { return qt_set_style_builtin(a); });
 
     link("notify",     [this](VM&, ArgsView a) { return qt_notify_builtin(a); });
 
@@ -975,6 +980,36 @@ Value ModuleQt::qt_every_builtin(ArgsView args)
     QtSignalHub::instance().connectCallback(timer, sig, args[1]);
     timer->start();
     return qtObjectValue(timer);
+}
+
+Value ModuleQt::qt_set_style_builtin(ArgsView args)
+{
+    ensureQtUiThread("qt.set_style");
+    if (args.size() < 1 || !isString(args[0]))
+        throw std::invalid_argument("qt.set_style(name) expects a style name "
+                                    "(e.g. \"Fusion\", \"Material\", \"Basic\")");
+    QString name = QString::fromStdString(toUTF8StdString(asStringObj(args[0])->s));
+
+    // Enumerate the installed Controls styles (the capitalised sub-dirs of
+    // .../QtQuick/Controls) so a typo fails loudly here rather than silently falling
+    // back to Basic at load time. QQuickStyle has no public availableStyles().
+    const QString controlsDir = QLibraryInfo::path(QLibraryInfo::QmlImportsPath)
+                                + "/QtQuick/Controls";
+    QStringList styles;
+    for (const QString& d : QDir(controlsDir).entryList(QDir::Dirs | QDir::NoDotAndDotDot))
+        if (!d.isEmpty() && d.at(0).isUpper())   // skip tooling dirs (e.g. "designer")
+            styles << d;
+    if (!styles.isEmpty()) {
+        bool found = false;
+        for (const QString& s : styles)
+            if (s.compare(name, Qt::CaseInsensitive) == 0) { name = s; found = true; break; }
+        if (!found)
+            throw std::runtime_error("qt.set_style: unknown style '" + name.toStdString() +
+                                     "'. Available: " + styles.join(", ").toStdString());
+    }
+    // No effect once a Controls item has been created, so this must run before load().
+    QQuickStyle::setStyle(name);
+    return Value::nilVal();
 }
 
 // ============================================================

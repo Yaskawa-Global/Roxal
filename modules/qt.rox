@@ -60,6 +60,13 @@ func every(ms, handler):
   items freely."""
 
 @builtin
+func set_style(name:string):
+  """Select the Qt Quick Controls style for the app — one of the installed styles
+  ("Basic", "Fusion", "Material", "Universal", "Imagine"). Call this once, before
+  load()/load_string() (it has no effect once a control has been created). Raises if
+  the style isn't installed."""
+
+@builtin
 func notify(obj, name=nil):
   """Push a change of `obj` (a Roxal object exposed to QML via set_context_property)
   to QML. Roxal-side property *assignments* notify automatically; use this only to

@@ -164,6 +164,23 @@ the main UI thread, so it may touch Qt items freely. (For a *continuously* live 
 responsive while you think — you'd integrate stdin into the event loop; these one-shots are the
 simpler building block.)
 
+### Choosing a Controls style
+
+Qt Quick Controls ships several **styles** — `Basic` (the default), `Fusion`, `Material`,
+`Universal`, `Imagine`. Pick one with `qt.set_style(name)` **before** loading any QML (it has no
+effect once a control exists):
+
+```roxal
+import qt
+qt.set_style("Fusion")          # or "Material", "Universal", …
+var e = qt.Engine()
+e.load("app.qml")
+e.run()
+```
+
+It's a process-wide, app-level choice (raises on an unknown style name). For per-control theming on
+top of a style (e.g. Material accent/colours), set the style's attached properties in QML.
+
 ---
 
 ## Items & properties

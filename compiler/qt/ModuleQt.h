@@ -128,6 +128,9 @@ private:
     Value qt_process_events_builtin(ArgsView args);
     Value qt_every_builtin(ArgsView args);
 
+    // Select the Qt Quick Controls style (Basic/Fusion/Material/…); before load().
+    Value qt_set_style_builtin(ArgsView args);
+
     // Force-push a bindable object's property to QML (for in-place collection mutation).
     Value qt_notify_builtin(ArgsView args);
 
