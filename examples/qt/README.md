@@ -36,6 +36,13 @@ walk-through see [roxal-qt-module-guide.md](roxal-qt-module-guide.md).
 | [sortfilter](sortfilter.rox) | A `qt.SortFilterModel` view over a list model | Type in the filter → the list narrows; click **Sort by name** / **Priority (high→low)** to reorder. |
 | [treeview](treeview.rox) | A `qt.TreeModel` in a QML `TreeView` | Click **Add joint to the tip** → a node is appended down the chain; expand/collapse to see it. |
 | [dynamic](dynamic.rox) | **Runtime creation** — `engine.create_component` + `Component.create` | Click **Add joint** → a numbered marker is spawned into the container. |
+| [teapot](teapot.rox) | **3D** — Qt Quick 3D renders the Utah teapot (`RuntimeLoader`); drag to orbit | **Cycle tint** / **Pause** the spin (Roxal-driven); needs an OpenGL display. |
+
+The 3D example uses **Qt Quick 3D** (the modern Qt 6 3D module — not the older Qt 3D /
+`Qt3DExtras`). The mesh [teapot.obj](teapot.obj) (the Utah/Newell teapot) is loaded at runtime by
+`QtQuick3D.AssetUtils.RuntimeLoader`, and Qt Quick 3D is pulled in purely as a QML import — so the
+`roxal` binary stays Qt-free, exactly like the 2D examples. It needs a real OpenGL-capable display
+(it won't render under `QT_QPA_PLATFORM=offscreen`).
 
 ## Smoke-testing the UI paths
 

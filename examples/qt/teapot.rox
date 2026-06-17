@@ -1,0 +1,55 @@
+# Demo: a 3D scene with the famous Utah teapot, using Qt Quick 3D — the modern Qt 6 3D
+# facility (not the older Qt 3D / Qt3DExtras framework). The teapot mesh (teapot.obj, the
+# Newell/Utah teapot) is loaded at runtime by QtQuick3D.AssetUtils.RuntimeLoader; QML
+# animates the rotation; Roxal drives the scene: one button toggles the spin, another
+# cycles a lighting tint. Qt Quick 3D loads as a QML import, so the roxal binary stays
+# Qt-free (nothing extra is linked in).
+#
+# Build (Qt is an optional module, OFF by default):
+#   cmake -B build/ -DROXAL_ENABLE_QT=ON -DCMAKE_PREFIX_PATH=/opt/Qt/6.8.3/gcc_64
+#   cmake --build build/ -j4
+# Run from the repo root (needs an X11 display with OpenGL):
+#   ./build/roxal examples/qt/teapot.rox
+
+import qt
+
+var engine = qt.Engine()
+engine.load('teapot.qml')
+
+var win    = engine.find("win")
+var status = engine.find("status")
+
+# Tints Roxal cycles through — a name and the QML color the key light takes.
+type Tint object:
+  var name  :string
+  var color :string
+
+var tints = [
+  Tint("warm white", "#ffffff"),
+  Tint("amber",      "#ffb454"),
+  Tint("teal",       "#46d6c0"),
+  Tint("rose",       "#ff6b9d"),
+  Tint("violet",     "#b69cff"),
+]
+var idx = 0
+
+# UI -> Roxal: cycle the tint by setting the key light's color via the QML helper.
+win.onCycleRequested(proc():
+  idx = (idx + 1) rem len(tints)
+  var t = tints[idx]
+  win.applyTint(t.color)
+  status.text = "tint: {t.name}"
+)
+
+# UI -> Roxal: toggle the QML spin animation by flipping the bound property.
+win.onSpinRequested(proc():
+  win.spinning = not win.spinning
+  if win.spinning:
+    status.text = "spinning"
+  else:
+    status.text = "paused"
+)
+
+print("Utah teapot in Qt Quick 3D — Cycle tint / Pause from Roxal; close the window to exit")
+engine.run()
+print("bye")
