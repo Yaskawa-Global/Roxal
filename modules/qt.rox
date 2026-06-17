@@ -250,3 +250,37 @@ type TreeModel object:
   @builtin
   proc set(node, role:string, value):
     """Set `role` of `node` to `value` and notify the view (a no-op if unchanged)."""
+
+
+@builtin
+type SortFilterModel object:
+  """A sorted / filtered view over a qt.ListModel for a QML ListView, without changing the
+  underlying model. Sort by a role and/or filter rows by a role substring; the view tracks
+  the source live (appends/edits to the source flow through). Expose it (not the source) via
+  set_context_property; the delegate binds `model.<role>` exactly as for the source model."""
+
+  var _native   // ForeignPtr to the C++ QSortFilterProxyModel (module-owned)
+
+  @builtin
+  proc init(source):
+    """Wrap `source` (a qt.ListModel) in a sort/filter view."""
+
+  @builtin
+  proc sort_by(role:string, descending=false):
+    """Sort the view by `role` (a role of the source's row type), ascending by default."""
+
+  @builtin
+  proc filter(role:string, text:string):
+    """Show only rows whose `role` value contains `text` (case-insensitive substring)."""
+
+  @builtin
+  proc clear_filter():
+    """Remove the filter (show all rows)."""
+
+  @builtin
+  func count() -> int:
+    """The number of visible (post-filter) rows."""
+
+  @builtin
+  func row(i:int):
+    """The source row object at visible index `i` (nil if out of range)."""

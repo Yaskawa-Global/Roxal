@@ -312,6 +312,25 @@ Drive the model from Roxal:
 > After editing a row object's properties directly, tell the view with `model.row_changed(i)` (or
 > `cell_changed`/`set`). The structural calls above notify on their own.
 
+### Sorting & filtering
+
+To show the same rows **sorted and/or filtered** without changing the underlying model, wrap a
+`qt.ListModel` in a **`qt.SortFilterModel`** and expose *that* to the view:
+
+```roxal
+var model = qt.ListModel(Task, [...])
+var view  = qt.SortFilterModel(model)
+view.sort_by("name")              # by a role, ascending
+view.sort_by("priority", descending=true)
+view.filter("name", "weld")       # rows whose `name` contains "weld" (case-insensitive)
+view.clear_filter()
+engine.set_context_property("tasks", view)   # the ListView binds the view; delegate still uses model.<role>
+```
+
+The view tracks the source live — appends/edits to `model` flow through. `view.count()` is the
+visible row count and `view.row(i)` is the source object at visible index `i`. (v1 supports
+role-based sort + substring filter; arbitrary Roxal predicates are a future addition.)
+
 ### Tree models
 
 For hierarchical data in a QML `TreeView`, use **`qt.TreeModel`** — the same idea, but each node's

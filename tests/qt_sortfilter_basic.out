@@ -1,0 +1,7 @@
+by name: apple banana cherry
+by qty desc: apple banana cherry
+filter 'an' count: 1
+  match: banana
+cleared count: 3
+after append count: 4
+top by qty: avocado

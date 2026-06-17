@@ -98,6 +98,15 @@ private:
     Value treemodel_cell_changed_builtin(ArgsView args);
     Value treemodel_set_builtin(ArgsView args);
 
+    // SortFilterModel methods (args[0] = receiver). A QSortFilterProxyModel over a
+    // qt.ListModel: role-based sort + case-insensitive substring filter.
+    Value sortfilter_init_builtin(ArgsView args);
+    Value sortfilter_sort_by_builtin(ArgsView args);
+    Value sortfilter_filter_builtin(ArgsView args);
+    Value sortfilter_clear_filter_builtin(ArgsView args);
+    Value sortfilter_count_builtin(ArgsView args);
+    Value sortfilter_row_builtin(ArgsView args);
+
     // Module-level escape hatches for non-identifier / fully-dynamic names.
     Value qt_get_builtin(ArgsView args);
     Value qt_set_builtin(ArgsView args);

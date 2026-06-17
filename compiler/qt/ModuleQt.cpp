@@ -25,6 +25,9 @@
 #include <QUrl>
 #include <QtGlobal>
 #include <QMessageLogContext>
+#include <QSortFilterProxyModel>
+#include <QModelIndex>
+#include <QHash>
 
 #include <cstdio>
 #include <cstdlib>
@@ -157,6 +160,47 @@ RoxalTreeModel* roxalTreeModelPtr(const Value& v)
     if (!isForeignPtr(nativeVal)) return nullptr;
     auto* handle = static_cast<QPointer<RoxalTreeModel>*>(asForeignPtr(nativeVal)->ptr);
     return handle ? handle->data() : nullptr;
+}
+
+// Resolve the QSortFilterProxyModel a SortFilterModel receiver (args[0]) wraps.
+QSortFilterProxyModel* sortFilterFromReceiver(ArgsView args, const char* method)
+{
+    ensureQtUiThread(method);   // SortFilterModel.* is main-thread only
+    if (args.size() < 1 || !isObjectInstance(args[0]))
+        throw std::invalid_argument(std::string("SortFilterModel.") + method + " expects a receiver");
+    ObjectInstance* inst = asObjectInstance(args[0]);
+    Value nativeVal = inst->getProperty("_native");
+    if (!isForeignPtr(nativeVal))
+        throw std::runtime_error(std::string("SortFilterModel.") + method +
+                                 "(): not initialized (call qt.SortFilterModel(model) first)");
+    auto* handle = static_cast<QPointer<QSortFilterProxyModel>*>(asForeignPtr(nativeVal)->ptr);
+    QSortFilterProxyModel* proxy = handle ? handle->data() : nullptr;
+    if (!proxy)
+        throw std::runtime_error(std::string("SortFilterModel.") + method + "(): no longer valid");
+    return proxy;
+}
+
+// If `v` is a qt.SortFilterModel handle, return its QSortFilterProxyModel (else nullptr).
+QSortFilterProxyModel* roxalSortFilterPtr(const Value& v)
+{
+    if (!isObjectInstance(v)) return nullptr;
+    ObjectInstance* inst = asObjectInstance(v);
+    if (!isObjectType(inst->instanceType)) return nullptr;
+    if (asObjectType(inst->instanceType)->name != icu::UnicodeString("SortFilterModel")) return nullptr;
+    Value nativeVal = inst->getProperty("_native");
+    if (!isForeignPtr(nativeVal)) return nullptr;
+    auto* handle = static_cast<QPointer<QSortFilterProxyModel>*>(asForeignPtr(nativeVal)->ptr);
+    return handle ? handle->data() : nullptr;
+}
+
+// Map a role NAME to its Qt role int via the proxy's source model roleNames(); -1 if absent.
+static int sortFilterRoleInt(QSortFilterProxyModel* proxy, const QByteArray& name)
+{
+    if (!proxy->sourceModel()) return -1;
+    const QHash<int, QByteArray> roles = proxy->sourceModel()->roleNames();
+    for (auto it = roles.constBegin(); it != roles.constEnd(); ++it)
+        if (it.value() == name) return it.key();
+    return -1;
 }
 
 // Connect each top-level window's `closing` signal so that closing a window
@@ -375,6 +419,13 @@ void ModuleQt::registerBuiltins(VM& vm)
     linkMethod("TreeModel", "node_changed",[this](VM&, ArgsView a) { return treemodel_node_changed_builtin(a); });
     linkMethod("TreeModel", "cell_changed",[this](VM&, ArgsView a) { return treemodel_cell_changed_builtin(a); });
     linkMethod("TreeModel", "set",         [this](VM&, ArgsView a) { return treemodel_set_builtin(a); });
+
+    linkMethod("SortFilterModel", "init",         [this](VM&, ArgsView a) { return sortfilter_init_builtin(a); });
+    linkMethod("SortFilterModel", "sort_by",      [this](VM&, ArgsView a) { return sortfilter_sort_by_builtin(a); });
+    linkMethod("SortFilterModel", "filter",       [this](VM&, ArgsView a) { return sortfilter_filter_builtin(a); });
+    linkMethod("SortFilterModel", "clear_filter", [this](VM&, ArgsView a) { return sortfilter_clear_filter_builtin(a); });
+    linkMethod("SortFilterModel", "count",        [this](VM&, ArgsView a) { return sortfilter_count_builtin(a); });
+    linkMethod("SortFilterModel", "row",          [this](VM&, ArgsView a) { return sortfilter_row_builtin(a); });
 
     link("get",  [this](VM&, ArgsView a) { return qt_get_builtin(a); });
     link("set",  [this](VM&, ArgsView a) { return qt_set_builtin(a); });
@@ -729,6 +780,8 @@ Value ModuleQt::engine_set_context_property_builtin(ArgsView args)
         engine->rootContext()->setContextProperty(name, static_cast<QObject*>(model));
     } else if (RoxalTreeModel* tree = roxalTreeModelPtr(v)) {
         engine->rootContext()->setContextProperty(name, static_cast<QObject*>(tree));
+    } else if (QSortFilterProxyModel* proxy = roxalSortFilterPtr(v)) {
+        engine->rootContext()->setContextProperty(name, static_cast<QObject*>(proxy));
     } else if (isQtObject(v)) {
         engine->rootContext()->setContextProperty(name, asQtObject(v)->deref("set_context_property"));
     } else if (isObjectInstance(v)) {
@@ -1057,6 +1110,79 @@ Value ModuleQt::treemodel_set_builtin(ArgsView args)
         throw std::invalid_argument("TreeModel.set(node, role, value) expects a node, a string role, and a value");
     m->setCell(args[1], QByteArray::fromStdString(toUTF8StdString(asStringObj(args[2])->s)), args[3]);
     return Value::nilVal();
+}
+
+// ---- qt.SortFilterModel builtins (a QSortFilterProxyModel over a qt.ListModel) ----
+
+Value ModuleQt::sortfilter_init_builtin(ArgsView args)
+{
+    if (args.size() < 2 || !isObjectInstance(args[0]))
+        throw std::invalid_argument("qt.SortFilterModel(source) expects a receiver and a source model");
+    ObjectInstance* inst = asObjectInstance(args[0]);
+    RoxalListModel* source = roxalListModelPtr(args[1]);
+    if (!source)
+        throw std::invalid_argument("qt.SortFilterModel(source): source must be a qt.ListModel");
+
+    QSortFilterProxyModel* proxy = QtModelHub::instance().createSortFilter(source);
+    auto* handle = new QPointer<QSortFilterProxyModel>(proxy);
+    auto fp = newForeignPtrObj(static_cast<void*>(handle));
+    fp->registerCleanup([](void* p) {
+        delete static_cast<QPointer<QSortFilterProxyModel>*>(p);
+    });
+    inst->setProperty("_native", Value::objVal(std::move(fp)));
+    return Value::nilVal();
+}
+
+Value ModuleQt::sortfilter_sort_by_builtin(ArgsView args)
+{
+    QSortFilterProxyModel* proxy = sortFilterFromReceiver(args, "sort_by");
+    if (args.size() < 2 || !isString(args[1]))
+        throw std::invalid_argument("SortFilterModel.sort_by(role, descending=false) expects a string role");
+    QByteArray role = QByteArray::fromStdString(toUTF8StdString(asStringObj(args[1])->s));
+    const int roleInt = sortFilterRoleInt(proxy, role);
+    if (roleInt < 0)
+        throw std::runtime_error("SortFilterModel.sort_by: no role '" + std::string(role.constData()) + "'");
+    const bool desc = args.size() >= 3 && args[2].isBool() && args[2].asBool();
+    proxy->setSortRole(roleInt);
+    proxy->sort(0, desc ? Qt::DescendingOrder : Qt::AscendingOrder);
+    return Value::nilVal();
+}
+
+Value ModuleQt::sortfilter_filter_builtin(ArgsView args)
+{
+    QSortFilterProxyModel* proxy = sortFilterFromReceiver(args, "filter");
+    if (args.size() < 3 || !isString(args[1]) || !isString(args[2]))
+        throw std::invalid_argument("SortFilterModel.filter(role, text) expects a string role and string text");
+    QByteArray role = QByteArray::fromStdString(toUTF8StdString(asStringObj(args[1])->s));
+    const int roleInt = sortFilterRoleInt(proxy, role);
+    if (roleInt < 0)
+        throw std::runtime_error("SortFilterModel.filter: no role '" + std::string(role.constData()) + "'");
+    proxy->setFilterRole(roleInt);
+    proxy->setFilterFixedString(QString::fromStdString(toUTF8StdString(asStringObj(args[2])->s)));
+    return Value::nilVal();
+}
+
+Value ModuleQt::sortfilter_clear_filter_builtin(ArgsView args)
+{
+    sortFilterFromReceiver(args, "clear_filter")->setFilterFixedString(QString());
+    return Value::nilVal();
+}
+
+Value ModuleQt::sortfilter_count_builtin(ArgsView args)
+{
+    return Value::intVal(sortFilterFromReceiver(args, "count")->rowCount());
+}
+
+Value ModuleQt::sortfilter_row_builtin(ArgsView args)
+{
+    QSortFilterProxyModel* proxy = sortFilterFromReceiver(args, "row");
+    if (args.size() < 2 || !args[1].isInt())
+        throw std::invalid_argument("SortFilterModel.row(i) expects an int index");
+    const int i = static_cast<int>(args[1].asInt());
+    if (i < 0 || i >= proxy->rowCount()) return Value::nilVal();
+    const QModelIndex sidx = proxy->mapToSource(proxy->index(i, 0));
+    RoxalListModel* source = static_cast<RoxalListModel*>(proxy->sourceModel());
+    return source ? source->rowAt(sidx.row()) : Value::nilVal();
 }
 
 Value ModuleQt::qt_notify_builtin(ArgsView args)

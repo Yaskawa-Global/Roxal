@@ -1,0 +1,47 @@
+# Demo: a sorted / filtered ListView via a Roxal qt.SortFilterModel.
+#
+# A qt.SortFilterModel wraps a qt.ListModel and shows the same rows sorted and/or filtered,
+# without changing the underlying model. Here a text field filters by the `name` role and two
+# buttons re-sort — the UI asks Roxal (via signals) to call view.filter(...) / view.sort_by(...),
+# and the list updates live. The view tracks the source, so edits/appends to `model` flow through.
+#
+# Build (Qt is an optional module, OFF by default):
+#   cmake -B build/ -DROXAL_ENABLE_QT=ON -DCMAKE_PREFIX_PATH=/opt/Qt/6.8.3/gcc_64
+#   cmake --build build/ -j4
+# Run from the repo root (needs an X11 display):
+#   ./build/roxal examples/qt/sortfilter.rox
+
+import qt
+
+# A row type — its public properties (name, priority) become the roles.
+type Part object:
+  var name     :string
+  var priority :int
+
+var engine = qt.Engine()
+
+# The underlying model, then a sort/filter view over it (exposed to QML — not the source).
+var model = qt.ListModel(Part, [
+  Part("gripper", 2),
+  Part("base plate", 5),
+  Part("wrist sensor", 1),
+  Part("shoulder motor", 4),
+  Part("elbow joint", 3),
+])
+var view = qt.SortFilterModel(model)
+view.sort_by("name")                      # start sorted by name
+engine.set_context_property("items", view)
+engine.load('sortfilter.qml')
+
+# UI → Roxal: apply the sort/filter the user asked for (the proxy ops are Roxal builtins).
+var win = engine.find("win")
+win.onFilterChanged(proc(text):
+  view.filter("name", text)               # case-insensitive substring on the `name` role
+)
+win.onSortRequested(proc(role, descending):
+  view.sort_by(role, descending)
+)
+
+print("ready — type to filter by name, or click a sort button; close the window to exit")
+engine.run()
+print("bye")

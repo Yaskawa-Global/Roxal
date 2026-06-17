@@ -11,6 +11,7 @@
 #include <QVariant>
 #include <QModelIndex>
 #include <QList>
+#include <QSortFilterProxyModel>
 
 #include <memory>
 #include <vector>
@@ -247,6 +248,7 @@ bool RoxalListModel::setCell(int row, const QByteArray& roleName, const Value& v
 struct QtModelHub::Impl : SimpleMarkSweepGC::ExternalRootProvider {
     std::vector<std::unique_ptr<RoxalListModel>> models;
     std::vector<std::unique_ptr<RoxalTreeModel>> treeModels;
+    std::vector<std::unique_ptr<QSortFilterProxyModel>> proxies;   // qt.SortFilterModel
     bool rootRegistered { false };
 
     // Keep each live model's rows/roots (and their elements, transitively) + row type
@@ -285,6 +287,7 @@ void QtModelHub::init()
 
 void QtModelHub::shutdown()
 {
+    impl_->proxies.clear();      // proxies first — never outlive their source models
     impl_->models.clear();       // delete the QAbstract*Models while Qt is still alive
     impl_->treeModels.clear();
     if (impl_->rootRegistered) {
@@ -306,6 +309,17 @@ RoxalTreeModel* QtModelHub::createTree(const Value& rowType, const Value& roots)
     auto m = std::make_unique<RoxalTreeModel>(rowType, roots);
     RoxalTreeModel* raw = m.get();
     impl_->treeModels.push_back(std::move(m));
+    return raw;
+}
+
+QSortFilterProxyModel* QtModelHub::createSortFilter(RoxalListModel* source)
+{
+    auto p = std::make_unique<QSortFilterProxyModel>();
+    p->setSourceModel(source);
+    p->setFilterCaseSensitivity(Qt::CaseInsensitive);   // substring filter, case-insensitive
+    p->setDynamicSortFilter(true);                      // track source edits live
+    QSortFilterProxyModel* raw = p.get();
+    impl_->proxies.push_back(std::move(p));
     return raw;
 }
 

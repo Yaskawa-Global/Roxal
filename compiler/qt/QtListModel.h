@@ -14,6 +14,8 @@
 #include <memory>
 #include <vector>
 
+class QSortFilterProxyModel;   // QtCore — owned (not GC-rooted) by QtModelHub for qt.SortFilterModel
+
 namespace roxal {
 
 class RoxalTreeModel;   // QtTreeModel.h — also owned + GC-rooted by QtModelHub
@@ -96,6 +98,9 @@ public:
     // shutdown; the qt.ListModel / qt.TreeModel handle holds a QPointer to it).
     RoxalListModel* create(const Value& rowType, const Value& rows);
     RoxalTreeModel* createTree(const Value& rowType, const Value& roots);
+    // A QSortFilterProxyModel over `source` (a RoxalListModel); the hub owns it. Holds no
+    // Roxal Values (its source is already GC-rooted), so it needs ownership only — not tracing.
+    QSortFilterProxyModel* createSortFilter(RoxalListModel* source);
 
 private:
     QtModelHub();

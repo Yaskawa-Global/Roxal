@@ -1,0 +1,23 @@
+// A qt.SortFilterModel feeds a QML Repeater (a ListView consumer): the proxy's sorted +
+// filtered rows reach QML with the source's roles. After sort_by("name") + filter("name","a")
+// the visible rows are apple, banana (cherry filtered out); a Timer reads the rendered delegate
+// texts back via a P2 signal. Headless via QT_QPA_PLATFORM=offscreen.
+import qt
+
+type Item object:
+  var name :string
+
+var m = qt.ListModel(Item, [Item("banana"), Item("apple"), Item("cherry")])
+var v = qt.SortFilterModel(m)
+v.sort_by("name")           # apple, banana, cherry
+v.filter("name", "a")       # rows containing "a": banana, apple → sorted: apple, banana
+
+var engine = qt.Engine()
+engine.set_context_property("items", v)
+engine.load_string('import QtQuick\nimport QtQuick.Window\nWindow {\n id: win\n objectName: "win"\n visible: true\n signal report(string s)\n Column { Repeater { id: rep; objectName: "rep"; model: items; delegate: Text { text: model.name } } }\n Timer { interval: 30; running: true; onTriggered: { var s = ""; for (var i = 0; i < rep.count; i++) s += rep.itemAt(i).text + ";"; win.report(s); Qt.quit() } }\n}\n')
+
+var win = engine.find("win")
+win.onReport(proc(s): print("report: {s}"))
+
+engine.run()
+print("done")

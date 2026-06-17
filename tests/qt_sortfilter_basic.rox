@@ -1,0 +1,29 @@
+// Pure-Roxal test for qt.SortFilterModel: a QSortFilterProxyModel view over a qt.ListModel.
+// Exercises role-based sort (asc/desc), case-insensitive substring filter, clear_filter, and
+// that appends to the SOURCE model flow through the sorted/filtered view.
+import qt
+
+type Item object:
+  var name :string
+  var qty  :int
+
+var m = qt.ListModel(Item, [Item("banana", 2), Item("apple", 3), Item("cherry", 1)])
+var v = qt.SortFilterModel(m)
+
+v.sort_by("name")
+print("by name: " + v.row(0).name + " " + v.row(1).name + " " + v.row(2).name)   # apple banana cherry
+
+v.sort_by("qty", descending=true)
+print("by qty desc: " + v.row(0).name + " " + v.row(1).name + " " + v.row(2).name)   # apple banana cherry
+
+v.filter("name", "an")
+print("filter 'an' count: {v.count()}")   # 1
+print("  match: " + v.row(0).name)         # banana
+
+v.clear_filter()
+print("cleared count: {v.count()}")        # 3
+
+m.append(Item("avocado", 5))               # append to the source — flows through
+v.sort_by("qty", descending=true)
+print("after append count: {v.count()}")   # 4
+print("top by qty: " + v.row(0).name)      # avocado
