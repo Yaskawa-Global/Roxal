@@ -1,0 +1,14 @@
+// A Qt handler that catches its own exception keeps the UI running: run() continues normally
+// after the handler returns (the counterpart to qt_callback_error's fail-loud default).
+import qt
+var engine = qt.Engine()
+engine.load_string('import QtQuick\nimport QtQuick.Window\nWindow { id: win; objectName: "win"; visible: true; signal tick(); Timer { interval: 30; running: true; onTriggered: { win.tick(); Qt.quit() } } }\n')
+var win = engine.find("win")
+win.onTick(proc():
+  try:
+    raise RuntimeException("handler boom")
+  except e:
+    print("caught: " + string(e))
+)
+engine.run()
+print("done")

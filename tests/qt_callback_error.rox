@@ -1,0 +1,13 @@
+// An unhandled exception in a Qt signal/event handler (running while the VM is parked in
+// run()) is NOT swallowed: it aborts run() and surfaces as an uncaught exception (fail-loud),
+// and remaining handlers for that signal are skipped. To keep the UI running instead, catch
+// inside the handler (see qt_callback_catch).
+import qt
+var engine = qt.Engine()
+engine.load_string('import QtQuick\nimport QtQuick.Window\nWindow { id: win; objectName: "win"; visible: true; signal tick(); Timer { interval: 30; running: true; onTriggered: { win.tick(); Qt.quit() } } }\n')
+var win = engine.find("win")
+win.onTick(proc():
+  raise RuntimeException("handler boom")
+)
+engine.run()
+print("unreachable")
