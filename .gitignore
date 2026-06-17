@@ -37,3 +37,6 @@
 build/
 compiler/cpp-gen/
 node_modules/
+
+# gui-user MCP smoke-test scratch (screenshots, display logs)
+.gui-user/

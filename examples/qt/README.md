@@ -8,18 +8,50 @@ cmake -B build/ -DROXAL_ENABLE_QT=ON -DCMAKE_PREFIX_PATH=/opt/Qt/6.8.3/gcc_64
 cmake --build build/ -j4
 ```
 
-## hello — window opens, close it to exit
+Each example runs the same two ways — on a real X11 display, or headless on Qt's
+offscreen platform plugin (renders to an in-memory surface, no X server — handy for
+CI):
 
 ```sh
-./build/roxal examples/qt/hello.rox          # needs an X11 display
-QT_QPA_PLATFORM=offscreen ./build/roxal examples/qt/hello.rox   # headless
+./build/roxal examples/qt/hello.rox                              # real window
+QT_QPA_PLATFORM=offscreen ./build/roxal examples/qt/hello.rox    # headless
 ```
 
-[hello.rox](hello.rox) creates a `qt.Engine`, loads [hello.qml](hello.qml) (whose
-root is a `Window`), and calls `engine.run()`. `run()` blocks the script — while
-the VM keeps pumping Qt cooperatively — until the window is closed (or QML calls
-`Qt.quit()`), then the script continues and exits with a clean teardown.
+`engine.run()` blocks the script — while the VM keeps pumping Qt cooperatively —
+until the window closes (or QML calls `Qt.quit()`), then the script continues and
+exits with a clean teardown.
 
-`QT_QPA_PLATFORM=offscreen` is a Qt platform plugin that renders to an in-memory
-surface instead of a real display, so the program runs without an X server (handy
-for CI/headless). Remove it to see an actual window.
+## The examples
+
+Each builds on the one before, covering a capability of the module. For a narrative
+walk-through see [roxal-qt-module-guide.md](roxal-qt-module-guide.md).
+
+| Example | Shows | Try it |
+| --- | --- | --- |
+| [hello](hello.rox) | Engine lifecycle: load a `Window`, `run()`, clean teardown | Window opens; close it to exit. |
+| [interactive](interactive.rox) | **P1** — find items by `objectName`; read/write properties; call a QML method | At startup Roxal sets the title to *"Driven from Roxal!"*, recolors the box, and calls `bump()` 3× → box shows **3**. |
+| [signals](signals.rox) | **P2** — a Qt signal reaches a Roxal callback (`btn.onClicked(...)`) | Click **Click me** → status counts up (*clicks: 1, 2, …*). |
+| [listmodel](listmodel.rox) | **P3** — a `ListView` backed by a `qt.ListModel` of Roxal row objects | Click **Add task** → a row is appended; tick a checkbox → the edit flows back to the row. |
+| [bindable](bindable.rox) | **P4** — a Roxal object exposed as a QML-bindable backend | Drag the slider → *Volume: N* (QML→Roxal); click **Reset from Roxal** → title + volume reset (Roxal→QML auto-push). |
+| [sortfilter](sortfilter.rox) | A `qt.SortFilterModel` view over a list model | Type in the filter → the list narrows; click **Sort by name** / **Priority (high→low)** to reorder. |
+| [treeview](treeview.rox) | A `qt.TreeModel` in a QML `TreeView` | Click **Add joint to the tip** → a node is appended down the chain; expand/collapse to see it. |
+| [dynamic](dynamic.rox) | **Runtime creation** — `engine.create_component` + `Component.create` | Click **Add joint** → a numbered marker is spawned into the container. |
+
+## Smoke-testing the UI paths
+
+The headless `qt_*` tests (`python3 runtests.py -t 'qt_*'`,
+`QT_QPA_PLATFORM=offscreen`) cover these paths automatically. To additionally
+exercise them on a **real display with real input** — clicks, typing, drags — drive
+the examples above and confirm the UI reacts as the *Try it* column describes.
+
+This repo's `gui-user` computer-use server makes that scriptable: it launches an app
+on a private virtual display (Xvfb), then observes via screenshots / the
+accessibility tree and injects input. A run looks like:
+
+1. `launch_app("./build/roxal", args=["examples/qt/dynamic.rox"], working_dir=<repo>, vnc=true)`
+2. `screenshot()` — confirm the window rendered
+3. `click_element("Add joint")` (or `click(x, y)` from the screenshot) — drive it
+4. `screenshot()` — confirm the UI changed (a new marker, an updated count, …)
+5. `close_app()` between examples; `stop_display()` when done
+
+Screenshots auto-save under `.gui-user/screenshots/` (git-ignored scratch).
