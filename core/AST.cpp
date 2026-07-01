@@ -431,6 +431,62 @@ void ContinueStatement::output(std::ostream& os, int indent) const
 
 
 
+std::any JumpStatement::accept(ASTVisitor& v)
+{
+    Anys results {};
+
+    if (v.visitFirst())
+        results.push_back( v.visit(dynamic_ptr_cast<JumpStatement>(ptr_from_this())) );
+
+    if (v.visitChildren())
+        acceptChildren(v, results);
+
+    if (v.visitLast())
+        results.push_back( v.visit(dynamic_ptr_cast<JumpStatement>(ptr_from_this())) );
+
+    return results;
+}
+
+void JumpStatement::acceptChildren(ASTVisitor& v, Anys& results)
+{
+    (void)v; (void)results;
+}
+
+void JumpStatement::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"Jump " << toUTF8StdString(name) << std::endl;
+}
+
+
+
+std::any LabelStatement::accept(ASTVisitor& v)
+{
+    Anys results {};
+
+    if (v.visitFirst())
+        results.push_back( v.visit(dynamic_ptr_cast<LabelStatement>(ptr_from_this())) );
+
+    if (v.visitChildren())
+        acceptChildren(v, results);
+
+    if (v.visitLast())
+        results.push_back( v.visit(dynamic_ptr_cast<LabelStatement>(ptr_from_this())) );
+
+    return results;
+}
+
+void LabelStatement::acceptChildren(ASTVisitor& v, Anys& results)
+{
+    (void)v; (void)results;
+}
+
+void LabelStatement::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"Label " << toUTF8StdString(name) << std::endl;
+}
+
+
+
 
 std::any IfStatement::accept(ASTVisitor& v)
 {

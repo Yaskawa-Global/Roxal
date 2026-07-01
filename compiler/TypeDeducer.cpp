@@ -518,6 +518,22 @@ std::any TypeDeducer::visit(ptr<ast::ContinueStatement> ast)
 }
 
 
+std::any TypeDeducer::visit(ptr<ast::JumpStatement> ast)
+{
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    return results;
+}
+
+
+std::any TypeDeducer::visit(ptr<ast::LabelStatement> ast)
+{
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    return results;
+}
+
+
 std::any TypeDeducer::visit(ptr<ast::IfStatement> ast)
 {
     ast::Anys results {};

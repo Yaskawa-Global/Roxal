@@ -57,8 +57,24 @@
     "keywords": {
       "patterns": [
         {
+          "comment": "'jump <label>' — 'jump' is a hard keyword; the target is a label name.",
+          "match": "\\b(jump)\\s+(`?[A-Za-z_][A-Za-z0-9_]*`?)",
+          "captures": {
+            "1": { "name": "keyword.control.roxal" },
+            "2": { "name": "entity.name.label.roxal" }
+          }
+        },
+        {
+          "comment": "'label <name>' declaration. 'label' is a soft keyword (also a valid identifier), so match only at statement start followed by a name.",
+          "match": "^\\s*(label)\\s+(`?[A-Za-z_][A-Za-z0-9_]*`?)",
+          "captures": {
+            "1": { "name": "keyword.control.roxal" },
+            "2": { "name": "entity.name.label.roxal" }
+          }
+        },
+        {
           "name": "keyword.control.roxal",
-          "match": "\\b(?:if|else|elseif|while|for|break|continue|match|case|default|try|except|finally|raise|return|until|when|becomes|changes|occurs|where|emit|scope|with)\\b"
+          "match": "\\b(?:if|else|elseif|while|for|break|continue|jump|match|case|default|try|except|finally|raise|return|until|when|becomes|changes|occurs|where|emit|scope|with)\\b"
         },
         {
           "name": "keyword.control.import.roxal",

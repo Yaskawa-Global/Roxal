@@ -44,6 +44,10 @@ public:
 
     virtual std::any visitContinue_stmt(RoxalParser::Continue_stmtContext *context);
 
+    virtual std::any visitJump_stmt(RoxalParser::Jump_stmtContext *context);
+
+    virtual std::any visitLabel_stmt(RoxalParser::Label_stmtContext *context);
+
     virtual std::any visitIf_stmt(RoxalParser::If_stmtContext *context);
 
     virtual std::any visitWhile_stmt(RoxalParser::While_stmtContext *context);

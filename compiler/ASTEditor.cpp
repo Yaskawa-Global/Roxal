@@ -349,6 +349,16 @@ std::any ASTEditor::visit(ptr<ast::ContinueStatement> ast)
     return {};
 }
 
+std::any ASTEditor::visit(ptr<ast::JumpStatement> ast)
+{
+    return {};
+}
+
+std::any ASTEditor::visit(ptr<ast::LabelStatement> ast)
+{
+    return {};
+}
+
 std::any ASTEditor::visit(ptr<ast::IfStatement> ast)
 {
     //need to handle expressions in conditionalSuites

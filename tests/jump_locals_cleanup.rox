@@ -1,0 +1,11 @@
+# Locals declared before a backward jump must be cleaned up each pass so the
+# operand stack stays balanced across iterations.
+var i = 0
+scope:
+    label top
+    var a = i * 2
+    var b = i * 3
+    print("i={i} a={a} b={b}")
+    i = i + 1
+    jump top if i < 4
+print("after")

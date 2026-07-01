@@ -529,6 +529,24 @@ for n in nums:
 
 `break` and `continue` always target the innermost enclosing loop. They are not valid outside a loop.
 
+### Jump and Label
+
+Occasionally a structured loop is awkward. `label <name>` marks a position and `jump <name>` transfers control to it. Like `break`/`continue`, `jump` composes with the `if` modifier; it may target a label in the same or an enclosing scope (jumping outward, or back to retry).
+
+A common use is jumping *back* to retry:
+
+```php
+var attempts = 0
+
+label retry // "retry" is label name, which is an identifier you choose
+attempts = attempts + 1
+
+jump retry if not connect() and attempts < 3   // retry until connected, up to 3 tries
+```
+
+Usually, it is a good idea to avoid using `jump` in favour of structured control via statements like `while`, `for`, `match`, `break` and `continue` which may give more readable code.
+
+
 ### Match Statement
 
 The `match` statement provides pattern matching similar to Python's match or C's switch. It works with any type and supports multiple patterns per case, range matching for numeric types, and a default case.

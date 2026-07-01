@@ -344,6 +344,28 @@ std::any ASTGraphviz::visit(ptr<ast::ContinueStatement> ast)
 }
 
 
+std::any ASTGraphviz::visit(ptr<ast::JumpStatement> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+    nodes[name] = node(name,"Jump "+toUTF8StdString(ast->name));
+    stackPush(name);
+    endVisit();
+    return {};
+}
+
+
+std::any ASTGraphviz::visit(ptr<ast::LabelStatement> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+    nodes[name] = node(name,"Label "+toUTF8StdString(ast->name));
+    stackPush(name);
+    endVisit();
+    return {};
+}
+
+
 std::any ASTGraphviz::visit(ptr<ast::IfStatement> ast)
 {
     startVisit();

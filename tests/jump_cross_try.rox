@@ -1,0 +1,7 @@
+# Error: jump out of a try block crosses the handler-teardown boundary.
+scope:
+    try:
+        jump out
+    except:
+        print("e")
+    label out

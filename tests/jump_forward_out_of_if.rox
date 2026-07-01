@@ -1,0 +1,9 @@
+# Forward 'jump' exits an if: block to a lexically shallower label.
+var x = -5
+scope:
+    if x < 0:
+        print("negative")
+        jump skip
+    print("non-negative path")
+    label skip
+print("after scope")

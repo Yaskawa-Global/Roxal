@@ -801,6 +801,12 @@ std::any ASTGenerator::visitStatement(RoxalParser::StatementContext *context)
         else if (is<ContinueStatement>(compound)) {
             stmt = as<ContinueStatement>(compound);
         }
+        else if (is<JumpStatement>(compound)) {
+            stmt = as<JumpStatement>(compound);
+        }
+        else if (is<LabelStatement>(compound)) {
+            stmt = as<LabelStatement>(compound);
+        }
         else if (is<AdheringIfStatement>(compound)) {
             // break/continue with `if` clause are wrapped in AdheringIfStatement by their visitors.
             stmt = as<AdheringIfStatement>(compound);
@@ -902,6 +908,10 @@ std::any ASTGenerator::visitCompound_stmt(RoxalParser::Compound_stmtContext *con
         return visitBreak_stmt(context->break_stmt());
     else if (context->continue_stmt())
         return visitContinue_stmt(context->continue_stmt());
+    else if (context->jump_stmt())
+        return visitJump_stmt(context->jump_stmt());
+    else if (context->label_stmt())
+        return visitLabel_stmt(context->label_stmt());
     else if (context->block_stmt())
         return visitBlock_stmt(context->block_stmt());
     else if (context->if_stmt())
@@ -993,6 +1003,45 @@ std::any ASTGenerator::visitContinue_stmt(RoxalParser::Continue_stmtContext *con
     }
 
     return typeValue(continueStmt);
+    visitEnd();
+}
+
+
+
+std::any ASTGenerator::visitJump_stmt(RoxalParser::Jump_stmtContext *context)
+{
+    visitStart();
+
+    ptr<JumpStatement> jumpStmt = make_ptr<JumpStatement>();
+    setSourceInfo(jumpStmt, context);
+    jumpStmt->name = identifierFromTerminal(context->IDENTIFIER());
+
+    if (context->if_clause()) {
+        auto cond = as<Expression>(visitExpression(context->if_clause()->expression()));
+        ptr<AdheringIfStatement> ifStmt = make_ptr<AdheringIfStatement>();
+        setSourceInfo(ifStmt, context->if_clause());
+        ifStmt->stmt = jumpStmt;
+        ifStmt->condition = cond;
+        return typeValue(ifStmt);
+    }
+
+    return typeValue(jumpStmt);
+    visitEnd();
+}
+
+
+
+std::any ASTGenerator::visitLabel_stmt(RoxalParser::Label_stmtContext *context)
+{
+    visitStart();
+
+    ptr<LabelStatement> labelStmt = make_ptr<LabelStatement>();
+    setSourceInfo(labelStmt, context);
+    // label_stmt is 'label <name>': two IDENTIFIERs — [0] is the soft keyword 'label',
+    // [1] is the label name.
+    labelStmt->name = identifierFromTerminal(context->IDENTIFIER().at(1));
+
+    return typeValue(labelStmt);
     visitEnd();
 }
 

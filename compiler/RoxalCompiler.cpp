@@ -29,7 +29,7 @@ using ast::Access;
 namespace {
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 42;
+constexpr std::uint32_t ModuleCacheVersion = 43;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -211,9 +211,13 @@ Value RoxalCompiler::compile(std::istream& source, const std::string& name,
         asFunction(module->function)->strict = strictContext;
 
         try {
+            compileUnwinding = false;
             auto file = as<File>(ast);
 
             file->accept(*this);
+
+            // Any top-level 'jump' whose 'label' was never defined is an error.
+            checkUnresolvedJumps();
 
             function = module->function;
 
@@ -224,6 +228,7 @@ Value RoxalCompiler::compile(std::istream& source, const std::string& name,
 
             //std::cout << "value:" << value->repr() << std::endl;
         } catch (std::logic_error& e) {
+            compileUnwinding = true;
             compileError(e.what());
 
             while (!lexicalScopes.empty() && (*scope())->isFunc() && !(*scope())->isModule())
@@ -238,6 +243,7 @@ Value RoxalCompiler::compile(std::istream& source, const std::string& name,
 
             return Value::nilVal();
         } catch (std::exception& e) {
+            compileUnwinding = true;
             compileError(e.what());
 
             while (!lexicalScopes.empty() && (*scope())->isFunc() && !(*scope())->isModule())
@@ -2718,6 +2724,140 @@ std::any RoxalCompiler::visit(ptr<ast::ContinueStatement> ast)
 }
 
 
+// 'label <name>': record a jump target and resolve any forward jumps to it.
+std::any RoxalCompiler::visit(ptr<ast::LabelStatement> ast)
+{
+    currentNode = ast;
+    auto fs = asFuncScope(funcScope());
+
+    for (const auto& l : fs->labels) {
+        if (l.name == ast->name) {
+            error("duplicate label '" + toUTF8StdString(ast->name) + "'");
+            return {};
+        }
+    }
+
+    FunctionScope::LabelInfo info;
+    info.name = ast->name;
+    info.offset = currentChunk()->code.size();
+    info.liveLocalCount = fs->locals.size();
+    info.scopeDepth = fs->scopeDepth;
+    info.blockPath = fs->blockPath;
+    info.guardDepth = fs->guardDepth;
+    fs->labels.push_back(info);
+
+    resolveLabel(info);
+    return {};
+}
+
+
+// Patch every pending forward 'jump' that targeted the just-defined label.
+void RoxalCompiler::resolveLabel(const FunctionScope::LabelInfo& label)
+{
+    auto fs = asFuncScope(funcScope());
+    auto& pend = fs->pendingJumps;
+    for (auto it = pend.begin(); it != pend.end(); ) {
+        if (it->name != label.name) { ++it; continue; }
+
+        // Rule 1: the label's block must lexically enclose (or equal) the jump's block.
+        bool enclosing = label.blockPath.size() <= it->blockPath.size()
+                         && std::equal(label.blockPath.begin(), label.blockPath.end(),
+                                       it->blockPath.begin());
+        // Rule 3: must not cross a try/with/when guard boundary.
+        bool sameGuard = (label.guardDepth == it->guardDepth);
+        // Rule 2: a forward jump must not skip an initialisation the target relies on —
+        // the locals it keeps (those at depth <= the label's scope depth) must exactly
+        // equal the label's live-local count.
+        size_t keep = 0;
+        for (int d : it->liveLocalDepths)
+            if (d <= label.scopeDepth) ++keep;
+        bool noSkip = (keep == label.liveLocalCount);
+
+        std::string at = " at line " + std::to_string(it->line.line);
+        if (!enclosing)
+            error("jump to label '" + toUTF8StdString(label.name) + "'" + at
+                  + " must target the same or an enclosing scope");
+        else if (!sameGuard)
+            error("jump to label '" + toUTF8StdString(label.name) + "'" + at
+                  + " cannot cross a try/with boundary");
+        else if (!noSkip)
+            error("jump to label '" + toUTF8StdString(label.name) + "'" + at
+                  + " would skip a variable declaration");
+        else {
+            patchU16At(it->popArgOffset, uint16_t(label.liveLocalCount));
+            patchJump(it->jumpArgOffset);
+        }
+        it = pend.erase(it);
+    }
+}
+
+
+void RoxalCompiler::checkUnresolvedJumps()
+{
+    auto fs = asFuncScope(funcScope());
+    if (!fs)
+        return;
+    // During error-unwinding cleanup, just discard — a real error was already reported.
+    if (compileUnwinding) {
+        fs->pendingJumps.clear();
+        return;
+    }
+    if (!fs->pendingJumps.empty()) {
+        auto pj = fs->pendingJumps.front();
+        fs->pendingJumps.clear();
+        error("jump to undefined label '" + toUTF8StdString(pj.name) + "' at line "
+              + std::to_string(pj.line.line));
+    }
+}
+
+
+// 'jump <name>': transfer control to the matching 'label <name>'.
+std::any RoxalCompiler::visit(ptr<ast::JumpStatement> ast)
+{
+    currentNode = ast;
+    auto fs = asFuncScope(funcScope());
+
+    const FunctionScope::LabelInfo* target = nullptr;
+    for (const auto& l : fs->labels)
+        if (l.name == ast->name) { target = &l; break; }
+
+    std::string comment = "jump " + toUTF8StdString(ast->name);
+
+    if (target) {
+        // Backward jump: the label is already defined.
+        bool enclosing = target->blockPath.size() <= fs->blockPath.size()
+                         && std::equal(target->blockPath.begin(), target->blockPath.end(),
+                                       fs->blockPath.begin());
+        if (!enclosing) {
+            error("jump to label '" + toUTF8StdString(ast->name)
+                  + "' must target the same or an enclosing scope");
+            return {};
+        }
+        if (target->guardDepth != fs->guardDepth) {
+            error("jump to label '" + toUTF8StdString(ast->name)
+                  + "' cannot cross a try/with boundary");
+            return {};
+        }
+        emitPopToCount(int(target->liveLocalCount), comment);
+        emitLoop(target->offset, comment);
+    } else {
+        // Forward jump: record placeholders; resolved when the label is seen.
+        FunctionScope::PendingJump pj;
+        pj.name = ast->name;
+        pj.popArgOffset = emitPopToCount(-1, comment);
+        pj.jumpArgOffset = emitJump(OpCode::Jump, comment);
+        for (const auto& loc : fs->locals)
+            pj.liveLocalDepths.push_back(loc.depth);
+        pj.scopeDepth = fs->scopeDepth;
+        pj.blockPath = fs->blockPath;
+        pj.guardDepth = fs->guardDepth;
+        pj.line = ast->interval.first;
+        fs->pendingJumps.push_back(pj);
+    }
+    return {};
+}
+
+
 std::any RoxalCompiler::visit(ptr<ast::IfStatement> ast)
 {
     currentNode = ast;
@@ -3169,6 +3309,8 @@ std::any RoxalCompiler::visit(ptr<ast::AdheringIfStatement> ast)
 std::any RoxalCompiler::visit(ptr<ast::TryStatement> ast)
 {
     currentNode = ast;
+    // A 'jump' must not cross this try's handler-teardown — mark the guarded region.
+    asFuncScope(funcScope())->guardDepth++;
     // emit handler setup and compile body
     auto handlerJump = emitJump(OpCode::SetupExcept);
 
@@ -3228,6 +3370,7 @@ std::any RoxalCompiler::visit(ptr<ast::TryStatement> ast)
 
     patchJump(jumpOverHandlers);
 
+    asFuncScope(funcScope())->guardDepth--;
     return {};
 }
 
@@ -3410,8 +3553,13 @@ std::any RoxalCompiler::visit(ptr<ast::WithStatement> ast)
     ctx.stackSlot = static_cast<uint16_t>(contextSlot);
     withContextStack.push_back(ctx);
 
+    // A 'jump' must not escape the with-context cleanup — mark the guarded region.
+    asFuncScope(funcScope())->guardDepth++;
+
     // Compile the body with the context available
     ast->body->accept(*this);
+
+    asFuncScope(funcScope())->guardDepth--;
 
     // Pop the with context
     withContextStack.pop_back();
@@ -5550,6 +5698,7 @@ void RoxalCompiler::enterFuncScope(Value moduleType, const icu::UnicodeString& f
 
 void RoxalCompiler::exitFuncScope()
 {
+    checkUnresolvedJumps();
     #ifdef DEBUG_BUILD
     if (lexicalScopes.empty())
         throw std::runtime_error("exitFuncScope() stack underflow");
@@ -5572,6 +5721,9 @@ void RoxalCompiler::enterLocalScope()
 {
     asFuncScope(funcScope())->scopeDepth++;
     asFuncScope(funcScope())->constBindings.emplace_back();
+    // Track lexical block ancestry for 'jump'/'label' enclosing-scope validation.
+    auto fs = asFuncScope(funcScope());
+    fs->blockPath.push_back(fs->nextBlockId++);
     #ifdef DEBUG_TRACE_SCOPES
     std::cout << "enterLocalScope() depth:" << asFuncScope(funcScope())->scopeDepth << std::endl;
     outputScopes();
@@ -5607,6 +5759,10 @@ void RoxalCompiler::exitLocalScope()
     auto& constBindings = asFuncScope(funcScope())->constBindings;
     if (!constBindings.empty())
         constBindings.pop_back();
+
+    auto& blockPath = asFuncScope(funcScope())->blockPath;
+    if (!blockPath.empty())
+        blockPath.pop_back();
 
     #ifdef DEBUG_TRACE_SCOPES
     std::cout << "exitLexicalScope()" << std::endl;
@@ -5863,6 +6019,29 @@ Chunk::size_type RoxalCompiler::emitJump(OpCode instruction, const std::string& 
     emitByte(0xff);
     emitByte(0xff);
     return currentChunk()->code.size() - 2;
+}
+
+
+Chunk::size_type RoxalCompiler::emitPopToCount(int count, const std::string& comment)
+{
+    emitByte(OpCode::PopToCount, comment);
+    if (count < 0) {
+        emitByte(0xff);   // placeholder, patched later for forward jumps
+        emitByte(0xff);
+    } else {
+        if (count > std::numeric_limits<uint16_t>::max())
+            error("Too many locals for jump stack cleanup.");
+        emitByte((uint16_t(count) >> 8) & 0xff);
+        emitByte(uint8_t(uint16_t(count) & 0xff));
+    }
+    return currentChunk()->code.size() - 2;
+}
+
+
+void RoxalCompiler::patchU16At(Chunk::size_type argOffset, uint16_t value)
+{
+    currentChunk()->code[argOffset]     = (value >> 8) & 0xff;
+    currentChunk()->code[argOffset + 1] = uint8_t(value & 0xff);
 }
 
 

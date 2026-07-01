@@ -115,6 +115,8 @@ enum class OpCode {
     DefineLocalOverload,   // pop closure; create or append to local-slot OverloadSet
     GetLocalOverloadAt,    // load local OverloadSet by slot, push closures[index] (compile-time-resolved overload)
     InvokeOverloadAt,      // like Invoke but with explicit overload index — compile-time-resolved method dispatch
+    PopToCount,    // 'jump' stack cleanup: close upvalues & pop locals down to a frame-relative
+                   // slot count (fixed 2-byte arg, like Jump).
     _Last
 };
 

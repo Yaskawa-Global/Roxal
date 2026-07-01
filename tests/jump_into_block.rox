@@ -1,0 +1,7 @@
+# Error: jump into a nested/sibling block (label is not enclosing).
+var b = true
+scope:
+    if b:
+        label inner
+        print("in")
+    jump inner

@@ -1,0 +1,13 @@
+# 'jump <label> if <cond>' — taken (backward) and not-taken (forward).
+var n = 0
+scope:
+    label loop
+    n = n + 1
+    jump loop if n < 3
+print("n={n}")
+var skip = false
+scope:
+    jump over if skip
+    print("ran body")
+    label over
+print("done")

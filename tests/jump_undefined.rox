@@ -1,0 +1,3 @@
+# Error: jump to a label that is never defined.
+scope:
+    jump nowhere

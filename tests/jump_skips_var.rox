@@ -1,0 +1,8 @@
+# Error: forward jump would skip a variable declaration the target relies on.
+var c = true
+scope:
+    if c:
+        jump past
+    var y = 10
+    label past
+    print(y)

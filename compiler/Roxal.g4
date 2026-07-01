@@ -71,6 +71,8 @@ compound_stmt
  | return_stmt
  | break_stmt
  | continue_stmt
+ | jump_stmt
+ | label_stmt
  | if_stmt
  | while_stmt
  | for_stmt
@@ -99,6 +101,20 @@ break_stmt
 
 continue_stmt
  : CONTINUE if_clause?
+ ;
+
+
+// 'jump' is a hard keyword (unused as an identifier); the optional if_clause mirrors
+// 'break if' / 'continue if' (INFORM's JUMP *LABEL IF idiom).
+jump_stmt
+ : JUMP IDENTIFIER if_clause?
+ ;
+
+
+// 'label' is a soft keyword (used widely as an identifier) — guarded by a semantic
+// predicate exactly like at_clause, so 'label' stays a valid variable name elsewhere.
+label_stmt
+ : {_input->LT(1)->getText() == "label"}? IDENTIFIER IDENTIFIER
  ;
 
 
@@ -593,6 +609,9 @@ CASE: 'case';
 DEFAULT: 'default';
 BREAK: 'break';
 CONTINUE: 'continue';
+JUMP: 'jump';
+// NOTE: 'label' is intentionally NOT a token — it is a soft keyword recognised by a
+// semantic predicate in label_stmt, so it remains usable as an ordinary identifier.
 
 
 NEWLINE : ( '\r'? '\n' | '\r' | '\f' ) SPACES?;

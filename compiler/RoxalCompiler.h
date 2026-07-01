@@ -57,6 +57,8 @@ public:
     virtual std::any visit(ptr<ast::ReturnStatement> ast);
     virtual std::any visit(ptr<ast::BreakStatement> ast);
     virtual std::any visit(ptr<ast::ContinueStatement> ast);
+    virtual std::any visit(ptr<ast::JumpStatement> ast);
+    virtual std::any visit(ptr<ast::LabelStatement> ast);
     virtual std::any visit(ptr<ast::IfStatement> ast);
     virtual std::any visit(ptr<ast::WhileStatement> ast);
     virtual std::any visit(ptr<ast::ForStatement> ast);
@@ -320,6 +322,33 @@ protected:
         std::unordered_map<icu::UnicodeString, int16_t> localOverloadSlots;
         std::unordered_map<icu::UnicodeString,
                            std::vector<ptr<type::Type>>> localOverloadCandidates;
+
+        // ---- 'jump'/'label' bookkeeping (confined to a single function body) ----
+        // A defined 'label <name>' marker.
+        struct LabelInfo {
+            icu::UnicodeString name;
+            size_t offset;            // bytecode offset of the label (jump target)
+            size_t liveLocalCount;    // locals.size() at the label = slot keep-count for jumps here
+            int scopeDepth;
+            std::vector<int> blockPath;  // active block ids at the label (ancestry path)
+            int guardDepth;           // open try/with/when nesting at the label
+        };
+        // A 'jump <name>' whose label has not yet been seen (forward reference).
+        struct PendingJump {
+            icu::UnicodeString name;
+            size_t popArgOffset;      // offset of the PopToCount 2-byte arg to patch
+            size_t jumpArgOffset;     // offset of the Jump 2-byte arg to patch
+            std::vector<int> liveLocalDepths; // depths of live locals at the jump (non-decreasing)
+            int scopeDepth;
+            std::vector<int> blockPath;
+            int guardDepth;
+            ast::LinePos line;        // for error reporting
+        };
+        std::vector<LabelInfo> labels;
+        std::vector<PendingJump> pendingJumps;
+        int guardDepth { 0 };         // open try/with/when nesting at the current point
+        std::vector<int> blockPath;   // active block ids (one per open local scope)
+        int nextBlockId { 0 };        // monotonic block-id generator
     };
 
 
@@ -459,6 +488,10 @@ protected:
 
     ptr<ast::AST> currentNode;
 
+    // True while unwinding a compile error (cleanup of scopes). Suppresses the
+    // unresolved-'jump' check so error cleanup doesn't throw a second time.
+    bool compileUnwinding { false };
+
     bool compilingNestedType { false }; // true during nested type compilation — skips module registration
 
     void error(const std::string& message);
@@ -507,6 +540,16 @@ protected:
     void emitConstant(const Value& value, const std::string& comment = "");
 
     void patchJump(Chunk::size_type jumpInstrOffset);
+
+    // Emit a PopToCount opcode with a fixed 2-byte arg. If 'count' is given, writes it;
+    // otherwise writes a 0xffff placeholder. Returns the offset of the arg bytes (to patch).
+    Chunk::size_type emitPopToCount(int count = -1, const std::string& comment = "");
+    // Overwrite a raw big-endian uint16 at the given code offset (for backpatching).
+    void patchU16At(Chunk::size_type argOffset, uint16_t value);
+    // Resolve any forward 'jump's that targeted this just-defined label.
+    void resolveLabel(const FunctionScope::LabelInfo& label);
+    // Error on any 'jump' whose label was never defined in this function body.
+    void checkUnresolvedJumps();
 
     uint16_t makeConstant(const Value& value);
 

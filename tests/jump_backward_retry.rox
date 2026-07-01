@@ -1,0 +1,8 @@
+# Backward 'jump' re-runs a region (a loop expressed via jump-to-label).
+var i = 0
+scope:
+    label top
+    print(i)
+    i = i + 1
+    jump top if i < 5
+print("done")

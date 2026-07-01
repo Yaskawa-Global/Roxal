@@ -7763,6 +7763,21 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     pop();
                 break;
             }
+            case OpCode::PopToCount: {
+                // 'jump' stack cleanup: close upvalues for, and pop, every local
+                // above the target frame-relative slot count (so the operand stack
+                // matches what the jump target expects). Only ever shrinks the stack,
+                // so frame->slots stays valid.
+                uint16_t keep = readShort();
+                Value* target = frame->slots + keep;
+                closeUpvalues(target);
+                ptrdiff_t slotsIndex = frame->slots - &thread->stack[0];
+                ptrdiff_t topIndex = thread->stackTop - thread->stack.begin();
+                ptrdiff_t toPop = topIndex - (slotsIndex + keep);
+                if (toPop > 0)
+                    popN(size_t(toPop));
+                break;
+            }
             case OpCode::Dup: {
                 auto value = peek(0);
                 push(value);

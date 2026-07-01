@@ -68,6 +68,8 @@ class ExpressionStatement;
 class ReturnStatement;
 class BreakStatement;
 class ContinueStatement;
+class JumpStatement;
+class LabelStatement;
 class IfStatement;
 class WhileStatement;
 class ForStatement;
@@ -129,6 +131,8 @@ public:
     virtual std::any visit(ptr<ReturnStatement> ast) = 0;
     virtual std::any visit(ptr<BreakStatement> ast) = 0;
     virtual std::any visit(ptr<ContinueStatement> ast) = 0;
+    virtual std::any visit(ptr<JumpStatement> ast) = 0;
+    virtual std::any visit(ptr<LabelStatement> ast) = 0;
     virtual std::any visit(ptr<IfStatement> ast) = 0;
     virtual std::any visit(ptr<WhileStatement> ast) = 0;
     virtual std::any visit(ptr<ForStatement> ast) = 0;
@@ -317,6 +321,8 @@ struct Statement : public AST {
         Return,
         Break,
         Continue,
+        Jump,
+        Label,
         If,
         While,
         For,
@@ -386,6 +392,32 @@ struct BreakStatement : public Statement {
 
 struct ContinueStatement : public Statement {
     ContinueStatement() : Statement(StmtType::Continue) {}
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v, Anys& results);
+};
+
+
+// 'jump <name>' — transfer control to the matching 'label <name>' marker.
+struct JumpStatement : public Statement {
+    JumpStatement() : Statement(StmtType::Jump) {}
+
+    icu::UnicodeString name; // target label name
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v, Anys& results);
+};
+
+
+// 'label <name>' — a named jump target marker.
+struct LabelStatement : public Statement {
+    LabelStatement() : Statement(StmtType::Label) {}
+
+    icu::UnicodeString name; // label name
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
