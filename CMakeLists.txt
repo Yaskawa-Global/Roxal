@@ -530,6 +530,17 @@ if(ROXAL_ENABLE_QT)
     # Qt6::CorePrivate brings the private headers (QMetaObjectBuilder) used to build the
     # moc-free dynamic method bridge that makes Roxal object methods callable from QML.
     target_link_libraries(roxalqt PRIVATE roxal_abi Qt6::Core Qt6::CorePrivate Qt6::Gui Qt6::Qml Qt6::Quick)
+    # roxalqt transitively includes VM.h -> ModuleDDS.h -> <dds/dds.h> when
+    # ROXAL_ENABLE_DDS is on, but it intentionally doesn't link roxalcore/ddsc
+    # (those symbols resolve at dlopen from the roxal exe -- see the comment
+    # above this target).  It still needs the CycloneDDS *headers* to compile,
+    # so pull them from the imported target's interface without adding a link
+    # dependency.  roxal_abi carries the ROXAL_ENABLE_DDS define but no include
+    # dirs, which is why this is needed on top of it.
+    if(ROXAL_ENABLE_DDS)
+        target_include_directories(roxalqt PRIVATE
+            $<TARGET_PROPERTY:CycloneDDS::ddsc,INTERFACE_INCLUDE_DIRECTORIES>)
+    endif()
     target_compile_options(roxalqt PRIVATE
         $<$<CONFIG:DEBUG>:-fPIC -Wno-attributes -Werror=return-type -g -fmax-errors=1>
         $<$<CONFIG:RELEASE>:-O3>
