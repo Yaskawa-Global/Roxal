@@ -588,6 +588,11 @@ file(WRITE "${CMAKE_BINARY_DIR}/roxal_features.cmake"
     "set(ROXAL_HAS_XML ${ROXAL_ENABLE_XML})\n"
     "set(ROXAL_HAS_MEDIA ${ROXAL_ENABLE_MEDIA})\n"
     "set(ROXAL_HAS_COMPUTE_SERVER ${ROXAL_COMPUTE_SERVER})\n"
+    # qt is a dlopen'd plugin (libroxalqt.so), not linked into libroxal.a, so a
+    # host that links roxal doesn't need to link Qt.  Exported so hosts can still
+    # detect the qt module -- e.g. to place the plugin next to their binary and
+    # add -rdynamic so it resolves core symbols at dlopen.
+    "set(ROXAL_HAS_QT ${ROXAL_ENABLE_QT})\n"
 )
 
 add_custom_target(check
