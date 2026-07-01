@@ -9,6 +9,7 @@
 #   bash install-deps.sh eigen          # build only eigen
 #   bash install-deps.sh onnxruntime    # just ONNX Runtime (GPU)
 #   bash install-deps.sh onnxruntime --cpu-only
+#   bash install-deps.sh --help         # list every target + install status
 #
 # Available targets: eigen antlr4 cyclonedds grpc media pugixml onnxruntime
 #
@@ -22,11 +23,70 @@ BUILD_TMP="/tmp/roxal-deps-build"
 CORE_TARGETS=(eigen antlr4)
 ALL_TARGETS=(eigen antlr4 cyclonedds grpc media pugixml onnxruntime)
 
+# One-line description per target, shown by --help.
+declare -A TARGET_DESC=(
+    [eigen]="Eigen 5.0.1 - header-only linear algebra (core)"
+    [antlr4]="ANTLR4 4.13.1 C++ runtime + antlr4-tools (core)"
+    [cyclonedds]="CycloneDDS 11.0.0 + CycloneDDS-CXX (DDS pub/sub)"
+    [grpc]="gRPC 1.51.1 + protobuf (RPC; slow build)"
+    [media]="PNG/JPEG image libs (apt only; no deps/ folder)"
+    [pugixml]="pugixml 1.15 (lightweight XML parser)"
+    [onnxruntime]="ONNX Runtime 1.24.1 (ML inference; GPU default, --cpu-only)"
+)
+
+print_help() {
+    cat <<EOF
+install-deps.sh - build/install Roxal's from-source dependencies into deps/
+
+Usage:
+  install-deps.sh [target ...] [--cpu-only]
+  install-deps.sh all [--cpu-only]
+  install-deps.sh --help
+
+With no target, builds the core set: ${CORE_TARGETS[*]}
+'all' builds every target:          ${ALL_TARGETS[*]}
+
+Targets:
+EOF
+    local t status
+    for t in "${ALL_TARGETS[@]}"; do
+        if [ "$t" = media ]; then
+            status="apt-only"
+        elif [ -d "$DEPS_DIR/$t" ]; then
+            status="installed"
+        else
+            status="missing"
+        fi
+        printf '  %-12s [%-9s] %s\n' "$t" "$status" "${TARGET_DESC[$t]:-}"
+    done
+    cat <<EOF
+
+Options:
+  --cpu-only   Build ONNX Runtime CPU-only (default is GPU / CUDA 12)
+  -h, --help   Show this help and exit
+
+deps/ dir: $DEPS_DIR
+
+Notes:
+  * [installed] means a deps/<name> folder already exists.  Re-running a target
+    rebuilds/updates it in place; builds are NOT auto-skipped (except
+    onnxruntime).  To force a clean rebuild, remove deps/<name> (and its
+    $BUILD_TMP/<name> source checkout) first.
+
+Examples:
+  install-deps.sh                    # core deps (${CORE_TARGETS[*]})
+  install-deps.sh all                # everything (GPU ONNX)
+  install-deps.sh all --cpu-only     # everything (CPU ONNX)
+  install-deps.sh grpc cyclonedds    # just these two
+EOF
+}
+
 # Parse --cpu-only flag
 ONNX_CPU_ONLY=false
 POSITIONAL=()
 for arg in "$@"; do
     case "$arg" in
+        -h|--help) print_help; exit 0 ;;
         --cpu-only) ONNX_CPU_ONLY=true ;;
         *) POSITIONAL+=("$arg") ;;
     esac
@@ -42,6 +102,18 @@ if [ $# -gt 0 ]; then
     fi
 else
     TARGETS=("${CORE_TARGETS[@]}")
+fi
+
+# Reject unknown target names up-front (a typo would otherwise silently
+# build nothing).  'all' and the default core set are already known-good.
+if [ $# -gt 0 ] && [ "$1" != "all" ]; then
+    for _t in "${TARGETS[@]}"; do
+        if ! printf '%s\n' "${ALL_TARGETS[@]}" | grep -qx "$_t"; then
+            echo "ERROR: unknown target '$_t'. Valid targets: ${ALL_TARGETS[*]}" >&2
+            echo "Run '$(basename "$0") --help' to list targets and status." >&2
+            exit 1
+        fi
+    done
 fi
 
 should_build() { printf '%s\n' "${TARGETS[@]}" | grep -qx "$1"; }
