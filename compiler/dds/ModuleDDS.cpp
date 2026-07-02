@@ -1476,6 +1476,12 @@ void ModuleDDS::fillSampleFromValue(const StructInfo& info,
                     if (!seq->_buffer || elemSz == 0)
                         break;
                     std::memset(seq->_buffer, 0, elemSz * len);
+                    // Fast path: a packed byte list bulk-copies straight into the sequence buffer.
+                    const std::vector<uint8_t>* packedSrc =
+                        field.type.element->kind == FieldType::Kind::Byte ? lst->packedBytes() : nullptr;
+                    if (packedSrc) {
+                        std::memcpy(seq->_buffer, packedSrc->data(), len);
+                    } else
                     for (size_t idx = 0; idx < len; ++idx) {
                         Value ev = lst->getElement(idx);
                         char* elemPtr = reinterpret_cast<char*>(seq->_buffer + elemSz * idx);
@@ -1672,13 +1678,14 @@ Value ModuleDDS::valueFromSample(const StructInfo& info,
                         const dds_sequence_t* seq = reinterpret_cast<const dds_sequence_t*>(src);
                         if (seq && seq->_buffer) {
                             if (field.type.element->kind == FieldType::Kind::Byte) {
-                                // Fast path for byte sequences (e.g. image data): pre-size the list and
-                                // push inline byteVals. The generic per-element path below churns the GC
-                                // and reallocs, which is catastrophic for ~MB blobs (seconds per frame).
+                                // Byte sequences (image/blob data) -> packed byte list: one bulk copy into
+                                // the list's compact std::vector<uint8_t> storage. Transparent to scripts
+                                // (reads still yield byte values), 1 byte/elem instead of an 8-byte boxed
+                                // Value, no per-element GC churn, and zero-copy-transferable into a tensor
+                                // via `tensor(..., bytes=move(data))` for the vision pipeline.
                                 const uint8_t* bytes = reinterpret_cast<const uint8_t*>(seq->_buffer);
-                                lst->reserve(seq->_length);
-                                for (uint32_t bi = 0; bi < seq->_length; ++bi)
-                                    lst->append(Value::byteVal(bytes[bi]));
+                                std::vector<uint8_t> buf(bytes, bytes + seq->_length);
+                                lst->adoptPackedBytes(std::move(buf));
                             } else
                             for (uint32_t idx = 0; idx < seq->_length && elemSz > 0; ++idx) {
                                 const char* eptr = reinterpret_cast<const char*>(seq->_buffer + elemSz * idx);

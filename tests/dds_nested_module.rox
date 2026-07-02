@@ -1,5 +1,6 @@
 import RosImage
 import dds
+import sys
 
 # Item 3: create_topic now accepts an optional qos dict.
 p = dds.create_participant()
@@ -31,6 +32,9 @@ print("dims {recv.width}x{recv.height} {recv.encoding} step {recv.step}")
 print("meta {recv.meta.frame_id} {recv.meta.stamp.sec} {recv.meta.stamp.nanosec}")
 print("data {recv.data}")
 print("bigendian {recv.is_bigendian}")
+# sequence<octet>/<uint8> deserializes to a compact packed byte list (transparent to scripts).
+var rep = sys._list_repr(recv.data)
+print("repr {rep}")
 
 # Item 2: non-colliding flat short-name alias still works.
 var m2 = RosImage.Image_()
