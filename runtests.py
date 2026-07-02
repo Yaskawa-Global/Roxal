@@ -246,7 +246,8 @@ tests = [
     'vector_quantity_test', 'orient_test', 'orient_conv_test',
     'tensor_basic', 'tensor_math', 'tensor_compare', 'tensor_convert', 'math_min_max_sum',
     'tensor_convert_err', 'matrix_tensor_err', 'vector_tensor_err',
-    'tensor_slice',
+    'tensor_slice', 'tensor_bytes', 'tensor_bytes_move', 'tensor_dtype_storage',
+    'tensor_bytes_len_err', 'tensor_bytes_conflict_err',
     'math_relu', 'math_softmax', 'math_argmax', 'math_clamp',
     'value_semantics', 'value_semantics_cow',
     'ffi1', 'ffi_addfloats', 'ffi_struct_out', 'ffi_inttypes', 'ffi_strlen', 'ffi_relative', 'ffi_toupper', 'ffi_primptr', 'ffi_voidptr_struct', 'cstruct1', 'cstruct2', 'cstruct3', 'cstruct_byval', 'cstruct_array',
@@ -274,7 +275,7 @@ tests = [
     'stacktrace', 'exception_stacktrace', 'object_user_ref_cycle', 'gc_list_cycle', 'gc_liveness',
     'runtime_error_snippet',
     'property_count', 'property_accessor', 'property_accessor_oneliner', 'dict_property_getters', 'cmdline_execute', 'repl_run', 'invalid_option', 'fileio_basic', 'fileio_binary',
-    'fileio_read_binary', 'fileio_write_binary', 'fileio_actor_write', 'fileio_delete', 'fileio_extra',
+    'fileio_read_binary', 'fileio_write_binary', 'fileio_actor_write', 'fileio_delete', 'fileio_extra', 'fileio_packed',
     'string_concat_roundtrip', 'actor_concat_stress',
     'help_doc', 'help_wait', 'help_time_wall_now', 'help_time_wall_now_instance', 'docstring_func',
     'builtin_object_methods', 'math_counter_signal', 'print_flush',
@@ -308,7 +309,7 @@ grpc_tests = ['grpc_message_types', 'grpc_service_actor', 'grpc_int64_values', '
 grpc_server_tests = ['grpc_int64_values', 'grpc_streaming', 'grpc_args']
 fileio_tests = [
     'fileio_basic', 'fileio_binary', 'fileio_read_binary', 'fileio_write_binary',
-    'fileio_actor_write', 'fileio_delete', 'fileio_extra',
+    'fileio_actor_write', 'fileio_delete', 'fileio_extra', 'fileio_packed',
     'string_concat_roundtrip', 'actor_concat_stress'
 ]
 dds_tests = ['dds_bounded_ok', 'dds_bounded_fail', 'dds_complex_smoke', 'dds_array_ok', 'dds_array_struct', 'dds_array_multi', 'dds_nested_module']

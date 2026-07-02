@@ -1,0 +1,27 @@
+import fileio
+
+# A packed byte list writes and reads back as a packed byte list.
+var path = '/tmp/roxal_packed_test.bin'
+var blob = [byte(1), byte(2), byte(250), byte(255), byte(0)]
+print(_list_repr(blob))          # packed
+
+var h = fileio.open(path, false, 'binary', true)
+fileio.write(h, blob)
+fileio.close(h)
+
+var back = fileio.read_file(path, 'binary')
+print(_list_repr(back))          # packed  (binary reads land packed)
+print(""+back)                   # [1, 2, 250, 255, 0]
+print(""+(back == blob))         # true
+
+# Writing a boxed list of ints (0..255) still works via the lenient path.
+var path2 = '/tmp/roxal_packed_test2.bin'
+var h2 = fileio.open(path2, false, 'binary', true)
+fileio.write(h2, [65, 66, 67])
+fileio.close(h2)
+var back2 = fileio.read_file(path2, 'binary')
+print(_list_repr(back2))         # packed
+print(""+back2)                  # [65, 66, 67]
+
+fileio.delete_file(path)
+fileio.delete_file(path2)

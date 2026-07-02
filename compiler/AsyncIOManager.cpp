@@ -211,11 +211,9 @@ Value AsyncIOManager::executeFileRead(PendingIOOp& op)
     std::streamsize n = op.file->file->gcount();
 
     if (op.binary) {
-        Value lst { Value::listVal() };
-        asList(lst)->reserve(static_cast<size_t>(n));
-        for (std::streamsize i = 0; i < n; ++i)
-            asList(lst)->append(Value::byteVal(static_cast<uint8_t>(buf[static_cast<size_t>(i)])));
-        return lst;
+        // Binary reads land as a packed byte list (one memcpy, ~1 byte/elem).
+        std::vector<uint8_t> bytes(buf.data(), buf.data() + n);
+        return Value::listVal(std::move(bytes));
     }
 
     std::string s(buf.data(), static_cast<size_t>(n));
@@ -256,11 +254,9 @@ Value AsyncIOManager::executeFileReadAll(PendingIOOp& op)
     std::string data = ss.str();
 
     if (op.binary) {
-        Value lst { Value::listVal() };
-        asList(lst)->reserve(data.size());
-        for (char c : data)
-            asList(lst)->append(Value::byteVal(static_cast<uint8_t>(c)));
-        return lst;
+        // Whole-file binary read lands as a packed byte list.
+        std::vector<uint8_t> bytes(data.begin(), data.end());
+        return Value::listVal(std::move(bytes));
     }
 
     return Value::stringVal(toUnicodeString(data));

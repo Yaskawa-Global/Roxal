@@ -241,21 +241,26 @@ Value ModuleFileIO::fileio_write_builtin(ArgsView args)
         if (!isList(args[1]))
             throw std::invalid_argument("fileio.write expects list of bytes in binary mode");
         ObjList* lst = asList(args[1]);
-        writeData.reserve(static_cast<size_t>(lst->length()));
-        for (int i = 0; i < lst->length(); ++i) {
-            const Value& v = lst->getElement(i);
-            uint8_t b;
-            if (v.isByte())
-                b = v.asByte();
-            else if (v.isInt()) {
-                int iv = v.asInt();
-                if (iv < 0 || iv > 255)
-                    throw std::invalid_argument("fileio.write int out of byte range");
-                b = static_cast<uint8_t>(iv);
-            } else {
-                throw std::invalid_argument("fileio.write expects list of bytes or ints");
+        // Fast path: a packed byte list copies out in one shot.
+        if (const std::vector<uint8_t>* pb = lst->packedBytes()) {
+            writeData.assign(pb->begin(), pb->end());
+        } else {
+            writeData.reserve(static_cast<size_t>(lst->length()));
+            for (int i = 0; i < lst->length(); ++i) {
+                const Value& v = lst->getElement(i);
+                uint8_t b;
+                if (v.isByte())
+                    b = v.asByte();
+                else if (v.isInt()) {
+                    int iv = v.asInt();
+                    if (iv < 0 || iv > 255)
+                        throw std::invalid_argument("fileio.write int out of byte range");
+                    b = static_cast<uint8_t>(iv);
+                } else {
+                    throw std::invalid_argument("fileio.write expects list of bytes or ints");
+                }
+                writeData.push_back(static_cast<char>(b));
             }
-            writeData.push_back(static_cast<char>(b));
         }
     } else {
         writeData = toString(args[1]);

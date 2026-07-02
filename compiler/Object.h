@@ -964,6 +964,10 @@ struct ObjTensor : public Obj
 {
     ObjTensor();
     ObjTensor(const std::vector<int64_t>& shape, TensorDType dtype = TensorDType::Float64);
+    /// Construct by reinterpreting a raw byte buffer as the given dtype/shape.
+    /// Non-ORT builds adopt the buffer (zero-copy move); ORT builds do one memcpy.
+    /// bytes.size() must equal numel(shape) * dtypeSize(dtype). Host byte order.
+    ObjTensor(const std::vector<int64_t>& shape, TensorDType dtype, std::vector<uint8_t>&& bytes);
     virtual ~ObjTensor() {}
 
 #ifdef ROXAL_ENABLE_ONNX
@@ -1047,12 +1051,14 @@ private:
     /// COW guard for the Ort::Value (deep-copies if shared).
     void ensureOrtUnique();
 #else
-    // Native storage (used when ONNX Runtime is not available)
-    ptr<std::vector<double>> data_;
+    // Native storage (used when ONNX Runtime is not available). Raw bytes in the
+    // tensor's dtype-native layout (numel * dtypeSize bytes), matching the ORT
+    // build's element type so conversions behave identically with or without ORT.
+    ptr<std::vector<uint8_t>> data_;
 
     void ensureUnique() {
         if (data_.use_count() > 1)
-            data_ = make_ptr<std::vector<double>>(*data_);
+            data_ = make_ptr<std::vector<uint8_t>>(*data_);
     }
 #endif
 
@@ -1086,6 +1092,17 @@ unique_ptr<ObjTensor, UnreleasedObj> newTensorObj(const std::vector<int64_t>& sh
 unique_ptr<ObjTensor, UnreleasedObj> newTensorObj(const std::vector<int64_t>& shape,
                                                    const std::vector<double>& data,
                                                    TensorDType dtype = TensorDType::Float64);
+/// Create a tensor by reinterpreting a raw byte buffer as the given dtype/shape.
+/// `len` must equal numel(shape) * dtypeSize(dtype). Host byte order. Copies.
+unique_ptr<ObjTensor, UnreleasedObj> newTensorObj(const std::vector<int64_t>& shape,
+                                                   TensorDType dtype,
+                                                   const uint8_t* bytes, size_t len);
+/// Same, adopting the buffer (non-ORT: zero-copy move; ORT: one memcpy).
+unique_ptr<ObjTensor, UnreleasedObj> newTensorObj(const std::vector<int64_t>& shape,
+                                                   TensorDType dtype,
+                                                   std::vector<uint8_t>&& bytes);
+/// Byte size of one element of the given dtype (available in both builds).
+size_t tensorDTypeSize(TensorDType dtype);
 #ifdef ROXAL_ENABLE_ONNX
 /// Create a tensor that takes ownership of an Ort::Value (zero-copy).
 unique_ptr<ObjTensor, UnreleasedObj> newTensorObj(Ort::Value&& ortValue);

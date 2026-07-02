@@ -1,0 +1,19 @@
+# move(blob) transfers the byte buffer into the tensor; a non-moved source is untouched.
+
+# With move(): the source variable becomes nil, the tensor holds the data.
+var b = [byte(1), byte(2), byte(3), byte(4)]
+var t = tensor(shape=[2,2], dtype="uint8", bytes=move(b))
+print(""+(b == nil))          # true
+print(""+t.to_bytes())        # [1, 2, 3, 4]
+
+# Without move(): the source list is unchanged and still owns its buffer.
+var b2 = [byte(5), byte(6)]
+var t2 = tensor(shape=[2], dtype="uint8", bytes=b2)
+print(""+b2)                  # [5, 6]
+print(""+t2.to_bytes())       # [5, 6]
+print(_list_repr(b2))         # packed
+
+# Mutating the tensor after a move does not disturb anything else.
+t[0, 0] = 99
+print(""+t.to_bytes())        # [99, 2, 3, 4]
+print(""+b2)                  # [5, 6]  (independent)

@@ -3291,9 +3291,14 @@ Value ModuleSys::list_repr_builtin(VM& vm, ArgsView args)
 {
     // Test/introspection helper: reports a list's internal storage representation.
     // Returns "packed" for the raw-byte representation, "boxed" otherwise.
-    if (args.size() != 1 || !isList(args[0]))
+    if (args.size() != 1)
         throw std::invalid_argument("_list_repr expects a single list argument");
-    return Value::stringVal(icu::UnicodeString(asList(args[0])->isPackedBytes() ? "packed" : "boxed"));
+    Value v = args[0];
+    if (isFuture(v))
+        v.resolveFuture();  // e.g. an async fileio.read result
+    if (!isList(v))
+        throw std::invalid_argument("_list_repr expects a single list argument");
+    return Value::stringVal(icu::UnicodeString(asList(v)->isPackedBytes() ? "packed" : "boxed"));
 }
 
 Value ModuleSys::arity_builtin(VM& vm, ArgsView args)
@@ -3424,21 +3429,26 @@ Value ModuleSys::deserialize_builtin(VM& vm, ArgsView args)
 
     ObjList* lst = asList(args[0]);
     std::string data;
-    data.reserve(lst->length());
-    for(int i=0;i<lst->length();i++) {
-        Value v = lst->getElement(i);
-        uint8_t b;
-        if(v.isByte()) {
-            b = v.asByte();
-        } else if(v.isInt()) {
-            int iv = v.asInt();
-            if(iv < 0 || iv > 255)
-                throw std::runtime_error("deserialize int out of byte range");
-            b = static_cast<uint8_t>(iv);
-        } else {
-            throw std::invalid_argument("deserialize expects list of bytes or ints");
+    if(const std::vector<uint8_t>* pb = lst->packedBytes()) {
+        // Fast path: a packed byte list copies out in one shot.
+        data.assign(pb->begin(), pb->end());
+    } else {
+        data.reserve(lst->length());
+        for(int i=0;i<lst->length();i++) {
+            Value v = lst->getElement(i);
+            uint8_t b;
+            if(v.isByte()) {
+                b = v.asByte();
+            } else if(v.isInt()) {
+                int iv = v.asInt();
+                if(iv < 0 || iv > 255)
+                    throw std::runtime_error("deserialize int out of byte range");
+                b = static_cast<uint8_t>(iv);
+            } else {
+                throw std::invalid_argument("deserialize expects list of bytes or ints");
+            }
+            data.push_back(static_cast<char>(b));
         }
-        data.push_back(static_cast<char>(b));
     }
 
     std::stringstream ss(std::ios::in|std::ios::out|std::ios::binary);

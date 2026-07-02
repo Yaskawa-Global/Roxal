@@ -820,6 +820,7 @@ public:
     Value tensor_min_builtin(ArgsView args);
     Value tensor_max_builtin(ArgsView args);
     Value tensor_sum_builtin(ArgsView args);
+    Value tensor_to_bytes_builtin(ArgsView args);
 
     // Orient methods
     Value orient_rotate_builtin(ArgsView args);

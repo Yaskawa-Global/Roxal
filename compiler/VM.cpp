@@ -424,7 +424,11 @@ static ptr<type::Type> builtinConstructorType(ValueType t)
                 PT pDtype(toUnicodeString("dtype"));
                 pDtype.type = make_ptr<type::Type>(type::BuiltinType::String);
                 pDtype.hasDefault = true;
-                tensorType->func->params = {pShape, pData, pDtype};
+                PT pBytes(toUnicodeString("bytes"));
+                pBytes.type = make_ptr<type::Type>(type::BuiltinType::List);
+                pBytes.hasDefault = true;
+                // Appended last so existing positional (shape, data, dtype) calls are unaffected.
+                tensorType->func->params = {pShape, pData, pDtype, pBytes};
             }
             return tensorType;
         }
@@ -2449,11 +2453,14 @@ bool VM::call(ValueType builtinType, const CallSpec& callSpec)
             static const uint16_t dtypeHash = toUnicodeString("dtype").hashCode() & 0x7fff;
             static const uint16_t dataHash = toUnicodeString("data").hashCode() & 0x7fff;
             static const uint16_t shapeHash = toUnicodeString("shape").hashCode() & 0x7fff;
+            static const uint16_t bytesHash = toUnicodeString("bytes").hashCode() & 0x7fff;
 
             std::vector<int64_t> shape;
             std::vector<double> data;
             TensorDType dtype = TensorDType::Float64;
             bool hasData = false;
+            Value bytesArg = Value::nilVal();  // raw-bytes reinterpret source (bytes=)
+            bool hasBytes = false;
 
             // Process all arguments
             for (size_t i = 0; i < callSpec.argCount; ++i) {
@@ -2492,6 +2499,11 @@ bool VM::call(ValueType builtinType, const CallSpec& callSpec)
                         } else {
                             throw std::runtime_error("tensor shape must be a list");
                         }
+                    } else if (hash == bytesHash) {
+                        if (!isList(arg))
+                            throw std::runtime_error("tensor bytes must be a list of bytes");
+                        bytesArg = arg;
+                        hasBytes = true;
                     }
                     // Ignore unknown named params (or could throw)
                 } else {
@@ -2556,6 +2568,60 @@ bool VM::call(ValueType builtinType, const CallSpec& callSpec)
 
             if (shape.empty())
                 throw std::runtime_error("tensor constructor requires shape");
+
+            if (hasBytes) {
+                if (hasData)
+                    throw std::runtime_error("tensor: specify data= or bytes=, not both");
+                // Validate against dtype after the whole arg list is processed
+                // (named args can arrive in any order).
+                int64_t numel = 1;
+                for (auto s : shape) numel *= s;
+                size_t need = static_cast<size_t>(numel) * tensorDTypeSize(dtype);
+                ObjList* bl = asList(bytesArg);
+
+                // Zero-copy steal when the source is a sole-owner packed byte
+                // list (e.g. move(blob) or a temporary): non-ORT adopts the
+                // buffer, ORT still memcpies. Otherwise copy from a byte view.
+                bool soleOwner = bytesArg.isObj() && !bytesArg.isConst()
+                              && bytesArg.asObj()->control->snapshotToken == nullptr
+                              && bytesArg.asObj()->control->strong.load(std::memory_order_relaxed) == 1;
+                Value result;
+                if (bl->isPackedBytes() && soleOwner) {
+                    std::vector<uint8_t> moved = bl->stealPackedBytes();
+                    if (moved.size() != need)
+                        throw std::runtime_error("tensor bytes= length " + std::to_string(moved.size())
+                                                 + " does not match shape/dtype (" + std::to_string(need) + ")");
+                    result = Value::objVal(newTensorObj(shape, dtype, std::move(moved)));
+                } else if (const std::vector<uint8_t>* pb = bl->packedBytes()) {
+                    if (pb->size() != need)
+                        throw std::runtime_error("tensor bytes= length " + std::to_string(pb->size())
+                                                 + " does not match shape/dtype (" + std::to_string(need) + ")");
+                    result = Value::objVal(newTensorObj(shape, dtype, pb->data(), pb->size()));
+                } else {
+                    // Boxed list: gather bytes (byte or int 0..255), then copy.
+                    std::vector<uint8_t> tmp;
+                    tmp.reserve(static_cast<size_t>(bl->length()));
+                    for (int32_t i = 0; i < bl->length(); ++i) {
+                        Value v = bl->getElement(i);
+                        if (v.isByte()) tmp.push_back(v.asByte());
+                        else if (v.isInt()) {
+                            int iv = v.asInt();
+                            if (iv < 0 || iv > 255)
+                                throw std::runtime_error("tensor bytes= element out of byte range");
+                            tmp.push_back(static_cast<uint8_t>(iv));
+                        } else {
+                            throw std::runtime_error("tensor bytes= expects a list of bytes");
+                        }
+                    }
+                    if (tmp.size() != need)
+                        throw std::runtime_error("tensor bytes= length " + std::to_string(tmp.size())
+                                                 + " does not match shape/dtype (" + std::to_string(need) + ")");
+                    result = Value::objVal(newTensorObj(shape, dtype, tmp.data(), tmp.size()));
+                }
+                *(thread->stackTop - callSpec.argCount - 1) = result;
+                popN(callSpec.argCount);
+                return true;
+            }
 
             Value result = hasData
                 ? Value::tensorVal(shape, data, dtype)
@@ -10964,6 +11030,8 @@ void VM::defineBuiltinMethods()
                         false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
     defineBuiltinMethod(ValueType::Tensor, "sum", std::mem_fn(&VM::tensor_sum_builtin),
                         false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Tensor, "to_bytes", std::mem_fn(&VM::tensor_to_bytes_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
 
     // Orient methods — all read-only on self
     defineBuiltinMethod(ValueType::Orient, "rotate", std::mem_fn(&VM::orient_rotate_builtin),
@@ -11640,6 +11708,17 @@ Value VM::tensor_sum_builtin(ArgsView args)
     for (int64_t i = 0; i < n; ++i)
         s += t->at(i);
     return Value::realVal(s);
+}
+
+Value VM::tensor_to_bytes_builtin(ArgsView args)
+{
+    // Copy the tensor's raw dtype-native buffer into a packed byte list.
+    if (args.size() != 1 || !isTensor(args[0]))
+        throw std::invalid_argument("tensor.to_bytes expects no arguments");
+    ObjTensor* t = asTensor(args[0]);
+    size_t n = static_cast<size_t>(t->numel()) * tensorDTypeSize(t->dtype());
+    const uint8_t* p = static_cast<const uint8_t*>(t->rawData());  // ORT arm ensures CPU
+    return Value::listVal(std::vector<uint8_t>(p, p + n));
 }
 
 // Orient helpers for creating quantity(rad) return values

@@ -1,0 +1,32 @@
+# dtype-native storage quantizes on assignment identically in both build
+# configs (with or without ONNX Runtime). This locks in that a low-precision
+# dtype does not silently retain full double precision.
+
+# Integer dtypes wrap/truncate like a hardware cast.
+var u = tensor(shape=[1], dtype="uint8")
+u[0] = 300
+print(""+u[0])                 # 44   (300 mod 256)
+
+var i8 = tensor(shape=[1], dtype="int8")
+i8[0] = 200
+print(""+i8[0])                # -56  (200 as signed 8-bit)
+
+var i16 = tensor(shape=[1], dtype="int16")
+i16[0] = 70000
+print(""+i16[0])               # 4464 (70000 mod 65536)
+
+# float32 loses precision that float64 keeps.
+var f32 = tensor(shape=[1], dtype="float32")
+f32[0] = 1.1
+print(""+(f32[0] == 1.1))      # false (1.1 not representable in float32)
+f32[0] = 1.5
+print(""+(f32[0] == 1.5))      # true  (1.5 is exact)
+
+var f64 = tensor(shape=[1], dtype="float64")
+f64[0] = 1.1
+print(""+(f64[0] == 1.1))      # true
+
+# float16 stores 2 bytes/element and round-trips exact half values.
+var h = tensor(shape=[2], dtype="float16", data=[1.5, -0.25])
+print(""+len(h.to_bytes()))    # 4
+print(""+h[0]+" "+h[1])        # 1.5 -0.25

@@ -1,0 +1,33 @@
+# Reinterpret raw bytes as a tensor of a given dtype/shape, and back.
+
+# uint8: 4 bytes fill a [2,2] tensor directly.
+var t = tensor(shape=[2,2], dtype="uint8", bytes=[byte(10), byte(20), byte(30), byte(40)])
+print(""+t[0,0]+" "+t[0,1]+" "+t[1,0]+" "+t[1,1])   # 10 20 30 40
+
+# to_bytes() returns a packed byte list.
+var b = t.to_bytes()
+print(_list_repr(b))                                  # packed
+print(""+b)                                           # [10, 20, 30, 40]
+
+# Round-trip: tensor -> bytes -> tensor.
+var t2 = tensor(shape=[2,2], dtype="uint8", bytes=b)
+print(""+(t2 == t))                                   # true
+
+# A boxed list of ints 0..255 is accepted too.
+var t3 = tensor(shape=[3], dtype="uint8", bytes=[1, 2, 3])
+print(""+t3.to_bytes())                               # [1, 2, 3]
+
+# float32: to_bytes yields 4 bytes/element; round-trips exactly.
+var f = tensor(shape=[3], dtype="float32", data=[1.5, -2.25, 100.0])
+var fb = f.to_bytes()
+print(""+len(fb))                                     # 12
+print(_list_repr(fb))                                 # packed
+var f2 = tensor(shape=[3], dtype="float32", bytes=fb)
+print(""+(f2 == f))                                   # true
+
+# int32: 8 bytes -> 2 int32 elements; round-trips.
+var i = tensor(shape=[2], dtype="int32", data=[1000, -2000])
+var ib = i.to_bytes()
+print(""+len(ib))                                     # 8
+var i2 = tensor(shape=[2], dtype="int32", bytes=ib)
+print(""+(i2 == i))                                   # true

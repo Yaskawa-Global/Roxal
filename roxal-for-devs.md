@@ -36,6 +36,7 @@ Reference types:
     * Single quoted `'like this'` or double quoted `"like this"`
     * With double quotes, `{}` placeholders interpolate identifiers, dotted properties, and indexes using identifiers, numeric literals, or single-quoted string literals. Multiple comma-separated indices are allowed (for example `"lookup={record['name']}"` or `"matrix element={mat[row, 2]}"`).
   * `list` - [list, of, values] - heterogeneous
+    * A list that holds only `byte` values is stored packed (one byte per element) transparently, rather than boxed, making it an efficient blob for binary data.
   * `dict` - {key:value,key2:value2} - heterogeneous (hash, map)
     * insertion order preserved
   * `object` - user-defined object type (aka class)
@@ -357,6 +358,27 @@ var t4 = tensor(2, 3, dtype='float32')        // specify data type
 
 Supported `dtype` values: `'float16'`, `'float32'`, `'float64'` (default), `'int8'`, `'int16'`, `'int32'`, `'int64'`, `'uint8'`, `'bool'`
 
+#### Raw bytes ↔ tensor
+
+`data=` takes a list of *values* (converted per element). To instead reinterpret a raw byte blob as a tensor — for example, decoding a binary buffer read from a file or socket — use `bytes=` with an explicit `shape` and `dtype`:
+
+```php
+var blob = fileio.read_file('frame.raw', 'binary')       // packed byte list
+var img  = tensor(shape=[480, 640, 3], dtype='uint8', bytes=blob)
+```
+
+The byte list length must equal `numel(shape) * dtype_size` (host byte order). `data=` and `bytes=` are mutually exclusive. Wrap the source in `move()` (`tensor(..., bytes=move(blob))`) to transfer ownership — the source list becomes `nil` and the transfer avoids a copy where possible.
+
+`t.to_bytes()` is the inverse: it copies the tensor's raw element buffer into a packed byte list, which round-trips back through `bytes=`:
+
+```php
+var raw = img.to_bytes()                                  // packed byte list
+fileio.write(h, raw)                                      // write it out
+var same = tensor(shape=[480, 640, 3], dtype='uint8', bytes=raw)
+```
+
+These conversions behave identically whether or not the ONNX Runtime backend is compiled in.
+
 ### Tensor Indexing and Properties
 
 ```php
@@ -417,6 +439,7 @@ print(t.max())        // 9
 print(t.shape())      // [2, 3]
 print(t.rank())       // 2
 print(t.dtype())      // 'float64'
+print(t.to_bytes())   // raw element buffer as a packed byte list
 ```
 
 ### Arithmetic Operations
@@ -2039,8 +2062,8 @@ The functions in the sys module are always globally available (- as if `import s
 * `allof(...items)` - returns a future that resolves when all input items resolve. Resolved value is a list of values in argument order. Each item may be a future, event type, or bool signal; arg can be a single awaitable or a list (flattened one level). Empty input resolves to `[]`.
 * `anyof(...items)` - returns a future that resolves when the first input resolves. Resolved value is a dict `{"index": i, "value": v}`. Same input rules as `allof`. Empty input raises.
 * `stacktrace()` - return the current call stack as a list
-* `serialize(value, protocol='default')` - serialize `value` using protocol
-* `deserialize(bytes, protocol='default')` - deserialize bytes using protocol
+* `serialize(value, protocol='default')` - serialize `value` to a packed byte list. The stream carries a small header (magic byte + format version). The format is transient (like Python's `pickle`): it is meant for round-tripping within the same build, not long-term storage or cross-version exchange.
+* `deserialize(bytes, protocol='default')` - reconstruct a value from bytes produced by `serialize`. Requires the header and only accepts the current format version — a headerless or older-version stream is rejected with a clear error (it is not migrated).
 * `to_bytes(v, width=0, endian='little')` - reinterpret a scalar as a list of bytes. Source may be `bool` (1 byte), `byte` (1 byte), `int` (width 1/2/4/8 two's-complement; default 8), `real` (width 4 for IEEE float32 downcast, or 8 for IEEE double; default 8), or `string` (UTF-8 bytes; width must be 0). `endian` is `'little'` (default) or `'big'`.
 * `from_bytes(bytes, dtype=real, endian='little', signed=true)` - reinterpret a list of bytes as the requested type. `dtype` is a type value (preferred — `int`, `real`, `bool`, `string`) or the equivalent string (`'int'`, `'real'`, `'bool'`, `'string'`). `int` accepts length 1/2/4/8; result is always Roxal `int`. `real` accepts length 4 (IEEE float32 upcast to double) or length 8 (IEEE double). `bool` reads 1 byte (nonzero → true). `string` UTF-8 decodes. `signed` only applies when `dtype=int` for widths < 8: `signed=true` (default) sign-extends the input; `signed=false` zero-extends — useful for unsigned hardware registers (e.g. a 16-bit register `0xFFFF` reads as `-1` with `signed=true`, `65535` with `signed=false`). `endian` accepts `'little'` / `'big'` (alias `'network'`). Round-trip: `from_bytes(to_bytes(v, width=w), dtype=...)` recovers `v` for valid widths.
 * `bits_to_bytes(bits, msb_first=true)` - pack a list of `bool` (or 0/1) bits into a list of byte. Result length is `ceil(len(bits)/8)` with the final byte zero-padded. `msb_first=true` (default) puts the first bit in each byte's MSB — matching the `byte([8 bits])` constructor convention. `msb_first=false` puts the first bit in the LSB.
@@ -2059,6 +2082,7 @@ The functions in the sys module are always globally available (- as if `import s
 * `list.insert(index, value)` - insert `value` before `index`. Negative indices count from the end; out-of-range indices clamp to the start/end. Mutates in place.
 * `list.remove(value)` - remove the first element equal to `value`. Raises an error if not present (guard with `list.remove(x) if x in list`). Mutates in place.
 * `list.pop(index=-1)` - remove and return the element at `index` (default: the last). Raises an error if the index is out of range. Mutates in place.
+* `list.reserve(n)` - hint that the list will hold at least `n` elements, pre-allocating capacity to avoid incremental reallocation while appending. Does not change the list's length or contents. Mutates in place (rejected on a `const` list).
 * `filter(items, predicate)` - return a new list containing elements for which `predicate(element)` returns true; predicate can optionally take `(element, index)`. Also a list method: `list.filter(predicate)`
 * `map(items, transform)` - return a new list with `transform(element)` applied to each element; transform can optionally take `(element, index)`. Also a list method: `list.map(transform)`
 * `reduce(items, reducer, initial)` - reduce list to a single value by calling `reducer(accumulator, element)` for each element; reducer can optionally take `(accumulator, element, index)`. Also a list method: `list.reduce(reducer, initial)`

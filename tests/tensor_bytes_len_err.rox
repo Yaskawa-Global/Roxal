@@ -1,0 +1,3 @@
+# bytes= length must match numel * dtype size.
+var t = tensor(shape=[2, 2], dtype="uint8", bytes=[byte(1), byte(2)])
+print(t)
