@@ -1,0 +1,26 @@
+packed
+boxed
+10 10
+40 40
+40 40
+30 30
+[20, 30]
+[20, 30]
+packed
+100 100
+[10, 20, 30, 40]
+[10, 20, 30, 40]
+true
+true
+false
+true
+true
+true
+true
+false
+[5, 10, 20, 30, 40]
+packed
+40
+packed
+[5, 10, 30]
+packed

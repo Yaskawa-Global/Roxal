@@ -1339,7 +1339,7 @@ std::string roxal::objStringToString(const ObjString* os)
 
 
 ObjList::ObjList(const ObjRange* r)
-    : elts_(make_ptr<std::vector<Value>>())
+    : repr_(Repr::Boxed), elts_(make_ptr<std::vector<Value>>())
 {
     type = ObjType::List;
     int32_t rangeLen = r->length();
@@ -1359,20 +1359,38 @@ Value ObjList::index(const Value& i) const
             index = len - (-index);
         if (index < 0 || index >= len)
             throw std::invalid_argument("List index out-of-range.");
-        return (*elts_)[index];
+        return getElement(index);
     }
     else if (isRange(i)) {
-        auto sublist = newListObj();
         auto r = asRange(i);
         auto listLen = length();
         auto rangeLen = r->length(listLen);
 
-        for(auto i=0; i<rangeLen; i++) {
-            auto targetIndex = r->targetIndex(i,listLen);
-            if ((targetIndex >= 0) && (targetIndex < listLen))
-                sublist->elts_->push_back((*elts_)[targetIndex]);
+        // Build the sublist by populating its storage directly. We must not
+        // route through setElements()/adoptPackedBytes() here: those are
+        // MVCC-guarded and would bump the fresh sublist's writeEpoch while a
+        // snapshot is active, which breaks resolveConstChild's epoch check for
+        // const range-indexing.
+        auto sublist = newListObj();
+        if (repr_ == Repr::PackedByte) {
+            // Slicing a packed list yields a packed list.
+            auto sub = make_ptr<std::vector<uint8_t>>();
+            sub->reserve(rangeLen);
+            for(auto k=0; k<rangeLen; k++) {
+                auto targetIndex = r->targetIndex(k,listLen);
+                if ((targetIndex >= 0) && (targetIndex < listLen))
+                    sub->push_back((*packed_)[targetIndex]);
+            }
+            sublist->packed_ = std::move(sub);  // repr_ is already PackedByte
+        } else {
+            sublist->unpack();  // switch fresh clone to boxed storage
+            sublist->elts_->reserve(rangeLen);
+            for(auto k=0; k<rangeLen; k++) {
+                auto targetIndex = r->targetIndex(k,listLen);
+                if ((targetIndex >= 0) && (targetIndex < listLen))
+                    sublist->elts_->push_back((*elts_)[targetIndex]);
+            }
         }
-
         return Value::objVal(std::move(sublist));
     }
     else
@@ -1386,8 +1404,17 @@ void ObjList::setElement(size_t i, const Value& v)
     ensureMutable();
     CowGuard guard(control);
     if (guard.active()) saveVersion();
-    ensureUnique();
-    (*elts_)[i] = v;
+    ensureUniqueStorage();
+    if (repr_ == Repr::PackedByte) {
+        if (v.isByte()) {
+            (*packed_)[i] = v.asByte();
+        } else {
+            unpack();
+            (*elts_)[i] = v;
+        }
+    } else {
+        (*elts_)[i] = v;
+    }
     if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
@@ -1396,8 +1423,21 @@ void ObjList::setElements(const std::vector<Value>& v)
     ensureMutable();
     CowGuard guard(control);
     if (guard.active()) saveVersion();
-    ensureUnique();
-    *elts_ = v;
+    // Bulk replace re-evaluates packability from scratch.
+    if (allBytes(v)) {
+        auto pk = make_ptr<std::vector<uint8_t>>();
+        pk->reserve(v.size());
+        for (const auto& e : v)
+            pk->push_back(e.asByte());
+        packed_ = std::move(pk);
+        elts_.reset();
+        repr_ = Repr::PackedByte;
+    } else {
+        auto boxed = make_ptr<std::vector<Value>>(v);
+        elts_ = std::move(boxed);
+        packed_.reset();
+        repr_ = Repr::Boxed;
+    }
     if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
@@ -1406,7 +1446,7 @@ void ObjList::setIndex(const Value& i, const Value& v)
     ensureMutable();
     CowGuard guard(control);
     if (guard.active()) saveVersion();
-    ensureUnique();
+    ensureUniqueStorage();
     if (i.isNumber()) {
         auto index = i.asInt();
         auto len = length();
@@ -1414,7 +1454,16 @@ void ObjList::setIndex(const Value& i, const Value& v)
             index = len - (-index);
         if (index < 0 || index >= len)
             throw std::invalid_argument("List index out-of-range.");
-        (*elts_)[index] = v;
+        if (repr_ == Repr::PackedByte) {
+            if (v.isByte()) {
+                (*packed_)[index] = v.asByte();
+            } else {
+                unpack();
+                (*elts_)[index] = v;
+            }
+        } else {
+            (*elts_)[index] = v;
+        }
     }
     else if (isRange(i)) {
 
@@ -1431,11 +1480,25 @@ void ObjList::setIndex(const Value& i, const Value& v)
         if (rhsLen != rangeLen)
             throw std::invalid_argument("Assignment to list with range requires a list on RHS of same length ("+std::to_string(rangeLen)+") as the range being assigned (len RHS is "+std::to_string(rhsLen)+" ).");
 
-        for(auto i=0; i<rangeLen; i++) {
-            auto targetIndex = r->targetIndex(i,listLen);
+        // If the LHS is packed but the RHS has any non-byte element, unpack first.
+        if (repr_ == Repr::PackedByte) {
+            bool rhsAllBytes = true;
+            for(auto k=0; k<rhsLen; k++)
+                if (!rhsList->getElement(k).isByte()) { rhsAllBytes = false; break; }
+            if (!rhsAllBytes)
+                unpack();
+        }
+
+        for(auto k=0; k<rangeLen; k++) {
+            auto targetIndex = r->targetIndex(k,listLen);
             if ((targetIndex >= 0) && (targetIndex < listLen)) {
-                if (i < rhsLen)
-                    (*elts_)[targetIndex] = (*rhsList->elts_)[i];
+                if (k < rhsLen) {
+                    Value rv = rhsList->getElement(k);
+                    if (repr_ == Repr::PackedByte)
+                        (*packed_)[targetIndex] = rv.asByte();
+                    else
+                        (*elts_)[targetIndex] = rv;
+                }
             }
         }
     }
@@ -1449,10 +1512,33 @@ void ObjList::concatenate(const ObjList* other)
     ensureMutable();
     CowGuard guard(control);
     if (guard.active()) saveVersion();
-    ensureUnique();
-    const auto& otherElts = *other->elts_;
-    elts_->reserve(elts_->size() + otherElts.size());
-    elts_->insert(elts_->end(), otherElts.begin(), otherElts.end());
+    ensureUniqueStorage();
+    if (repr_ == Repr::PackedByte) {
+        if (const auto* otherPacked = other->packedBytes()) {
+            // packed + packed: raw append, stays packed.
+            packed_->reserve(packed_->size() + otherPacked->size());
+            packed_->insert(packed_->end(), otherPacked->begin(), otherPacked->end());
+        } else {
+            // packed + boxed: stay packed only if the RHS is entirely bytes.
+            const auto& otherElts = *other->elts_;
+            bool rhsAllBytes = allBytes(otherElts);
+            if (rhsAllBytes) {
+                packed_->reserve(packed_->size() + otherElts.size());
+                for (const auto& e : otherElts)
+                    packed_->push_back(e.asByte());
+            } else {
+                unpack();
+                elts_->reserve(elts_->size() + otherElts.size());
+                elts_->insert(elts_->end(), otherElts.begin(), otherElts.end());
+            }
+        }
+    } else {
+        // Boxed LHS: append the other list's elements via boxed accessors.
+        int32_t otherLen = other->length();
+        elts_->reserve(elts_->size() + otherLen);
+        for (int32_t k = 0; k < otherLen; k++)
+            elts_->push_back(other->getElement(k));
+    }
     if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
@@ -1461,8 +1547,17 @@ void ObjList::append(const Value& value)
     ensureMutable();
     CowGuard guard(control);
     if (guard.active()) saveVersion();
-    ensureUnique();
-    elts_->push_back(value);
+    ensureUniqueStorage();
+    if (repr_ == Repr::PackedByte) {
+        if (value.isByte())
+            packed_->push_back(value.asByte());  // first-append specialization for empty lists
+        else {
+            unpack();
+            elts_->push_back(value);
+        }
+    } else {
+        elts_->push_back(value);
+    }
     if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
@@ -1471,27 +1566,35 @@ void ObjList::insertAt(int64_t index, const Value& value)
     ensureMutable();
     CowGuard guard(control);
     if (guard.active()) saveVersion();
-    ensureUnique();
-    int64_t n = static_cast<int64_t>(elts_->size());
+    ensureUniqueStorage();
+    if (repr_ == Repr::PackedByte && !value.isByte())
+        unpack();
+    int64_t n = length();
     // Python-style: negative counts from the end; out-of-range clamps to [0, n].
     if (index < 0) { index += n; if (index < 0) index = 0; }
     if (index > n) index = n;
-    elts_->insert(elts_->begin() + index, value);
+    if (repr_ == Repr::PackedByte)
+        packed_->insert(packed_->begin() + index, value.asByte());
+    else
+        elts_->insert(elts_->begin() + index, value);
     if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 Value ObjList::removeAt(int64_t index)
 {
     ensureMutable();
-    int64_t n = static_cast<int64_t>(elts_->size());
+    int64_t n = length();
     int64_t i = index < 0 ? index + n : index;  // negative counts from the end
     if (i < 0 || i >= n)
         throw std::out_of_range("list index out of range");
     CowGuard guard(control);
     if (guard.active()) saveVersion();
-    ensureUnique();
-    Value removed = (*elts_)[i];
-    elts_->erase(elts_->begin() + i);
+    ensureUniqueStorage();
+    Value removed = getElement(i);
+    if (repr_ == Repr::PackedByte)
+        packed_->erase(packed_->begin() + i);
+    else
+        elts_->erase(elts_->begin() + i);
     if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
     return removed;
 }
@@ -1499,22 +1602,34 @@ Value ObjList::removeAt(int64_t index)
 bool ObjList::removeValue(const Value& value, bool strict)
 {
     ensureMutable();
-    int64_t n = static_cast<int64_t>(elts_->size());
+    int64_t n = length();
     int64_t found = -1;
     for (int64_t i = 0; i < n; i++)
-        if ((*elts_)[i].equals(value, strict)) { found = i; break; }
+        if (getElement(i).equals(value, strict)) { found = i; break; }
     if (found < 0)
         return false;
     CowGuard guard(control);
     if (guard.active()) saveVersion();
-    ensureUnique();
-    elts_->erase(elts_->begin() + found);
+    ensureUniqueStorage();
+    if (repr_ == Repr::PackedByte)
+        packed_->erase(packed_->begin() + found);
+    else
+        elts_->erase(elts_->begin() + found);
     if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
     return true;
 }
 
 void ObjList::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
+    if (repr_ == Repr::PackedByte) {
+        // Compact packed format: high-bit-flagged count, then raw octets.
+        // The high bit is never set by boxed lists (length is a non-negative int32).
+        uint32_t marker = static_cast<uint32_t>(packed_->size()) | 0x80000000u;
+        out.write(reinterpret_cast<char*>(&marker), 4);
+        if (!packed_->empty())
+            out.write(reinterpret_cast<const char*>(packed_->data()), packed_->size());
+        return;
+    }
     uint32_t len = length();
     out.write(reinterpret_cast<char*>(&len), 4);
     for(const auto& v : *elts_)
@@ -1526,17 +1641,47 @@ void ObjList::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     ensureMutable();
     CowGuard guard(control);
     if (guard.active()) saveVersion();
-    ensureUnique();
-    uint32_t len;
-    in.read(reinterpret_cast<char*>(&len), 4);
-    elts_->clear();
-    for(uint32_t i=0;i<len;i++)
-        elts_->push_back(readValue(in, ctx));
+    uint32_t raw;
+    in.read(reinterpret_cast<char*>(&raw), 4);
+    if (raw & 0x80000000u) {
+        // Compact packed format.
+        uint32_t n = raw & 0x7fffffffu;
+        auto pk = make_ptr<std::vector<uint8_t>>(n);
+        if (n)
+            in.read(reinterpret_cast<char*>(pk->data()), n);
+        packed_ = std::move(pk);
+        elts_.reset();
+        repr_ = Repr::PackedByte;
+    } else {
+        // Boxed format (how any list with non-byte elements is written): read
+        // per-element, then re-evaluate packability — construction re-evaluates
+        // representation, so an all-byte boxed stream comes back packed.
+        uint32_t len = raw;
+        std::vector<Value> tmp;
+        tmp.reserve(len);
+        for(uint32_t i=0;i<len;i++)
+            tmp.push_back(readValue(in, ctx));
+        if (allBytes(tmp)) {
+            auto pk = make_ptr<std::vector<uint8_t>>();
+            pk->reserve(tmp.size());
+            for (const auto& e : tmp)
+                pk->push_back(e.asByte());
+            packed_ = std::move(pk);
+            elts_.reset();
+            repr_ = Repr::PackedByte;
+        } else {
+            elts_ = make_ptr<std::vector<Value>>(std::move(tmp));
+            packed_.reset();
+            repr_ = Repr::Boxed;
+        }
+    }
     if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
 void ObjList::trace(ValueVisitor& visitor) const
 {
+    if (repr_ == Repr::PackedByte)
+        return;  // no Value references to trace
     for (const auto& value : *elts_) {
         visitor.visit(value);
     }
@@ -1545,7 +1690,9 @@ void ObjList::trace(ValueVisitor& visitor) const
 void ObjList::dropReferences()
 {
     cleanupMVCC();
-    elts_ = make_ptr<std::vector<Value>>();
+    elts_.reset();
+    packed_ = make_ptr<std::vector<uint8_t>>();
+    repr_ = Repr::PackedByte;
 }
 
 void ObjList::set(const ObjList* other)
@@ -1553,9 +1700,87 @@ void ObjList::set(const ObjList* other)
     ensureMutable();
     CowGuard guard(control);
     if (guard.active()) saveVersion();
-    ensureUnique();
-    *elts_ = *other->elts_;
+    // Copy the other list's representation and contents.
+    if (other->repr_ == Repr::PackedByte) {
+        packed_ = make_ptr<std::vector<uint8_t>>(*other->packed_);
+        elts_.reset();
+        repr_ = Repr::PackedByte;
+    } else {
+        elts_ = make_ptr<std::vector<Value>>(*other->elts_);
+        packed_.reset();
+        repr_ = Repr::Boxed;
+    }
     if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+}
+
+std::vector<Value> ObjList::getElements() const
+{
+    if (repr_ == Repr::PackedByte) {
+        std::vector<Value> out;
+        out.reserve(packed_->size());
+        for (uint8_t b : *packed_)
+            out.push_back(Value::byteVal(b));
+        return out;
+    }
+    return *elts_;
+}
+
+void ObjList::reserve(size_t n)
+{
+    ensureMutable();
+    ensureUniqueStorage();
+    if (repr_ == Repr::PackedByte)
+        packed_->reserve(n);
+    else
+        elts_->reserve(n);
+}
+
+void ObjList::cacheElement(int64_t index, const Value& val)
+{
+    ensureUniqueStorage();
+    if (repr_ == Repr::PackedByte) {
+        if (val.isByte()) {
+            (*packed_)[index] = val.asByte();
+        } else {
+            unpack();
+            (*elts_)[index] = val;
+        }
+    } else {
+        (*elts_)[index] = val;
+    }
+}
+
+void ObjList::adoptPackedBytes(std::vector<uint8_t>&& b)
+{
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    packed_ = make_ptr<std::vector<uint8_t>>(std::move(b));
+    elts_.reset();
+    repr_ = Repr::PackedByte;
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+}
+
+std::vector<uint8_t> ObjList::stealPackedBytes()
+{
+    ensureMutable();
+    CowGuard guard(control);
+    if (guard.active()) saveVersion();
+    std::vector<uint8_t> out;
+    if (repr_ == Repr::PackedByte && packed_.use_count() == 1) {
+        out = std::move(*packed_);
+    } else {
+        // Not sole owner (or boxed): fall back to a copy of the byte view.
+        int32_t n = length();
+        out.reserve(n);
+        for (int32_t i = 0; i < n; i++)
+            out.push_back(getElement(i).asByte());
+    }
+    packed_ = make_ptr<std::vector<uint8_t>>();
+    elts_.reset();
+    repr_ = Repr::PackedByte;
+    if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
+    return out;
 }
 
 
@@ -1589,6 +1814,17 @@ unique_ptr<ObjList, UnreleasedObj> roxal::newListObj(const std::vector<Value>& e
     return l;
 }
 
+unique_ptr<ObjList, UnreleasedObj> roxal::newListObj(std::vector<uint8_t>&& bytes)
+{
+    #ifdef DEBUG_BUILD
+    auto l = newObj<ObjList>(__func__, __FILE__, __LINE__);
+    #else
+    auto l = newObj<ObjList>();
+    #endif
+    l->adoptPackedBytes(std::move(bytes));
+    return l;
+}
+
 unique_ptr<Obj, UnreleasedObj> ObjList::clone(roxal::ptr<CloneContext> ctx) const
 {
     // Check if already cloned (preserves shared references and handles cycles)
@@ -1608,8 +1844,18 @@ unique_ptr<Obj, UnreleasedObj> ObjList::clone(roxal::ptr<CloneContext> ctx) cons
         ctx->originalToClone[this] = newl.get();
     }
 
+    if (repr_ == Repr::PackedByte) {
+        // Bytes are primitives with no references or cycles: share the buffer
+        // (COW), matching ObjTensor::clone.
+        newl->packed_ = packed_;
+        newl->elts_.reset();
+        newl->repr_ = Repr::PackedByte;
+        return newl;
+    }
+
     // Clone children with context
     auto lsize = elts_->size();
+    newl->unpack();  // switch the fresh clone to boxed storage before filling
     newl->elts_->reserve(lsize);
     for (size_t i = 0; i < lsize; i++)
         newl->elts_->push_back((*elts_)[i].clone(ctx));
@@ -1620,9 +1866,11 @@ unique_ptr<Obj, UnreleasedObj> ObjList::clone(roxal::ptr<CloneContext> ctx) cons
 unique_ptr<Obj, UnreleasedObj> ObjList::shallowClone() const
 {
     auto newl = newListObj();
-    // COW: share the storage pointer (O(1) refcount bump).
-    // Mutations on either side will trigger ensureUnique() to copy-on-write.
+    // COW: share whichever storage pointer is active (O(1) refcount bump).
+    // Mutations on either side trigger ensureUniqueStorage() to copy-on-write.
+    newl->repr_ = repr_;
     newl->elts_ = elts_;
+    newl->packed_ = packed_;
     return newl;
 }
 
@@ -1631,14 +1879,16 @@ bool ObjList::equals(const ObjList* other) const
     if (other == nullptr)
         return false;
 
-    const auto& lst1 = *elts_;
-    const auto& lst2 = *other->elts_;
-
-    if (lst1.size() != lst2.size())
+    if (length() != other->length())
         return false;
 
-    for(size_t i=0;i<lst1.size();++i)
-        if (!lst1[i].equals(lst2[i], false))
+    // Fast path: both packed -> raw byte compare.
+    if (repr_ == Repr::PackedByte && other->repr_ == Repr::PackedByte)
+        return *packed_ == *other->packed_;
+
+    int32_t n = length();
+    for(int32_t i=0;i<n;++i)
+        if (!getElement(i).equals(other->getElement(i), false))
             return false;
 
     return true;

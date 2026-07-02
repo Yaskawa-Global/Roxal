@@ -1,0 +1,37 @@
+# serialize()/deserialize() preserve packed byte lists and their representation.
+
+# A packed byte list round-trips and stays packed.
+var blob = [byte(1), byte(2), byte(250), byte(3)]
+var s = serialize(blob)
+print(_list_repr(s))             # packed  (the serialized byte stream)
+var back = deserialize(s)
+print(""+back)                   # [1, 2, 250, 3]
+print(_list_repr(back))          # packed
+print(""+(back == blob))         # true
+
+# A mixed list round-trips and comes back boxed.
+var mixed = [1, "two", byte(3), nil]
+var back2 = deserialize(serialize(mixed))
+print(""+back2)                  # [1, "two", 3, nil]
+print(_list_repr(back2))         # boxed
+print(""+(back2 == mixed))       # true
+
+# A dict containing a packed list round-trips with the list still packed.
+var d = {"data": [byte(9), byte(8)], "n": 2}
+var back3 = deserialize(serialize(d))
+print(""+back3["data"])          # [9, 8]
+print(_list_repr(back3["data"])) # packed
+print(""+back3["n"])             # 2
+
+# to_bytes / bits_to_bytes produce packed byte lists directly.
+print(_list_repr(to_bytes(1.0)))                                              # packed
+print(_list_repr(bits_to_bytes([true, false, true, false, false, false, false, false])))  # packed
+
+# The serialize() format is transient: a stream without the header is rejected.
+var s2 = serialize([byte(7), byte(8), byte(9)])
+var headerless = s2[5..<len(s2)]   # strip the 5-byte magic+version header
+try:
+  deserialize(headerless)
+  print("ERROR: expected rejection")
+except e:
+  print("rejected headerless")     # rejected headerless

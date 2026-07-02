@@ -1,0 +1,13 @@
+packed
+[1, 2, 250, 3]
+packed
+true
+[1, "two", 3, nil]
+boxed
+true
+[9, 8]
+packed
+2
+packed
+packed
+rejected headerless

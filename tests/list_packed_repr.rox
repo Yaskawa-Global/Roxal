@@ -1,0 +1,51 @@
+# Internal storage representation of lists: byte-only lists pack; anything else boxes.
+
+# Empty list is packed-capable.
+var e = []
+print(_list_repr(e))            # packed
+
+# A literal of bytes packs.
+var a = [byte(1), byte(2), byte(3)]
+print(_list_repr(a))            # packed
+
+# A literal with an int is boxed.
+var b = [1, 2, 3]
+print(_list_repr(b))            # boxed
+
+# A range-derived list is boxed (ints).
+var r = list(range(0..3))
+print(_list_repr(r))            # boxed
+
+# Appending a byte to an empty list keeps it packed (first-append specialization).
+var p = []
+p.append(byte(7))
+print(_list_repr(p))            # packed
+print(p)                        # [7]
+
+# Appending a non-byte unpacks; length and values are preserved.
+p.append(42)
+print(_list_repr(p))            # boxed
+print(p)                        # [7, 42]
+print(len(p))                   # 2
+
+# Appending a string to a byte list unpacks.
+var s = [byte(9)]
+s.append("x")
+print(_list_repr(s))            # boxed
+print(s)                        # [9, "x"]
+
+# Appending nil unpacks.
+var n = [byte(3)]
+n.append(nil)
+print(_list_repr(n))            # boxed
+
+# One-way rule: popping back to a byte-only content does NOT re-pack.
+var w = [byte(1)]
+w.append(500)                   # unpack
+w.pop()                         # remove the int; content is now [byte(1)]
+print(_list_repr(w))            # boxed  (no automatic re-pack)
+print(w)                        # [1]
+
+# But a freshly constructed list re-evaluates and packs.
+var f = [byte(1)]
+print(_list_repr(f))            # packed

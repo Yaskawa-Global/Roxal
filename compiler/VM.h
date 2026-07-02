@@ -843,6 +843,7 @@ public:
     Value list_insert_builtin(ArgsView args);
     Value list_remove_builtin(ArgsView args);
     Value list_pop_builtin(ArgsView args);
+    Value list_reserve_builtin(ArgsView args);
 
     Value string_upper_builtin(ArgsView args);
     Value string_lower_builtin(ArgsView args);

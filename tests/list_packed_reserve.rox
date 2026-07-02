@@ -1,0 +1,28 @@
+# list.reserve() works on both representations and is representation-neutral.
+
+# Reserve on a packed list: repr, length, and contents unchanged.
+var p = [byte(1), byte(2), byte(3)]
+p.reserve(100)
+print(_list_repr(p))             # packed
+print(""+len(p))                 # 3
+print(""+p)                      # [1, 2, 3]
+
+# Appending after reserve still works and stays packed.
+p.append(byte(4))
+print(""+p)                      # [1, 2, 3, 4]
+print(_list_repr(p))             # packed
+
+# Reserve on a boxed list: repr and contents unchanged.
+var b = [1, "two", 3]
+b.reserve(50)
+print(_list_repr(b))             # boxed
+print(""+b)                      # [1, "two", 3]
+
+# Reserve on an empty list is fine and keeps it packed-capable.
+var e = []
+e.reserve(0)
+print(_list_repr(e))             # packed
+
+# Reserving on a const list is rejected like any other mutation.
+const cl = [byte(1), byte(2)]
+cl.reserve(10)

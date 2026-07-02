@@ -5,6 +5,9 @@ Test: real_val passed ok
 Test: string_val passed ok
 Test: range_val passed ok
 Test: list_val passed ok
+Test: packed_list passed ok
+Test: packed_list_repr passed ok
+Test: boxed_list_repacks passed ok
 Test: dict_val passed ok
 Test: vector_val passed ok
 Test: matrix_val passed ok
@@ -14,4 +17,4 @@ Test: boxed_real passed ok
 Test: chunk_round passed ok
 Test: function_round passed ok
 Test: closure_round passed ok
-Passed 16 failed 0
+Passed 19 failed 0

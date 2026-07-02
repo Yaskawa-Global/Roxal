@@ -10986,6 +10986,8 @@ void VM::defineBuiltinMethods()
                         false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x1);
     defineBuiltinMethod(ValueType::List, "pop", std::mem_fn(&VM::list_pop_builtin),
                         false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x1);
+    defineBuiltinMethod(ValueType::List, "reserve", std::mem_fn(&VM::list_reserve_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x1);
 
     // String case-conversion methods — read-only on self (return new string)
     defineBuiltinMethod(ValueType::String, "upper", std::mem_fn(&VM::string_upper_builtin),
@@ -11834,6 +11836,16 @@ Value VM::list_pop_builtin(ArgsView args)
         index = args[1].asInt();
     }
     return asList(args[0])->removeAt(index);  // throws std::out_of_range if empty/out-of-range
+}
+
+Value VM::list_reserve_builtin(ArgsView args)
+{
+    if (args.size() != 2 || !isList(args[0]))
+        throw std::invalid_argument("list.reserve expects a single integer capacity argument");
+    if (!args[1].isInt() || args[1].asInt() < 0)
+        throw std::invalid_argument("list.reserve capacity must be a non-negative integer");
+    asList(args[0])->reserve(static_cast<size_t>(args[1].asInt()));
+    return Value::nilVal();
 }
 
 Value VM::string_upper_builtin(ArgsView args)

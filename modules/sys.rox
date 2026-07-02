@@ -67,6 +67,10 @@ func _refcount(value) -> int:
   """return the strong reference count of a value (-1 for non-objects)"""
 
 @builtin
+func _list_repr(value) -> string:
+  """return a list's internal storage representation ("packed" or "boxed")"""
+
+@builtin
 func _arity(fn) -> int:
   """return the number of parameters a function expects"""
 

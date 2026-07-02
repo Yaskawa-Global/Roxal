@@ -1,0 +1,13 @@
+[1, 9, 3] packed
+[100, 9, 3] boxed
+[8, 9, 3, 4] packed
+[8, 999, 3, 4] boxed
+[1, 2, 3, 4] packed
+boxed
+[1, 2] packed
+[1, 2, 3, "s"] boxed
+[1, 2, 3] packed
+[1, 7, 8] boxed
+[2, 4] packed
+[11, 12, 13, 14] packed
+[11, 12, 13, 14] boxed

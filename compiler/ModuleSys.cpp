@@ -1392,6 +1392,7 @@ void ModuleSys::registerBuiltins(VM& vm)
         addSys("_weak_alive", [this](VM& vm, ArgsView a){ return weak_alive_builtin(vm,a); });
         addSys("_strongref", [this](VM& vm, ArgsView a){ return strongref_builtin(vm,a); });
         addSys("_refcount", [this](VM& vm, ArgsView a){ return refcount_builtin(vm,a); });
+        addSys("_list_repr", [this](VM& vm, ArgsView a){ return list_repr_builtin(vm,a); });
         addSys("_arity", [this](VM& vm, ArgsView a){ return arity_builtin(vm,a); });
         addSys("gc", [this](VM& vm, ArgsView a){ return gc_builtin(vm,a); });
         addSys("gc_config", [this](VM& vm, ArgsView a){ return gc_config_builtin(vm,a); });
@@ -3286,6 +3287,15 @@ Value ModuleSys::refcount_builtin(VM& vm, ArgsView args)
     return Value::intVal(obj->control->strong.load(std::memory_order_relaxed));
 }
 
+Value ModuleSys::list_repr_builtin(VM& vm, ArgsView args)
+{
+    // Test/introspection helper: reports a list's internal storage representation.
+    // Returns "packed" for the raw-byte representation, "boxed" otherwise.
+    if (args.size() != 1 || !isList(args[0]))
+        throw std::invalid_argument("_list_repr expects a single list argument");
+    return Value::stringVal(icu::UnicodeString(asList(args[0])->isPackedBytes() ? "packed" : "boxed"));
+}
+
 Value ModuleSys::arity_builtin(VM& vm, ArgsView args)
 {
     if (args.size() != 1)
@@ -3361,6 +3371,16 @@ Value ModuleSys::gc_config_builtin(VM& vm, ArgsView args)
     return Value::intVal(threshold);
 }
 
+// serialize() output carries a small self-describing header (magic byte +
+// version) so a version/format mismatch is caught with a clear error rather
+// than misparsing. The format is transient (like Python pickle): deserialize()
+// requires the header and only accepts the current version — it does not read
+// headerless or older data. The magic byte 0x52 ('R') is not a valid leading
+// byte of a raw writeValue stream (always a ValueType tag <= ~30 or the Boxed
+// sentinel 0xff), so a foreign/headerless stream is cleanly rejected.
+static constexpr uint8_t SerializeMagic = 0x52;        // 'R'
+static constexpr uint32_t SerializeFormatVersion = 1;
+
 Value ModuleSys::serialize_builtin(VM& vm, ArgsView args)
 {
     if(args.size() < 1 || args.size() > 2)
@@ -3375,14 +3395,17 @@ Value ModuleSys::serialize_builtin(VM& vm, ArgsView args)
         throw std::invalid_argument("unknown serialization protocol");
 
     std::stringstream ss(std::ios::in|std::ios::out|std::ios::binary);
+    // Header: magic byte + little-endian format version.
+    uint8_t magic = SerializeMagic;
+    uint32_t version = SerializeFormatVersion;
+    ss.write(reinterpret_cast<char*>(&magic), 1);
+    ss.write(reinterpret_cast<char*>(&version), 4);
     ptr<SerializationContext> ctx = make_ptr<SerializationContext>();
     writeValue(ss, args[0], ctx);
     std::string data = ss.str();
-    std::vector<Value> bytes;
-    bytes.reserve(data.size());
-    for(unsigned char ch : data)
-        bytes.push_back(Value::byteVal(ch));
-    return Value::listVal(bytes);
+    // Emit the bytes as a packed byte list (memcpy-fast, ~1 byte/elem on disk).
+    std::vector<uint8_t> bytes(data.begin(), data.end());
+    return Value::listVal(std::move(bytes));
 }
 
 Value ModuleSys::deserialize_builtin(VM& vm, ArgsView args)
@@ -3421,6 +3444,19 @@ Value ModuleSys::deserialize_builtin(VM& vm, ArgsView args)
     std::stringstream ss(std::ios::in|std::ios::out|std::ios::binary);
     ss.write(data.data(), data.size());
     ss.seekg(0);
+    // The serialize() format is transient (like Python pickle): every stream
+    // carries a magic byte + version header, and deserialize() requires it. We
+    // do not attempt to read headerless or older-version data — the version
+    // check exists to reject mixing, not to migrate.
+    if(data.size() < 5 || static_cast<uint8_t>(data[0]) != SerializeMagic)
+        throw std::runtime_error("deserialize: not a valid serialized stream (missing header)");
+    uint32_t version = 0;
+    std::memcpy(&version, data.data() + 1, 4);
+    if(version != SerializeFormatVersion)
+        throw std::runtime_error("deserialize: unsupported serialization format version "
+                                 + std::to_string(version) + " (this build writes version "
+                                 + std::to_string(SerializeFormatVersion) + ")");
+    ss.seekg(5);
     ptr<SerializationContext> ctx = make_ptr<SerializationContext>();
     return readValue(ss, ctx);
 }

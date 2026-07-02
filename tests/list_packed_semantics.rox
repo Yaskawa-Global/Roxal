@@ -1,0 +1,56 @@
+# A packed byte list must behave identically to the same list held boxed.
+
+# Build the same contents two ways: `packed` stays packed; `boxed` is forced
+# boxed by transiently inserting then removing a non-byte.
+var packed = [byte(10), byte(20), byte(30), byte(40)]
+var boxed  = [byte(10), byte(20), byte(30), byte(40)]
+boxed.append("force")
+boxed.pop()                      # content back to the four bytes, but boxed
+print(_list_repr(packed))        # packed
+print(_list_repr(boxed))         # boxed
+
+# Positive and negative indexing agree.
+print(""+packed[0]+" "+boxed[0])     # 10 10
+print(""+packed[3]+" "+boxed[3])     # 40 40
+print(""+packed[-1]+" "+boxed[-1])   # 40 40
+print(""+packed[-2]+" "+boxed[-2])   # 30 30
+
+# Slices agree in value; a slice of the packed list is itself packed.
+print(""+packed[1..<3])          # [20, 30]
+print(""+boxed[1..<3])           # [20, 30]
+print(_list_repr(packed[1..<3])) # packed
+
+# Iteration order agrees.
+var sp = 0
+for x in packed:
+  sp = sp + x
+var sb = 0
+for x in boxed:
+  sb = sb + x
+print(""+sp+" "+sb)              # 100 100
+
+# Printing is identical.
+print(""+packed)                 # [10, 20, 30, 40]
+print(""+boxed)                  # [10, 20, 30, 40]
+
+# `in` works for byte and int needles and reports misses.
+print(""+(byte(20) in packed))   # true
+print(""+(20 in packed))         # true
+print(""+(99 in packed))         # false
+print(""+(20 in boxed))          # true
+
+# Equality: packed==boxed, and non-strict byte==int elementwise.
+print(""+(packed == boxed))                # true
+print(""+(packed == [10, 20, 30, 40]))     # true
+print(""+(packed == [byte(10), byte(20), byte(30), byte(40)])) # true
+print(""+(packed == [10, 20, 30]))         # false
+
+# Mutating ops keep packedness when values stay bytes.
+packed.insert(0, byte(5))
+print(""+packed)                 # [5, 10, 20, 30, 40]
+print(_list_repr(packed))        # packed
+print(""+packed.pop())           # 40
+print(_list_repr(packed))        # packed
+packed.remove(byte(20))
+print(""+packed)                 # [5, 10, 30]
+print(_list_repr(packed))        # packed

@@ -248,6 +248,7 @@ public:
     static Value listVal();   // ObjList
     static Value listVal(const Value& r); // from range
     static Value listVal(const std::vector<Value>& elts);
+    static Value listVal(std::vector<uint8_t>&& bytes);  // packed byte list
 
     static Value dictVal();   // ObjDict
     static Value dictVal(const std::vector<std::pair<Value,Value>>& entries);

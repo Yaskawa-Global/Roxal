@@ -567,28 +567,62 @@ std::string objRangeToString(const ObjRange* r);
 
 struct ObjList : public Obj
 {
-    ObjList() : elts_(make_ptr<std::vector<Value>>()) { type = ObjType::List; }
+    // A list selects one of two internal storage representations. A list that
+    // holds only `byte` elements keeps them packed as raw octets
+    // (std::vector<uint8_t>, 1 byte each). Writing any non-byte value unpacks
+    // it to the boxed form (std::vector<Value>, one 64-bit Value each). The
+    // representation is invisible to Roxal semantics: reads always return the
+    // element as it was stored, and no operation errors because of it. The
+    // transition is one-way for element-wise mutation; bulk replacement and
+    // construction (setElements/read/slice/concat) re-evaluate packability.
+    enum class Repr : uint8_t { Boxed, PackedByte };
+
+    // Fresh empty lists start packed-capable (an empty list of bytes).
+    ObjList() : packed_(make_ptr<std::vector<uint8_t>>()) { type = ObjType::List; }
     ObjList(const ObjRange* r);
     virtual ~ObjList() {}
 
-    int32_t length() const { return static_cast<int32_t>(elts_->size()); }
-    bool empty() const { return elts_->empty(); }
+    int32_t length() const {
+        return repr_ == Repr::PackedByte
+            ? static_cast<int32_t>(packed_->size())
+            : static_cast<int32_t>(elts_->size());
+    }
+    bool empty() const {
+        return repr_ == Repr::PackedByte ? packed_->empty() : elts_->empty();
+    }
 
     // Element access by integer index (no bounds-check Value wrapping)
-    Value getElement(size_t i) const { return elts_->at(i); }
+    Value getElement(size_t i) const {
+        return repr_ == Repr::PackedByte
+            ? Value::byteVal(packed_->at(i))
+            : elts_->at(i);
+    }
     void setElement(size_t i, const Value& v);  // MVCC-guarded
 
     // Element access by Value index (with bounds checking and slice support)
     Value index(const Value& i) const;
     void setIndex(const Value& i, const Value& v);
 
-    // Bulk access: returns a snapshot copy of the elements vector
-    std::vector<Value> getElements() const { return *elts_; }
-    // Bulk replace: sets all elements from a plain vector
+    // Bulk access: returns a snapshot copy of the elements (boxed) vector
+    std::vector<Value> getElements() const;
+    // Bulk replace: sets all elements from a plain vector (packing detection point)
     void setElements(const std::vector<Value>& v);  // MVCC-guarded
 
+    // Packed-bytes representation introspection and bulk transfer.
+    bool isPackedBytes() const { return repr_ == Repr::PackedByte; }
+    // Raw packed buffer for consumer fast paths; nullptr when the list is boxed.
+    const std::vector<uint8_t>* packedBytes() const {
+        return repr_ == Repr::PackedByte ? packed_.get() : nullptr;
+    }
+    // Producer path: bulk-replace contents with a raw byte buffer (stays packed).
+    void adoptPackedBytes(std::vector<uint8_t>&& b);  // MVCC-guarded
+    // Move the raw byte buffer out, leaving the list packed-empty. Requires the
+    // caller to have verified sole ownership of the storage (control->strong and
+    // packed_.use_count()); used for zero-copy transfer into a tensor.
+    std::vector<uint8_t> stealPackedBytes();  // MVCC-guarded
+
     // Capacity
-    void reserve(size_t n) { ensureUnique(); elts_->reserve(n); }
+    void reserve(size_t n);
 
     // List operations (in-place)
     void concatenate(const ObjList* other);  // Concatenate other list to this list (extend)
@@ -601,7 +635,7 @@ struct ObjList : public Obj
     bool equals(const ObjList* other) const;  // Deep equality comparison
 
     // Replace element at index without MVCC guards (for frozen snapshot caching)
-    void cacheElement(int64_t index, const Value& val) { ensureUnique(); (*elts_)[index] = val; }
+    void cacheElement(int64_t index, const Value& val);
 
     unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
     unique_ptr<Obj, UnreleasedObj> shallowClone() const override;
@@ -613,10 +647,45 @@ struct ObjList : public Obj
     void dropReferences() override;
 
 private:
-    ptr<std::vector<Value>> elts_;
-    void ensureUnique() {
-        if (elts_.use_count() > 1)
-            elts_ = make_ptr<std::vector<Value>>(*elts_);
+    Repr repr_ = Repr::PackedByte;
+    ptr<std::vector<Value>> elts_;      // active iff repr_ == Boxed
+    ptr<std::vector<uint8_t>> packed_;  // active iff repr_ == PackedByte
+
+    bool packed() const { return repr_ == Repr::PackedByte; }
+
+    // Repr-aware copy-on-write: copies whichever storage vector is shared.
+    void ensureUniqueStorage() {
+        if (repr_ == Repr::PackedByte) {
+            if (packed_.use_count() > 1)
+                packed_ = make_ptr<std::vector<uint8_t>>(*packed_);
+        } else {
+            if (elts_.use_count() > 1)
+                elts_ = make_ptr<std::vector<Value>>(*elts_);
+        }
+    }
+
+    // Transition packed -> boxed by boxing every byte into a fresh elts_ vector.
+    // Must be called inside a mutator's MVCC bracket. Builds a new elts_ rather
+    // than mutating packed_ in place, so version snapshots sharing the old
+    // packed_ buffer remain valid.
+    void unpack() {
+        if (repr_ != Repr::PackedByte)
+            return;
+        auto boxed = make_ptr<std::vector<Value>>();
+        boxed->reserve(packed_->size());
+        for (uint8_t b : *packed_)
+            boxed->push_back(Value::byteVal(b));
+        elts_ = std::move(boxed);
+        packed_.reset();
+        repr_ = Repr::Boxed;
+    }
+
+    // True iff every element is a byte (an empty vector counts as packable).
+    static bool allBytes(const std::vector<Value>& v) {
+        for (const auto& e : v)
+            if (!e.isByte())
+                return false;
+        return true;
     }
 };
 
@@ -627,6 +696,7 @@ inline ObjList* asList(const Value& v) { return static_cast<ObjList*>(v.asObj())
 unique_ptr<ObjList, UnreleasedObj> newListObj();
 unique_ptr<ObjList, UnreleasedObj> newListObj(const ObjRange* r);
 unique_ptr<ObjList, UnreleasedObj> newListObj(const std::vector<Value>& elts);
+unique_ptr<ObjList, UnreleasedObj> newListObj(std::vector<uint8_t>&& bytes);
 
 std::string objListToString(const ObjList* ol);
 

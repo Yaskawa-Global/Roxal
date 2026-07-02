@@ -1,0 +1,56 @@
+# Representation transitions across mutation, slice-assign, extend, concat, filter, map.
+
+# Scalar index-assign of a non-byte unpacks; of a byte stays packed.
+var a = [byte(1), byte(2), byte(3)]
+a[1] = byte(9)
+print(""+a+" "+_list_repr(a))    # [1, 9, 3] packed
+a[0] = 100                       # int -> unpack
+print(""+a+" "+_list_repr(a))    # [100, 9, 3] boxed
+
+# Range slice-assign with an all-byte RHS stays packed.
+var b = [byte(1), byte(2), byte(3), byte(4)]
+b[0..<2] = [byte(8), byte(9)]
+print(""+b+" "+_list_repr(b))    # [8, 9, 3, 4] packed
+
+# Range slice-assign with a non-byte RHS unpacks.
+var c = [byte(1), byte(2), byte(3), byte(4)]
+c[0..<2] = [byte(8), 999]
+print(""+c+" "+_list_repr(c))    # [8, 999, 3, 4] boxed
+
+# extend: packed + packed stays packed.
+var p = [byte(1), byte(2)]
+p.extend([byte(3), byte(4)])
+print(""+p+" "+_list_repr(p))    # [1, 2, 3, 4] packed
+
+# extend: packed + a byte-only boxed list stays packed.
+var q = [byte(1)]
+var qb = [byte(2)]
+qb.append("z")
+qb.pop()                         # byte-only content, but boxed
+print(_list_repr(qb))            # boxed
+q.extend(qb)
+print(""+q+" "+_list_repr(q))    # [1, 2] packed
+
+# extend: packed + a list containing a non-byte unpacks.
+var m = [byte(1), byte(2)]
+m.extend([3, "s"])
+print(""+m+" "+_list_repr(m))    # [1, 2, 3, "s"] boxed
+
+# `+` concat: byte lists concatenate and stay packed.
+var x = [byte(1), byte(2)] + [byte(3)]
+print(""+x+" "+_list_repr(x))    # [1, 2, 3] packed
+
+# `+` concat with a non-byte list yields a boxed result.
+var y = [byte(1)] + [7, 8]
+print(""+y+" "+_list_repr(y))    # [1, 7, 8] boxed
+
+# filter over a packed list preserves elements, so the result stays packed.
+var src = [byte(1), byte(2), byte(3), byte(4)]
+var evens = filter(src, func(v): v rem 2 == 0)
+print(""+evens+" "+_list_repr(evens))  # [2, 4] packed
+
+# map returning bytes packs; map returning ints boxes.
+var mb = map(src, func(v): byte(v + 10))
+print(""+mb+" "+_list_repr(mb))  # [11, 12, 13, 14] packed
+var mi = map(src, func(v): v + 10)
+print(""+mi+" "+_list_repr(mi))  # [11, 12, 13, 14] boxed

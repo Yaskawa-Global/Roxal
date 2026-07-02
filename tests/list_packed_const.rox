@@ -1,0 +1,41 @@
+# Packed byte lists through const snapshots and across an actor boundary.
+
+# A const snapshot of a packed list reads correctly and stays packed.
+var blob = [byte(1), byte(2), byte(3), byte(4)]
+const cb = blob
+print(_list_repr(cb))            # packed
+print(""+cb[0])                  # 1
+print(""+cb[-1])                 # 4
+print(""+cb[1..<3])              # [2, 3]
+print(""+len(cb))                # 4
+print(""+(cb == [1, 2, 3, 4]))   # true
+
+var total = 0
+for x in cb:
+  total = total + x
+print(""+total)                  # 10
+
+# Mutating the original after the snapshot leaves the snapshot unaffected.
+blob.append(byte(99))
+print(""+cb)                     # [1, 2, 3, 4]
+print(""+blob)                   # [1, 2, 3, 4, 99]
+
+# Pass a packed byte list across an actor boundary (implicitly const param).
+type Summer actor:
+    func total(data: list) -> int:
+        var s = 0
+        for v in data:
+            s = s + v
+        return s
+
+    func first(data: list) -> int:
+        return data[0]
+
+var w = Summer()
+var payload = [byte(10), byte(20), byte(30)]
+print(""+w.total(payload))       # 60
+print(""+w.first(payload))       # 10
+
+# The caller's list is unchanged and still packed after the actor call.
+print(""+payload)                # [10, 20, 30]
+print(_list_repr(payload))       # packed

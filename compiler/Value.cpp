@@ -309,6 +309,11 @@ Value Value::listVal(const std::vector<Value>& elts)
     return Value::objVal(newListObj(elts));
 }
 
+Value Value::listVal(std::vector<uint8_t>&& bytes)
+{
+    return Value::objVal(newListObj(std::move(bytes)));
+}
+
 Value Value::dictVal()
 {
     return Value::objVal(newDictObj());
@@ -1381,6 +1386,49 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
     asList(lst)->append(Value::intVal(1));
     asList(lst)->append(Value::intVal(2));
     roundTrip("list_val", lst);
+
+    // Packed byte list: round-trips by value and stays packed on read.
+    {
+        std::vector<uint8_t> raw{5, 255, 0, 128};
+        Value pv = Value::listVal(std::move(raw));
+        roundTrip("packed_list", pv);
+        try {
+            std::stringstream ss(std::ios::in|std::ios::out|std::ios::binary);
+            ptr<SerializationContext> ctx = make_ptr<SerializationContext>();
+            writeValue(ss, pv, ctx);
+            ss.seekg(0);
+            Value read = readValue(ss, ctx);
+            bool pass = isList(read) && asList(read)->isPackedBytes()
+                     && asList(read)->length() == 4;
+            results.push_back({"packed_list_repr", pass, pass ? "ok" : "not packed"});
+        } catch(std::exception& e) {
+            results.push_back({"packed_list_repr", false, std::string("exception: ")+e.what()});
+        }
+    }
+
+    // Boxed list wire format (u32 count without the packed high-bit marker):
+    // an all-byte boxed stream must decode and re-pack on read.
+    {
+        try {
+            std::stringstream ss(std::ios::in|std::ios::out|std::ios::binary);
+            uint32_t len = 3;
+            ss.write(reinterpret_cast<char*>(&len), 4);
+            ptr<SerializationContext> ctx = make_ptr<SerializationContext>();
+            writeValue(ss, Value::byteVal(10), ctx);
+            writeValue(ss, Value::byteVal(20), ctx);
+            writeValue(ss, Value::byteVal(30), ctx);
+            ss.seekg(0);
+            Value lv = Value::listVal();
+            asList(lv)->read(ss, ctx);
+            bool pass = asList(lv)->isPackedBytes()
+                     && asList(lv)->length() == 3
+                     && asList(lv)->getElement(0).equals(Value::byteVal(10), true)
+                     && asList(lv)->getElement(2).equals(Value::byteVal(30), true);
+            results.push_back({"boxed_list_repacks", pass, pass ? "ok" : "mismatch"});
+        } catch(std::exception& e) {
+            results.push_back({"boxed_list_repacks", false, std::string("exception: ")+e.what()});
+        }
+    }
 
     Value d = { Value::dictVal() };
     asDict(d)->store(Value::intVal(1), Value::intVal(2));
