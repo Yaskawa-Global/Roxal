@@ -94,24 +94,15 @@ Value ModuleDDS::importIdl(const std::string& idlFilename)
     Value moduleVal = getOrCreateModule(moduleName);
 
     registerGeneratedTypes(moduleVal, types);
-    // register constants from IDL in the module
+    // register constants + typedef aliases from IDL, nested at their scope
     if (adapter) {
-        ObjModuleType* mod = asModuleType(moduleVal);
-        auto shortName = [](const std::string& full) -> std::string {
-            auto pos = full.rfind("::");
-            if (pos == std::string::npos)
-                return full;
-            return full.substr(pos + 2);
-        };
         for (const auto& c : adapter->constants()) {
             if (c.value.isNil())
                 continue;
-            icu::UnicodeString name = toUnicodeString(shortName(c.fullName));
-            mod->vars.store(name, c.value, true);
+            storeAtScope(moduleVal, c.fullName, c.value);
         }
         // register typedef aliases as additional module vars pointing to the aliased type
         for (const auto& td : adapter->typedefs()) {
-            icu::UnicodeString name = toUnicodeString(shortName(td.fullName));
             Value target = Value::nilVal();
             switch (td.aliasedType.kind) {
                 case FieldType::Kind::StructRef:
@@ -135,7 +126,7 @@ Value ModuleDDS::importIdl(const std::string& idlFilename)
                     break;
             }
             if (!target.isNil()) {
-                mod->vars.store(name, target, true);
+                storeAtScope(moduleVal, td.fullName, target);
             }
         }
     }
@@ -157,20 +148,85 @@ Value ModuleDDS::getOrCreateModule(const std::string& name)
     return moduleVal;
 }
 
+Value ModuleDDS::getOrCreateNestedModule(Value topModuleVal, const std::vector<std::string>& intermediateParts)
+{
+    Value current = topModuleVal;
+    for (const auto& part : intermediateParts) {
+        ObjModuleType* mod = asModuleType(current);
+        icu::UnicodeString uname = toUnicodeString(part);
+        auto existing = mod->vars.load(uname);
+        if (existing.has_value() && isModuleType(existing.value())) {
+            current = existing.value();
+            continue;
+        }
+        Value childVal = Value::moduleTypeVal(uname);
+        ObjModuleType::allModules.push_back(childVal);
+        mod->vars.store(uname, childVal, true);
+        current = childVal;
+    }
+    return current;
+}
+
+void ModuleDDS::storeAtScope(Value topModuleVal, const std::string& fullName, const Value& val)
+{
+    // Split the full scoped name (a::b::c::Leaf) into parts.
+    std::vector<std::string> parts;
+    size_t start = 0;
+    while (true) {
+        size_t sep = fullName.find("::", start);
+        if (sep == std::string::npos) { parts.push_back(fullName.substr(start)); break; }
+        parts.push_back(fullName.substr(start, sep - start));
+        start = sep + 2;
+    }
+    ObjModuleType* topMod = asModuleType(topModuleVal);
+    icu::UnicodeString shortName = toUnicodeString(parts.back());
+
+    // Single-level (Top::Leaf) or unscoped: store directly in the top module.
+    if (parts.size() <= 2) {
+        topMod->vars.store(shortName, val, true);
+        return;
+    }
+
+    // Nested: materialise intermediate modules (parts[1..n-2]) and store the leaf inside,
+    // so a script can reference the full nested path (e.g. sensor_msgs.msg.dds_.Image_).
+    std::vector<std::string> intermediates(parts.begin() + 1, parts.end() - 1);
+    Value leaf = getOrCreateNestedModule(topModuleVal, intermediates);
+    asModuleType(leaf)->vars.store(shortName, val, true);
+
+    // Best-effort convenience: also expose the short name at the top module when it does
+    // not collide, so single-nested references (e.g. sensor_msgs.Image_) keep working.
+    if (!topMod->vars.load(shortName).has_value())
+        topMod->vars.store(shortName, val, true);
+}
+
 void ModuleDDS::registerGeneratedTypes(Value moduleVal, const std::vector<Value>& types)
 {
-    ObjModuleType* mod = asModuleType(moduleVal);
     for (const auto& typeVal : types) {
         if (!isObjectType(typeVal) && !isEnumType(typeVal))
             continue;
 
         ObjObjectType* type = asObjectType(typeVal);
-        mod->vars.store(type->name, typeVal, true);
+        std::string full = adapter ? adapter->fullNameForType(typeVal) : "";
+        if (full.empty()) {
+            // No scope info: fall back to flat registration by short name.
+            asModuleType(moduleVal)->vars.store(type->name, typeVal, true);
+            continue;
+        }
+        // Item 1: index by full name so resolveTypeValue resolves deeply-nested (ROS) types.
+        typesByFullName_[full] = typeVal;
+        // Item 2: expose the type at its real nested-module path.
+        storeAtScope(moduleVal, full, typeVal);
     }
 }
 
 Value ModuleDDS::resolveTypeValue(const std::string& fullName)
 {
+    // Item 1: direct full-name lookup handles arbitrarily nested / ROS-style names,
+    // for which no module keyed by the parent scope exists.
+    auto direct = typesByFullName_.find(fullName);
+    if (direct != typesByFullName_.end())
+        return direct->second;
+
     auto pos = fullName.rfind("::");
     std::string moduleName = pos == std::string::npos ? "" : fullName.substr(0, pos);
     std::string shortName = pos == std::string::npos ? fullName : fullName.substr(pos + 2);
@@ -562,6 +618,7 @@ std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::buildDynamicTopic(Value part
             case FieldType::Kind::EnumRef: base = canonicalEnumName(elem.refName); break;
             case FieldType::Kind::String: base = "string"; break;
             case FieldType::Kind::Bool: base = "bool"; break;
+            case FieldType::Kind::Byte: base = "byte"; break;
             case FieldType::Kind::Int32: base = "int32"; break;
             case FieldType::Kind::Int64: base = "int64"; break;
             case FieldType::Kind::UInt64: base = "uint64"; break;
@@ -580,6 +637,7 @@ std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::buildDynamicTopic(Value part
             dds_dynamic_type_spec_t spec{};
             switch (ft.kind) {
                 case FieldType::Kind::Bool: spec.kind = DDS_DYNAMIC_TYPE_KIND_PRIMITIVE; spec.type.primitive = DDS_DYNAMIC_BOOLEAN; break;
+                case FieldType::Kind::Byte: spec.kind = DDS_DYNAMIC_TYPE_KIND_PRIMITIVE; spec.type.primitive = DDS_DYNAMIC_UINT8; break;
                 case FieldType::Kind::Int32: spec.kind = DDS_DYNAMIC_TYPE_KIND_PRIMITIVE; spec.type.primitive = DDS_DYNAMIC_INT32; break;
                 case FieldType::Kind::Int64: spec.kind = DDS_DYNAMIC_TYPE_KIND_PRIMITIVE; spec.type.primitive = DDS_DYNAMIC_INT64; break;
                 case FieldType::Kind::UInt64: spec.kind = DDS_DYNAMIC_TYPE_KIND_PRIMITIVE; spec.type.primitive = DDS_DYNAMIC_UINT64; break;
@@ -1169,6 +1227,7 @@ size_t ModuleDDS::typeSizeInternal(const FieldType& ft, ModuleDDS* mod)
 {
     switch (ft.kind) {
         case FieldType::Kind::Bool: return sizeof(bool);
+        case FieldType::Kind::Byte: return sizeof(uint8_t);
         case FieldType::Kind::Int32: return sizeof(int32_t);
         case FieldType::Kind::Float64: return sizeof(double);
         case FieldType::Kind::String: {
@@ -1206,6 +1265,7 @@ size_t ModuleDDS::fieldAlignInternal(const FieldType& ft, ModuleDDS* mod)
 {
     switch (ft.kind) {
         case FieldType::Kind::Bool: return alignof(bool);
+        case FieldType::Kind::Byte: return alignof(uint8_t);
         case FieldType::Kind::Int32: return alignof(int32_t);
         case FieldType::Kind::Float64: return alignof(double);
         case FieldType::Kind::Int64: return alignof(int64_t);
@@ -1268,6 +1328,11 @@ void ModuleDDS::fillSampleFromValue(const StructInfo& info,
             case FieldType::Kind::Bool: {
                 bool b = fval.isBool() ? fval.asBool() : fval.isNumber() ? fval.asInt() != 0 : false;
                 *reinterpret_cast<bool*>(target) = b;
+                break;
+            }
+            case FieldType::Kind::Byte: {
+                uint8_t v = fval.isNumber() ? static_cast<uint8_t>(fval.asInt()) : 0;
+                *reinterpret_cast<uint8_t*>(target) = v;
                 break;
             }
             case FieldType::Kind::Int32: {
@@ -1351,6 +1416,9 @@ void ModuleDDS::fillSampleFromValue(const StructInfo& info,
                             case FieldType::Kind::Bool:
                                 *reinterpret_cast<bool*>(elemPtr) = ev.isBool() ? ev.asBool() : ev.isNumber() ? ev.asInt() != 0 : false;
                                 break;
+                            case FieldType::Kind::Byte:
+                                *reinterpret_cast<uint8_t*>(elemPtr) = ev.isNumber() ? static_cast<uint8_t>(ev.asInt()) : 0;
+                                break;
                             case FieldType::Kind::Int32:
                                 *reinterpret_cast<int32_t*>(elemPtr) = ev.isNumber() ? ev.asInt() : 0;
                                 break;
@@ -1414,6 +1482,9 @@ void ModuleDDS::fillSampleFromValue(const StructInfo& info,
                         switch (field.type.element->kind) {
                             case FieldType::Kind::Bool:
                                 *reinterpret_cast<bool*>(elemPtr) = ev.isBool() ? ev.asBool() : ev.isNumber() ? ev.asInt() != 0 : false;
+                                break;
+                            case FieldType::Kind::Byte:
+                                *reinterpret_cast<uint8_t*>(elemPtr) = ev.isNumber() ? static_cast<uint8_t>(ev.asInt()) : 0;
                                 break;
                             case FieldType::Kind::Int32:
                                 *reinterpret_cast<int32_t*>(elemPtr) = ev.isNumber() ? ev.asInt() : 0;
@@ -1498,6 +1569,9 @@ Value ModuleDDS::valueFromSample(const StructInfo& info,
             case FieldType::Kind::Bool:
                 val = Value::boolVal(*reinterpret_cast<const bool*>(src));
                 break;
+            case FieldType::Kind::Byte:
+                val = Value::intVal(*reinterpret_cast<const uint8_t*>(src));
+                break;
             case FieldType::Kind::Int32:
                 val = Value::intVal(*reinterpret_cast<const int32_t*>(src));
                 break;
@@ -1549,6 +1623,9 @@ Value ModuleDDS::valueFromSample(const StructInfo& info,
                                 case FieldType::Kind::Bool:
                                     ev = Value::boolVal(*reinterpret_cast<const bool*>(eptr));
                                     break;
+                                case FieldType::Kind::Byte:
+                                    ev = Value::intVal(*reinterpret_cast<const uint8_t*>(eptr));
+                                    break;
                                 case FieldType::Kind::Int32:
                                     ev = Value::intVal(*reinterpret_cast<const int32_t*>(eptr));
                                     break;
@@ -1594,12 +1671,24 @@ Value ModuleDDS::valueFromSample(const StructInfo& info,
                     } else {
                         const dds_sequence_t* seq = reinterpret_cast<const dds_sequence_t*>(src);
                         if (seq && seq->_buffer) {
+                            if (field.type.element->kind == FieldType::Kind::Byte) {
+                                // Fast path for byte sequences (e.g. image data): pre-size the list and
+                                // push inline byteVals. The generic per-element path below churns the GC
+                                // and reallocs, which is catastrophic for ~MB blobs (seconds per frame).
+                                const uint8_t* bytes = reinterpret_cast<const uint8_t*>(seq->_buffer);
+                                lst->reserve(seq->_length);
+                                for (uint32_t bi = 0; bi < seq->_length; ++bi)
+                                    lst->append(Value::byteVal(bytes[bi]));
+                            } else
                             for (uint32_t idx = 0; idx < seq->_length && elemSz > 0; ++idx) {
                                 const char* eptr = reinterpret_cast<const char*>(seq->_buffer + elemSz * idx);
                                 Value ev = Value::nilVal();
                                 switch (field.type.element->kind) {
                                     case FieldType::Kind::Bool:
                                         ev = Value::boolVal(*reinterpret_cast<const bool*>(eptr));
+                                        break;
+                                    case FieldType::Kind::Byte:
+                                        ev = Value::intVal(*reinterpret_cast<const uint8_t*>(eptr));
                                         break;
                                     case FieldType::Kind::Int32:
                                         ev = Value::intVal(*reinterpret_cast<const int32_t*>(eptr));

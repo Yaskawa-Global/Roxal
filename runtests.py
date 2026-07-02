@@ -310,7 +310,7 @@ fileio_tests = [
     'fileio_actor_write', 'fileio_delete', 'fileio_extra',
     'string_concat_roundtrip', 'actor_concat_stress'
 ]
-dds_tests = ['dds_bounded_ok', 'dds_bounded_fail', 'dds_complex_smoke', 'dds_array_ok', 'dds_array_struct', 'dds_array_multi']
+dds_tests = ['dds_bounded_ok', 'dds_bounded_fail', 'dds_complex_smoke', 'dds_array_ok', 'dds_array_struct', 'dds_array_multi', 'dds_nested_module']
 regex_tests = ['regex_test']
 xml_tests = [
     'xml_basic_compact', 'xml_basic_raw', 'xml_attrs', 'xml_mixed_raw',

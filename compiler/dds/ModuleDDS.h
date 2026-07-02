@@ -35,6 +35,9 @@ private:
     Value moduleTypeValue;
     std::unique_ptr<DdsAdapter> adapter;
     std::unordered_map<std::string, Value> idlModules;
+    // Full IDL scoped name (e.g. "sensor_msgs::msg::dds_::Image_") -> generated type Value.
+    // Consulted first by resolveTypeValue so deeply-nested (ROS-style) type names resolve.
+    std::unordered_map<std::string, Value> typesByFullName_;
     struct TopicSupport {
         std::shared_ptr<dds_topic_descriptor_t> descriptor;
         std::shared_ptr<ddsi_typeinfo> typeinfo;
@@ -51,6 +54,10 @@ private:
     std::vector<size_t> offsetsFor(const StructInfo& info, const dds_topic_descriptor_t* desc) const;
 
     Value getOrCreateModule(const std::string& name);
+    // Walk/create the chain of nested modules under topModuleVal for each intermediate scope part.
+    Value getOrCreateNestedModule(Value topModuleVal, const std::vector<std::string>& intermediateParts);
+    // Store a value (type/const/typedef) at its full scoped name, materialising nested modules.
+    void storeAtScope(Value topModuleVal, const std::string& fullName, const Value& val);
     void registerGeneratedTypes(Value moduleVal, const std::vector<Value>& types);
     Value resolveTypeValue(const std::string& fullName);
 

@@ -1,0 +1,7 @@
+dims 640x480 rgb8 step 1920
+meta cam 7 42
+data [1, 2, 3, 4]
+bigendian 0
+alias_ok 0
+topic rt/image_raw
+type sensor_msgs::msg::dds_::Image_

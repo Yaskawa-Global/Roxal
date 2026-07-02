@@ -1,0 +1,33 @@
+// Nested-module IDL (first in the suite) exercising deeply-nested type
+// resolution + real nested-module exposure. Mirrors the ROS 2
+// sensor_msgs/msg/Image scoping shape (pkg::msg::dds_::Type_).
+module RosImage {
+  module msg {
+    module dds_ {
+
+      @final
+      struct Stamp_ {
+        long sec;
+        unsigned long nanosec;
+      };
+
+      @final
+      struct Meta_ {
+        Stamp_ stamp;
+        string frame_id;
+      };
+
+      @final
+      struct Image_ {
+        Meta_ meta;
+        unsigned long height;
+        unsigned long width;
+        string encoding;
+        octet is_bigendian;
+        unsigned long step;
+        sequence<octet> data;
+      };
+
+    };
+  };
+};

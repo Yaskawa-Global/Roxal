@@ -10,7 +10,7 @@ func create_participant(domain_id:int=0, qos:dict={}):
   """Create a domain participant (default domain_id=0)."""
 
 @builtin
-func create_topic(participant, name:str, msg_type):
+func create_topic(participant, name:str, msg_type, qos:dict={}):
   """Create a topic on the participant for the given IDL message type."""
 
 @builtin
@@ -54,3 +54,33 @@ func writer_signal(name:str, msg_type, participant=nil, qos:dict={}, initial=nil
 @builtin
 func reader_signal(name:str, msg_type, participant=nil, qos:dict={}, initial=nil):
   """Create participant/topic/reader and return a reader signal for msg_type."""
+
+
+# --- ROS 2 name-mangling helpers (rmw_cyclonedds profile) ---
+# rmw_cyclonedds mangles ROS names on the DDS wire. These map ROS names to the
+# DDS strings a ROS 2 publisher/subscriber uses, so scripts need not hand-mangle.
+
+func ros_topic(name:str):
+  """Map a ROS topic to its DDS wire name (prefix 'rt'). e.g. /image_raw -> rt/image_raw"""
+  if name == "":
+    return name
+  if name[0:1] == "/":
+    return "rt" + name
+  return "rt/" + name
+
+func ros_type_name(ros_path:str):
+  """Map a ROS type path to its DDS type name. e.g. sensor_msgs/msg/Image -> sensor_msgs::msg::dds_::Image_"""
+  var parts = ros_path.split("/")
+  var n = len(parts)
+  if n == 0:
+    return ros_path
+  var out = ""
+  var i = 0
+  while i < n - 1:
+    out = out + parts[i] + "::"
+    i = i + 1
+  return out + "dds_::" + parts[n - 1] + "_"
+
+func ros_reader_signal(name:str, msg_type, participant=nil, qos:dict={}, initial=nil):
+  """Like reader_signal, but maps the ROS topic name via ros_topic(). msg_type stays the imported IDL type so the DDS wire type name is correct."""
+  return reader_signal(ros_topic(name), msg_type, participant, qos, initial)

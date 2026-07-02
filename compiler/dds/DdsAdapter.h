@@ -20,6 +20,7 @@ struct ObjObjectType;
 struct FieldType {
     enum class Kind {
         Int32,
+        Byte,   // 1-byte int (octet/uint8/int8/char) -- distinct wire width, needed for ROS interop
         Bool,
         Float64,
         String,

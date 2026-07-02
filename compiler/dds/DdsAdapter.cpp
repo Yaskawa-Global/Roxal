@@ -49,19 +49,20 @@ FieldType::Kind mapBaseType(idl_type_t t)
         case IDL_FLOAT:
         case IDL_DOUBLE:
         case IDL_LDOUBLE: return FieldType::Kind::Float64;
+        case IDL_INT8:
+        case IDL_UINT8:
+        case IDL_CHAR:
+        case IDL_OCTET:
+            return FieldType::Kind::Byte;   // 1-byte wire width (critical for ROS uint8/octet)
         case IDL_SHORT:
         case IDL_USHORT:
         case IDL_LONG:
         case IDL_ULONG:
-        case IDL_INT8:
-        case IDL_UINT8:
-        case IDL_INT16:
+        case IDL_INT16:   // NOTE: 16-bit still widened to Int32 (a remaining width gap; not used by sensor_msgs/Image)
         case IDL_UINT16:
         case IDL_INT32:
         case IDL_UINT32:
-        case IDL_CHAR:
         case IDL_WCHAR:
-        case IDL_OCTET:
             return FieldType::Kind::Int32;
         case IDL_LLONG:
         case IDL_ULLONG:
@@ -116,6 +117,7 @@ FieldType classifyType(const void* typeSpec)
 
 Value makeTypeSpec(FieldType::Kind kind) {
     switch (kind) {
+        case FieldType::Kind::Byte:
         case FieldType::Kind::Int32: return Value::typeSpecVal(ValueType::Int);
         case FieldType::Kind::Bool: return Value::typeSpecVal(ValueType::Bool);
         case FieldType::Kind::Float64: return Value::typeSpecVal(ValueType::Real);
@@ -129,6 +131,7 @@ Value makeTypeSpec(FieldType::Kind kind) {
 
 Value makeDefault(FieldType::Kind kind) {
     switch (kind) {
+        case FieldType::Kind::Byte:
         case FieldType::Kind::Int32: return defaultValue(ValueType::Int);
         case FieldType::Kind::Bool: return defaultValue(ValueType::Bool);
         case FieldType::Kind::Float64: return defaultValue(ValueType::Real);
