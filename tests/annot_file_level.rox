@@ -1,0 +1,10 @@
+# Binding rule: an annotation GLUED to an import binds to the import, so this
+# @strict is NOT file-level and the string->int coercion below succeeds.
+# (File-level @strict requires a blank line after it -- covered by
+# module_strict_assign_err.)
+@strict
+import sys
+
+var x:int
+x = "5"
+print("not strict, x={x}")

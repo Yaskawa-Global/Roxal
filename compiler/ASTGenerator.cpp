@@ -706,6 +706,15 @@ std::any ASTGenerator::visitImport_stmt(RoxalParser::Import_stmtContext *context
     ptr<Import> import = make_ptr<Import>();
     setSourceInfo(import, context);
 
+    // annotations attached to this import (e.g. @ros above an IDL import)
+    for (size_t i = 0; i < context->annotation().size(); i++) {
+        auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(context->annotation().at(i)));
+        ptr<Annotation> annotation = make_ptr<Annotation>();
+        annotation->name = annotInfo->accessed;
+        annotation->args = *annotInfo->args;
+        import->annotations.push_back(annotation);
+    }
+
     for(auto i=0; i<context->IDENTIFIER().size(); i++) {
         auto component { identifierFromTerminal(context->IDENTIFIER().at(i)) };
         import->packages.push_back( component );

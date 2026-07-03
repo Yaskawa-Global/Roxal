@@ -11,13 +11,60 @@ grammar Roxal;
 
 tokens { INDENT, DEDENT }
 
+@parser::members {
+  // File-level vs attached annotations: a leading annotation run is
+  // FILE-LEVEL only when a blank line separates it from what follows;
+  // an annotation glued to the next line binds to that import/declaration.
+  // The indentation lexer suppresses NEWLINE tokens on blank lines, so the
+  // separation cannot be seen in the token stream -- detect it by comparing
+  // source line numbers instead. Evaluated per loop iteration: in
+  // "@a <blank> @b decl", @a is file-level and @b binds to the declaration.
+  bool leadingAnnotationIsFileLevel() {
+    size_t i = 1;
+    int lastLine = -1;
+    while (_input->LT(i)->getType() == AT) {
+      i++; // AT
+      if (_input->LT(i)->getType() != IDENTIFIER)
+        return false; // malformed; let normal parsing report it
+      i++; // IDENTIFIER
+      if (_input->LT(i)->getType() == OPEN_PAREN) {
+        int depth = 0;
+        do {
+          auto t = _input->LT(i)->getType();
+          if (t == antlr4::Token::EOF)
+            return true;
+          if (t == OPEN_PAREN) depth++;
+          else if (t == CLOSE_PAREN) depth--;
+          i++;
+        } while (depth > 0);
+      }
+      if (_input->LT(i)->getType() != NEWLINE)
+        return false;
+      // Measure the gap from the annotation's last CONTENT token: when a
+      // blank line follows, the lexer suppresses the annotation line's own
+      // newline and the emitted NEWLINE carries the blank line's number,
+      // so the NEWLINE token's line cannot reveal the gap.
+      lastLine = static_cast<int>(_input->LT(i - 1)->getLine());
+      i++; // NEWLINE
+      auto next = _input->LT(i);
+      if (next->getType() == antlr4::Token::EOF)
+        return true; // nothing follows: treat as file-level
+      if (static_cast<int>(next->getLine()) > lastLine + 1)
+        return true; // blank line terminates the file-level group
+      if (next->getType() != AT)
+        return false; // glued to a non-annotation: binds to it
+      // glued to another annotation: keep walking the run
+    }
+    return false;
+  }
+}
 
 /*
  * Parser rules
  */
 
 file_input
- : annotation* (NEWLINE* import_stmt)* ( NEWLINE | declaration )* EOF
+ : ({leadingAnnotationIsFileLevel()}? annotation)* (NEWLINE* import_stmt)* ( NEWLINE | declaration )* EOF
  ;
 
 
@@ -29,7 +76,7 @@ single_input
 
 
 import_stmt
- : IMPORT IDENTIFIER (DOT IDENTIFIER)* ( (DOT STAR)? | (DOT '[' identifier_list ']')? ) NEWLINE
+ : annotation* IMPORT IDENTIFIER (DOT IDENTIFIER)* ( (DOT STAR)? | (DOT '[' identifier_list ']')? ) NEWLINE
  ;
 
 identifier_list

@@ -184,7 +184,7 @@ tests = [
     'import_return_stack',
     'import_folder_init', 'import_folder_single', 'import_comment_before',
     'method_named_param',
-    'annot1', 'generic', 'objscopes',
+    'annot1', 'annot_import', 'annot_file_level', 'generic', 'objscopes',
     'threads1', 'fork_upvalue_error', 'fork_no_upvalues',
     'actor1', 'actor2', 'actor3', 'actor4', 'actor5', 'actor6', 'actor7', 'actor8', 'actor9',
     'actor_init', 'actor_stack', 'actor_future', 'future_ready', 'future_builtin_resolve', 'future_typed_param_resolve', 'wait_duration', 'wait_duration_dim_err', 'wait_duration_mixed_err',

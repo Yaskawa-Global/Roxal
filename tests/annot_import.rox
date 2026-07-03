@@ -1,0 +1,6 @@
+# An unknown annotation glued to an import parses and is carried/ignored
+# (import annotations are generic; only recognised names have effects).
+@meta
+import sys
+
+print("annotated import ok")
