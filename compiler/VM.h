@@ -192,7 +192,11 @@ public:
     Value importProtoModule(const std::string& path);
 #endif
 #ifdef ROXAL_ENABLE_DDS
-    Value importIdlModule(const std::string& path);
+    // annotations: names of annotations attached to the import statement,
+    // passed through verbatim (interpreted by the dds module, not the VM).
+    Value importIdlModule(const std::string& path,
+                          const std::vector<std::string>& annotations = {},
+                          std::vector<std::string>* outGlobals = nullptr);
 #endif
 
     // =========================================================================

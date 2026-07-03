@@ -1,0 +1,7 @@
+# @ros on a non-idl import is carried and ignored, like any unrecognised
+# import annotation: the compiler does not interpret import annotations
+# (only the importer backing the import does, and non-idl imports have none).
+@ros
+import sys
+
+print("ok: @ros ignored on non-idl import")

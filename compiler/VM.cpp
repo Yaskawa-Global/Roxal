@@ -12559,13 +12559,15 @@ Value VM::importProtoModule(const std::string& path)
 }
 #endif
 #ifdef ROXAL_ENABLE_DDS
-Value VM::importIdlModule(const std::string& path)
+Value VM::importIdlModule(const std::string& path,
+                          const std::vector<std::string>& annotations,
+                          std::vector<std::string>* outGlobals)
 {
     if (!ddsModule)
         lazyModuleRegistry.ensureLoaded(toUnicodeString("dds"), *this);
     if (!ddsModule)
         throw std::runtime_error("DDS module not initialized");
-    return ddsModule->importIdl(path);
+    return ddsModule->importIdl(path, annotations, outGlobals);
 }
 #endif
 

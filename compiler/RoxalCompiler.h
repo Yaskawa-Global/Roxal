@@ -136,7 +136,16 @@ protected:
     bool cacheReadEnabled;
     bool cacheWriteEnabled;
     bool currentModuleHasDynamicImport{false};
-    std::vector<std::string> currentDynamicImports;
+    // Dynamic (.idl/.proto) imports made by the module being compiled,
+    // recorded into the .roc cache so cache loads can re-import them.
+    // The annotation names attached to the import statement are carried
+    // verbatim (the compiler does not interpret them; the importer backing
+    // the import decides what, if anything, they mean).
+    struct DynImport {
+        std::string path;
+        std::vector<std::string> annotations;
+    };
+    std::vector<DynImport> currentDynamicImports;
     VM* moduleResolverVM;
 
     // Persistent TypeDeducer for REPL mode to maintain type info across lines

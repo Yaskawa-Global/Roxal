@@ -1,0 +1,32 @@
+import Image
+import dds
+import sys
+
+# Stock ROS 2 idl tree (tests/ros_share, real generated files with
+# cross-package #include): the import binds sensor_msgs (main file's module,
+# not the first-parsed included one), and std_msgs/builtin_interfaces register
+# as their own globals. Names are UNMANGLED here (no @ros).
+
+var img = sensor_msgs.msg.Image()
+img.width = 3
+img.height = 2
+img.encoding = "rgb8"
+img.is_bigendian = 0
+img.step = 9
+img.data = [1, 2, 3]
+var hdr = std_msgs.msg.Header()
+hdr.frame_id = "f0"
+var stamp = builtin_interfaces.msg.Time()
+stamp.sec = 4
+stamp.nanosec = 5
+hdr.stamp = stamp
+img.header = hdr
+
+p = dds.create_participant()
+t = dds.create_topic(p, "StockImgTopic", sensor_msgs.msg.Image)
+w = dds.create_writer(p, t)
+r = dds.create_reader(p, t)
+wait(for=dds.write(w, img))
+var recv = dds.read(r)
+var rep = sys._list_repr(recv.data)
+print("stock {recv.width}x{recv.height} {recv.encoding} step {recv.step} frame {recv.header.frame_id} {recv.header.stamp.sec}.{recv.header.stamp.nanosec} data {recv.data} repr {rep}")

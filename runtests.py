@@ -184,7 +184,7 @@ tests = [
     'import_return_stack',
     'import_folder_init', 'import_folder_single', 'import_comment_before',
     'method_named_param',
-    'annot1', 'annot_import', 'annot_file_level', 'generic', 'objscopes',
+    'annot1', 'annot_import', 'annot_file_level', 'annot_ros_nonidl', 'generic', 'objscopes',
     'threads1', 'fork_upvalue_error', 'fork_no_upvalues',
     'actor1', 'actor2', 'actor3', 'actor4', 'actor5', 'actor6', 'actor7', 'actor8', 'actor9',
     'actor_init', 'actor_stack', 'actor_future', 'future_ready', 'future_builtin_resolve', 'future_typed_param_resolve', 'wait_duration', 'wait_duration_dim_err', 'wait_duration_mixed_err',
@@ -312,7 +312,9 @@ fileio_tests = [
     'fileio_actor_write', 'fileio_delete', 'fileio_extra', 'fileio_packed',
     'string_concat_roundtrip', 'actor_concat_stress'
 ]
-dds_tests = ['dds_bounded_ok', 'dds_bounded_fail', 'dds_complex_smoke', 'dds_array_ok', 'dds_array_struct', 'dds_array_multi', 'dds_nested_module']
+dds_tests = ['dds_bounded_ok', 'dds_bounded_fail', 'dds_complex_smoke', 'dds_array_ok', 'dds_array_struct', 'dds_array_multi', 'dds_nested_module',
+             'dds_idl_include', 'dds_idl_include_missing', 'dds_idl_stock',
+             'dds_ros_import', 'dds_ros_signal_roundtrip']
 regex_tests = ['regex_test']
 xml_tests = [
     'xml_basic_compact', 'xml_basic_raw', 'xml_attrs', 'xml_mixed_raw',
@@ -817,6 +819,11 @@ try:
         if test.startswith('grpc_'):
             proto_path = os.path.join('..', 'compiler', 'grpc', 'protos')
             cmd = [cmd[0], '-p', proto_path, *cmd[1:]]
+        if test.startswith('dds_idl_stock') or test.startswith('dds_ros'):
+            # stock ROS idl tree: import resolution needs the msg dir on the
+            # module path; #include resolution needs the share root.
+            share = os.path.join('..', 'tests', 'ros_share')
+            cmd = [cmd[0], '-p', share, '-p', os.path.join(share, 'sensor_msgs', 'msg'), *cmd[1:]]
 
         if args.opcode_prof and '--opcode-prof' not in cmd:
             cmd = [cmd[0], '--opcode-prof', *cmd[1:]]

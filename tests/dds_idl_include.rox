@@ -1,0 +1,32 @@
+import IncTop
+import dds
+
+# Diamond include (IncTop -> IncMid1/IncMid2 -> IncBase): exercises the
+# #include splicer (recursion + dedup) and multi-top-module registration
+# (each included package becomes its own global module).
+
+p = dds.create_participant()
+t = dds.create_topic(p, "IncComboTopic", IncTop.Combo)
+w = dds.create_writer(p, t)
+r = dds.create_reader(p, t)
+
+m = IncTop.Combo()
+var m1 = IncMid1.M1()
+var b1 = IncBase.Basis()
+b1.id = 7
+b1.tag = "base7"
+m1.b = b1
+m1.x = 11
+var m2 = IncMid2.M2()
+var b2 = IncBase.Basis()
+b2.id = 8
+b2.tag = "base8"
+m2.b = b2
+m2.y = 22
+m.a = m1
+m.b = m2
+m.z = 33
+
+wait(for=dds.write(w, m))
+var recv = dds.read(r)
+print("combo {recv.a.b.id} {recv.a.b.tag} {recv.a.x} | {recv.b.b.id} {recv.b.b.tag} {recv.b.y} | {recv.z}")

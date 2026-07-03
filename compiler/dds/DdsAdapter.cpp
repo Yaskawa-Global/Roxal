@@ -9,8 +9,11 @@ extern "C" {
 #include <idl/descriptor_type_meta.h>
 }
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
@@ -21,6 +24,7 @@ namespace {
 
 struct ParseResult {
     std::string package;
+    std::vector<std::string> topModules; // every distinct top-level module, in parse order
     std::vector<StructInfo> structs;
     std::vector<EnumInfo> enums;
     std::vector<ConstInfo> consts;
@@ -155,6 +159,10 @@ idl_retcode_t onModule(const idl_pstate_t*, bool revisit, const idl_path_t*, con
     const idl_module_t* mod = static_cast<const idl_module_t*>(node);
     if (!revisit) {
         const char* name = idl_identifier(mod);
+        if (name && st->scope.empty()
+            && std::find(st->result.topModules.begin(), st->result.topModules.end(), name)
+                   == st->result.topModules.end())
+            st->result.topModules.push_back(name);
         if (name)
             st->scope.push_back(name);
         if (st->result.package.empty() && name)
@@ -309,11 +317,171 @@ idl_retcode_t onTypedef(const idl_pstate_t*, bool revisit, const idl_path_t*, co
     return IDL_RETCODE_OK;
 }
 
+// Recursively inline #include directives so libidl (which has no include
+// support of its own -- the mcpp preprocessor lives in the idlc binary, not
+// the library) sees a single self-contained buffer. Search order per
+// directive: the directory of the file containing it, then each
+// caller-supplied search path (the VM module search paths). Duplicate
+// includes (diamond graphs) are spliced once; repeats become blank lines.
+// Known limitation (accepted): parse errors after splicing report positions
+// in the spliced text -- no #line directives are emitted.
+std::string spliceIncludes(const std::filesystem::path& file,
+                           const std::string& content,
+                           const std::vector<std::string>& searchPaths,
+                           std::set<std::filesystem::path>& visited,
+                           int depth = 0)
+{
+    if (depth > 64)
+        throw std::runtime_error("IDL include nesting too deep (>64) at " + file.string());
+
+    std::string out;
+    out.reserve(content.size());
+    std::istringstream lines(content);
+    std::string line;
+    while (std::getline(lines, line)) {
+        // match: optional ws, '#', optional ws, 'include', then "name" or <name>
+        bool spliced = false;
+        size_t i = line.find_first_not_of(" \t");
+        if (i != std::string::npos && line[i] == '#') {
+            size_t j = line.find_first_not_of(" \t", i + 1);
+            if (j != std::string::npos && line.compare(j, 7, "include") == 0) {
+                size_t k = line.find_first_not_of(" \t", j + 7);
+                if (k != std::string::npos && (line[k] == '"' || line[k] == '<')) {
+                    const char close = line[k] == '"' ? '"' : '>';
+                    size_t e = line.find(close, k + 1);
+                    if (e != std::string::npos) {
+                        const std::string inc = line.substr(k + 1, e - k - 1);
+                        std::filesystem::path resolved;
+                        std::vector<std::string> searched;
+                        auto tryBase = [&](const std::filesystem::path& base) {
+                            searched.push_back(base.string());
+                            if (!resolved.empty())
+                                return;
+                            std::error_code ec;
+                            std::filesystem::path cand = base / inc;
+                            if (std::filesystem::is_regular_file(cand, ec) && !ec)
+                                resolved = cand;
+                        };
+                        tryBase(file.parent_path());
+                        for (const auto& sp : searchPaths)
+                            tryBase(std::filesystem::absolute(sp));
+                        if (resolved.empty()) {
+                            std::string dirs;
+                            for (const auto& d : searched)
+                                dirs += (dirs.empty() ? "" : ", ") + d;
+                            throw std::runtime_error(
+                                "IDL include '" + inc + "' not found (from "
+                                + file.string() + "); searched: " + dirs);
+                        }
+                        std::error_code ec;
+                        auto canon = std::filesystem::canonical(resolved, ec);
+                        if (ec)
+                            canon = resolved;
+                        if (visited.count(canon)) {
+                            out += "\n"; // already spliced (diamond include)
+                        } else {
+                            visited.insert(canon);
+                            std::ifstream in(resolved);
+                            if (!in.is_open())
+                                throw std::runtime_error(
+                                    "Unable to open IDL include: " + resolved.string());
+                            std::stringstream buf;
+                            buf << in.rdbuf();
+                            out += spliceIncludes(resolved, buf.str(), searchPaths,
+                                                  visited, depth + 1);
+                            out += "\n";
+                        }
+                        spliced = true;
+                    }
+                }
+            }
+        }
+        if (!spliced) {
+            out += line;
+            out += "\n";
+        }
+    }
+    return out;
+}
+
+// ROS 2 (rmw_cyclonedds) wire-name mangling: pkg::msg::Type -> pkg::msg::dds_::Type_.
+// Applied to the ParseResult BEFORE any maps/Values are built, so everything
+// downstream (declByName, structsByFullName_, fullNameByType_, wire
+// registration, marshalling lookups) is uniformly mangled. Also nulls each
+// renamed type's libidl node: the serialized-typeinfo fast path
+// (typeMetaFor) would otherwise emit typeinfo carrying the ORIGINAL source
+// names; with node==nullptr it declines and buildDynamicTopic uses the
+// manual dynamic-type path, whose names come from the (mangled) fullNames.
+void applyRosMangling(ParseResult& parsed,
+                      std::vector<std::pair<std::string, std::string>>& aliases)
+{
+    auto mangleName = [](const std::string& full) -> std::string {
+        auto pos = full.rfind("::");
+        if (pos == std::string::npos)
+            return full; // unscoped: no package to mangle under
+        const std::string scope = full.substr(0, pos);
+        const std::string leaf = full.substr(pos + 2);
+        // idempotence: already ROS-mangled (handwritten pre-mangled IDL)
+        if (scope == "dds_" || (scope.size() >= 6 && scope.compare(scope.size() - 6, 6, "::dds_") == 0))
+            return full;
+        return scope + "::dds_::" + leaf + "_";
+    };
+    auto shortOf = [](const std::string& full) -> std::string {
+        auto pos = full.rfind("::");
+        return pos == std::string::npos ? full : full.substr(pos + 2);
+    };
+
+    std::unordered_map<std::string, std::string> shortRename;
+    for (auto& s : parsed.structs) {
+        std::string mangled = mangleName(s.fullName);
+        if (mangled == s.fullName)
+            continue;
+        shortRename[shortOf(s.fullName)] = shortOf(mangled);
+        aliases.emplace_back(s.fullName, mangled);
+        s.fullName = std::move(mangled);
+        s.node = nullptr; // force the manual dynamic-type path (see above)
+    }
+    for (auto& e : parsed.enums) {
+        std::string mangled = mangleName(e.fullName);
+        if (mangled == e.fullName)
+            continue;
+        shortRename[shortOf(e.fullName)] = shortOf(mangled);
+        aliases.emplace_back(e.fullName, mangled);
+        e.fullName = std::move(mangled);
+        e.node = nullptr;
+    }
+    if (shortRename.empty())
+        return;
+
+    // Rewrite type references (classifyType captures SHORT identifiers).
+    std::function<void(FieldType&)> rewriteRef = [&](FieldType& ft) {
+        if ((ft.kind == FieldType::Kind::StructRef || ft.kind == FieldType::Kind::EnumRef)) {
+            auto it = shortRename.find(ft.refName);
+            if (it != shortRename.end())
+                ft.refName = it->second;
+        }
+        if (ft.element)
+            rewriteRef(*ft.element);
+    };
+    for (auto& s : parsed.structs)
+        for (auto& f : s.fields)
+            rewriteRef(f.type);
+    for (auto& td : parsed.typedefs)
+        rewriteRef(td.aliasedType);
+    // Const/typedef NAMES are deliberately left unmangled: they are not wire
+    // entities (rmw mangles type names only).
+}
+
 ParseResult parseWithIdl(const std::string& content)
 {
     idl_pstate_t* ps = nullptr;
     if (idl_create_pstate(IDL_FLAG_ANNOTATIONS | IDL_FLAG_EXTENDED_DATA_TYPES | IDL_FLAG_ANONYMOUS_TYPES, nullptr, &ps) != IDL_RETCODE_OK)
         throw std::runtime_error("IDL parser initialization failed");
+    // Stock ROS 2 IDL carries no extensibility annotations; pin the default to
+    // FINAL (libidl's current default and rmw_cyclonedds' wire behaviour) so
+    // behaviour is stable and libidl's default-extensibility warning is
+    // silenced.
+    ps->config.default_extensibility = IDL_FINAL;
     auto guard = std::unique_ptr<idl_pstate_t, decltype(&idl_delete_pstate)>(ps, &idl_delete_pstate);
 
     idl_retcode_t rc = idl_parse_string(ps, content.c_str());
@@ -353,7 +521,9 @@ ParseResult parseWithIdl(const std::string& content)
 DdsAdapter::DdsAdapter() = default;
 DdsAdapter::~DdsAdapter() = default;
 
-std::vector<Value> DdsAdapter::allocateTypes(const std::string& idlFile)
+std::vector<Value> DdsAdapter::allocateTypes(const std::string& idlFile,
+                                             const std::vector<std::string>& includeSearchPaths,
+                                             bool rosProfile)
 {
     std::ifstream in(idlFile);
     if (!in.is_open())
@@ -361,7 +531,49 @@ std::vector<Value> DdsAdapter::allocateTypes(const std::string& idlFile)
     std::stringstream buffer;
     buffer << in.rdbuf();
 
-    ParseResult parsed = parseWithIdl(buffer.str());
+    // Record the first module declared in the MAIN file's own text (scanned
+    // pre-splice): after include splicing, the first module *parsed* may come
+    // from an included file (e.g. std_msgs when importing sensor_msgs), so
+    // the import-binding rule needs the main file's own first module.
+    mainFirstModule_.clear();
+    {
+        std::istringstream rawLines(buffer.str());
+        std::string ln;
+        while (std::getline(rawLines, ln)) {
+            size_t i = ln.find_first_not_of(" \t");
+            if (i == std::string::npos || ln.compare(i, 2, "//") == 0)
+                continue;
+            if (ln.compare(i, 6, "module") == 0) {
+                size_t j = ln.find_first_not_of(" \t", i + 6);
+                if (j != std::string::npos && j > i + 6) {
+                    size_t e = j;
+                    while (e < ln.size() && (std::isalnum(static_cast<unsigned char>(ln[e])) || ln[e] == '_'))
+                        ++e;
+                    if (e > j) {
+                        mainFirstModule_ = ln.substr(j, e - j);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Inline any #include directives (recursively, deduped) so the parser
+    // sees one self-contained buffer. No-op for include-free files.
+    std::string source;
+    {
+        std::set<std::filesystem::path> visited;
+        std::error_code ec;
+        auto canon = std::filesystem::canonical(idlFile, ec);
+        visited.insert(ec ? std::filesystem::path(idlFile) : canon);
+        source = spliceIncludes(idlFile, buffer.str(), includeSearchPaths, visited);
+    }
+
+    ParseResult parsed = parseWithIdl(source);
+    topModules_ = parsed.topModules;
+    rosAliases_.clear();
+    if (rosProfile)
+        applyRosMangling(parsed, rosAliases_);
     if (!parsed.package.empty())
         lastPackage_ = parsed.package;
     else

@@ -1,0 +1,9 @@
+#include "IncBase.idl"
+
+module IncMid1 {
+  @final
+  struct M1 {
+    IncBase::Basis b;
+    long x;
+  };
+};

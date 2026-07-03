@@ -1637,9 +1637,29 @@ wait(500ms)
 
 Roxal can import DDS IDL (`.idl`) when built with `-DROXAL_ENABLE_DDS=ON`. An import like `import HelloWorldData` will locate `HelloWorldData.idl`, generate Roxal types (structs/enums), constants, and typedef aliases, and expose them as a module. Built-in functions live in the `dds` module (participants, topics, readers/writers, and convenience reader/writer signals).
 
-Supported IDL subset (aligned with the ROS 2 profile): structs (final/appendable/mutable), enums, optional fields, bounded/unbounded strings and sequences, fixed-size arrays (including arrays of enums/structs), typedefs, and consts. 64-bit ints map to Roxal `int`. Known unsupported/unsupported-to-parse: unions, maps, bitsets/bitmasks.
+`#include` directives in IDL are searched in the order: the directory of the file containing it, then each module search path. Every distinct top-level IDL module in the parse becomes its own Roxal module.
 
-Marshalling notes: bounded strings/sequences enforce bounds at write time. Fixed arrays are flattened to a single list on the Roxal side. For array-bearing types we avoid CycloneDDS’s serialized typeinfo descriptors because our manual layout doesn’t yet interpret the descriptor `m_ops` for arrays; everything else reuses the generated typeinfo for efficiency.
+### ROS 2 interop: the `@ros` import annotation
+
+Annotating an IDL import with `@ros` (on the line directly above the import) applies ROS 2 (`rmw_cyclonedds`) wire-name mangling to every parsed type at import time: `pkg::msg::Type` becomes `pkg::msg::dds_::Type_` — the name a ROS 2 node actually uses on the DDS wire. Types are exposed under the mangled path (`sensor_msgs.msg.dds_.Image_`) with the stock names kept as aliases (`sensor_msgs.msg.Image`). Topic names are mangled per call via the `dds.ros_*` helpers (`/image_raw` → `rt/image_raw`):
+
+```roxal
+@ros
+import Image      // stock ROS sensor_msgs/msg/Image.idl
+import dds
+
+rsig = dds.ros_reader_signal('/image_raw', sensor_msgs.msg.dds_.Image_)
+when rsig changes as evt:
+  print("frame {evt.value.width}x{evt.value.height}")
+```
+
+- `ros_topic(name)` — ROS topic → DDS topic (`/x` → `rt/x`)
+- `ros_type_name(path)` — ROS type path → DDS type name (`sensor_msgs/msg/Image` → `sensor_msgs::msg::dds_::Image_`)
+- `ros_reader_signal(...)` / `ros_writer_signal(...)` — `reader_signal`/`writer_signal` with the topic name mapped via `ros_topic()`
+
+A given `.idl` file must be imported with a consistent profile (mixing `@ros` and plain imports of the same file is an error).
+
+Supported IDL subset (aligned with the ROS 2 profile): structs (final/appendable/mutable), enums, optional fields, bounded/unbounded strings and sequences, fixed-size arrays (including arrays of enums/structs), typedefs, and consts. 64-bit ints map to Roxal `int`. Known unsupported/unsupported-to-parse: unions, maps, bitsets/bitmasks.
 
 Common `dds` functions
 

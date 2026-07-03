@@ -84,3 +84,7 @@ func ros_type_name(ros_path:str):
 func ros_reader_signal(name:str, msg_type, participant=nil, qos:dict={}, initial=nil):
   """Like reader_signal, but maps the ROS topic name via ros_topic(). msg_type stays the imported IDL type so the DDS wire type name is correct."""
   return reader_signal(ros_topic(name), msg_type, participant, qos, initial)
+
+func ros_writer_signal(name:str, msg_type, participant=nil, qos:dict={}, initial=nil):
+  """Like writer_signal, but maps the ROS topic name via ros_topic()."""
+  return writer_signal(ros_topic(name), msg_type, participant, qos, initial)

@@ -1,0 +1,6 @@
+#include "NoSuchFile.idl"
+
+module BadInclude {
+  @final
+  struct B { long v; };
+};

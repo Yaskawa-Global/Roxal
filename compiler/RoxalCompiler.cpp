@@ -29,7 +29,7 @@ using ast::Access;
 namespace {
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 44;
+constexpr std::uint32_t ModuleCacheVersion = 45; // 45: dynamic-import records carry the import's annotation names
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -939,6 +939,14 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
     if (module.isProto || module.isIdl)
         currentModuleHasDynamicImport = true;
 
+    // Import annotations are generic: the compiler does not interpret them.
+    // Their NAMES are handed to the importer backing the import (e.g. the
+    // dds module recognises @ros on IDL imports) and recorded in the .roc
+    // cache so cached reloads re-import with identical semantics.
+    std::vector<std::string> importAnnotations;
+    for (const auto& annot : ast->annotations)
+        importAnnotations.push_back(toUTF8StdString(annot->name));
+
     // Check if this is a builtin module (even if a file also exists).
     // Support both single-component (e.g., "regex") and dotted (e.g., "ai.nn") names.
     {
@@ -1046,7 +1054,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
 #ifdef ROXAL_ENABLE_GRPC
                 importedModuleType = VM::instance().importProtoModule(absoluteModuleFilePath);
                 importedModules[module] = importedModuleType;
-                currentDynamicImports.push_back(absoluteModuleFilePath);
+                currentDynamicImports.push_back({absoluteModuleFilePath, importAnnotations});
 #else
                 throw std::runtime_error("proto import requires ROXAL_ENABLE_GRPC");
 #endif
@@ -1057,9 +1065,9 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
         } else if (module.isIdl) {
             try {
 #ifdef ROXAL_ENABLE_DDS
-                importedModuleType = VM::instance().importIdlModule(absoluteModuleFilePath);
+                importedModuleType = VM::instance().importIdlModule(absoluteModuleFilePath, importAnnotations);
                 importedModules[module] = importedModuleType;
-                currentDynamicImports.push_back(absoluteModuleFilePath);
+                currentDynamicImports.push_back({absoluteModuleFilePath, importAnnotations});
 #else
                 throw std::runtime_error("IDL import requires ROXAL_ENABLE_DDS");
 #endif
@@ -5450,7 +5458,7 @@ Value RoxalCompiler::loadModuleFromCache(const ModuleInfo& module) const
             return Value::nilVal();
         bool cachedHasDynamicImport = (flags & 0x1) != 0;
 
-        std::vector<std::string> dynamicImports;
+        std::vector<DynImport> dynamicImports;
         if (cachedHasDynamicImport) {
             uint32_t count = 0;
             cacheStream.read(reinterpret_cast<char*>(&count), sizeof(count));
@@ -5461,7 +5469,24 @@ Value RoxalCompiler::loadModuleFromCache(const ModuleInfo& module) const
                     continue;
                 std::string path(len, '\0');
                 cacheStream.read(path.data(), len);
-                dynamicImports.push_back(path);
+                uint32_t acount = 0;
+                cacheStream.read(reinterpret_cast<char*>(&acount), sizeof(acount));
+                // Sanity-bound the counts so a corrupt/truncated cache
+                // invalidates (recompiles) instead of misparsing.
+                if (!cacheStream || acount > 256)
+                    return Value::nilVal();
+                std::vector<std::string> annotations;
+                for (uint32_t a = 0; a < acount; ++a) {
+                    uint32_t alen = 0;
+                    cacheStream.read(reinterpret_cast<char*>(&alen), sizeof(alen));
+                    if (!cacheStream || alen > 4096)
+                        return Value::nilVal();
+                    std::string name(alen, '\0');
+                    if (alen > 0)
+                        cacheStream.read(name.data(), alen);
+                    annotations.push_back(std::move(name));
+                }
+                dynamicImports.push_back({path, std::move(annotations)});
             }
         }
 
@@ -5470,18 +5495,23 @@ Value RoxalCompiler::loadModuleFromCache(const ModuleInfo& module) const
         if (!isFunction(value))
             return Value::nilVal();
 
-        // Re-import dynamic modules so module references can be reconciled
-        for (const auto& path : dynamicImports) {
+        // Re-import dynamic modules so module references can be reconciled.
+        // dynImportGlobals collects the global module names each IDL import
+        // registered (may be several top-level modules, none matching the
+        // file stem -- e.g. spliced ROS includes).
+        std::vector<std::string> dynImportGlobals;
+        for (const auto& imp : dynamicImports) {
             try {
-                std::filesystem::path p(path);
+                std::filesystem::path p(imp.path);
                 auto ext = p.extension().string();
                 if (ext == ".idl") {
 #ifdef ROXAL_ENABLE_DDS
-                    VM::instance().importIdlModule(path);
+                    VM::instance().importIdlModule(imp.path, imp.annotations,
+                                                   &dynImportGlobals);
 #endif
                 } else if (ext == ".proto") {
 #ifdef ROXAL_ENABLE_GRPC
-                    VM::instance().importProtoModule(path);
+                    VM::instance().importProtoModule(imp.path);
 #endif
                 }
             } catch (...) {
@@ -5491,13 +5521,15 @@ Value RoxalCompiler::loadModuleFromCache(const ModuleInfo& module) const
 
         if (cachedHasDynamicImport) {
             std::unordered_map<std::string, Value> importedGlobals;
-            for (const auto& path : dynamicImports) {
-                std::filesystem::path p(path);
-                std::string name = p.stem().string();
+            auto collectGlobal = [&](const std::string& name) {
                 auto g = VM::instance().loadGlobal(toUnicodeString(name));
                 if (g.has_value() && isModuleType(g.value()))
                     importedGlobals[name] = g.value().strongRef();
-            }
+            };
+            for (const auto& imp : dynamicImports)
+                collectGlobal(std::filesystem::path(imp.path).stem().string());
+            for (const auto& name : dynImportGlobals)
+                collectGlobal(name);
 
             if (!importedGlobals.empty()) {
                 std::unordered_set<ObjFunction*> visited;
@@ -5550,10 +5582,17 @@ void RoxalCompiler::storeModuleCache(const ModuleInfo& module, const Value& func
         if (currentModuleHasDynamicImport) {
             uint32_t count = static_cast<uint32_t>(currentDynamicImports.size());
             cacheStream.write(reinterpret_cast<const char*>(&count), sizeof(count));
-            for (const auto& path : currentDynamicImports) {
-                uint32_t len = static_cast<uint32_t>(path.size());
+            for (const auto& imp : currentDynamicImports) {
+                uint32_t len = static_cast<uint32_t>(imp.path.size());
                 cacheStream.write(reinterpret_cast<const char*>(&len), sizeof(len));
-                cacheStream.write(path.data(), len);
+                cacheStream.write(imp.path.data(), len);
+                uint32_t acount = static_cast<uint32_t>(imp.annotations.size());
+                cacheStream.write(reinterpret_cast<const char*>(&acount), sizeof(acount));
+                for (const auto& name : imp.annotations) {
+                    uint32_t alen = static_cast<uint32_t>(name.size());
+                    cacheStream.write(reinterpret_cast<const char*>(&alen), sizeof(alen));
+                    cacheStream.write(name.data(), alen);
+                }
             }
         }
 

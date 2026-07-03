@@ -74,8 +74,16 @@ public:
     DdsAdapter();
     ~DdsAdapter();
 
-    std::vector<Value> allocateTypes(const std::string& idlFile);
+    // rosProfile: apply ROS 2 (rmw_cyclonedds) wire-name mangling to all parsed
+    // types (pkg::msg::Type -> pkg::msg::dds_::Type_) before types are built.
+    std::vector<Value> allocateTypes(const std::string& idlFile,
+                                     const std::vector<std::string>& includeSearchPaths = {},
+                                     bool rosProfile = false);
     std::string packageName() const { return lastPackage_; }
+    // Every distinct top-level module from the last allocateTypes parse (in order).
+    const std::vector<std::string>& topModules() const { return topModules_; }
+    // First module declared in the main file's own text (pre-splice scan).
+    const std::string& mainFirstModule() const { return mainFirstModule_; }
     // Serialized XTypes type information and typemap for the last parsed IDL root.
     const std::vector<unsigned char>& typeInfo() const { return typeInfo_; }
     const std::vector<unsigned char>& typeMap() const { return typeMap_; }
@@ -89,6 +97,9 @@ public:
     bool typeMetaFor(const std::string& fullName,
                      std::vector<unsigned char>& outInfo,
                      std::vector<unsigned char>& outMap) const;
+    // (original fullName, ROS-mangled fullName) pairs from the last
+    // allocateTypes call with rosProfile=true (empty otherwise).
+    const std::vector<std::pair<std::string, std::string>>& rosAliases() const { return rosAliases_; }
 
 private:
     struct ParsedType {
@@ -97,6 +108,9 @@ private:
     };
 
     std::string lastPackage_;
+    std::vector<std::string> topModules_;
+    std::string mainFirstModule_;
+    std::vector<std::pair<std::string, std::string>> rosAliases_;
     std::vector<unsigned char> typeInfo_;
     std::vector<unsigned char> typeMap_;
     void* rootNode_{nullptr};

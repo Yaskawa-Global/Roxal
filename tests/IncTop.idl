@@ -1,0 +1,12 @@
+// Diamond include: IncMid1 and IncMid2 both include IncBase (spliced once).
+#include "IncMid1.idl"
+#include "IncMid2.idl"
+
+module IncTop {
+  @final
+  struct Combo {
+    IncMid1::M1 a;
+    IncMid2::M2 b;
+    long z;
+  };
+};

@@ -1,0 +1,3 @@
+ros 3x2 frame cam0 6.60 data [9, 8, 7]
+topic_name rt/probe_img type_name sensor_msgs::msg::dds_::Image_
+alias width 5

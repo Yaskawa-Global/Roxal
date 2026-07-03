@@ -1,0 +1,7 @@
+module IncBase {
+  @final
+  struct Basis {
+    long id;
+    string tag;
+  };
+};

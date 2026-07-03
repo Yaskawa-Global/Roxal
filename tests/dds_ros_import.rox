@@ -1,0 +1,36 @@
+@ros
+import Image
+import dds
+
+# @ros on a stock ROS 2 idl import: all type names are wire-mangled at import
+# time (pkg::msg::Type -> pkg::msg::dds_::Type_), across every included
+# package. The unmangled (stock) names remain available as aliases.
+
+var img = sensor_msgs.msg.dds_.Image_()
+img.width = 3
+img.height = 2
+img.encoding = "rgb8"
+img.is_bigendian = 0
+img.step = 9
+img.data = [9, 8, 7]
+var hdr = std_msgs.msg.dds_.Header_()
+hdr.frame_id = "cam0"
+var stamp = builtin_interfaces.msg.dds_.Time_()
+stamp.sec = 6
+stamp.nanosec = 60
+hdr.stamp = stamp
+img.header = hdr
+
+p = dds.create_participant()
+t = dds.create_topic(p, dds.ros_topic('/probe_img'), sensor_msgs.msg.dds_.Image_)
+w = dds.create_writer(p, t)
+r = dds.create_reader(p, t)
+wait(for=dds.write(w, img))
+var recv = dds.read(r)
+print("ros {recv.width}x{recv.height} frame {recv.header.frame_id} {recv.header.stamp.sec}.{recv.header.stamp.nanosec} data {recv.data}")
+print("topic_name {t.name} type_name {t.type_name}")
+
+# unmangled alias constructs the same (wire-mangled) type
+var img2 = sensor_msgs.msg.Image()
+img2.width = 5
+print("alias width {img2.width}")

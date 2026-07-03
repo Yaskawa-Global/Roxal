@@ -20,6 +20,7 @@
 #include <dds/ddsi/ddsi_typelib.h>
 
 #include <filesystem>
+#include <iostream>
 #include <stdexcept>
 #include <cstring>
 #include <functional>
@@ -68,7 +69,9 @@ void ModuleDDS::onModuleLoaded(VM& vm)
     vm.ddsModule = this;
 }
 
-Value ModuleDDS::importIdl(const std::string& idlFilename)
+Value ModuleDDS::importIdl(const std::string& idlFilename,
+                           const std::vector<std::string>& annotations,
+                           std::vector<std::string>* outGlobals)
 {
     if (!functionsLinked) {
         linkNativeFunctions();
@@ -76,6 +79,34 @@ Value ModuleDDS::importIdl(const std::string& idlFilename)
     }
     if (!std::filesystem::exists(std::filesystem::path(idlFilename)))
         throw std::invalid_argument("DDS import - IDL file '"+idlFilename+"' not found.");
+
+    // Interpret the import annotations this module recognises. @ros applies
+    // ROS 2 (rmw_cyclonedds) wire-name mangling; anything else is ignored
+    // with a warning (import annotations are generic language surface).
+    bool rosProfile = false;
+    for (const auto& name : annotations) {
+        if (name == "ros")
+            rosProfile = true;
+        else
+            std::cerr << "warning: ignoring unrecognised annotation '@" << name
+                      << "' on IDL import '" << idlFilename << "'" << std::endl;
+    }
+
+    // The same file cannot be imported under two profiles: compile-time and
+    // cache-reload both route through here, and the adapter maps accumulate.
+    {
+        std::error_code ec;
+        auto canon = std::filesystem::canonical(idlFilename, ec);
+        const std::string key = ec ? idlFilename : canon.string();
+        auto pit = idlProfileByPath_.find(key);
+        if (pit != idlProfileByPath_.end()) {
+            if (pit->second != rosProfile)
+                throw std::invalid_argument("IDL '" + idlFilename
+                    + "' already imported with a different @ros profile");
+        } else {
+            idlProfileByPath_.emplace(key, rosProfile);
+        }
+    }
 
     if (!adapter)
         adapter = std::make_unique<DdsAdapter>();
@@ -85,15 +116,50 @@ Value ModuleDDS::importIdl(const std::string& idlFilename)
         functionsLinked = true;
     }
 
-    auto types = adapter->allocateTypes(idlFilename);
+    // Module search paths double as the IDL #include search roots (so e.g.
+    // `-p /opt/ros/jazzy/share` lets stock ROS idl includes resolve).
+    auto types = adapter->allocateTypes(idlFilename, vm().getModulePaths(), rosProfile);
 
     std::filesystem::path pp(idlFilename);
-    std::string moduleName = adapter->packageName();
-    if (moduleName.empty())
-        moduleName = pp.stem().string();
+    // Bind the import to: (a) the top-level module matching the file stem,
+    // else (b) the first module declared in the main file's own text (after
+    // include splicing the first module *parsed* may come from an included
+    // file), else (c) the first module parsed overall, else the file stem.
+    const auto& tops = adapter->topModules();
+    const std::string stem = pp.stem().string();
+    std::string moduleName;
+    if (std::find(tops.begin(), tops.end(), stem) != tops.end()) {
+        moduleName = stem;
+    } else if (!adapter->mainFirstModule().empty()
+               && std::find(tops.begin(), tops.end(), adapter->mainFirstModule()) != tops.end()) {
+        moduleName = adapter->mainFirstModule();
+    } else {
+        moduleName = adapter->packageName();
+        if (moduleName.empty())
+            moduleName = stem;
+    }
     Value moduleVal = getOrCreateModule(moduleName);
+    if (outGlobals) {
+        outGlobals->push_back(moduleName);
+        for (const auto& t : tops)
+            if (t != moduleName)
+                outGlobals->push_back(t);
+    }
 
     registerGeneratedTypes(moduleVal, types);
+
+    // @ros convenience: also expose each mangled type under its ORIGINAL
+    // (stock) name -- scripts may write sensor_msgs.msg.Image() while the
+    // wire name stays the mangled sensor_msgs::msg::dds_::Image_ (the type
+    // Value itself carries the mangled name via fullNameByType_).
+    for (const auto& alias : adapter->rosAliases()) {
+        auto it = typesByFullName_.find(alias.second);
+        if (it == typesByFullName_.end())
+            continue;
+        typesByFullName_.emplace(alias.first, it->second);
+        storeAtScope(moduleVal, alias.first, it->second);
+    }
+
     // register constants + typedef aliases from IDL, nested at their scope
     if (adapter) {
         for (const auto& c : adapter->constants()) {
@@ -178,7 +244,13 @@ void ModuleDDS::storeAtScope(Value topModuleVal, const std::string& fullName, co
         parts.push_back(fullName.substr(start, sep - start));
         start = sep + 2;
     }
-    ObjModuleType* topMod = asModuleType(topModuleVal);
+    // Route scoped names by their OWN package (parts[0]) -- each distinct
+    // top-level module becomes (or reuses) a global roxal module, so a parse
+    // containing several packages (e.g. spliced ROS includes) registers each
+    // type under the right one. Unscoped names go to the import's default
+    // module.
+    Value topVal = parts.size() == 1 ? topModuleVal : getOrCreateModule(parts[0]);
+    ObjModuleType* topMod = asModuleType(topVal);
     icu::UnicodeString shortName = toUnicodeString(parts.back());
 
     // Single-level (Top::Leaf) or unscoped: store directly in the top module.
@@ -190,7 +262,7 @@ void ModuleDDS::storeAtScope(Value topModuleVal, const std::string& fullName, co
     // Nested: materialise intermediate modules (parts[1..n-2]) and store the leaf inside,
     // so a script can reference the full nested path (e.g. sensor_msgs.msg.dds_.Image_).
     std::vector<std::string> intermediates(parts.begin() + 1, parts.end() - 1);
-    Value leaf = getOrCreateNestedModule(topModuleVal, intermediates);
+    Value leaf = getOrCreateNestedModule(topVal, intermediates);
     asModuleType(leaf)->vars.store(shortName, val, true);
 
     // Best-effort convenience: also expose the short name at the top module when it does

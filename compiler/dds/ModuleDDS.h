@@ -29,12 +29,22 @@ public:
     void initialize() override {};
     Value moduleType() const override { return moduleTypeValue; }
 
-    Value importIdl(const std::string& idlFilename);
+    // Import an IDL file, registering its types under their top-level modules.
+    // annotations: names of annotations attached to the import statement --
+    // @ros applies ROS 2 wire-name mangling (see DdsAdapter::allocateTypes);
+    // unrecognised names are ignored (with a warning).
+    // outGlobals (optional) receives the names of every top-level roxal module
+    // the import bound/registered (used by the .roc cache reconcile).
+    Value importIdl(const std::string& idlFilename,
+                    const std::vector<std::string>& annotations = {},
+                    std::vector<std::string>* outGlobals = nullptr);
 
 private:
     Value moduleTypeValue;
     std::unique_ptr<DdsAdapter> adapter;
     std::unordered_map<std::string, Value> idlModules;
+    // canonical idl path -> rosProfile it was imported with (conflict guard)
+    std::unordered_map<std::string, bool> idlProfileByPath_;
     // Full IDL scoped name (e.g. "sensor_msgs::msg::dds_::Image_") -> generated type Value.
     // Consulted first by resolveTypeValue so deeply-nested (ROS-style) type names resolve.
     std::unordered_map<std::string, Value> typesByFullName_;
