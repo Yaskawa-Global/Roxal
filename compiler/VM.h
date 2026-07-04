@@ -153,6 +153,11 @@ public:
     /// Safe to call unconditionally at any return from main.
     static void shutdownIfConstructed();
 
+    /// True once the singleton's constructor has completed. Lets low-level
+    /// services (e.g. the GC auto-trigger) avoid re-entering VM::instance()
+    /// while the function-local static is still initializing.
+    static bool constructed();
+
     VM(VM const&) = delete;
     void operator=(VM const&) = delete;
 

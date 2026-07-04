@@ -1,0 +1,11 @@
+# Run with --gc-threshold 1 (see runtests.py): every allocation crosses the
+# GC auto-trigger threshold, including the thousands made while the VM
+# singleton itself is constructing. Requesting a collection at that point
+# used to re-enter VM::instance() mid-initialization (recursive_init_error
+# abort); the trigger now defers until construction completes.
+var l = []
+var i = 0
+while i < 100:
+  l.append("s{i}")
+  i = i + 1
+print("gc construct stress ok {len(l)}")

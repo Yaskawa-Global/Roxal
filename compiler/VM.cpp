@@ -1412,6 +1412,11 @@ void VM::shutdownIfConstructed()
         instance().shutdown();
 }
 
+bool VM::constructed()
+{
+    return vmConstructed.load(std::memory_order_acquire);
+}
+
 void VM::shutdown()
 {
     if (shutdownComplete_.exchange(true))

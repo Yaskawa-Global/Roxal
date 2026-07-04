@@ -207,13 +207,24 @@ void SimpleMarkSweepGC::registerAllocation(ObjControl* control) {
         std::uint64_t previous = bytesAllocatedSinceLastCollect_.fetch_add(allocationSize, std::memory_order_relaxed);
         std::uint64_t updated = previous + allocationSize;
         std::uint64_t threshold = autoTriggerThreshold_.load(std::memory_order_relaxed);
-        if (threshold > 0 && previous < threshold && updated >= threshold) {
-            // requestCollect() clears bytesAllocatedSinceLastCollect_ once it flips
-            // collectionRequested_ from false to true so that the next GC cycle
-            // starts counting from zero immediately while still reporting the
-            // bytes that triggered the request (including manual gc() calls when
-            // the threshold is disabled).
-            requestCollect();
+        if (threshold > 0 && updated >= threshold) {
+            if (!VM::constructed()) {
+                // Collections must not be requested while the VM singleton is
+                // still constructing: requestCollect() re-enters VM::instance()
+                // (recursive_init_error), and collecting roots from a
+                // half-built VM would be unsound regardless. Remember the
+                // crossing and fire on the first allocation afterwards.
+                deferredAutoTrigger_.store(true, std::memory_order_relaxed);
+            } else if (previous < threshold ||
+                       deferredAutoTrigger_.load(std::memory_order_relaxed)) {
+                deferredAutoTrigger_.store(false, std::memory_order_relaxed);
+                // requestCollect() clears bytesAllocatedSinceLastCollect_ once it flips
+                // collectionRequested_ from false to true so that the next GC cycle
+                // starts counting from zero immediately while still reporting the
+                // bytes that triggered the request (including manual gc() calls when
+                // the threshold is disabled).
+                requestCollect();
+            }
         }
     }
 
@@ -246,6 +257,10 @@ void SimpleMarkSweepGC::unregisterAllocation(ObjControl* control) {
 
 void SimpleMarkSweepGC::requestCollect() {
     if (!gcEnabled_.load(std::memory_order_acquire)) {
+        return;
+    }
+    // Never wake/collect against a half-constructed VM (see registerAllocation).
+    if (!VM::constructed()) {
         return;
     }
     std::uint64_t allocated = bytesAllocatedSinceLastCollect_.load(std::memory_order_relaxed);

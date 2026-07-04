@@ -111,6 +111,10 @@ private:
     std::atomic<std::uint64_t> epoch_{1};
     std::atomic<std::uint64_t> nextExternalParticipantId_{1};
     std::atomic<bool> collectionRequested_{false};
+    // An auto-trigger threshold crossing happened while the VM singleton was
+    // still constructing (requesting then would re-enter VM::instance()
+    // mid-initialization); fire on the first allocation after construction.
+    std::atomic<bool> deferredAutoTrigger_{false};
     std::atomic<bool> collectionInProgress_{false};
     std::atomic<size_t> lastFreedCount_{0};
     std::atomic<std::uint64_t> lastFreedBytes_{0};

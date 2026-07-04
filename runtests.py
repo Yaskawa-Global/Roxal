@@ -125,7 +125,7 @@ tests = [
     'andtest', 'ortest', 'not', 'not_nil_conversion_err', 'is_not_nil', 'is_not_non_nil',
     'nil_to_ref_types', 'nil_to_value_type_err', 'nil_to_range_err', 'nil_to_typed_prop_err', 'range_content_eq',
     'arith', 'factorial', 'defaultvalues', 'construct_defaults', 'typeof_test', 'invoke_method',
-    'change_notifier', 'gc_nested_invoke',
+    'change_notifier', 'gc_nested_invoke', 'gc_construct_stress',
     'dict', 'dict2', 'dict_keyerror', 'dict_dot', 'dict_dot_keyerror', 'dict_self_reference', 'list', 'list2', 'list_negative_index', 'list_self_reference', 'copyinto_list', 'copyinto_list_unicode', 'copyinto_sublist', 'copyinto_signal',
     'list_add_test', 'list_concat_shallow', 'list_methods', 'list_add_nonlist_err', 'list_remove_notfound_err', 'list_pop_empty_err', 'list_dict_equal', 'test_filter_map_reduce', 'list_method_exception', 'test_paren_continuation',
     'list_packed_repr', 'list_packed_semantics', 'list_packed_transitions', 'list_packed_reserve', 'list_packed_const', 'list_packed_serialize', 'range', 'range2', 'enum1', 'enum2', 'enum3', 'upvalue_leak',
@@ -817,6 +817,10 @@ try:
             input_data = f"/run {rel_script}\n/quit\n".encode()
         if test == 'invalid_option':
             cmd = [roxal, '--bogus']
+        if test == 'gc_construct_stress':
+            # degenerate 1KB threshold: GC requested from the first allocations,
+            # including during VM construction (see the .rox header comment)
+            cmd = [cmd[0], '--gc-threshold', '1', *cmd[1:]]
         if test.startswith('grpc_'):
             proto_path = os.path.join('..', 'compiler', 'grpc', 'protos')
             cmd = [cmd[0], '-p', proto_path, *cmd[1:]]
