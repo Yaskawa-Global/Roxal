@@ -407,9 +407,13 @@ void DataflowEngine::run() {
             continue;
         }
 
-        if (m_tickPeriod == TimeDuration::zero()) {
-            // Purely event-driven network: service updates handed off from
-            // non-VM producer threads (see processEventDrivenSignalUpdate).
+        if (m_hostDriven.load(std::memory_order_relaxed)
+            || m_tickPeriod == TimeDuration::zero()) {
+            // Purely event-driven network, OR a host drives the periodic
+            // schedule via tickFor() (m_hostDriven): this loop reduces to
+            // servicing updates handed off from non-VM producer threads
+            // (see processEventDrivenSignalUpdate) -- event-driven islands
+            // evaluate here on the actor thread, off the host's RT budget.
             if (!processPendingEventUpdates())
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
@@ -467,9 +471,11 @@ void DataflowEngine::runFor(TimeDuration duration)
             continue; // start loop again with updated timing
         }
 
-        if (m_tickPeriod == TimeDuration::zero()) {
-            // Purely event-driven network: service updates handed off from
-            // non-VM producer threads (see processEventDrivenSignalUpdate).
+        if (m_hostDriven.load(std::memory_order_relaxed)
+            || m_tickPeriod == TimeDuration::zero()) {
+            // Purely event-driven network, OR a host drives the periodic
+            // schedule via tickFor() (m_hostDriven): reduce to servicing the
+            // pending-event queue (see run() for the full rationale).
             if (!processPendingEventUpdates())
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
@@ -630,6 +636,11 @@ void DataflowEngine::evaluateNetwork(TimePoint evaluationTime)
 
 DataflowEngine::TickResult DataflowEngine::tickFor(TimeDuration budget)
 {
+    // The host is driving the periodic schedule from here on: the engine's
+    // own run()/runFor() loops must stop ticking periodic islands (see
+    // m_hostDriven) or the two drivers race on the same islands.
+    m_hostDriven.store(true, std::memory_order_relaxed);
+
     auto deadline = TimePoint::currentTime() + budget;
 
     // If we have yielded work, check for overrun then resume
@@ -681,6 +692,16 @@ DataflowEngine::TickResult DataflowEngine::tickFor(TimeDuration budget)
     }
 
     for (size_t i = 0; i < islandsCopy.size(); ++i) {
+        // Event-driven islands (no periodic source, tickPeriod zero) are
+        // evaluated when their inputs are set() -- inline on VM threads or
+        // via the pending-event queue drained on the engine's actor thread.
+        // They do NOT belong on the host's periodic schedule: their work is
+        // unbounded relative to an RT budget (e.g. camera-frame tensor
+        // transforms), and scheduling them here starves the host's
+        // remaining budget via the yield/resume path.
+        if (islandsCopy[i].tickPeriod == TimeDuration::zero())
+            continue;
+
         TimePoint islandTime = resolveEvaluationTime(islandsCopy[i], m_tickStart);
         auto result = evaluateIsland(islandsCopy[i], islandTime, deadline);
 
@@ -739,6 +760,11 @@ DataflowEngine::TickResult DataflowEngine::resumeTickEvaluation(TimePoint deadli
 
     // Continue evaluating from saved position
     for (size_t i = m_yieldState.islandIndex; i < islandsCopy.size(); ++i) {
+        // Same event-island skip as tickFor's fresh-tick loop (indices into
+        // islandsCopy stay aligned -- we skip, not remove).
+        if (islandsCopy[i].tickPeriod == TimeDuration::zero())
+            continue;
+
         size_t startPeriodIndex = (i == m_yieldState.islandIndex) ? m_yieldState.periodIndex : 0;
         size_t startFuncIndex = (i == m_yieldState.islandIndex) ? m_yieldState.funcIndex : 0;
 

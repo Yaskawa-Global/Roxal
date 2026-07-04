@@ -167,6 +167,16 @@ private:
     std::atomic<bool> m_networkModified;
     std::atomic<bool> m_shouldStop{false};
 
+    // Latched true on the first tickFor() call: an embedding host (e.g. an
+    // RT control loop) has taken ownership of the PERIODIC schedule.  From
+    // then on the engine's own run()/runFor() loops stop ticking periodic
+    // islands (they'd race the host's tickFor on the same islands) and
+    // reduce to servicing the event-update queue -- the actor thread stays
+    // the home of event-driven islands (vision streams etc.), keeping their
+    // unbounded work off the host's RT budget.  Never reset: host-driven is
+    // a mode commitment for the engine instance's lifetime.
+    std::atomic<bool> m_hostDriven{false};
+
     // State for resuming a yielded tick execution
     struct YieldState {
         bool active { false };
