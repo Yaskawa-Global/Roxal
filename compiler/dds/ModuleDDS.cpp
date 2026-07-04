@@ -1378,20 +1378,42 @@ void ModuleDDS::registerReaderSignal(const Value& sigVal, const Value& readerVal
 {
     auto support = lookupSupport(readerVal);
     auto desc = support ? support->descriptor : nullptr;
-    std::lock_guard<std::mutex> lock(signalMutex);
-    readerSignals.push_back({sigVal.weakRef(), reader, typeName, desc});
+
+    // The reader's effective history QoS decides the delivery policy of the
+    // reader-signal thread (see drainReaderBinding). Query it once here.
+    dds_history_kind_t historyKind = DDS_HISTORY_KEEP_LAST;
+    if (dds_qos_t* q = dds_create_qos()) {
+        if (dds_get_qos(reader, q) == DDS_RETCODE_OK) {
+            dds_history_kind_t kind;
+            int32_t depth = 0;
+            if (dds_qget_history(q, &kind, &depth))
+                historyKind = kind;
+        }
+        dds_delete_qos(q);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(signalMutex);
+        readerSignals.push_back({sigVal.weakRef(), reader, typeName, desc, historyKind});
+    }
+    readerBindingsChanged.store(true);
+    wakeReaderThread();
 }
 
 void ModuleDDS::unregisterSignal(const Value& sigVal)
 {
-    std::lock_guard<std::mutex> lock(signalMutex);
-    auto prune = [&](std::vector<SignalBinding>& vec) {
-        vec.erase(std::remove_if(vec.begin(), vec.end(), [&](const SignalBinding& b){
-            return !b.signal.isAlive() || b.signal == sigVal || b.signal.strongRef() == sigVal;
-        }), vec.end());
-    };
-    prune(writerSignals);
-    prune(readerSignals);
+    {
+        std::lock_guard<std::mutex> lock(signalMutex);
+        auto prune = [&](std::vector<SignalBinding>& vec) {
+            vec.erase(std::remove_if(vec.begin(), vec.end(), [&](const SignalBinding& b){
+                return !b.signal.isAlive() || b.signal == sigVal || b.signal.strongRef() == sigVal;
+            }), vec.end());
+        };
+        prune(writerSignals);
+        prune(readerSignals);
+    }
+    readerBindingsChanged.store(true);
+    wakeReaderThread();
 }
 
 static Value getFieldValue(const Value& msg, const std::string& name)
@@ -2145,53 +2167,183 @@ std::unique_ptr<dds_qos_t, decltype(&dds_delete_qos)> ModuleDDS::qosFromValue(co
     return qos;
 }
 
-void ModuleDDS::readerThreadLoop()
+// Take everything currently in the reader's cache and hand it to the signal
+// according to the reader's history QoS:
+//  - keep_last: the QoS contract says only the newest sample(s) matter, so the
+//    cache is drained and only the newest valid sample is converted and set.
+//    (For keyed topics with multiple live instances this delivers the last
+//    sample in take order; per-instance freshness is not distinguished.)
+//  - keep_all: the user asked for lossless delivery, so every valid sample is
+//    converted and set in order. Only one batch is taken per call: the
+//    level-triggered readcondition immediately re-wakes the waitset while a
+//    backlog remains, which keeps per-wake work bounded and fair across
+//    readers.
+void ModuleDDS::drainReaderBinding(const SignalBinding& binding)
 {
-    while (readerThreadRunning.load()) {
-        std::vector<SignalBinding> readersCopy;
-        {
-            std::lock_guard<std::mutex> lock(signalMutex);
-            readersCopy = readerSignals;
+    if (!binding.signal.isAlive() || binding.entity <= 0)
+        return;
+
+    constexpr int kBatch = 16;
+    void* samples[kBatch] = { nullptr };
+    dds_sample_info_t infos[kBatch];
+
+    const StructInfo* info = findStructInfo(binding.typeName);
+    Value typeVal = resolveTypeValue(binding.typeName);
+    const dds_topic_descriptor_t* desc = binding.descriptor ? binding.descriptor.get() : nullptr;
+    const bool keepAll = (binding.historyKind == DDS_HISTORY_KEEP_ALL);
+    const bool convertible = info && typeVal.isNonNil();
+
+    auto deliver = [&](const Value& val) {
+        Value sigStrong = binding.signal.strongRef();
+        if (isSignal(sigStrong)) {
+            ObjSignal* objSig = asSignal(sigStrong);
+            objSig->signal->set(val);
         }
-        for (const auto& binding : readersCopy) {
-            if (!binding.signal.isAlive())
-                continue;
-            dds_entity_t reader = binding.entity;
-            if (reader <= 0)
-                continue;
-            void* samples[1] = { nullptr };
-            dds_sample_info_t si;
-            std::memset(&si, 0, sizeof(si));
-            dds_return_t rc = ::dds_take(reader, samples, &si, 1, 1);
-            if (rc < 0) {
-                fprintf(stderr, "dds_take error: %s\n", dds_strretcode(-rc));
-                continue;
-            }
-            if (rc == 0)
-                continue;
-            if (si.valid_data && samples[0]) {
-                const StructInfo* info = findStructInfo(binding.typeName);
-                Value typeVal = resolveTypeValue(binding.typeName);
-                const dds_topic_descriptor_t* desc = binding.descriptor ? binding.descriptor.get() : nullptr;
-                if (info && typeVal.isNonNil()) {
-                    Value val = valueFromSample(*info, desc, samples[0], typeVal);
-                    Value sigStrong = binding.signal.strongRef();
-                    if (isSignal(sigStrong)) {
-                        ObjSignal* objSig = asSignal(sigStrong);
-                        objSig->signal->set(val);
+    };
+
+    Value newest;
+    bool haveNewest = false;
+    for (;;) {
+        dds_return_t got = ::dds_take(binding.entity, samples, infos, kBatch, kBatch);
+        if (got < 0) {
+            fprintf(stderr, "dds_take error: %s\n", dds_strretcode(-got));
+            break;
+        }
+        if (got == 0)
+            break;
+        if (convertible) {
+            if (keepAll) {
+                for (int i = 0; i < got; ++i) {
+                    if (infos[i].valid_data && samples[i])
+                        deliver(valueFromSample(*info, desc, samples[i], typeVal));
+                }
+            } else {
+                // Only the newest valid sample of the batch needs converting.
+                for (int i = got - 1; i >= 0; --i) {
+                    if (infos[i].valid_data && samples[i]) {
+                        newest = valueFromSample(*info, desc, samples[i], typeVal);
+                        haveNewest = true;
+                        break;
                     }
                 }
             }
-            ::dds_return_loan(reader, samples, 1);
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        ::dds_return_loan(binding.entity, samples, got);
+        if (keepAll || got < kBatch)
+            break;
     }
+    if (!keepAll && haveNewest)
+        deliver(newest);
+}
+
+void ModuleDDS::readerThreadLoop()
+{
+    // reader entity -> its readcondition attached to the waitset
+    std::unordered_map<dds_entity_t, dds_entity_t> readConds;
+    std::vector<SignalBinding> snapshot;
+    std::unordered_map<dds_entity_t, const SignalBinding*> byEntity;
+
+    auto resync = [&]() {
+        {
+            std::lock_guard<std::mutex> lock(signalMutex);
+            snapshot = readerSignals;
+        }
+        byEntity.clear();
+        for (const auto& b : snapshot) {
+            if (b.entity <= 0)
+                continue;
+            byEntity[b.entity] = &b;
+            if (readConds.count(b.entity))
+                continue;
+            dds_entity_t cond = dds_create_readcondition(b.entity, DDS_ANY_STATE);
+            if (cond <= 0) {
+                fprintf(stderr, "dds reader signal: dds_create_readcondition: %s\n",
+                        dds_strretcode(-cond));
+                continue;
+            }
+            dds_return_t rc = dds_waitset_attach(readerWaitset, cond,
+                                                 static_cast<dds_attach_t>(b.entity));
+            if (rc < 0) {
+                fprintf(stderr, "dds reader signal: dds_waitset_attach: %s\n",
+                        dds_strretcode(-rc));
+                ::dds_delete(cond);
+                continue;
+            }
+            readConds[b.entity] = cond;
+        }
+        for (auto it = readConds.begin(); it != readConds.end();) {
+            if (byEntity.count(it->first)) {
+                ++it;
+            } else {
+                // Detach/delete may legitimately fail if the reader (and its
+                // child readcondition) was already deleted -- ignore.
+                dds_waitset_detach(readerWaitset, it->second);
+                ::dds_delete(it->second);
+                it = readConds.erase(it);
+            }
+        }
+    };
+
+    constexpr int kMaxTriggers = 64;
+    dds_attach_t triggered[kMaxTriggers];
+
+    while (readerThreadRunning.load()) {
+        if (readerBindingsChanged.exchange(false))
+            resync();
+
+        // Finite timeout as a safety net; wake-ups normally come from the
+        // readconditions or the guard condition.
+        dds_return_t n = dds_waitset_wait(readerWaitset, triggered, kMaxTriggers, DDS_SECS(1));
+        if (!readerThreadRunning.load())
+            break;
+        if (n < 0) {
+            fprintf(stderr, "dds reader signal: dds_waitset_wait: %s\n", dds_strretcode(-n));
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
+        if (n == 0)
+            continue;
+
+        // Reset the guard if it fired (membership/shutdown handled above).
+        bool guardWasSet = false;
+        dds_take_guardcondition(readerGuard, &guardWasSet);
+
+        int count = std::min<int>(static_cast<int>(n), kMaxTriggers);
+        for (int i = 0; i < count; ++i) {
+            auto entity = static_cast<dds_entity_t>(triggered[i]);
+            if (entity <= 0)
+                continue; // the guard condition (attached with cookie 0)
+            auto it = byEntity.find(entity);
+            if (it != byEntity.end())
+                drainReaderBinding(*it->second);
+        }
+    }
+
+    for (auto& kv : readConds) {
+        dds_waitset_detach(readerWaitset, kv.second);
+        ::dds_delete(kv.second);
+    }
+}
+
+void ModuleDDS::wakeReaderThread()
+{
+    if (readerGuard > 0)
+        dds_set_guardcondition(readerGuard, true);
 }
 
 void ModuleDDS::startReaderThread()
 {
     bool expected = false;
     if (readerThreadRunning.compare_exchange_strong(expected, true)) {
+        readerWaitset = dds_create_waitset(DDS_CYCLONEDDS_HANDLE);
+        readerGuard = dds_create_guardcondition(DDS_CYCLONEDDS_HANDLE);
+        if (readerWaitset <= 0 || readerGuard <= 0 ||
+            dds_waitset_attach(readerWaitset, readerGuard, 0) < 0) {
+            fprintf(stderr, "dds reader signal: failed to create waitset/guard\n");
+            readerThreadRunning.store(false);
+            return;
+        }
+        readerBindingsChanged.store(true);
         readerThread = std::thread([this](){ readerThreadLoop(); });
     }
 }
@@ -2200,8 +2352,15 @@ void ModuleDDS::stopReaderThread()
 {
     bool expected = true;
     if (readerThreadRunning.compare_exchange_strong(expected, false)) {
+        wakeReaderThread();
         if (readerThread.joinable())
             readerThread.join();
+        if (readerWaitset > 0)
+            ::dds_delete(readerWaitset);
+        if (readerGuard > 0)
+            ::dds_delete(readerGuard);
+        readerWaitset = 0;
+        readerGuard = 0;
     }
 }
 

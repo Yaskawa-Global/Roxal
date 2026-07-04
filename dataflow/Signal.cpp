@@ -105,6 +105,9 @@ Signal::~Signal()
 
 void Signal::trace(roxal::ValueVisitor& visitor) const
 {
+    // GC tracing can run while a non-VM thread (e.g. the DDS reader-signal
+    // thread) is mutating the map.
+    std::lock_guard<std::recursive_mutex> lock(m_valuesMutex);
     for (const auto& entry : values) {
         visitor.visit(entry.second);
     }
@@ -131,6 +134,7 @@ void Signal::setFrequency(double freq)
 
 std::optional<Value> Signal::valueIfAvailableAt(TimePoint t) const
 {
+    std::lock_guard<std::recursive_mutex> lock(m_valuesMutex);
     auto it = values.find(t);
     if (it != values.end())
         return it->second;
@@ -160,6 +164,7 @@ Value Signal::valueAt(TimePoint t) const
         std::cout << "valueAt Signal " + name() + " for time " + t.humanString() + " not a multiple of period " + m_period.humanString() << std::endl;
     #endif
 
+    std::lock_guard<std::recursive_mutex> lock(m_valuesMutex);
     auto it = values.find(t);
     if (it != values.end()) {
         return it->second;
@@ -190,23 +195,34 @@ void Signal::setValueAt(TimePoint t, const Value& v)
 #endif
     }
 
-    assert(!values.empty());
-    bool valueChanged = (lastValueBefore(t) != v);
+    bool notifyChange = false;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_valuesMutex);
+        assert(!values.empty());
+        bool valueChanged = (lastValueBefore(t) != v);
 
-    // if we're adding a newer time, remove the oldest
-    if (t > values.rbegin()->first) {
-        if (values.size() >= m_maxHistoryPeriods)
-            values.erase(values.begin()); // map keys are sorted by time, so remove oldest/smallest value
+        // if we're adding a newer time, remove the oldest
+        if (t > values.rbegin()->first) {
+            if (values.size() >= m_maxHistoryPeriods)
+                values.erase(values.begin()); // map keys are sorted by time, so remove oldest/smallest value
+        }
+
+        values[t] = v;
+
+        if (valueChanged) {
+            if (m_suppressInitialChange)
+                m_suppressInitialChange = false;  // first value is initialization, not a change
+            else
+                notifyChange = true;
+        }
     }
 
-    values[t] = v;
-
-    if (valueChanged) {
-        if (m_suppressInitialChange)
-            m_suppressInitialChange = false;  // first value is initialization, not a change
-        else
-            invokeValueChangedCallbacks(t, v);
-    }
+    // Callbacks and engine notification run outside m_valuesMutex: callbacks
+    // can be arbitrarily heavy (event scheduling, DDS writes) and the engine
+    // takes its own m_mutex -- holding m_valuesMutex across that would invert
+    // the engine-then-signal lock order the tick path uses.
+    if (notifyChange)
+        invokeValueChangedCallbacks(t, v);
 
     if (m_eventDriven) {
         engine->updateSignalConsumerInputAvailability(ptr_from_this(), t);
@@ -265,6 +281,7 @@ void Signal::evaluate(TimePoint t)
 
 Value Signal::lastValue() const
 {
+    std::lock_guard<std::recursive_mutex> lock(m_valuesMutex);
     if (values.empty())
         throw std::runtime_error("Signal has no values.");
     return values.rbegin()->second;
@@ -272,6 +289,7 @@ Value Signal::lastValue() const
 
 TimePoint Signal::latestSampleTime() const
 {
+    std::lock_guard<std::recursive_mutex> lock(m_valuesMutex);
     if (values.empty())
         return TimePoint::zero();
     return values.rbegin()->first;
@@ -282,6 +300,7 @@ Value Signal::valueAtIndex(int index, std::optional<TimePoint> referenceTime) co
     if (index > 0)
         throw std::invalid_argument("Signal index must be 0 or negative");
 
+    std::lock_guard<std::recursive_mutex> lock(m_valuesMutex);
     if (values.empty())
         throw std::runtime_error("Signal has no values.");
 
@@ -347,6 +366,7 @@ ptr<Signal> Signal::indexedSignal(int index)
 
 Value Signal::lastValueBefore(TimePoint t) const
 {
+    std::lock_guard<std::recursive_mutex> lock(m_valuesMutex);
     auto it = values.lower_bound(t);
 
     if (it == values.begin()) {

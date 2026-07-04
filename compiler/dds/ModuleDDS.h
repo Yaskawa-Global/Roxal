@@ -130,12 +130,26 @@ private:
         dds_entity_t entity;
         std::string typeName;
         std::shared_ptr<dds_topic_descriptor_t> descriptor;
+        // Reader history QoS, queried at registration: governs the delivery
+        // policy of the reader-signal thread (keep_last -> coalesce each
+        // drained batch to the newest sample; keep_all -> deliver every
+        // sample in order).
+        dds_history_kind_t historyKind{DDS_HISTORY_KEEP_LAST};
     };
     std::vector<SignalBinding> writerSignals;
     std::vector<SignalBinding> readerSignals;
     std::atomic<bool> readerThreadRunning{false};
     std::thread readerThread;
     mutable std::mutex signalMutex;
+    // Waitset-driven reader-signal servicing: the thread blocks in
+    // dds_waitset_wait on per-reader readconditions (level-triggered while
+    // samples remain in the cache); the guard condition wakes it for
+    // membership changes and shutdown.
+    dds_entity_t readerWaitset{0};
+    dds_entity_t readerGuard{0};
+    std::atomic<bool> readerBindingsChanged{false};
+    void wakeReaderThread();
+    void drainReaderBinding(const SignalBinding& binding);
 
     // native implementations
     static Value dds_create_participant(VM&, ArgsView args);

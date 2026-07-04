@@ -1,6 +1,7 @@
 #pragma once
 
 #include <map>
+#include <mutex>
 #include <optional>
 
 #include "core/common.h"
@@ -99,7 +100,11 @@ public:
     Value lastValueBefore(TimePoint t) const;
 
     // number of stored history values
-    size_t valuesCount() const { return values.size(); }
+    size_t valuesCount() const
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_valuesMutex);
+        return values.size();
+    }
 
 protected:
     Signal(double freq, Value initial, std::optional<std::string> name = {});
@@ -117,6 +122,14 @@ protected:
     // mapping from time to value (sorted by time)
     //  only stores m_maxHistoryPeriods values on m_period boundaries
     std::map<TimePoint, Value> values; // Time to Value mapping
+
+    // Guards `values`: it is written by the engine thread (ticks), by script
+    // threads (set) and by the DDS reader-signal thread, and read by any
+    // sampling thread plus GC tracing. Recursive because accessors nest
+    // (setValueAt -> lastValueBefore, valueAtIndex -> valueAt). Lock order
+    // where both are held: engine m_mutex first, then this. Never hold this
+    // across change callbacks or DataflowEngine calls.
+    mutable std::recursive_mutex m_valuesMutex;
 
     double m_frequency; // Frequency in Hz
     TimeDuration m_period;

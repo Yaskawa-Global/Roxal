@@ -1,0 +1,34 @@
+# Reader signal with keep_all history: the reader-signal thread must deliver
+# every sample in order (lossless), not just the freshest. A reliable writer
+# bursts 8 messages faster than the signal is consumed; all 8 must arrive as
+# distinct signal changes.
+import HelloWorldData
+import dds
+import sys
+
+qos = {'reliability': 'reliable', 'history': {'kind': 'keep_all'}}
+p = dds.create_participant()
+rsig = dds.reader_signal('ka_probe', HelloWorldData.Msg, p, qos)
+
+var got = 0
+var msgs = ""
+when rsig changes as evt:
+  got = got + 1
+  msgs = msgs + " " + evt.value.message
+
+t = dds.create_topic(p, 'ka_probe', HelloWorldData.Msg, qos)
+w = dds.create_writer(p, t, qos)
+
+var i = 1
+while i <= 8:
+  var m = HelloWorldData.Msg()
+  m.userID = 7
+  m.message = "m{i}"
+  wait(for=dds.write(w, m))
+  i = i + 1
+
+var tries = 0
+while got < 8 and tries < 600:
+  sys.wait(5ms)
+  tries = tries + 1
+print("keep_all events {got}:{msgs}")

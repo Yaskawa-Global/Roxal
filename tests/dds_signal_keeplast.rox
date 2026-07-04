@@ -1,0 +1,31 @@
+# Reader signal with (default) keep_last history: under a burst the signal
+# must converge on the newest sample; intermediate samples may be coalesced
+# away by the QoS contract, so only the final value is asserted.
+import HelloWorldData
+import dds
+import sys
+
+qos = {'reliability': 'reliable'}
+p = dds.create_participant()
+rsig = dds.reader_signal('kl_probe', HelloWorldData.Msg, p, qos)
+
+t = dds.create_topic(p, 'kl_probe', HelloWorldData.Msg, qos)
+w = dds.create_writer(p, t, qos)
+
+var i = 1
+while i <= 8:
+  var m = HelloWorldData.Msg()
+  m.userID = 7
+  m.message = "m{i}"
+  wait(for=dds.write(w, m))
+  i = i + 1
+
+var last = ""
+var tries = 0
+while last != "m8" and tries < 600:
+  var v = rsig.value
+  if v != nil:
+    last = v.message
+  sys.wait(5ms)
+  tries = tries + 1
+print("keep_last final {last}")

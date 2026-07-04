@@ -811,6 +811,15 @@ The data flow engine is represented as a builtin actor instance.  Hence, the eva
 
 Signals can be sampled to yield their current value at any time on any thread, either via the builtin `value` property, or by using them to construct their underlying value type (e.g. `vector(vecsignal)`, or `real(realsig)`)
 
+A signal's time->value history map (`Signal::values`) is written by the engine
+thread (ticks), script threads (`set`) and the DDS reader-signal thread, and
+read by sampling threads and GC tracing, so it is guarded by a per-signal
+recursive mutex (`m_valuesMutex`).  Locking discipline: where both are held,
+the engine's `m_mutex` is taken first, then the signal mutex; change
+callbacks and `DataflowEngine` notifications are always invoked *outside*
+the signal mutex (they can be arbitrarily heavy and take the engine mutex
+themselves).
+
 ## DDS Module (ModuleDDS)
 
 `import dds` exposes CycloneDDS pub/sub (`compiler/dds/`).  IDL files are
@@ -835,6 +844,22 @@ live handles whenever the process type library is already populated -- a
 use-after-free that aborts the process, fatal when embedding libroxal in a
 host with statically registered types (reported upstream to Eclipse
 CycloneDDS).
+
+Reader signals (`dds.reader_signal` / `dds.ros_reader_signal`) are serviced
+by one waitset-driven thread (`ModuleDDS::readerThreadLoop`): a per-reader
+readcondition (level-triggered while samples remain in the reader cache) is
+attached to a `dds_waitset`, and a guard condition wakes the thread for
+binding changes and shutdown.  Sample delivery is QoS-aware, using the
+reader's history kind queried at registration: **keep_last** readers drain
+the cache and set only the newest valid sample (matching the QoS contract
+and bounding pressure on the dataflow engine); **keep_all** readers get
+every sample in order, one bounded batch per wake (the level-triggered
+readcondition re-wakes while a backlog remains).  Note that a signal is
+last-value semantics end to end -- scripts that need guaranteed
+per-message processing should loop on `dds.read`/`dds.take` instead.
+Sample conversion (`valueFromSample`) runs on the reader thread, off any
+RT-budgeted (`runFor`) thread; handler bodies (`when sig changes`) run as
+pending events on their script threads as usual.
 
 ### Supported IDL subset / future enhancements
 

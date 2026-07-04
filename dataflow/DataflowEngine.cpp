@@ -267,8 +267,17 @@ void DataflowEngine::copyInto(const ptr<Signal>& lhs, const ptr<Signal>& rhs)
     lhs->tickPending = rhs->tickPending;
     lhs->m_eventDriven = rhs->m_eventDriven;
 
-    auto previousValues = lhs->values;
-    lhs->values = rhs->values;
+    // Direct manipulation of the signals' values maps must be serialized with
+    // concurrent producers (e.g. the DDS reader-signal thread). Snapshot under
+    // the locks, operate on the snapshots, and never hold the locks across
+    // setValueAt (it notifies callbacks/the engine after its own locking).
+    std::map<TimePoint, Value> previousValues, rhsValues;
+    {
+        std::scoped_lock sigLock(lhs->m_valuesMutex, rhs->m_valuesMutex);
+        previousValues = lhs->values;
+        rhsValues = rhs->values;
+        lhs->values = rhs->values;
+    }
     for(const auto& rhsCallback : rhs->m_changeNotifier.callbacks)
         lhs->m_changeNotifier.addCallback(rhsCallback);
 
@@ -296,22 +305,24 @@ void DataflowEngine::copyInto(const ptr<Signal>& lhs, const ptr<Signal>& rhs)
     }
 
     bool rhsHasConcreteSample = std::any_of(
-        rhs->values.begin(), rhs->values.end(),
+        rhsValues.begin(), rhsValues.end(),
         [](const std::pair<const TimePoint, Value>& sample) {
             return !sample.second.isNil();
         });
 
-    bool earliestSampleIsNil = rhs->values.empty() || rhs->values.begin()->second.isNil();
+    bool earliestSampleIsNil = rhsValues.empty() || rhsValues.begin()->second.isNil();
 
     if (rhsHasConcreteSample) {
-        for (const auto& kv : rhs->values)
+        for (const auto& kv : rhsValues)
             lhs->setValueAt(kv.first, kv.second);
 
         if (earliestSampleIsNil && !previousValues.empty()) {
             auto fallback = previousValues.begin();
+            std::lock_guard<std::recursive_mutex> lock(rhs->m_valuesMutex);
             rhs->values[fallback->first] = fallback->second;
         }
     } else if (!previousValues.empty()) {
+        std::scoped_lock sigLock(lhs->m_valuesMutex, rhs->m_valuesMutex);
         lhs->values = previousValues;
         rhs->values = previousValues;
     }
@@ -800,6 +811,7 @@ TimePoint DataflowEngine::resolveEvaluationTime(const NetworkIsland& island, Tim
         if (!signal)
             continue;
 
+        std::lock_guard<std::recursive_mutex> lock(signal->m_valuesMutex);
         if (signal->values.empty())
             continue;
 
