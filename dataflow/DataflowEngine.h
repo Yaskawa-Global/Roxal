@@ -266,9 +266,23 @@ private:
     // thread. Guarded by m_pendingEventMutex (not m_mutex: producers must
     // never block on network evaluation).
     std::mutex m_pendingEventMutex;
-    std::vector<std::pair<ptr<Signal>, TimePoint>> m_pendingEventUpdates;
+    // Each entry holds an ObjSignal wrapper Value (not a bare ptr<Signal>):
+    // Values are the house convention for stored references, the wrapper's
+    // trace() covers everything the signal owns, and holding it keeps the
+    // signal registered (wrapper refcount) until the update is serviced.
+    // The container itself is still invisible to the GC mark phase, so
+    // tracePendingEventUpdates() below is called during root collection.
+    std::vector<std::pair<roxal::Value, TimePoint>> m_pendingEventUpdates;
     // Drain the queue (engine/VM thread only). Returns true if any were run.
     bool processPendingEventUpdates();
+
+public:
+    // GC mark-phase hook: a queued signal's embedded Values are otherwise
+    // only traced through a reachable ObjSignal wrapper — if the last
+    // wrapper dies while an update is queued, the mark phase would sweep
+    // the values the drain is about to read. Called by SimpleMarkSweepGC
+    // during root collection.
+    void tracePendingEventUpdates(roxal::ValueVisitor& visitor);
 };
 
 

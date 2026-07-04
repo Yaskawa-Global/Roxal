@@ -700,6 +700,16 @@ static void generateAST(const std::string& inputPath, bool graph, const std::str
 
 int main(int argc, const char* argv[])
 {
+    // Tear the VM down deterministically at every return from main — before
+    // __run_exit_handlers, where the singleton's destructor would otherwise
+    // run with undefined cross-library static-destruction order while
+    // non-VM threads may still be alive (historically an exit-time
+    // segfault for embedding hosts). Declared first so it destructs last,
+    // after the other guards below (e.g. the opcode-profile flush).
+    struct VMShutdownGuard {
+        ~VMShutdownGuard() { VM::shutdownIfConstructed(); }
+    } vmShutdownGuard;
+
     const std::uint64_t defaultGcThresholdKb =
         SimpleMarkSweepGC::kDefaultAutoTriggerThreshold / 1024ull;
     const std::string gcOptionHelp =

@@ -1400,6 +1400,23 @@ void VM::ensureDataflowEngineStopped()
 
 VM::~VM()
 {
+    // Fallback for hosts that never called shutdown(): runs during
+    // __run_exit_handlers with all the static-destruction-order caveats
+    // documented on shutdown(). No-op after an explicit shutdown.
+    shutdown();
+}
+
+void VM::shutdownIfConstructed()
+{
+    if (vmConstructed.load(std::memory_order_acquire))
+        instance().shutdown();
+}
+
+void VM::shutdown()
+{
+    if (shutdownComplete_.exchange(true))
+        return;
+
     // Signal all actor threads to exit the dispatch loop and wait for them
     // before tearing down any state.  Without this, dropReferences() can clear
     // module vars while actor threads are mid-opcode, causing use-after-free.
@@ -1456,6 +1473,14 @@ VM::~VM()
     }
     builtinModules.clear();
     lazyModuleRegistry.clear();
+
+    // Release the host event loop now, while the host's/plugin's own static
+    // state is still alive — its implementation lives outside libroxal, and
+    // destroying it from the singleton's exit-handler-time destructor is
+    // exactly the cross-library ordering hazard shutdown() exists to avoid.
+    // (The qt module already nulls it in onModuleUnloading; this covers hosts
+    // that installed a loop without a module hook.)
+    hostEventLoop_.reset();
 
     conditionalInterruptClosure = Value::nilVal();
     combinatorRelayFunction = Value::nilVal();

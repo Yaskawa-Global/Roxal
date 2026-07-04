@@ -4,6 +4,7 @@
 #include "Thread.h"
 #include "Value.h"
 #include "VM.h"
+#include "dataflow/DataflowEngine.h"
 
 #include <chrono>
 #include <iostream>
@@ -788,6 +789,14 @@ void SimpleMarkSweepGC::visitRoots(ValueVisitor& visitor) {
     });
 
     visitStrongValue(visitor, vm.dataflowEngineActor);
+
+    // Signals queued for event-driven island evaluation (handed off from
+    // non-VM producer threads, e.g. the DDS reader-signal thread) may have
+    // lost their last reachable ObjSignal wrapper while queued; trace their
+    // embedded values so the drain doesn't read swept objects.
+    if (auto dfEngine = df::DataflowEngine::instance(false))
+        dfEngine->tracePendingEventUpdates(visitor);
+
     visitStrongValue(visitor, vm.conditionalInterruptClosure);
     visitStrongValue(visitor, vm.combinatorRelayFunction);
     visitStrongValue(visitor, vm.initString);

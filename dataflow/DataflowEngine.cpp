@@ -332,6 +332,12 @@ void DataflowEngine::copyInto(const ptr<Signal>& lhs, const ptr<Signal>& rhs)
 
 void DataflowEngine::clear()
 {
+    // Drop queued-but-unserviced event updates first: they hold Signal refs
+    // (and Values inside those signals) that must not outlive VM teardown.
+    {
+        std::lock_guard<std::mutex> pendingLock(m_pendingEventMutex);
+        m_pendingEventUpdates.clear();
+    }
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     signalConsumers.clear();
     m_networkIslands.clear();
@@ -865,8 +871,11 @@ void DataflowEngine::processEventDrivenSignalUpdate(ptr<Signal> signal, TimePoin
     // own actor thread. (Evaluating in place there used to corrupt/crash:
     // invokeClosure on a thread with no VM Thread state.)
     if (roxal::VM::thread == nullptr) {
+        // Wrap before taking the queue lock: ObjSignal construction touches
+        // the engine mutex (wrapper registration).
+        roxal::Value wrapper = roxal::Value::signalVal(std::move(signal));
         std::lock_guard<std::mutex> lock(m_pendingEventMutex);
-        m_pendingEventUpdates.emplace_back(std::move(signal), timestamp);
+        m_pendingEventUpdates.emplace_back(std::move(wrapper), timestamp);
         return;
     }
 
@@ -893,9 +902,18 @@ void DataflowEngine::processEventDrivenSignalUpdate(ptr<Signal> signal, TimePoin
     evaluateIsland(islandSnapshot, timestamp);
 }
 
+void DataflowEngine::tracePendingEventUpdates(roxal::ValueVisitor& visitor)
+{
+    std::lock_guard<std::mutex> lock(m_pendingEventMutex);
+    for (const auto& upd : m_pendingEventUpdates) {
+        if (upd.first.isObj())
+            visitor.visit(upd.first);
+    }
+}
+
 bool DataflowEngine::processPendingEventUpdates()
 {
-    std::vector<std::pair<ptr<Signal>, TimePoint>> pending;
+    std::vector<std::pair<roxal::Value, TimePoint>> pending;
     {
         std::lock_guard<std::mutex> lock(m_pendingEventMutex);
         pending.swap(m_pendingEventUpdates);
@@ -903,14 +921,20 @@ bool DataflowEngine::processPendingEventUpdates()
     if (pending.empty())
         return false;
 
-    // Coalesce to the newest timestamp per signal: islands re-read current
+    // Coalesce to the newest timestamp per underlying signal (distinct
+    // wrapper Values can refer to the same signal): islands re-read current
     // signal values, so evaluating once per signal per drain is enough.
     std::vector<std::pair<ptr<Signal>, TimePoint>> latest;
     for (auto& upd : pending) {
+        if (!roxal::isSignal(upd.first))
+            continue;
+        ptr<Signal> sig = roxal::asSignal(upd.first)->signal;
+        if (!sig)
+            continue;
         auto it = std::find_if(latest.begin(), latest.end(),
-                               [&](const auto& e){ return e.first == upd.first; });
+                               [&](const auto& e){ return e.first == sig; });
         if (it == latest.end())
-            latest.push_back(std::move(upd));
+            latest.emplace_back(std::move(sig), upd.second);
         else if (upd.second > it->second)
             it->second = upd.second;
     }

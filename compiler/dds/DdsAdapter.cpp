@@ -504,6 +504,13 @@ ParseResult parseWithIdl(const std::string& content)
     // behaviour is stable and libidl's default-extensibility warning is
     // silenced.
     ps->config.default_extensibility = IDL_FINAL;
+    // Stock ROS 2 IDL also decorates nearly every type and field with
+    // documentation annotations (@verbatim, @unit, ...) that libidl skips
+    // with a warning line each -- dozens per import. They are intentionally
+    // ignored; silence the whole unsupported-annotation class.
+    ps->track_warning = [](idl_warning_t warning) {
+        return warning != IDL_WARN_UNSUPPORTED_ANNOTATIONS;
+    };
     auto guard = std::unique_ptr<idl_pstate_t, decltype(&idl_delete_pstate)>(ps, &idl_delete_pstate);
 
     idl_retcode_t rc = idl_parse_string(ps, content.c_str());

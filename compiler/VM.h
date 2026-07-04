@@ -139,6 +139,20 @@ public:
         return instance;
     }
 
+    /// Deterministic full teardown: stop and join all VM-owned threads,
+    /// unload modules, release the host event loop, and run the final GC.
+    /// Idempotent — the destructor calls it as a fallback. Hosts embedding
+    /// libroxal should call this (or shutdownIfConstructed()) before
+    /// returning from main: left to the singleton's destructor, teardown
+    /// runs inside __run_exit_handlers, where cross-library static
+    /// destruction order is undefined and host threads may still be
+    /// running — historically an exit-time segfault.
+    void shutdown();
+
+    /// shutdown() if the singleton was ever created; never materializes it.
+    /// Safe to call unconditionally at any return from main.
+    static void shutdownIfConstructed();
+
     VM(VM const&) = delete;
     void operator=(VM const&) = delete;
 
@@ -567,6 +581,9 @@ protected:
 
     // Set when exit() builtin is called to terminate the VM.
     std::atomic_bool exitRequested {false};
+    // Set once shutdown() has run; makes teardown idempotent so the static
+    // destructor is a no-op after an explicit host-driven shutdown.
+    std::atomic_bool shutdownComplete_ {false};
     std::atomic_int exitCodeValue {0};
 
     std::atomic_bool objectCleanupPending {false};
