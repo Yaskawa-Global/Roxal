@@ -259,6 +259,16 @@ private:
     friend class FuncNode;
 
     void processEventDrivenSignalUpdate(ptr<Signal> signal, TimePoint timestamp);
+
+    // Event-driven updates arriving on non-VM threads (e.g. the DDS
+    // reader-signal thread) cannot evaluate FuncNode closures in place; they
+    // are queued here and drained by the engine's run loop on its own actor
+    // thread. Guarded by m_pendingEventMutex (not m_mutex: producers must
+    // never block on network evaluation).
+    std::mutex m_pendingEventMutex;
+    std::vector<std::pair<ptr<Signal>, TimePoint>> m_pendingEventUpdates;
+    // Drain the queue (engine/VM thread only). Returns true if any were run.
+    bool processPendingEventUpdates();
 };
 
 

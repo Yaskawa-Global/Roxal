@@ -861,6 +861,15 @@ Sample conversion (`valueFromSample`) runs on the reader thread, off any
 RT-budgeted (`runFor`) thread; handler bodies (`when sig changes`) run as
 pending events on their script threads as usual.
 
+Func-lifted transforms over reader signals (calling a `func` with a signal
+argument builds a derived signal, e.g.
+`cam.image = _rgbTensor(cam._image_raw)`) evaluate on the dataflow engine's
+actor thread: `DataflowEngine::processEventDrivenSignalUpdate` queues
+updates arriving on non-VM threads (the reader thread has no VM `Thread`
+state, so FuncNode closures must not execute there) and the engine's run
+loop drains them, coalescing to the newest timestamp per signal.  `set()`
+from script threads still evaluates inline/synchronously.
+
 ### Supported IDL subset / future enhancements
 
 The adapter, marshaller, and descriptor emitter must move together: a

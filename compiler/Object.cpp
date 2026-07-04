@@ -4835,6 +4835,16 @@ bool ObjTensor::equals(const ObjTensor* other, double eps) const
 #endif
 
     int64_t n = numel();
+
+    // Bitwise-identical buffers are equal for any eps, and a memcmp is far
+    // cheaper than the per-element eps walk below — this matters for signal
+    // change detection on large video/depth tensors, where the worst case is
+    // precisely two identical consecutive frames. (Bitwise-identical NaN
+    // payloads compare equal on this path.)
+    size_t byteCount = static_cast<size_t>(n) * tensorDTypeSize(dtype_);
+    if (byteCount > 0 && std::memcmp(rawData(), other->rawData(), byteCount) == 0)
+        return true;
+
     for (int64_t i = 0; i < n; ++i) {
         if (std::abs(at(i) - other->at(i)) > eps)
             return false;

@@ -396,7 +396,10 @@ void DataflowEngine::run() {
         }
 
         if (m_tickPeriod == TimeDuration::zero()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            // Purely event-driven network: service updates handed off from
+            // non-VM producer threads (see processEventDrivenSignalUpdate).
+            if (!processPendingEventUpdates())
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
 
@@ -407,6 +410,16 @@ void DataflowEngine::run() {
             continue;
         }
 
+        // Service handed-off event updates at least once per tick cycle (at
+        // fast tick rates, e.g. 1kHz, the gap loop below never runs), then
+        // keep servicing at 1ms granularity while waiting out longer tick
+        // gaps, taking the final (<1ms) stretch as a precise sleep so tick
+        // timing is unchanged.
+        processPendingEventUpdates();
+        while (TimePoint::currentTime() + TimeDuration::milliSecs(1) < m_tickStart) {
+            if (!processPendingEventUpdates())
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
         sleepUntil(m_tickStart);
         tick(false);
     }
@@ -443,7 +456,10 @@ void DataflowEngine::runFor(TimeDuration duration)
         }
 
         if (m_tickPeriod == TimeDuration::zero()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            // Purely event-driven network: service updates handed off from
+            // non-VM producer threads (see processEventDrivenSignalUpdate).
+            if (!processPendingEventUpdates())
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
             continue;
         }
 
@@ -455,7 +471,15 @@ void DataflowEngine::runFor(TimeDuration duration)
             continue;
         }
 
-        // wait until the next tick should start
+        // Service handed-off event updates at least once per tick cycle (at
+        // fast tick rates the gap loop below never runs), then keep
+        // servicing at 1ms granularity while waiting out longer tick gaps,
+        // taking the final (<1ms) stretch as a precise sleep.
+        processPendingEventUpdates();
+        while (TimePoint::currentTime() + TimeDuration::milliSecs(1) < m_tickStart) {
+            if (!processPendingEventUpdates())
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
         sleepUntil(m_tickStart);
 
         tick(/*waitForTickStart=*/false);
@@ -834,6 +858,18 @@ TimePoint DataflowEngine::resolveEvaluationTime(const NetworkIsland& island, Tim
 
 void DataflowEngine::processEventDrivenSignalUpdate(ptr<Signal> signal, TimePoint timestamp)
 {
+    // Island evaluation executes FuncNode closures, which requires the
+    // calling thread to be a VM thread (VM::thread set up). Producers on
+    // foreign threads -- e.g. the DDS reader-signal thread -- hand the
+    // update off to the engine's run loop, which drains the queue on its
+    // own actor thread. (Evaluating in place there used to corrupt/crash:
+    // invokeClosure on a thread with no VM Thread state.)
+    if (roxal::VM::thread == nullptr) {
+        std::lock_guard<std::mutex> lock(m_pendingEventMutex);
+        m_pendingEventUpdates.emplace_back(std::move(signal), timestamp);
+        return;
+    }
+
     if (m_networkModified)
         buildNetworkCacheData();
 
@@ -855,6 +891,32 @@ void DataflowEngine::processEventDrivenSignalUpdate(ptr<Signal> signal, TimePoin
         return;
 
     evaluateIsland(islandSnapshot, timestamp);
+}
+
+bool DataflowEngine::processPendingEventUpdates()
+{
+    std::vector<std::pair<ptr<Signal>, TimePoint>> pending;
+    {
+        std::lock_guard<std::mutex> lock(m_pendingEventMutex);
+        pending.swap(m_pendingEventUpdates);
+    }
+    if (pending.empty())
+        return false;
+
+    // Coalesce to the newest timestamp per signal: islands re-read current
+    // signal values, so evaluating once per signal per drain is enough.
+    std::vector<std::pair<ptr<Signal>, TimePoint>> latest;
+    for (auto& upd : pending) {
+        auto it = std::find_if(latest.begin(), latest.end(),
+                               [&](const auto& e){ return e.first == upd.first; });
+        if (it == latest.end())
+            latest.push_back(std::move(upd));
+        else if (upd.second > it->second)
+            it->second = upd.second;
+    }
+    for (auto& upd : latest)
+        processEventDrivenSignalUpdate(upd.first, upd.second);
+    return true;
 }
 
 

@@ -1,0 +1,55 @@
+# Func-lifted transform over a DDS reader signal: calling a func with a
+# signal argument builds a derived signal whose FuncNode re-evaluates per
+# change. The DDS reader-signal thread is not a VM thread, so the engine
+# must hand the island evaluation off to its own actor thread — evaluating
+# in place crashed (VM::invokeClosure with no VM Thread state) or, before
+# that, silently corrupted VM state (the reactive-vision livelock).
+@ros
+import Image
+import dds
+import sys
+
+func _rgbTensor(msg):
+  if msg == nil:
+    return nil
+  return tensor(shape=[msg.height, msg.width, 3], dtype='uint8', bytes=msg.data)
+
+rsig = dds.ros_reader_signal('/lift/image', sensor_msgs.msg.dds_.Image_)
+image = _rgbTensor(rsig)   # the lift: derived signal of tensors
+
+p = dds.create_participant(0)
+t = dds.create_topic(p, dds.ros_topic('/lift/image'), sensor_msgs.msg.dds_.Image_)
+w = dds.create_writer(p, t)
+
+var payload = tensor(shape=[9216], dtype='uint8').to_bytes()  # 64x48x3
+payload[0] = 7
+var i = 0
+while i < 5:
+  var img = sensor_msgs.msg.dds_.Image_()
+  img.width = 64
+  img.height = 48
+  img.encoding = "rgb8"
+  img.is_bigendian = 0
+  img.step = 192
+  img.data = payload
+  var hdr = std_msgs.msg.dds_.Header_()
+  hdr.frame_id = "cam"
+  var stamp = builtin_interfaces.msg.dds_.Time_()
+  stamp.sec = i
+  stamp.nanosec = 0
+  hdr.stamp = stamp
+  img.header = hdr
+  dds.write(w, img)
+  sys.wait(20ms)
+  i = i + 1
+
+var tries = 0
+var result = nil
+while result == nil and tries < 600:
+  result = image.value
+  sys.wait(5ms)
+  tries = tries + 1
+
+print("derived: {result}")
+print("pixel {result[0, 0, 0]}")
+print("done")
