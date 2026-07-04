@@ -93,8 +93,17 @@ FieldType classifyType(const void* typeSpec)
             ft.bound = seq->maximum;
         }
     } else if (idl_is_array(stripped)) {
+        // A typedef'd fixed array (idl_strip stops at aliases that carry array
+        // dimensions): stripped is the typedef's declarator, its type_spec the
+        // element type, and idl_array_size the flattened element count.
         ft.kind = FieldType::Kind::List;
-        // treat arrays similarly to sequences
+        ft.isArray = true;
+        ft.element = std::make_shared<FieldType>(classifyType(idl_type_spec(stripped)));
+        uint32_t arrSize = idl_array_size(stripped);
+        if (arrSize > 0) {
+            ft.bounded = true;
+            ft.bound = arrSize;
+        }
     } else if (idl_is_string(stripped) || idl_is_wstring(stripped)) {
         ft.kind = FieldType::Kind::String;
         const idl_string_t* s = static_cast<const idl_string_t*>(stripped);
@@ -115,6 +124,19 @@ FieldType classifyType(const void* typeSpec)
             ft.refName = name;
     } else {
         ft.kind = mapBaseType(t);
+        switch (t) {
+            case IDL_FLOAT:    // widened to float64
+            case IDL_LDOUBLE:  // narrowed to float64
+            case IDL_SHORT:    // widened to int32
+            case IDL_USHORT:
+            case IDL_INT16:
+            case IDL_UINT16:
+            case IDL_WCHAR:    // widened to int32
+                ft.widened = true;
+                break;
+            default:
+                break;
+        }
     }
     return ft;
 }

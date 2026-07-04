@@ -36,6 +36,11 @@ struct FieldType {
     bool bounded{false};
     uint32_t bound{0};
     bool isArray{false}; // true when declared as a fixed-size array
+    // The IDL declared a narrower/other-width primitive (float32, int16, ...)
+    // that Roxal widens to its nearest FieldType kind. The in-memory and wire
+    // width then differ from the IDL, so XTypes metadata generated from the
+    // IDL must not be published for types containing such fields.
+    bool widened{false};
 };
 
 struct FieldInfo {

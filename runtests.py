@@ -314,7 +314,7 @@ fileio_tests = [
 ]
 dds_tests = ['dds_bounded_ok', 'dds_bounded_fail', 'dds_complex_smoke', 'dds_array_ok', 'dds_array_struct', 'dds_array_multi', 'dds_nested_module',
              'dds_idl_include', 'dds_idl_include_missing', 'dds_idl_stock',
-             'dds_ros_import', 'dds_ros_signal_roundtrip']
+             'dds_ros_import', 'dds_ros_signal_roundtrip', 'dds_ros_camerainfo']
 regex_tests = ['regex_test']
 xml_tests = [
     'xml_basic_compact', 'xml_basic_raw', 'xml_attrs', 'xml_mixed_raw',

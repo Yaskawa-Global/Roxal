@@ -1,0 +1,45 @@
+# Stock ROS 2 CameraInfo under @ros: exercises fixed-array typedefs
+# (double__9[9]/double__12[12]) through topic creation and a full roundtrip.
+# These previously crashed in the CycloneDDS dynamic-type path when the
+# process typelib was populated, and the typedef'd array element type and
+# dimensions were dropped by the IDL adapter.
+@ros
+import CameraInfo
+import dds
+
+var info = sensor_msgs.msg.dds_.CameraInfo_()
+info.width = 640
+info.height = 480
+info.distortion_model = "plumb_bob"
+info.d = [0.1, -0.2, 0.0, 0.0, 0.05]
+info.k = [500.0, 0.0, 320.0, 0.0, 500.0, 240.0, 0.0, 0.0, 1.0]
+info.r = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+info.p = [500.0, 0.0, 320.0, 0.0, 0.0, 500.0, 240.0, 0.0, 0.0, 0.0, 1.0, 0.0]
+info.binning_x = 1
+info.binning_y = 1
+var hdr = std_msgs.msg.dds_.Header_()
+hdr.frame_id = "cam_optical"
+var stamp = builtin_interfaces.msg.dds_.Time_()
+stamp.sec = 12
+stamp.nanosec = 34
+hdr.stamp = stamp
+info.header = hdr
+var roi = sensor_msgs.msg.dds_.RegionOfInterest_()
+roi.x_offset = 8
+roi.y_offset = 4
+roi.width = 100
+roi.height = 50
+roi.do_rectify = true
+info.roi = roi
+
+p = dds.create_participant()
+t = dds.create_topic(p, dds.ros_topic('/probe_caminfo'), sensor_msgs.msg.dds_.CameraInfo_)
+w = dds.create_writer(p, t)
+r = dds.create_reader(p, t)
+wait(for=dds.write(w, info))
+var recv = dds.read(r)
+print("caminfo {recv.width}x{recv.height} {recv.distortion_model} frame {recv.header.frame_id}")
+print("k {recv.k}")
+print("p {recv.p}")
+print("d {recv.d}")
+print("roi {recv.roi.x_offset},{recv.roi.y_offset} {recv.roi.width}x{recv.roi.height} rectify {recv.roi.do_rectify}")

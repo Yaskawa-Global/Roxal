@@ -1,0 +1,5 @@
+caminfo 640x480 plumb_bob frame cam_optical
+k [500, 0, 320, 0, 500, 240, 0, 0, 1]
+p [500, 0, 320, 0, 0, 500, 240, 0, 0, 0, 1, 0]
+d [0.1, -0.2, 0, 0, 0.05]
+roi 8,4 100x50 rectify true

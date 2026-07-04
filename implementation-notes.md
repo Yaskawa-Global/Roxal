@@ -811,6 +811,68 @@ The data flow engine is represented as a builtin actor instance.  Hence, the eva
 
 Signals can be sampled to yield their current value at any time on any thread, either via the builtin `value` property, or by using them to construct their underlying value type (e.g. `vector(vecsignal)`, or `real(realsig)`)
 
+## DDS Module (ModuleDDS)
+
+`import dds` exposes CycloneDDS pub/sub (`compiler/dds/`).  IDL files are
+parsed with libidl (`DdsAdapter`, which splices `#include`s itself since the
+mcpp preprocessor lives in the idlc binary, not the library) into `StructInfo`
+/ `FieldType` descriptions, from which Roxal object types are generated.  The
+`@ros` import annotation applies ROS 2 (rmw_cyclonedds) wire-name mangling
+(`pkg::msg::Type` -> `pkg::msg::dds_::Type_`).
+
+Topic creation builds a complete static-style `dds_topic_descriptor_t` at
+runtime (`ModuleDDS::buildTopicDescriptor`): the `m_ops` marshalling bytecode
+(the same format idlc generates at compile time -- see CycloneDDS's
+`dds_opcodes.h`; run idlc on an IDL and read the generated `.c` for a
+reference), sample size/alignment and member offsets from `computeLayout`,
+plus serialized XTypes typeinfo/typemap blobs from libidlc's
+`generate_type_meta_ser`.  Because the ops offsets and the marshalling code
+(`fillSampleFromValue` / `valueFromSample`) both derive from `computeLayout`,
+descriptor and marshalling agree by construction.  The earlier implementation
+used CycloneDDS's `dds_dynamic_type_*` API instead; that API's typelib dedup
+(`dynamic_type_complete_locked`) frees just-constructed types out from under
+live handles whenever the process type library is already populated -- a
+use-after-free that aborts the process, fatal when embedding libroxal in a
+host with statically registered types (reported upstream to Eclipse
+CycloneDDS).
+
+### Supported IDL subset / future enhancements
+
+The adapter, marshaller, and descriptor emitter must move together: a
+construct is only supported once all three handle it (`DdsAdapter::classifyType`
++ `FieldType`, `ModuleDDS::buildTopicDescriptor`, and the marshal/layout
+functions).  Currently supported: structs (final / appendable / mutable,
+nested), bool / byte / int32 / int64 / uint64 / float64, enums, bounded and
+unbounded strings and sequences (including sequences of structs and nested
+collections), fixed arrays (multi-dimensional and typedef'd; prim / enum /
+string / struct elements), top-level `@key`, typedefs.  Unsupported
+constructs are rejected with a runtime error rather than silently
+mis-encoded.  Not yet supported -- candidates for later enhancement:
+
+- **`@optional` members** -- currently marshalled as plain required fields.
+  CycloneDDS's convention stores optionals as pointers (`DDS_OP_FLAG_OPT` |
+  `DDS_OP_FLAG_EXT` + a `DDS_OP_MID` member-id section); supporting it means
+  pointer storage in `computeLayout`/marshalling plus nil <-> absent mapping.
+- **Narrow primitives: `int16`/`uint16`, `float32` (and `wchar`,
+  `long double`)** -- widened to int32/float64 in memory *and on the wire*
+  (`FieldType::widened`), which diverges from the IDL; XTypes metadata blobs
+  are therefore skipped for types containing them (they fall back to
+  name-based endpoint matching).  Proper support = new `FieldType` kinds +
+  2BY/4BY-FP ops + marshal cases.  Related: a future `TensorDType::UInt16`
+  (16-bit depth images) wants the same 16-bit plumbing.
+- **Unions** -- ops `DDS_OP_TYPE_UNI` + `DDS_OP_JEQ4` case labels; needs a
+  Roxal-side representation for the discriminator/active-member.
+- **Maps** -- IDL `map<K,V>`; no `FieldType` representation.
+- **Bitmasks / bitsets** -- `DDS_OP_TYPE_BMK` etc.
+- **Struct inheritance** -- XTypes base types (`DDS_OP_FLAG_BASE`).
+- **Wide strings** (`wstring`) -- `DDS_OP_TYPE_WSTR`/`BWSTR`.
+- **`@key` on nested-struct members** (key chains) -- KOF offset chains and
+  key-order rules; only top-level keys are honoured today (multi-key ordering
+  follows definition order, untested against idlc's for >1 key).
+- **Explicit member ids** (`@id`/`@hashid`, `@autoid(hash)`) -- mutable types
+  currently assume sequential ids (matches the previous behaviour).
+- **`@external`** (pointer-stored members) -- `DDS_OP_FLAG_EXT` storage.
+
 ## Serialization
 
 Values are persisted using the `Value::write` and `Value::read` helpers, which

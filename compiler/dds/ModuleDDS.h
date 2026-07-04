@@ -85,6 +85,14 @@ private:
     static std::string typeNameFromValue(const Value& v);
     static dds_entity_t entityFromValue(const Value& v, bool allowNil = false);
     std::shared_ptr<TopicSupport> buildDynamicTopic(Value participant, const std::string& topicName, const std::string& typeName, dds_qos_t* qos = nullptr);
+    // Build a complete static-style topic descriptor (m_ops marshalling
+    // bytecode + XTypes metadata blobs) for an adapter-parsed struct, offsets
+    // taken from computeLayout so the descriptor and the marshalling code
+    // agree by construction. Replaces the CycloneDDS dynamic-type API path,
+    // whose typelib dedup frees constructed types out from under the caller
+    // when the process type library is already populated (use-after-free,
+    // reported upstream). Throws on unsupported constructs.
+    std::shared_ptr<dds_topic_descriptor_t> buildTopicDescriptor(const std::string& typeName);
     std::unique_ptr<dds_qos_t, decltype(&dds_delete_qos)> qosFromValue(const Value& v) const;
     static Value dds_write(VM&, ArgsView args);
     static Value dds_read(VM&, ArgsView args);

@@ -16,7 +16,6 @@
 #include <dds/ddsc/dds_public_alloc.h>
 #include <dds/ddsc/dds_opcodes.h>
 #include <dds/ddsc/dds_public_qos.h>
-#include <dds/ddsc/dds_public_dynamic_type.h>
 #include <dds/ddsi/ddsi_typelib.h>
 
 #include <filesystem>
@@ -24,6 +23,7 @@
 #include <stdexcept>
 #include <cstring>
 #include <functional>
+#include <optional>
 #include <algorithm>
 #include <cctype>
 #include <vector>
@@ -513,6 +513,406 @@ Value ModuleDDS::dds_create_topic(VM&, ArgsView args)
     return inst;
 }
 
+namespace {
+// Backing storage for a runtime-built topic descriptor; the descriptor holds
+// raw pointers into these buffers, so the bundle must live as long as the
+// dds_topic_descriptor_t (tied together by the shared_ptr deleter in
+// buildTopicDescriptor).
+struct BuiltDescriptorStorage {
+    std::vector<uint32_t> ops;
+    std::vector<std::string> keyNames;
+    std::vector<dds_key_descriptor_t> keys;
+    std::string typeName;
+    std::vector<unsigned char> typeInfoBlob;
+    std::vector<unsigned char> typeMapBlob;
+};
+} // namespace
+
+std::shared_ptr<dds_topic_descriptor_t> ModuleDDS::buildTopicDescriptor(const std::string& typeName)
+{
+    const StructInfo* top = adapter ? adapter->findStruct(typeName) : nullptr;
+    if (!top)
+        throw std::runtime_error("dds: unknown IDL struct type '" + typeName + "'");
+    const std::string topFull = top->fullName;
+
+    auto storage = std::make_shared<BuiltDescriptorStorage>();
+    std::vector<uint32_t>& ops = storage->ops;
+
+    // Emission state: one ops block per struct (top-level first, dependencies
+    // appended in discovery order, idlc style), with forward jumps patched
+    // once every block's start index is known.
+    std::unordered_map<std::string, uint32_t> blockStart; // canonical name -> ops word index
+    std::vector<std::string> emitQueue;                   // canonical names, FIFO
+    struct JumpPatch {
+        size_t jumpWord;    // ops index of the [next-insn, elem-insn] word
+        size_t insnStart;   // ops index of the ADR op the jump is relative to
+        uint16_t nextInsn;  // instruction length for this op form
+        std::string target; // canonical struct name jumped to
+    };
+    std::vector<JumpPatch> patches;
+    struct KeyRef { std::string name; uint32_t adrWord; };
+    std::vector<KeyRef> keyRefs;
+
+    auto canonicalStruct = [&](const std::string& name) -> std::string {
+        const StructInfo* si = adapter->findStruct(name);
+        if (!si)
+            throw std::runtime_error("dds: unknown struct '" + name + "' referenced by " + topFull);
+        return si->fullName;
+    };
+    auto enqueueStruct = [&](const std::string& name) -> std::string {
+        std::string full = canonicalStruct(name);
+        if (!blockStart.count(full) &&
+            std::find(emitQueue.begin(), emitQueue.end(), full) == emitQueue.end())
+            emitQueue.push_back(full);
+        return full;
+    };
+    auto structSize = [&](const std::string& full) -> uint32_t {
+        const StructInfo* si = adapter->findStruct(full);
+        std::vector<size_t> offs;
+        return static_cast<uint32_t>(computeLayout(*si, offs));
+    };
+    auto enumMax = [&](const std::string& name) -> uint32_t {
+        const EnumInfo* e = adapter->findEnum(name);
+        if (!e || e->values.empty())
+            throw std::runtime_error("dds: unknown enum '" + name + "' referenced by " + topFull);
+        int32_t mx = e->values.front().second;
+        for (const auto& v : e->values)
+            mx = std::max(mx, v.second);
+        return static_cast<uint32_t>(mx);
+    };
+    // Pre-cast: C++20 deprecates bitwise ops between different enum types,
+    // and every op word starts with DDS_OP_ADR (left-assoc then keeps the
+    // accumulating type uint32_t).
+    constexpr uint32_t kAdr = static_cast<uint32_t>(DDS_OP_ADR);
+    // Enums are stored as 4 bytes; idlc encodes that in the op's size flag.
+    constexpr uint32_t enuSz4 = 2u << DDS_OP_FLAG_SZ_SHIFT;
+
+    // Type bits (plus SGN/FP flags) for primitive leaves. shift 16 yields the
+    // primary type code of an ADR op, shift 8 the sequence/array subtype.
+    auto primCode = [](FieldType::Kind k, unsigned shift) -> std::optional<uint32_t> {
+        switch (k) {
+            case FieldType::Kind::Bool:    return DDS_OP_VAL_BLN << shift;
+            case FieldType::Kind::Byte:    return DDS_OP_VAL_1BY << shift;
+            case FieldType::Kind::Int32:   return (DDS_OP_VAL_4BY << shift) | DDS_OP_FLAG_SGN;
+            case FieldType::Kind::Int64:   return (DDS_OP_VAL_8BY << shift) | DDS_OP_FLAG_SGN;
+            case FieldType::Kind::UInt64:  return DDS_OP_VAL_8BY << shift;
+            case FieldType::Kind::Float64: return (DDS_OP_VAL_8BY << shift) | DDS_OP_FLAG_FP;
+            default: return std::nullopt;
+        }
+    };
+
+    std::function<void(const FieldType&, uint32_t, uint32_t)> emitMember =
+        [&](const FieldType& ft, uint32_t offset, uint32_t flags) {
+        if (auto pc = primCode(ft.kind, 16)) {
+            ops.push_back(kAdr | *pc | flags);
+            ops.push_back(offset);
+            return;
+        }
+        switch (ft.kind) {
+            case FieldType::Kind::String:
+                if (ft.bounded && ft.bound > 0) {
+                    ops.push_back(kAdr | DDS_OP_TYPE_BST | flags);
+                    ops.push_back(offset);
+                    ops.push_back(ft.bound + 1);
+                } else {
+                    ops.push_back(kAdr | DDS_OP_TYPE_STR | flags);
+                    ops.push_back(offset);
+                }
+                return;
+            case FieldType::Kind::EnumRef:
+                ops.push_back(kAdr | DDS_OP_TYPE_ENU | enuSz4 | flags);
+                ops.push_back(offset);
+                ops.push_back(enumMax(ft.refName));
+                return;
+            case FieldType::Kind::StructRef: {
+                std::string full = enqueueStruct(ft.refName);
+                size_t insnStart = ops.size();
+                ops.push_back(kAdr | DDS_OP_TYPE_EXT | flags);
+                ops.push_back(offset);
+                patches.push_back({ops.size(), insnStart, 3, full});
+                ops.push_back(0); // [next-insn, elem-insn], patched later
+                return;
+            }
+            case FieldType::Kind::List:
+                break; // handled below
+            default:
+                throw std::runtime_error("dds: unsupported field type in " + topFull);
+        }
+
+        const FieldType* elem = ft.element.get();
+        if (!elem)
+            throw std::runtime_error("dds: sequence/array in " + topFull + " has unknown element type");
+
+        if (ft.isArray) {
+            uint32_t alen = ft.bound;
+            // Flatten array-of-array chains (multi-dim declarators are already
+            // flattened by idl_array_size; typedef-of-array nesting lands here).
+            while (elem->kind == FieldType::Kind::List && elem->isArray) {
+                if (elem->bound == 0 || !elem->element)
+                    throw std::runtime_error("dds: bad nested array in " + topFull);
+                alen *= elem->bound;
+                elem = elem->element.get();
+            }
+            if (alen == 0)
+                throw std::runtime_error("dds: fixed array with no size in " + topFull);
+
+            if (auto pc = primCode(elem->kind, 8)) {
+                ops.push_back(kAdr | DDS_OP_TYPE_ARR | *pc | flags);
+                ops.push_back(offset);
+                ops.push_back(alen);
+                return;
+            }
+            switch (elem->kind) {
+                case FieldType::Kind::EnumRef:
+                    ops.push_back(kAdr | DDS_OP_TYPE_ARR | DDS_OP_SUBTYPE_ENU | enuSz4 | flags);
+                    ops.push_back(offset);
+                    ops.push_back(alen);
+                    ops.push_back(enumMax(elem->refName));
+                    return;
+                case FieldType::Kind::String:
+                    if (elem->bounded && elem->bound > 0) {
+                        ops.push_back(kAdr | DDS_OP_TYPE_ARR | DDS_OP_SUBTYPE_BST | flags);
+                        ops.push_back(offset);
+                        ops.push_back(alen);
+                        ops.push_back(0);
+                        ops.push_back(elem->bound + 1);
+                    } else {
+                        ops.push_back(kAdr | DDS_OP_TYPE_ARR | DDS_OP_SUBTYPE_STR | flags);
+                        ops.push_back(offset);
+                        ops.push_back(alen);
+                    }
+                    return;
+                case FieldType::Kind::StructRef: {
+                    std::string full = enqueueStruct(elem->refName);
+                    size_t insnStart = ops.size();
+                    ops.push_back(kAdr | DDS_OP_TYPE_ARR | DDS_OP_SUBTYPE_STU | flags);
+                    ops.push_back(offset);
+                    ops.push_back(alen);
+                    patches.push_back({ops.size(), insnStart, 5, full});
+                    ops.push_back(0); // [next-insn, elem-insn]
+                    ops.push_back(structSize(full));
+                    return;
+                }
+                case FieldType::Kind::List: { // array of sequences: inline element block
+                    size_t insnStart = ops.size();
+                    ops.push_back(kAdr | DDS_OP_TYPE_ARR |
+                                  ((elem->bounded && elem->bound > 0 && !elem->isArray)
+                                       ? DDS_OP_SUBTYPE_BSQ : DDS_OP_SUBTYPE_SEQ) | flags);
+                    ops.push_back(offset);
+                    ops.push_back(alen);
+                    size_t jumpWord = ops.size();
+                    ops.push_back(0);
+                    ops.push_back(static_cast<uint32_t>(typeSizeInternal(*elem, this)));
+                    size_t blockAt = ops.size();
+                    emitMember(*elem, 0, 0);
+                    ops.push_back(DDS_OP_RTS);
+                    ops[jumpWord] = (static_cast<uint32_t>(ops.size() - insnStart) << 16) |
+                                    static_cast<uint32_t>(blockAt - insnStart);
+                    return;
+                }
+                default:
+                    throw std::runtime_error("dds: unsupported array element type in " + topFull);
+            }
+        }
+
+        // (bounded) sequence
+        const bool bsq = ft.bounded && ft.bound > 0;
+        const uint32_t seqType = bsq ? DDS_OP_TYPE_BSQ : DDS_OP_TYPE_SEQ;
+        auto pushSeqHead = [&](uint32_t subtypeBits) -> size_t {
+            size_t insnStart = ops.size();
+            ops.push_back(kAdr | seqType | subtypeBits | flags);
+            ops.push_back(offset);
+            if (bsq)
+                ops.push_back(ft.bound);
+            return insnStart;
+        };
+        if (auto pc = primCode(elem->kind, 8)) {
+            pushSeqHead(*pc);
+            return;
+        }
+        switch (elem->kind) {
+            case FieldType::Kind::EnumRef:
+                pushSeqHead(DDS_OP_SUBTYPE_ENU | enuSz4);
+                ops.push_back(enumMax(elem->refName));
+                return;
+            case FieldType::Kind::String:
+                if (elem->bounded && elem->bound > 0) {
+                    pushSeqHead(DDS_OP_SUBTYPE_BST);
+                    ops.push_back(elem->bound + 1);
+                } else {
+                    pushSeqHead(DDS_OP_SUBTYPE_STR);
+                }
+                return;
+            case FieldType::Kind::StructRef: {
+                std::string full = enqueueStruct(elem->refName);
+                size_t insnStart = pushSeqHead(DDS_OP_SUBTYPE_STU);
+                ops.push_back(structSize(full)); // element size in memory
+                patches.push_back({ops.size(), insnStart, static_cast<uint16_t>(bsq ? 5 : 4), full});
+                ops.push_back(0); // [next-insn, elem-insn]
+                return;
+            }
+            case FieldType::Kind::List: { // sequence of collections: inline element block
+                uint32_t sub = elem->isArray ? DDS_OP_SUBTYPE_ARR
+                             : (elem->bounded && elem->bound > 0) ? DDS_OP_SUBTYPE_BSQ
+                                                                  : DDS_OP_SUBTYPE_SEQ;
+                size_t insnStart = pushSeqHead(sub);
+                ops.push_back(static_cast<uint32_t>(typeSizeInternal(*elem, this)));
+                size_t jumpWord = ops.size();
+                ops.push_back(0);
+                size_t blockAt = ops.size();
+                emitMember(*elem, 0, 0);
+                ops.push_back(DDS_OP_RTS);
+                ops[jumpWord] = (static_cast<uint32_t>(ops.size() - insnStart) << 16) |
+                                static_cast<uint32_t>(blockAt - insnStart);
+                return;
+            }
+            default:
+                throw std::runtime_error("dds: unsupported sequence element type in " + topFull);
+        }
+    };
+
+    // @key only on top-level members (nested key chains are not supported;
+    // they were not supported by the previous dynamic-type path either).
+    auto fieldFlags = [&](const FieldInfo& f, bool isTop) -> uint32_t {
+        if (f.isKey && isTop) {
+            keyRefs.push_back({f.name, static_cast<uint32_t>(ops.size())});
+            return DDS_OP_FLAG_KEY;
+        }
+        return 0;
+    };
+
+    auto emitStructBlock = [&](const std::string& full) {
+        const StructInfo* si = adapter->findStruct(full);
+        blockStart[full] = static_cast<uint32_t>(ops.size());
+        const bool isTop = (full == topFull);
+        std::vector<size_t> offsets;
+        computeLayout(*si, offsets);
+        if (si->extensibility == IDL_MUTABLE) {
+            // Parameter-list CDR: PLC + [PLM, elem-insn][member-id] list, then
+            // one RTS-terminated ADR block per member. Member ids are
+            // sequential, matching the AUTOID_SEQUENTIAL the dynamic-type
+            // path used.
+            ops.push_back(DDS_OP_PLC);
+            size_t plmStart = ops.size();
+            for (size_t i = 0; i < si->fields.size(); ++i) {
+                ops.push_back(DDS_OP_PLM); // elem-insn patched below
+                ops.push_back(static_cast<uint32_t>(i));
+            }
+            ops.push_back(DDS_OP_RTS);
+            for (size_t i = 0; i < si->fields.size(); ++i) {
+                size_t plmWord = plmStart + 2 * i;
+                ops[plmWord] |= static_cast<uint32_t>((ops.size() - plmWord) & 0xffffu);
+                emitMember(si->fields[i].type, static_cast<uint32_t>(offsets[i]),
+                           fieldFlags(si->fields[i], isTop));
+                ops.push_back(DDS_OP_RTS);
+            }
+        } else {
+            if (si->extensibility == IDL_APPENDABLE)
+                ops.push_back(DDS_OP_DLC); // XCDR2 delimited CDR (DHEADER)
+            for (size_t i = 0; i < si->fields.size(); ++i)
+                emitMember(si->fields[i].type, static_cast<uint32_t>(offsets[i]),
+                           fieldFlags(si->fields[i], isTop));
+            ops.push_back(DDS_OP_RTS);
+        }
+    };
+
+    enqueueStruct(topFull);
+    for (size_t qi = 0; qi < emitQueue.size(); ++qi)
+        emitStructBlock(emitQueue[qi]);
+
+    for (const auto& p : patches) {
+        auto it = blockStart.find(p.target);
+        if (it == blockStart.end())
+            throw std::runtime_error("dds: internal: no ops block emitted for " + p.target);
+        int32_t rel = static_cast<int32_t>(it->second) - static_cast<int32_t>(p.insnStart);
+        if (rel < INT16_MIN || rel > INT16_MAX)
+            throw std::runtime_error("dds: ops jump out of range for " + p.target);
+        ops[p.jumpWord] = (static_cast<uint32_t>(p.nextInsn) << 16) |
+                          (static_cast<uint32_t>(rel) & 0xffffu);
+    }
+
+    storage->keyNames.reserve(keyRefs.size());
+    storage->keys.reserve(keyRefs.size());
+    for (size_t i = 0; i < keyRefs.size(); ++i) {
+        uint32_t kofAt = static_cast<uint32_t>(ops.size());
+        ops.push_back(DDS_OP_KOF | 1u);
+        ops.push_back(keyRefs[i].adrWord);
+        storage->keyNames.push_back(keyRefs[i].name);
+        storage->keys.push_back({storage->keyNames.back().c_str(), kofAt,
+                                 static_cast<uint32_t>(i)});
+    }
+
+    // XTypes metadata (serialized typeinfo/typemap) is generated from the
+    // parsed IDL, so it must describe the wire encoding the ops actually
+    // produce. Skip it when the marshalling diverges from the IDL: widened
+    // primitives (float32/int16/... stored and sent at Roxal's wider width)
+    // and @optional members (marshalled as plain required fields). Without
+    // the blobs the type participates by name, like a NO_TYPE_INFO build.
+    bool metaEligible = true;
+    {
+        std::unordered_set<std::string> seen { topFull };
+        std::function<bool(const FieldType&)> ftClean = [&](const FieldType& ft) -> bool {
+            if (ft.widened)
+                return false;
+            if (ft.element && !ftClean(*ft.element))
+                return false;
+            if (ft.kind == FieldType::Kind::StructRef) {
+                const StructInfo* si = adapter->findStruct(ft.refName);
+                if (!si)
+                    return false;
+                if (!seen.insert(si->fullName).second)
+                    return true;
+                for (const auto& f : si->fields)
+                    if (f.isOptional || !ftClean(f.type))
+                        return false;
+            }
+            return true;
+        };
+        for (const auto& f : top->fields) {
+            if (f.isOptional || !ftClean(f.type)) {
+                metaEligible = false;
+                break;
+            }
+        }
+    }
+    if (metaEligible) {
+        std::vector<unsigned char> ti, tm;
+        if (adapter->typeMetaFor(topFull, ti, tm) && !ti.empty() && !tm.empty()) {
+            storage->typeInfoBlob = std::move(ti);
+            storage->typeMapBlob = std::move(tm);
+        }
+    }
+
+    std::vector<size_t> topOffsets;
+    const uint32_t sampleSize = static_cast<uint32_t>(computeLayout(*top, topOffsets));
+    uint32_t align = 1;
+    for (const auto& f : top->fields)
+        align = std::max(align, static_cast<uint32_t>(fieldAlignInternal(f.type, this)));
+
+    storage->typeName = topFull;
+    const bool haveMeta = !storage->typeInfoBlob.empty();
+    auto* desc = new dds_topic_descriptor_t{
+        .m_size = sampleSize,
+        .m_align = align,
+        .m_flagset = haveMeta ? DDS_TOPIC_XTYPES_METADATA : 0u,
+        .m_nkeys = static_cast<uint32_t>(storage->keys.size()),
+        .m_typename = storage->typeName.c_str(),
+        .m_keys = storage->keys.empty() ? nullptr : storage->keys.data(),
+        .m_nops = static_cast<uint32_t>(ops.size()),
+        .m_ops = storage->ops.data(),
+        .m_meta = "",
+        .type_information = { haveMeta ? storage->typeInfoBlob.data() : nullptr,
+                              haveMeta ? static_cast<uint32_t>(storage->typeInfoBlob.size()) : 0u },
+        .type_mapping = { haveMeta ? storage->typeMapBlob.data() : nullptr,
+                          haveMeta ? static_cast<uint32_t>(storage->typeMapBlob.size()) : 0u },
+        .restrict_data_representation = 0,
+    };
+    // The deleter captures the storage bundle, keeping ops/keys/blobs alive
+    // for as long as any TopicSupport/SignalBinding references the descriptor.
+    return std::shared_ptr<dds_topic_descriptor_t>(desc,
+        [storage](dds_topic_descriptor_t* p) { delete p; });
+}
+
 std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::buildDynamicTopic(Value participantVal, const std::string& topicName, const std::string& typeName, dds_qos_t* qos)
 {
     dds_entity_t participant = entityFromValue(participantVal, true);
@@ -545,282 +945,28 @@ std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::buildDynamicTopic(Value part
     const auto* structInfo = self->adapter->findStruct(typeName);
     if (!structInfo)
         return nullptr;
-    bool hasArray = false;
-    for (const auto& f : structInfo->fields) {
-        if (f.type.isArray) { hasArray = true; break; }
-    }
 
-    auto nameStorage = std::make_shared<std::vector<std::string>>();
-    auto keepName = [&](const std::string& n) -> const char* {
-        nameStorage->push_back(n);
-        return nameStorage->back().c_str();
-    };
-
-    // Try using serialized typeinfo from adapter if available. We skip it when
-    // arrays are present because the CycloneDDS topic descriptor (m_ops) layout
-    // differs from our manual packing for fixed arrays; using the generated
-    // descriptor with our marshal code would misalign fields. Until we decode
-    // and honor m_ops for arrays, stick to the manual layout for array-bearing
-    // types.
-    if (!hasArray) {
-        std::vector<unsigned char> perInfo;
-        std::vector<unsigned char> perMap;
-        if (self->adapter->typeMetaFor(typeName, perInfo, perMap) && !perInfo.empty()) {
-            ddsi_typeinfo* ti = ddsi_typeinfo_deser(perInfo.data(),
-                                                   static_cast<uint32_t>(perInfo.size()));
-            if (ti) {
-                dds_topic_descriptor_t* descOut = nullptr;
-                dds_return_t rc = dds_create_topic_descriptor(DDS_FIND_SCOPE_LOCAL_DOMAIN,
-                                                             participant,
-                                                             reinterpret_cast<const dds_typeinfo_t*>(ti),
-                                                             DDS_SECS(5),
-                                                             &descOut);
-                if (rc == DDS_RETCODE_OK && descOut) {
-                    dds_entity_t topic = ::dds_create_topic(participant, descOut, topicName.c_str(), qos, nullptr);
-                    if (topic > 0) {
-                        auto support = std::make_shared<TopicSupport>();
-                        support->descriptor = std::shared_ptr<dds_topic_descriptor_t>(descOut, dds_delete_topic_descriptor);
-                        support->typeinfo = std::shared_ptr<ddsi_typeinfo>(ti, ddsi_typeinfo_free);
-                        support->typeName = typeName;
-                        support->entity = topic;
-                        support->handle = self ? self->makeHandleValue(topic) : Value::nilVal();
-                        support->nameStorage = nameStorage;
-                        return support;
-                    }
-                    dds_delete_topic_descriptor(descOut);
-                }
-                ddsi_typeinfo_free(ti);
-            }
-        }
-    }
-
-    std::unordered_map<std::string, dds_dynamic_type_t> enumTypes;
-    std::unordered_map<std::string, dds_dynamic_type_t> structTypes;
-    std::unordered_map<std::string, dds_dynamic_type_t> stringTypes;
-
-    auto canonicalStructName = [&](const std::string& name) -> std::string {
-        const auto* sInfo = self->adapter->findStruct(name);
-        return sInfo ? sInfo->fullName : name;
-    };
-    auto canonicalEnumName = [&](const std::string& name) -> std::string {
-        const auto* eInfo = self->adapter->findEnum(name);
-        return eInfo ? eInfo->fullName : name;
-    };
-
-    std::function<dds_dynamic_type_spec_t(const FieldType&)> makeSpec;
-    std::function<dds_dynamic_type_t(const std::string&)> makeStructType =
-        [&](const std::string& requestedName) -> dds_dynamic_type_t {
-            std::string full = canonicalStructName(requestedName);
-            auto it = structTypes.find(full);
-            if (it != structTypes.end())
-                return it->second;
-            const auto* sInfo = self->adapter->findStruct(full);
-            dds_dynamic_type_descriptor_t sd{};
-            sd.kind = DDS_DYNAMIC_STRUCTURE;
-            sd.name = keepName(full);
-            dds_dynamic_type_t stype = dds_dynamic_type_create(participant, sd);
-            if (stype.ret != DDS_RETCODE_OK || !sInfo) {
-                structTypes.emplace(full, stype);
-                return stype;
-            }
-            dds_dynamic_type_extensibility ext = DDS_DYNAMIC_TYPE_EXT_APPENDABLE;
-            if (sInfo->extensibility == IDL_FINAL)
-                ext = DDS_DYNAMIC_TYPE_EXT_FINAL;
-            else if (sInfo->extensibility == IDL_MUTABLE)
-                ext = DDS_DYNAMIC_TYPE_EXT_MUTABLE;
-            dds_dynamic_type_set_extensibility(&stype, ext);
-            dds_dynamic_type_set_nested(&stype, false);
-            dds_dynamic_type_set_autoid(&stype, DDS_DYNAMIC_TYPE_AUTOID_SEQUENTIAL);
-            uint32_t memberId = 0;
-            for (const auto& field : sInfo->fields) {
-                auto spec = makeSpec(field.type);
-                dds_dynamic_member_descriptor_t mdesc{};
-                uint32_t thisId = memberId++;
-                if (spec.kind == DDS_DYNAMIC_TYPE_KIND_PRIMITIVE)
-                    mdesc = DDS_DYNAMIC_MEMBER_PRIM(spec.type.primitive, field.name.c_str());
-                else
-                    mdesc = DDS_DYNAMIC_MEMBER_(spec, field.name.c_str(), thisId, DDS_DYNAMIC_MEMBER_INDEX_END);
-                mdesc.id = thisId;
-                dds_return_t mrc = dds_dynamic_type_add_member(&stype, mdesc);
-                if (mrc != DDS_RETCODE_OK)
-                    throw std::runtime_error("Failed to add member " + field.name + ": " + dds_strretcode(-mrc));
-                if (field.isKey) {
-                    dds_return_t krc = dds_dynamic_member_set_key(&stype, mdesc.id, true);
-                    if (krc != DDS_RETCODE_OK) {
-                        fprintf(stderr, "Failed to set key on %s.%s: %s\n",
-                                sInfo->fullName.c_str(), field.name.c_str(), dds_strretcode(-krc));
-                    }
-                }
-                if (field.isOptional)
-                    dds_dynamic_member_set_optional(&stype, mdesc.id, true);
-            }
-            structTypes.emplace(full, stype);
-            return stype;
-        };
-
-    auto makeEnumType = [&](const std::string& name) -> dds_dynamic_type_t {
-        std::string enameCanonical = canonicalEnumName(name);
-        auto it = enumTypes.find(enameCanonical);
-        if (it != enumTypes.end())
-            return it->second;
-        const auto* einfo = self->adapter->findEnum(name);
-        dds_dynamic_type_descriptor_t edesc{};
-        edesc.kind = DDS_DYNAMIC_ENUMERATION;
-        std::string ename = enameCanonical.empty() ? std::string("enum") : enameCanonical;
-        edesc.name = keepName(ename);
-        dds_dynamic_type_t etype = dds_dynamic_type_create(participant, edesc);
-        if (etype.ret != DDS_RETCODE_OK) {
-            throw std::runtime_error("Failed to create enum type " + ename + ": " + dds_strretcode(-etype.ret));
-        }
-        if (etype.ret == DDS_RETCODE_OK && einfo) {
-            for (const auto& val : einfo->values) {
-                dds_dynamic_type_add_enum_literal(&etype, val.first.c_str(),
-                                                  DDS_DYNAMIC_ENUM_LITERAL_VALUE(val.second),
-                                                  false);
-            }
-        }
-        enumTypes.emplace(enameCanonical, etype);
-        return etype;
-    };
-
-    auto seqTypeName = [&](const FieldType& elem, bool bounded, uint32_t bound) {
-        std::string base;
-        switch (elem.kind) {
-            case FieldType::Kind::StructRef: base = canonicalStructName(elem.refName); break;
-            case FieldType::Kind::EnumRef: base = canonicalEnumName(elem.refName); break;
-            case FieldType::Kind::String: base = "string"; break;
-            case FieldType::Kind::Bool: base = "bool"; break;
-            case FieldType::Kind::Byte: base = "byte"; break;
-            case FieldType::Kind::Int32: base = "int32"; break;
-            case FieldType::Kind::Int64: base = "int64"; break;
-            case FieldType::Kind::UInt64: base = "uint64"; break;
-            case FieldType::Kind::Float64: base = "float64"; break;
-            case FieldType::Kind::List: base = "list"; break;
-            default: base = "seq";
-        }
-        std::string name = "seq<" + base + ">";
-        if (bounded && bound > 0)
-            name += "[b" + std::to_string(bound) + "]";
-        return name;
-    };
-
-    makeSpec =
-        [&](const FieldType& ft) -> dds_dynamic_type_spec_t {
-            dds_dynamic_type_spec_t spec{};
-            switch (ft.kind) {
-                case FieldType::Kind::Bool: spec.kind = DDS_DYNAMIC_TYPE_KIND_PRIMITIVE; spec.type.primitive = DDS_DYNAMIC_BOOLEAN; break;
-                case FieldType::Kind::Byte: spec.kind = DDS_DYNAMIC_TYPE_KIND_PRIMITIVE; spec.type.primitive = DDS_DYNAMIC_UINT8; break;
-                case FieldType::Kind::Int32: spec.kind = DDS_DYNAMIC_TYPE_KIND_PRIMITIVE; spec.type.primitive = DDS_DYNAMIC_INT32; break;
-                case FieldType::Kind::Int64: spec.kind = DDS_DYNAMIC_TYPE_KIND_PRIMITIVE; spec.type.primitive = DDS_DYNAMIC_INT64; break;
-                case FieldType::Kind::UInt64: spec.kind = DDS_DYNAMIC_TYPE_KIND_PRIMITIVE; spec.type.primitive = DDS_DYNAMIC_UINT64; break;
-                case FieldType::Kind::Float64: spec.kind = DDS_DYNAMIC_TYPE_KIND_PRIMITIVE; spec.type.primitive = DDS_DYNAMIC_FLOAT64; break;
-                case FieldType::Kind::String: {
-                    std::string key = ft.bounded ? "string8[b" + std::to_string(ft.bound) + "]" : "string8";
-                    dds_dynamic_type_t st{};
-                    auto it = stringTypes.find(key);
-                    if (it != stringTypes.end()) {
-                        st = it->second;
-                    } else {
-                        dds_dynamic_type_descriptor_t sdesc{};
-                        sdesc.kind = DDS_DYNAMIC_STRING8;
-                        sdesc.name = keepName("_str");
-                        if (ft.bounded && ft.bound > 0) {
-                            static thread_local uint32_t boundsBuf[1];
-                            boundsBuf[0] = ft.bound;
-                            sdesc.bounds = boundsBuf;
-                            sdesc.num_bounds = 1;
-                        }
-                        st = dds_dynamic_type_create(participant, sdesc);
-                        if (st.ret != DDS_RETCODE_OK)
-                            throw std::runtime_error("Failed to build string type: " + std::string(dds_strretcode(-st.ret)));
-                        stringTypes.emplace(key, st);
-                    }
-                    spec = DDS_DYNAMIC_TYPE_SPEC(dds_dynamic_type_ref(&st));
-                    break;
-                }
-                case FieldType::Kind::List: {
-                    dds_dynamic_type_descriptor_t seqDesc{};
-                    seqDesc.kind = ft.isArray ? DDS_DYNAMIC_ARRAY : DDS_DYNAMIC_SEQUENCE;
-                    seqDesc.element_type = ft.element ? makeSpec(*ft.element)
-                                                      : dds_dynamic_type_spec_t{DDS_DYNAMIC_TYPE_KIND_PRIMITIVE, {.primitive = DDS_DYNAMIC_INT32}};
-                    if (ft.bounded || ft.isArray) {
-                        static thread_local uint32_t boundsBuf[1];
-                        boundsBuf[0] = ft.bound;
-                        seqDesc.bounds = boundsBuf;
-                        seqDesc.num_bounds = 1;
-                    }
-                    std::string seqName = seqTypeName(ft.element ? *ft.element : FieldType{FieldType::Kind::Int32}, ft.bounded || ft.isArray, ft.bound);
-                    seqDesc.name = keepName(seqName);
-                    dds_dynamic_type_t seqType = dds_dynamic_type_create(participant, seqDesc);
-                    if (seqType.ret != DDS_RETCODE_OK)
-                        throw std::runtime_error("Failed to build sequence type: " + std::string(dds_strretcode(-seqType.ret)));
-                    spec = DDS_DYNAMIC_TYPE_SPEC(dds_dynamic_type_ref(&seqType));
-                    break;
-                }
-                case FieldType::Kind::EnumRef: {
-                    dds_dynamic_type_t etype = makeEnumType(ft.refName);
-                    spec = DDS_DYNAMIC_TYPE_SPEC(dds_dynamic_type_ref(&etype));
-                    break;
-                }
-                case FieldType::Kind::StructRef: {
-                    std::string snameCanonical = canonicalStructName(ft.refName);
-                    dds_dynamic_type_t st = makeStructType(snameCanonical);
-                    if (st.ret == DDS_RETCODE_OK)
-                        spec = DDS_DYNAMIC_TYPE_SPEC(dds_dynamic_type_ref(&st));
-                    else {
-                        spec.kind = DDS_DYNAMIC_TYPE_KIND_PRIMITIVE;
-                        spec.type.primitive = DDS_DYNAMIC_STRING8;
-                    }
-                    break;
-                }
-                default:
-                    spec.kind = DDS_DYNAMIC_TYPE_KIND_PRIMITIVE;
-                    spec.type.primitive = DDS_DYNAMIC_STRING8;
-                    break;
-            }
-            return spec;
-        };
-
-    dds_dynamic_type_t dynType = makeStructType(typeName);
-    if (dynType.ret != DDS_RETCODE_OK)
-        throw std::runtime_error("Failed to build dynamic type for " + typeName + ": " + dds_strretcode(-dynType.ret));
-
-    ddsi_typeinfo* typeinfo = nullptr;
-    dds_return_t rc = dds_dynamic_type_register(&dynType, &typeinfo);
-    if (rc != DDS_RETCODE_OK || !typeinfo) {
-        dds_dynamic_type_unref(&dynType);
-        throw std::runtime_error("dds_dynamic_type_register failed for " + typeName + ": " + dds_strretcode(-rc));
-    }
-    dds_topic_descriptor_t* descOut = nullptr;
-    rc = dds_create_topic_descriptor(DDS_FIND_SCOPE_LOCAL_DOMAIN,
-                                     participant,
-                                     reinterpret_cast<const dds_typeinfo_t*>(typeinfo),
-                                     DDS_SECS(5),
-                                     &descOut);
-    if (rc != DDS_RETCODE_OK || !descOut) {
-        ddsi_typeinfo_free(typeinfo);
-        dds_dynamic_type_unref(&dynType);
-        throw std::runtime_error("dds_create_topic_descriptor failed for " + typeName + ": " + dds_strretcode(-rc));
-    }
-    dds_entity_t topic = ::dds_create_topic(participant, descOut, topicName.c_str(), qos, nullptr);
-    for (auto& kv : enumTypes) dds_dynamic_type_unref(&kv.second);
-    for (auto& kv : structTypes) dds_dynamic_type_unref(&kv.second);
-    for (auto& kv : stringTypes) dds_dynamic_type_unref(&kv.second);
-    if (topic <= 0) {
-        dds_delete_topic_descriptor(descOut);
-        ddsi_typeinfo_free(typeinfo);
-        throw std::runtime_error("dds_create_topic failed: " + std::string(dds_strretcode(-topic)));
-    }
-
-    dds_dynamic_type_unref(&dynType);
+    // Build a complete static-style descriptor (m_ops + XTypes metadata, see
+    // buildTopicDescriptor) and create the topic through the ordinary
+    // static-type path -- the same code path idlc-generated applications use,
+    // which registers and dedups type metadata against the process type
+    // library inside CycloneDDS. The previous implementation constructed
+    // types through the dds_dynamic_type_* API, whose typelib dedup frees a
+    // just-constructed type out from under any second handle to it whenever a
+    // matching entry already exists -- i.e. whenever the process typelib is
+    // populated, e.g. by a host application's statically registered types --
+    // crashing the process (use-after-free in CycloneDDS's
+    // dynamic_type_complete_locked dedup; reported upstream).
+    auto descriptor = self->buildTopicDescriptor(typeName);
+    dds_entity_t topic = ::dds_create_topic(participant, descriptor.get(), topicName.c_str(), qos, nullptr);
+    if (topic <= 0)
+        throw std::runtime_error("dds_create_topic failed for " + typeName + ": " + std::string(dds_strretcode(-topic)));
 
     auto support = std::make_shared<TopicSupport>();
-    support->descriptor = std::shared_ptr<dds_topic_descriptor_t>(descOut, dds_delete_topic_descriptor);
-    support->typeinfo = std::shared_ptr<ddsi_typeinfo>(typeinfo, ddsi_typeinfo_free);
+    support->descriptor = descriptor;
     support->typeName = typeName;
     support->entity = topic;
-    support->handle = self ? self->makeHandleValue(topic) : Value::nilVal();
-    support->nameStorage = nameStorage;
+    support->handle = self->makeHandleValue(topic);
     return support;
 }
 
