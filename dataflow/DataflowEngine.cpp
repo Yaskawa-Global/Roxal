@@ -310,7 +310,13 @@ void DataflowEngine::copyInto(const ptr<Signal>& lhs, const ptr<Signal>& rhs)
             return !sample.second.isNil();
         });
 
-    bool earliestSampleIsNil = rhsValues.empty() || rhsValues.begin()->second.isNil();
+    // Explicit iterator guard rather than `empty() || begin()->...`: GCC 13's
+    // -Wstringop-overflow can't see the short-circuit and reports a bogus
+    // read past the map object for the empty case (observed in the
+    // roxal-internal/FC build of this file).
+    bool earliestSampleIsNil = true;
+    if (auto firstSample = rhsValues.begin(); firstSample != rhsValues.end())
+        earliestSampleIsNil = firstSample->second.isNil();
 
     if (rhsHasConcreteSample) {
         for (const auto& kv : rhsValues)
