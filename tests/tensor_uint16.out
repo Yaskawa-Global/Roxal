@@ -1,0 +1,8 @@
+elems 1000 40000 65535
+min 1000 max 65535 sum 106535
+wrap 4464
+bytes 4 232 3 64 156
+tensor(shape=[2], dtype='float32')
+metres 1 40
+plain 1000 40000
+back 1000 40000

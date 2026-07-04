@@ -247,7 +247,7 @@ tests = [
     'tensor_basic', 'tensor_math', 'tensor_compare', 'tensor_convert', 'math_min_max_sum',
     'tensor_convert_err', 'matrix_tensor_err', 'vector_tensor_err',
     'tensor_slice', 'tensor_bytes', 'tensor_bytes_move', 'tensor_dtype_storage',
-    'tensor_bytes_len_err', 'tensor_bytes_conflict_err',
+    'tensor_bytes_len_err', 'tensor_bytes_conflict_err', 'tensor_uint16',
     'math_relu', 'math_softmax', 'math_argmax', 'math_clamp',
     'value_semantics', 'value_semantics_cow',
     'ffi1', 'ffi_addfloats', 'ffi_struct_out', 'ffi_inttypes', 'ffi_strlen', 'ffi_relative', 'ffi_toupper', 'ffi_primptr', 'ffi_voidptr_struct', 'cstruct1', 'cstruct2', 'cstruct3', 'cstruct_byval', 'cstruct_array',

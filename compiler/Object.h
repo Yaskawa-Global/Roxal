@@ -954,7 +954,8 @@ enum class TensorDType : uint8_t {
     Int32   = 5,
     Int64   = 6,
     UInt8   = 7,
-    Bool    = 8
+    UInt16  = 8,
+    Bool    = 9
 };
 
 std::string to_string(TensorDType dtype);

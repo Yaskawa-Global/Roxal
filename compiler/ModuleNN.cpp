@@ -88,6 +88,7 @@ static std::string ortDtypeToString(ONNXTensorElementDataType dt) {
         case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:   return "int32";
         case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:   return "int64";
         case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8:   return "uint8";
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT16:  return "uint16";
         case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL:    return "bool";
         default: return "unknown";
     }

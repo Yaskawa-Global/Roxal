@@ -1,0 +1,33 @@
+# uint16 tensor dtype: 16UC1 depth images arrive as uint16 millimetres
+# (RealSense wire convention). Verifies construction from raw bytes and data
+# lists, correctness above int16 range (>32767), byte round-trip, and the
+# astype() conversion that yields float32 metres in one call.
+
+# Construction from a raw byte buffer (little-endian uint16), as from a DDS
+# sequence<octet>: 1000mm, 40000mm (would be negative as int16), 65535mm.
+var depth = tensor(shape=[3], dtype="uint16", bytes=[232, 3, 64, 156, 255, 255])
+print("elems " + depth[0] + " " + depth[1] + " " + depth[2])
+print("min " + depth.min() + " max " + depth.max() + " sum " + depth.sum())
+
+# Storage quantizes like a hardware cast (matches other integer dtypes).
+var w = tensor(shape=[1], dtype="uint16")
+w[0] = 70000
+print("wrap " + w[0])          # 70000 mod 65536 = 4464
+
+# data= list construction and byte round-trip.
+var t = tensor(shape=[2], dtype="uint16", data=[1000, 40000])
+var b = t.to_bytes()
+print("bytes " + len(b) + " " + b[0] + " " + b[1] + " " + b[2] + " " + b[3])
+
+# astype: uint16 millimetres -> float32 metres in one call.
+var metres = t.astype("float32", scale=0.001)
+print(metres)                  # repr shows the float32 dtype
+print("metres " + metres[0] + " " + metres[1])
+
+# astype without scale is a plain elementwise convert.
+var f = t.astype("float64")
+print("plain " + f[0] + " " + f[1])
+
+# positional scale also accepted
+var mm = metres.astype("uint16", 1000.0)
+print("back " + mm[0] + " " + mm[1])

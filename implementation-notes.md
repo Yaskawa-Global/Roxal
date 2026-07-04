@@ -883,8 +883,9 @@ mis-encoded.  Not yet supported -- candidates for later enhancement:
   (`FieldType::widened`), which diverges from the IDL; XTypes metadata blobs
   are therefore skipped for types containing them (they fall back to
   name-based endpoint matching).  Proper support = new `FieldType` kinds +
-  2BY/4BY-FP ops + marshal cases.  Related: a future `TensorDType::UInt16`
-  (16-bit depth images) wants the same 16-bit plumbing.
+  2BY/4BY-FP ops + marshal cases.  (Tensors already support `uint16` --
+  `dtype='uint16'` plus `astype(dtype, scale=)` for e.g. 16-bit depth
+  images; this gap is only about DDS IDL field widths.)
 - **Unions** -- ops `DDS_OP_TYPE_UNI` + `DDS_OP_JEQ4` case labels; needs a
   Roxal-side representation for the discriminator/active-member.
 - **Maps** -- IDL `map<K,V>`; no `FieldType` representation.

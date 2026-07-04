@@ -4201,6 +4201,7 @@ std::string roxal::to_string(TensorDType dtype)
         case TensorDType::Int32:   return "int32";
         case TensorDType::Int64:   return "int64";
         case TensorDType::UInt8:   return "uint8";
+        case TensorDType::UInt16:  return "uint16";
         case TensorDType::Bool:    return "bool";
         default: return "unknown";
     }
@@ -4216,6 +4217,7 @@ TensorDType roxal::tensorDTypeFromString(const std::string& s)
     if (s == "int32" || s == "int") return TensorDType::Int32;
     if (s == "int64" || s == "long") return TensorDType::Int64;
     if (s == "uint8" || s == "byte") return TensorDType::UInt8;
+    if (s == "uint16" || s == "ushort") return TensorDType::UInt16;
     if (s == "bool") return TensorDType::Bool;
     throw std::runtime_error("Unknown tensor dtype: " + s);
 }
@@ -4233,6 +4235,7 @@ size_t roxal::tensorDTypeSize(TensorDType dtype)
         case TensorDType::Int32:   return 4;
         case TensorDType::Int64:   return 8;
         case TensorDType::UInt8:   return 1;
+        case TensorDType::UInt16:  return 2;
         case TensorDType::Bool:    return 1;
         default: return 0;
     }
@@ -4312,6 +4315,7 @@ static double rawElementAsDouble(const uint8_t* base, TensorDType dtype, int64_t
         case TensorDType::Int32:   { int32_t v;  std::memcpy(&v, base + idx*4, 4); return static_cast<double>(v); }
         case TensorDType::Int64:   { int64_t v;  std::memcpy(&v, base + idx*8, 8); return static_cast<double>(v); }
         case TensorDType::UInt8:   return static_cast<double>(base[idx]);
+        case TensorDType::UInt16:  { uint16_t v; std::memcpy(&v, base + idx*2, 2); return static_cast<double>(v); }
         case TensorDType::Bool:    return base[idx] ? 1.0 : 0.0;
         default: throw std::runtime_error("Unsupported dtype for element access");
     }
@@ -4328,6 +4332,7 @@ static void rawSetElementFromDouble(uint8_t* base, TensorDType dtype, int64_t id
         case TensorDType::Int32:   { int32_t x = static_cast<int32_t>(v); std::memcpy(base + idx*4, &x, 4); break; }
         case TensorDType::Int64:   { int64_t x = static_cast<int64_t>(v); std::memcpy(base + idx*8, &x, 8); break; }
         case TensorDType::UInt8:   base[idx] = static_cast<uint8_t>(v); break;
+        case TensorDType::UInt16:  { uint16_t x = static_cast<uint16_t>(v); std::memcpy(base + idx*2, &x, 2); break; }
         case TensorDType::Bool:    base[idx] = (v != 0.0) ? 1 : 0; break;
         default: throw std::runtime_error("Unsupported dtype for element write");
     }
@@ -4408,6 +4413,7 @@ static ONNXTensorElementDataType tensorDTypeToOrt(TensorDType dtype)
         case TensorDType::Int32:   return ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32;
         case TensorDType::Int64:   return ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64;
         case TensorDType::UInt8:   return ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8;
+        case TensorDType::UInt16:  return ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT16;
         case TensorDType::Bool:    return ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL;
         default: throw std::runtime_error("Unsupported TensorDType for ORT conversion");
     }
@@ -4424,6 +4430,7 @@ static TensorDType tensorDTypeFromOrt(ONNXTensorElementDataType ortType)
         case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32:   return TensorDType::Int32;
         case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64:   return TensorDType::Int64;
         case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8:   return TensorDType::UInt8;
+        case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT16:  return TensorDType::UInt16;
         case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL:    return TensorDType::Bool;
         default: throw std::runtime_error("Unsupported ORT element type");
     }
@@ -4522,6 +4529,7 @@ static double ortElementAsDouble(const Ort::Value& val, TensorDType dtype, int64
         case TensorDType::Int8:    return static_cast<double>(val.GetTensorData<int8_t>()[idx]);
         case TensorDType::Int16:   return static_cast<double>(val.GetTensorData<int16_t>()[idx]);
         case TensorDType::UInt8:   return static_cast<double>(val.GetTensorData<uint8_t>()[idx]);
+        case TensorDType::UInt16:  return static_cast<double>(val.GetTensorData<uint16_t>()[idx]);
         case TensorDType::Bool:    return val.GetTensorData<bool>()[idx] ? 1.0 : 0.0;
         default: throw std::runtime_error("Unsupported dtype for element access");
     }
@@ -4539,6 +4547,7 @@ static void ortSetElementFromDouble(Ort::Value& val, TensorDType dtype, int64_t 
         case TensorDType::Int8:    val.GetTensorMutableData<int8_t>()[idx] = static_cast<int8_t>(v); break;
         case TensorDType::Int16:   val.GetTensorMutableData<int16_t>()[idx] = static_cast<int16_t>(v); break;
         case TensorDType::UInt8:   val.GetTensorMutableData<uint8_t>()[idx] = static_cast<uint8_t>(v); break;
+        case TensorDType::UInt16:  val.GetTensorMutableData<uint16_t>()[idx] = static_cast<uint16_t>(v); break;
         case TensorDType::Bool:    val.GetTensorMutableData<bool>()[idx] = (v != 0.0); break;
         default: throw std::runtime_error("Unsupported dtype for element write");
     }

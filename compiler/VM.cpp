@@ -11032,6 +11032,23 @@ void VM::defineBuiltinMethods()
                         false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
     defineBuiltinMethod(ValueType::Tensor, "to_bytes", std::mem_fn(&VM::tensor_to_bytes_builtin),
                         false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    {
+        // astype(dtype, scale=1.0) — registered with a func type so scale can
+        // be passed by name (t.astype('float32', scale=0.001)).
+        using PT = type::Type::FuncType::ParamType;
+        ptr<type::Type> astypeType = make_ptr<type::Type>(type::BuiltinType::Func);
+        astypeType->func = type::Type::FuncType();
+        PT pDtype(toUnicodeString("dtype"));
+        pDtype.type = make_ptr<type::Type>(type::BuiltinType::String);
+        pDtype.hasDefault = false;
+        PT pScale(toUnicodeString("scale"));
+        pScale.type = make_ptr<type::Type>(type::BuiltinType::Real);
+        pScale.hasDefault = true;
+        astypeType->func->params = {pDtype, pScale};
+        std::vector<Value> astypeDefaults{Value::nilVal(), Value::realVal(1.0)};
+        defineBuiltinMethod(ValueType::Tensor, "astype", std::mem_fn(&VM::tensor_astype_builtin),
+                            false, astypeType, astypeDefaults, Value::nilVal(), /*noMutateSelf=*/true);
+    }
 
     // Orient methods — all read-only on self
     defineBuiltinMethod(ValueType::Orient, "rotate", std::mem_fn(&VM::orient_rotate_builtin),
@@ -11719,6 +11736,34 @@ Value VM::tensor_to_bytes_builtin(ArgsView args)
     size_t n = static_cast<size_t>(t->numel()) * tensorDTypeSize(t->dtype());
     const uint8_t* p = static_cast<const uint8_t*>(t->rawData());  // ORT arm ensures CPU
     return Value::listVal(std::vector<uint8_t>(p, p + n));
+}
+
+Value VM::tensor_astype_builtin(ArgsView args)
+{
+    // astype(dtype, scale=1.0): elementwise-convert to a new tensor of the
+    // given dtype, multiplying each element by scale on the way. One call
+    // turns e.g. a uint16 millimetre depth image into float32 metres:
+    //   depth_m = t.astype('float32', scale=0.001)
+    if (args.size() < 2 || !isTensor(args[0]))
+        throw std::invalid_argument("tensor.astype(dtype, scale=1.0) expects a dtype");
+    if (!isString(args[1]))
+        throw std::invalid_argument("tensor.astype dtype must be a string");
+    ObjTensor* src = asTensor(args[0]);
+    TensorDType dstDtype = tensorDTypeFromString(toUTF8StdString(asStringObj(args[1])->s));
+
+    double scale = 1.0;
+    if (args.size() > 2 && !args[2].isNil()) {
+        if (!args[2].isNumber())
+            throw std::invalid_argument("tensor.astype scale must be a number");
+        scale = args[2].isInt() ? static_cast<double>(args[2].asInt()) : args[2].asReal();
+    }
+
+    auto out = newTensorObj(src->shape(), dstDtype);
+    ObjTensor* dst = out.get();
+    const int64_t n = src->numel();
+    for (int64_t i = 0; i < n; ++i)
+        dst->setAt(i, src->at(i) * scale);
+    return Value::objVal(std::move(out));
 }
 
 // Orient helpers for creating quantity(rad) return values
