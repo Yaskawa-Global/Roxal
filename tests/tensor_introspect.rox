@@ -1,0 +1,38 @@
+# Tensor introspection methods: shape(), dtype(), dims().
+# Guards against the API existing in the docs but not the binary
+# (which is exactly how they went missing before).
+
+# shape() -> list of dimension sizes
+var t = tensor(2, 3, 4, dtype='float32')
+print(t.shape())
+print(t.dtype())
+print(t.dims())
+
+# 1-D
+var v = tensor(shape=[5], dtype='int32')
+print(v.shape())
+print(v.dtype())
+print(v.dims())
+
+# 2-D, default dtype
+var m = tensor(2, 3)
+print(m.shape())
+print(m.dtype())
+print(m.dims())
+
+# uint8 image-shaped (the camera/vision path)
+var img = tensor(shape=[480, 640, 3], dtype='uint8')
+print(img.shape())
+print(img.dtype())
+print(img.dims())
+
+# dtype survives an astype conversion; shape unchanged
+var d = tensor(shape=[2, 2], dtype='uint16').astype('float32', scale=0.001)
+print(d.shape())
+print(d.dtype())
+
+# shape() reflects the constructed shape, len() is total elements
+var big = tensor(shape=[3, 4, 5])
+print(big.shape())
+print(big.dims())
+print(len(big))

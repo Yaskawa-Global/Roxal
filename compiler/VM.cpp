@@ -11098,6 +11098,12 @@ void VM::defineBuiltinMethods()
         defineBuiltinMethod(ValueType::Tensor, "astype", std::mem_fn(&VM::tensor_astype_builtin),
                             false, astypeType, astypeDefaults, Value::nilVal(), /*noMutateSelf=*/true);
     }
+    defineBuiltinMethod(ValueType::Tensor, "shape", std::mem_fn(&VM::tensor_shape_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Tensor, "dtype", std::mem_fn(&VM::tensor_dtype_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Tensor, "dims", std::mem_fn(&VM::tensor_dims_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
 
     // Orient methods — all read-only on self
     defineBuiltinMethod(ValueType::Orient, "rotate", std::mem_fn(&VM::orient_rotate_builtin),
@@ -11785,6 +11791,34 @@ Value VM::tensor_to_bytes_builtin(ArgsView args)
     size_t n = static_cast<size_t>(t->numel()) * tensorDTypeSize(t->dtype());
     const uint8_t* p = static_cast<const uint8_t*>(t->rawData());  // ORT arm ensures CPU
     return Value::listVal(std::vector<uint8_t>(p, p + n));
+}
+
+Value VM::tensor_shape_builtin(ArgsView args)
+{
+    // shape(): dimension sizes as a list of ints, e.g. [2, 3, 4].
+    if (args.size() != 1 || !isTensor(args[0]))
+        throw std::invalid_argument("tensor.shape expects no arguments");
+    ObjTensor* t = asTensor(args[0]);
+    Value list = Value::objVal(newListObj());
+    for (int64_t dim : t->shape())
+        asList(list)->append(Value::intVal(dim));
+    return list;
+}
+
+Value VM::tensor_dtype_builtin(ArgsView args)
+{
+    // dtype(): element type name, e.g. 'float32'.
+    if (args.size() != 1 || !isTensor(args[0]))
+        throw std::invalid_argument("tensor.dtype expects no arguments");
+    return Value::stringVal(toUnicodeString(to_string(asTensor(args[0])->dtype())));
+}
+
+Value VM::tensor_dims_builtin(ArgsView args)
+{
+    // dims(): number of dimensions (rank), e.g. 3 for a [2,3,4] tensor.
+    if (args.size() != 1 || !isTensor(args[0]))
+        throw std::invalid_argument("tensor.dims expects no arguments");
+    return Value::intVal(static_cast<int64_t>(asTensor(args[0])->shape().size()));
 }
 
 Value VM::tensor_astype_builtin(ArgsView args)

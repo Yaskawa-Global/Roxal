@@ -848,6 +848,9 @@ public:
     Value tensor_sum_builtin(ArgsView args);
     Value tensor_to_bytes_builtin(ArgsView args);
     Value tensor_astype_builtin(ArgsView args);
+    Value tensor_shape_builtin(ArgsView args);
+    Value tensor_dtype_builtin(ArgsView args);
+    Value tensor_dims_builtin(ArgsView args);
 
     // Orient methods
     Value orient_rotate_builtin(ArgsView args);
