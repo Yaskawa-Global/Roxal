@@ -9823,7 +9823,26 @@ bool VM::processEventDispatch()
         dispatch.active = false;
     }
 
-    // Phase 2: Check for new pending events
+    // Phase 2: Check for new pending events.
+    //
+    // Do NOT start a new event dispatch while one is still in flight (a
+    // handler frame is executing, or more handlers remain for the current
+    // event).  The dispatch state is a single slot per thread —
+    // handlerSnapshot / nextHandlerIndex / prevThreadSleep(Until) — and
+    // this loop runs once per dispatched instruction, so without this
+    // gate a second pending event starts a NESTED dispatch from inside
+    // the first event's handler frame and clobbers all of it.  The
+    // observable corruption: the nested save overwrites a saved SLEEPING
+    // state with "awake", so after the restores a thread suspended in
+    // wait() resumes immediately (waits collapse to ~the first event's
+    // arrival time); the clobbered snapshot/index can also strand the
+    // outer dispatch entirely (waits hang).  Events stay queued; when
+    // the in-flight handler returns, Phase 1 above advances/completes
+    // the current dispatch and falls through here to start the next
+    // one in the same call.  One event dispatch at a time per thread.
+    if (dispatch.active)
+        return true;
+
     if (thread->pendingEventCount.load(std::memory_order_acquire) == 0)
         return true;
 
