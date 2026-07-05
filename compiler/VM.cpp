@@ -1794,12 +1794,53 @@ ExecutionStatus VM::setup(std::istream& source, const std::string& name,
     threads.store(mainThread->id(), mainThread);
     thread = mainThread;
 
+    // Run host-registered preludes (see addScriptPrelude) now: the script
+    // thread exists, but the body's frame is not pushed yet, so each prelude
+    // runs as its own self-contained top-level frame — returning cleanly when
+    // its frame pops the stack empty (execute()'s execute_depth==1 &&
+    // frames.empty() termination).  Any `when` handler a prelude registers is
+    // therefore owned by THIS thread, the one that will service the body.
+    // Consumed once so unrelated setup() calls (builtin modules, REPL) don't
+    // re-fire them.
+    //
+    // Hold the synchronous-execution guard across the prelude.  Our caller
+    // (runWithImports) only raises it AFTER setup() returns, but a host RT
+    // loop may already be ticking runFor() on another thread; without the
+    // guard it would enter execute() on `thread` (which now has the prelude's
+    // frames) concurrently with us — a double-driver on the same VM thread.
+    // Restore the prior value so the incremental setup()+runFor() path (which
+    // never registers preludes) is unaffected.
+    if (!scriptPreludes_.empty()) {
+        const bool prevSync =
+            inSynchronousExecution_.exchange(true, std::memory_order_acq_rel);
+        auto preludes = std::move(scriptPreludes_);
+        scriptPreludes_.clear();
+        ExecutionStatus preludeStatus = ExecutionStatus::OK;
+        for (const auto& pr : preludes) {
+            resetStack();
+            auto [pstatus, presult] = invokeMethod(pr.first, pr.second, {});
+            (void)presult;
+            if (pstatus != ExecutionStatus::OK || runtimeErrorFlag.load()) {
+                preludeStatus = ExecutionStatus::RuntimeError;
+                break;
+            }
+        }
+        inSynchronousExecution_.store(prevSync, std::memory_order_release);
+        if (preludeStatus != ExecutionStatus::OK)
+            return preludeStatus;
+    }
+
     resetStack();
     push(closureValue);
     if (!call(asClosure(closureValue), CallSpec(0)))
         return ExecutionStatus::RuntimeError;
 
     return ExecutionStatus::OK;
+}
+
+void VM::addScriptPrelude(const Value& receiver, const icu::UnicodeString& method)
+{
+    scriptPreludes_.emplace_back(receiver, method);
 }
 
 

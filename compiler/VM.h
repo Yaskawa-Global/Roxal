@@ -260,6 +260,25 @@ public:
     ExecutionStatus setup(std::istream& source, const std::string& sourceName,
                           const std::vector<Value>& imports);
 
+    /// Register a nullary method to invoke on the script's own VM thread,
+    /// once, immediately after that thread is created and before the script
+    /// body's frame runs (see setup()).  Preludes run in registration order,
+    /// each to completion as its own top-level frame; the list is consumed
+    /// (cleared) by the launch that fires them.
+    ///
+    /// The point is thread affinity: a `when`/reactive handler binds to the
+    /// Roxal `Thread` that registers it.  A host that must install such
+    /// handlers for a script (e.g. FC's `sim.bind()`, whose DDS/camera
+    /// handlers must be owned by the thread that services the script body)
+    /// cannot do so from its bootstrap thread — that thread is torn down
+    /// before the body runs.  Registering the call as a prelude lets it run
+    /// under the correct thread without the user script having to call it.
+    ///
+    /// `receiver` must stay reachable (a GC root) between registration and
+    /// the next run()/runWithImports(); in practice it is, being held by a
+    /// module var passed through `imports`.
+    void addScriptPrelude(const Value& receiver, const icu::UnicodeString& method);
+
     /// Execute for up to the given duration, then yield.
     /// Returns: {OK, returnValue} if completed, {Yielded, nil} if budget exhausted or blocked,
     /// {RuntimeError, nil} on error. Call repeatedly to continue execution.
@@ -662,6 +681,11 @@ protected:
     std::condition_variable rtCondVar_;
     Value pendingRTClosure_ { Value::nilVal() }; // protected by rtMutex_
     int rtCoreExclusion_ { -1 }; // -1 = disabled (desktop), >=0 = exclude this core for actor threads
+
+    // Host-registered prelude invocations (see addScriptPrelude). Run once,
+    // on the script thread, before the body's frame — then cleared. Empty in
+    // the default build, so behaviour is unchanged.
+    std::vector<std::pair<Value, icu::UnicodeString>> scriptPreludes_;
 
     // Host UI event-loop integration (e.g. Qt). When set (serviced on the main
     // thread only), the dispatch loop pumps the host loop while busy and blocks
