@@ -432,10 +432,27 @@ void DataflowEngine::run() {
         // gaps, taking the final (<1ms) stretch as a precise sleep so tick
         // timing is unchanged.
         processPendingEventUpdates();
-        while (TimePoint::currentTime() + TimeDuration::milliSecs(1) < m_tickStart) {
+        // Re-check m_shouldStop AND m_hostDriven throughout the tick gap -- the
+        // outer loop only re-checks them once per tick, but this gap can span a
+        // whole tick period (and sleepUntil below waits out the rest):
+        //  * m_shouldStop: if the engine clock is simulator time that stops
+        //    advancing once the sim process exits, TimePoint::currentTime()
+        //    never reaches m_tickStart, so a stop() requested during the gap is
+        //    never observed and VM teardown's join of this thread hangs forever.
+        //  * m_hostDriven: a host (e.g. FC's RT loop) may call tickFor() and
+        //    take over the periodic schedule after run() has already entered
+        //    this branch (it starts false, before the host's first tickFor).
+        //    Bail so the outer loop takes the host-driven branch (draining
+        //    events) instead of this thread sitting dormant until a far-future
+        //    m_tickStart -- and double-driving the schedule if it ever wakes.
+        while (!m_shouldStop
+               && !m_hostDriven.load(std::memory_order_relaxed)
+               && TimePoint::currentTime() + TimeDuration::milliSecs(1) < m_tickStart) {
             if (!processPendingEventUpdates())
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
+        if (m_shouldStop || m_hostDriven.load(std::memory_order_relaxed))
+            continue;  // stop, or the host took over -> re-evaluate via outer loop
         sleepUntil(m_tickStart);
         tick(false);
     }
