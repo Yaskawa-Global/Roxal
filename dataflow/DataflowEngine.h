@@ -148,6 +148,20 @@ private:
 
     mutable std::recursive_mutex m_mutex; // guard network structures
 
+    // Interim single-evaluator guard.  Held for the duration of island
+    // evaluation by BOTH drivers -- tickFor() (the host/RT thread's periodic
+    // schedule) and processEventDrivenSignalUpdate() (the actor thread draining
+    // the pending-event queue) -- so the two never mutate engine state
+    // (signalConsumers, FuncNode availability, island state) concurrently.
+    // Deadlock-free w.r.t. the stop-the-world GC: both entry points are reached
+    // from NATIVE code, and a thread is only counted by the collector while
+    // inside execute(); a thread blocked here is off-execute(), so the GC never
+    // waits on it.  Lock ORDER: m_evalMutex before m_mutex, never the reverse.
+    // (Interim only: the RT thread can wait out an in-flight event evaluation --
+    // sub-ms for camera tensor transforms; the real fix is the single-driver
+    // rearchitecture.)
+    std::recursive_mutex m_evalMutex;
+
     // engine ticks occur at GCD of all clock signals
     std::atomic<TimeDuration> m_tickPeriod;
 

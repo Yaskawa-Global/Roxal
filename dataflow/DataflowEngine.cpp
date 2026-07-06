@@ -658,6 +658,13 @@ DataflowEngine::TickResult DataflowEngine::tickFor(TimeDuration budget)
     // m_hostDriven) or the two drivers race on the same islands.
     m_hostDriven.store(true, std::memory_order_relaxed);
 
+    // Interim single-evaluator guard: serialize periodic evaluation here with
+    // the actor thread's event-driven evaluation (processEventDrivenSignalUpdate)
+    // so they never touch engine state concurrently.  Released on every return,
+    // including the Yielded budget-slice path, so the actor thread gets the
+    // engine between our slices.  See m_evalMutex.
+    std::lock_guard<std::recursive_mutex> evalLock(m_evalMutex);
+
     auto deadline = TimePoint::currentTime() + budget;
 
     // If we have yielded work, check for overrun then resume
@@ -927,6 +934,13 @@ void DataflowEngine::processEventDrivenSignalUpdate(ptr<Signal> signal, TimePoin
         m_pendingEventUpdates.emplace_back(std::move(wrapper), timestamp);
         return;
     }
+
+    // Interim single-evaluator guard: serialize this event-driven evaluation
+    // with tickFor()'s periodic evaluation so the two drivers never mutate
+    // engine state concurrently.  Held only around the evaluation itself, NOT
+    // the foreign-thread queue path above (which merely enqueues).  See
+    // m_evalMutex.
+    std::lock_guard<std::recursive_mutex> evalLock(m_evalMutex);
 
     if (m_networkModified)
         buildNetworkCacheData();
