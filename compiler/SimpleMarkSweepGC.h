@@ -83,8 +83,19 @@ public:
     // Obj::unrefedObjs afterwards via VM::freeObjects().
     size_t collectNowForShutdown();
 
+    // Set once VM::shutdown() begins tearing the object graph down.  Object
+    // destructors that must behave differently during bulk teardown (e.g.
+    // ObjSignal clears its Signal's buffered Value history so those Object-
+    // backed Values don't get decRef'd after their targets are freed) consult
+    // this.  It is never set during normal incremental GC, so live shared
+    // objects keep their state.
+    void setShuttingDown(bool v) { m_shuttingDown.store(v, std::memory_order_release); }
+    bool isShuttingDown() const { return m_shuttingDown.load(std::memory_order_acquire); }
+
 private:
     SimpleMarkSweepGC() = default;
+
+    std::atomic<bool> m_shuttingDown { false };
 
     struct CollectionResult {
         std::vector<Obj*> unreachable;

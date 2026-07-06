@@ -103,6 +103,12 @@ Signal::~Signal()
 {
 }
 
+void Signal::clearValues()
+{
+    std::lock_guard<std::recursive_mutex> lock(m_valuesMutex);
+    values.clear();
+}
+
 void Signal::trace(roxal::ValueVisitor& visitor) const
 {
     // GC tracing can run while a non-VM thread (e.g. the DDS reader-signal

@@ -5077,6 +5077,17 @@ void ObjSignal::dropReferences()
     changeEventType = Value::nilVal();
     changeEventSignal.reset();
     changeEventUsesTimeSpan = false;
+    // During VM bulk teardown, also release the Signal's buffered time->Value
+    // history now -- in freeObjects() phase 1, while every Obj is still alive.
+    // Those Values can be Object-backed (e.g. tensor-valued camera / DDS-reader
+    // signals, which are NOT registered in the DataflowEngine so its clear()
+    // never reaches them); if they linger into phase 2 (~Signal), destroying
+    // them decRef's Objs that freeObjects() has already freed -- a shutdown
+    // use-after-free / heap corruption.  Gated on the shutdown flag so normal
+    // GC of an ObjSignal that wraps a still-shared live Signal leaves its
+    // history intact.
+    if (signal && SimpleMarkSweepGC::instance().isShuttingDown())
+        signal->clearValues();
 }
 
 // Lazily create the shared SignalChanged event type and register the callback

@@ -56,6 +56,12 @@ namespace roxal {
 struct CallFrame; // forward
 struct ActorInstance;
 class RoxalCompiler;
+// Forward-declared UNCONDITIONALLY so the grpcModule/ddsModule members below
+// exist in every translation unit regardless of ROXAL_ENABLE_GRPC/DDS -- see
+// the member comment. The full types arrive via the guarded #includes above
+// when the features are on; a forward declaration is all a pointer member needs.
+class ModuleGrpc;
+class ModuleDDS;
 
 
 typedef std::vector<CallFrame> CallFrames;
@@ -329,6 +335,15 @@ public:
     /// except this one and will use SCHED_OTHER (non-RT) scheduling.
     void setRTCoreExclusion(int coreIndex) { rtCoreExclusion_ = coreIndex; }
     int rtCoreExclusion() const { return rtCoreExclusion_; }
+
+    /// ABI guard: `sizeof(VM)` as libroxal itself was compiled (with the
+    /// library's ROXAL_ENABLE_* feature flags).  Deliberately OUT-OF-LINE so a
+    /// consumer that includes VM.h with a different flag set gets the library's
+    /// real size, not its own view.  A host can compare this to its own
+    /// `sizeof(roxal::VM)` at startup and fail loudly on mismatch -- the exact
+    /// hazard that silently corrupted memory before the grpcModule/ddsModule
+    /// members were made flag-independent.  See ModuleRobot's static check.
+    static std::size_t abiInstanceSize();
 
     /// Control the synchronous-execution guard that prevents runFor() from
     /// entering execute() while run()/runLine() owns the VM. Tests that call
@@ -648,12 +663,18 @@ protected:
     // compilation paths and from compile-vs-reconcile races.
     std::unordered_map<icu::UnicodeString, Value> userModuleRegistry;
     std::mutex userModuleRegistryMutex;
-#ifdef ROXAL_ENABLE_GRPC
+    // gRPC / DDS module back-pointers.  Declared UNCONDITIONALLY so the size
+    // and field offsets of `class VM` are identical whether or not a TU is
+    // compiled with ROXAL_ENABLE_GRPC / ROXAL_ENABLE_DDS.  These pointers gate
+    // members were the source of a silent ABI mismatch: a consumer (e.g. FC)
+    // that included VM.h without the flags got a `class VM` 16 bytes smaller
+    // than libroxal's, so its inline VM methods wrote to wrong member offsets
+    // and corrupted adjacent state (crash at shutdown).  Only the module
+    // *implementation* -- the #includes above and the methods that touch these
+    // -- stays feature-gated; the storage is always present (a null pointer
+    // when the feature is off costs 8 bytes and removes the layout hazard).
     ModuleGrpc* grpcModule { nullptr };
-#endif
-#ifdef ROXAL_ENABLE_DDS
     ModuleDDS* ddsModule { nullptr };
-#endif
 
     // builtin dataflow engine actor
     ptr<df::DataflowEngine> dataflowEngine;

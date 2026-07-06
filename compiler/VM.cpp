@@ -1422,6 +1422,12 @@ void VM::shutdown()
     if (shutdownComplete_.exchange(true))
         return;
 
+    // Enter bulk-teardown mode: object destructors that must drop Object-backed
+    // state early (e.g. ObjSignal clearing its Signal's buffered Value history)
+    // consult SimpleMarkSweepGC::isShuttingDown().  Set before requestExit() /
+    // dropReferences() run so the whole teardown sees it.
+    SimpleMarkSweepGC::instance().setShuttingDown(true);
+
     // Signal all actor threads to exit the dispatch loop and wait for them
     // before tearing down any state.  Without this, dropReferences() can clear
     // module vars while actor threads are mid-opcode, causing use-after-free.
@@ -1841,6 +1847,13 @@ ExecutionStatus VM::setup(std::istream& source, const std::string& name,
 void VM::addScriptPrelude(const Value& receiver, const icu::UnicodeString& method)
 {
     scriptPreludes_.emplace_back(receiver, method);
+}
+
+std::size_t VM::abiInstanceSize()
+{
+    // Compiled inside libroxal with the library's feature flags, so this is
+    // the authoritative sizeof(VM). Consumers compare against their own view.
+    return sizeof(VM);
 }
 
 

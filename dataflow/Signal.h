@@ -57,6 +57,15 @@ public:
     void setValueAt(TimePoint t, const Value& v);
     void set(const Value& v);
 
+    // Release the buffered time->Value history.  Called during VM/engine
+    // teardown (DataflowEngine::clear) to drop Object-backed Values (e.g.
+    // tensor-valued signals) while their target Objs are still alive -- if
+    // they linger into VM::freeObjects() the Values decRef already-freed Objs
+    // (use-after-free / heap corruption at shutdown).  Callers must ensure no
+    // producer thread will setValueAt() afterwards (DDS reader threads are
+    // stopped before clear()).
+    void clearValues();
+
     // For source signals: generate next value
     void tick(TimePoint t);
 
