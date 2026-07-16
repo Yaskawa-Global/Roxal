@@ -1,0 +1,85 @@
+# GC coordination stress: forced collections racing an actor, a periodic
+# dataflow island, interned-string churn, and a forked event-driven set()
+# burst (inline island evaluation on a script thread).  Exercises the
+# collection barrier, actor-thread participants (persistent
+# ExternalParticipants), the engine's signal/FuncNode root tracing, the
+# intern table's locked reuse/publish paths under concurrent creators,
+# join()'s GC-safe blocking region, and single-evaluator serialization
+# between a script thread and the engine's actor loop.
+# (Coordination-focused sibling of gc_construct_stress.rox, which covers
+# allocation-triggered collections via --gc-threshold 1.)
+
+type Counter actor:
+  private var n: int = 0
+  proc bump(amount: int):
+    this.n = this.n + amount
+  func value() -> int:
+    return this.n
+
+func scaled(x: int) -> int:
+  return x * 3
+
+var sig: signal = signal(10, 0)
+var out = scaled(sig)   # lifted over the signal: creates a dataflow island
+
+var hits = 0
+when sig changes as evt:
+  hits = hits + 1
+
+func gcLoop():
+  var i = 0
+  while i < 30:
+    gc()
+    wait(ms=1)
+    i = i + 1
+
+# Event-driven island: freq-0 signal, so each set() evaluates it INLINE
+# on the setting thread (under the engine's single-evaluator mutex).  The
+# lifted func gives the island a closure to execute per set; its OUTPUT
+# value is deliberately not asserted (event-island output sampling has
+# its own timestamp semantics) -- the pump's job is the concurrent
+# closure-execution/GC interleaving itself.
+var esig = signal(0, 0, "gc_stress_pump")
+var eout = scaled(esig)
+
+func pumpLoop():
+  # Inline event-evaluation bursts on this forked thread: closure execution
+  # + single-evaluator mutex traffic racing the engine's actor loop and the
+  # forked gc() loop -- the same GC interleavings the old host-style pump
+  # exercised, WITHOUT a second periodic scheduler driver (the engine
+  # thread is the sole one).
+  # NOTE: pending-event QUEUE traffic needs a non-VM producer (e.g. a DDS
+  # reader thread) -- script set()s evaluate inline -- so the
+  # drain-ownership race itself is covered by inspection + the dds signal
+  # tests.
+  var i = 0
+  while i < 120:
+    esig.set(i)
+    i = i + 1
+
+var c = Counter()
+var g = fork(gcLoop)
+var p = fork(pumpLoop)
+
+var total = 0
+var i = 1
+while i <= 40:
+  sig.set(i)
+  wait(for=c.bump(i))
+  total = total + i
+  # interned-string churn while collections run on the forked thread
+  var s = "gc-stress-" + i + "-" + (i * i)
+  i = i + 1
+
+join(g)
+join(p)
+gc()
+wait(ms=150)
+
+var cv = c.value()
+wait(for=cv)
+print("counter " + cv)
+print("total " + total)
+print("out " + int(out))
+print("hits nonzero: " + (hits > 0))
+print("gc stress ok")

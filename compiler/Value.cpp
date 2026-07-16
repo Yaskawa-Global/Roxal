@@ -203,6 +203,20 @@ Value::Value(unique_ptr<Obj, D> o)
 template Value::Value(unique_ptr<Obj, std::default_delete<Obj>>);
 template Value::Value(unique_ptr<Obj, UnreleasedObj>);
 
+void SerializationContext::traceRoot(ValueVisitor& visitor) const
+{
+    // Mark every partially-linked object registered during this read: until
+    // the deserialized graph is handed to its rooted owner, idToObj (raw
+    // pointers) plus in-flight C++ locals can be the ONLY references, and a
+    // collection mid-read would sweep them.  The temporary strong Value is
+    // benign incRef/decRef churn on structurally held objects.
+    for (const Value& v : retained) {
+        if (v.isObj()) {
+            visitor.visit(v);
+        }
+    }
+}
+
 Value Value::objRef(Obj* o)
 {
     if (!o) return nilVal();
@@ -869,13 +883,20 @@ ValueType Value::type() const {
     // FIXME: For efficiency, the enum values between ValueType and ObjType should be synchronized
     // and the Value::type() made efficient by returning a cast from ObjType -> ValueType for all
     // object cases to avoid a cascade of is*() checks for every single type.
+    if (isObj()) {
+        // A weak reference whose target has been collected dereferences to
+        // null -- report Nil instead of crashing (e.g. assigning over a
+        // variable that holds a dead weak ref reaches type() via
+        // VariablesMap::MonitoredValue::assign).
+        Obj* obj = asObj();
+        return obj ? obj->valueType() : ValueType::Nil;
+    }
     return isNil() ? ValueType::Nil
                     : (isBool() ? ValueType::Bool
                                 : (isByte() ? ValueType::Byte
                                             : (isInt() ? ValueType::Int
                                                        : (isReal() ? ValueType::Real
-                                                                   : (isObj() ? asObj()->valueType()
-                                                                              : ValueType((val & TypeTag) >> TypeTagOffset) ) ) ) ) );
+                                                                   : ValueType((val & TypeTag) >> TypeTagOffset) ) ) ) );
 }
 
 
@@ -1854,8 +1875,8 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
 
     if (type == ValueType::Signal) {
         size_t count = end - begin;
-        if (count < 1 || count > 3 || !(*begin).isNumber())
-            throw std::runtime_error("signal constructor expects frequency, optional initial value and optional name");
+        if (count < 1 || count > 4 || !(*begin).isNumber())
+            throw std::runtime_error("signal constructor expects frequency, optional initial value, optional name and optional domain (\"rt\" or \"background\")");
 
         double freq = toType(ValueType::Real, *begin, false).asReal();
         Value initial = Value::nilVal();
@@ -1866,10 +1887,19 @@ Value roxal::construct(ValueType type, std::vector<Value>::const_iterator begin,
         if (count >= 3)
             nameStr = toString(*(begin + 2));
 
+        df::Signal::Domain domain = df::Signal::Domain::RT;
+        if (count >= 4) {
+            std::string domainStr = toString(*(begin + 3));
+            if (domainStr == "background")
+                domain = df::Signal::Domain::Background;
+            else if (domainStr != "rt")
+                throw std::runtime_error("signal constructor domain must be \"rt\" or \"background\", got '"+domainStr+"'");
+        }
+
         std::string autoName = df::DataflowEngine::uniqueFuncName("signal("+ std::to_string(int(freq)) + "," + toString(initial) + ")");
         std::string finalName = nameStr.empty() ? autoName : nameStr;
 
-        auto sig = df::Signal::newSourceSignal(freq, initial, finalName);
+        auto sig = df::Signal::newSourceSignal(freq, initial, finalName, domain);
         return Value::signalVal(sig);
     }
 
@@ -3464,8 +3494,10 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
 
         Value owned = valueFactory();
         Obj* obj = owned.asObj();
-        if (useCtx)
+        if (useCtx) {
             ctx->idToObj[id] = obj;
+            ctx->retained.push_back(owned);   // strong hold for the whole read
+        }
         obj->read(in, ctx);
         return owned;
     };

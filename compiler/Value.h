@@ -1,6 +1,7 @@
 #pragma once
 #include <atomic>
 #include <optional>
+#include "SimpleMarkSweepGC.h"
 #include <unordered_map>
 #include <future>
 #include <functional>
@@ -118,10 +119,23 @@ inline bool isNilAcceptableTargetType(ValueType t) {
 }
 
 
-struct SerializationContext {
+// GC root: deserialization builds object graphs whose only reference for a
+// while is idToObj (raw pointers) plus in-flight C++ locals -- a collection
+// mid-read (module cache load, remote value decode) would sweep the
+// partially linked objects.  Every context self-registers via GCRootBase
+// and traces its registered objects for its whole lifetime.
+struct SerializationContext : public GCRootBase {
     virtual ~SerializationContext() = default;
+    void traceRoot(ValueVisitor& visitor) const override;
     std::unordered_map<const Obj*, uint64_t> objToId;
     std::unordered_map<uint64_t, Obj*> idToObj;
+    // Strong refs backing idToObj for the context's lifetime: a
+    // deserialized placeholder can lose its last graph reference mid-read
+    // (slot overwritten) while later back-references still resolve through
+    // idToObj -- without this hold the reclaimer destroys it first.
+    // Traced via traceRoot (this struct is a GC root), so the sweep cannot
+    // take them either.
+    std::vector<Value> retained;
     uint64_t nextId = 1;
 };
 
@@ -930,6 +944,15 @@ public:
             fn(entry.second);
         }
     }
+
+    // NOTE for the GC root scan: iteration there MUST stay unlocked
+    // (unsafeForEach*).  Mutators hold varsLock/globalsLock across
+    // GC-touching work (ensureSignal allocates, assign fires callbacks,
+    // Value destruction can enter the GC), so a collector -- which holds the
+    // GC mutex for the whole collection -- taking these locks would invert
+    // the order and deadlock.  Concurrency safety for the scan comes from
+    // the GC coverage invariant (all map mutators are parked or
+    // participant-covered during a collection), not from these locks.
 
     // list of module variable names (globals not considered)
     std::vector<icu::UnicodeString> variableNames() const

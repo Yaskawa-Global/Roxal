@@ -765,8 +765,9 @@ accumulate dead registrations:
    `oneShot` HandlerRegistration is removed from `thread->eventHandlers`
    and the matching weak entry is dropped from `evt->subscribers`. Safe
    because dispatch runs on the registering thread.
-2. **Prune-time cleanup.** `Thread::pruneEventRegistrations`, run after
-   every GC, additionally removes any HandlerRegistration whose
+2. **Prune-time cleanup.** `Thread::pruneEventRegistrations`, run for every
+   live thread during each collection (via the ThreadManager index, on the
+   collector), additionally removes any HandlerRegistration whose
    `combinatorTarget` weak ref is dead or whose combinator is `fulfilled`
    (and drops the matching subscriber entry). This catches the
    never-fires-again case — e.g. an `AbortRequested` that was a losing
@@ -819,6 +820,26 @@ the engine's `m_mutex` is taken first, then the signal mutex; change
 callbacks and `DataflowEngine` notifications are always invoked *outside*
 the signal mutex (they can be arbitrarily heavy and take the engine mutex
 themselves).
+
+Scheduling: the engine either drives periodic islands itself (`run()`), or an
+embedding RT host drives them in budget slices via `tickFor(budget)` (the
+first `tickFor` call latches host-driven mode; the engine thread then reduces
+to servicing event-driven islands and background work). Each signal has an
+**execution domain** — `rt` (default) or `background`, declared via
+`signal(freq, init, name, domain)` or the chainable `sig.domain("background")`
+method. An island is background if ANY of its signals declares it; background
+islands are kept off the shared periodic schedule entirely (they do not
+contribute to the global tick period) and are serviced by the engine's own
+thread with no tick budget — for periodic work whose cost cannot fit an RT
+slice (perception, logging). Budgeted ticks attribute overruns per node
+(`DataflowEngine::consumeNodeOverruns()`; one-time stderr warnings name the
+offending FuncNode), and an advisory lint warns once per island composition
+when script-closure nodes sit on a host-driven periodic schedule
+(`ROXAL_RT_LINT=0` silences). Event-driven updates are pumped iteratively:
+a handler that `set()`s another event-driven signal enqueues the chained
+update rather than recursing, so arbitrarily long handler chains run at
+constant native stack depth (a 100k-link convergence cap turns a
+non-converging cross-island cycle into a clear error).
 
 ## DDS Module (ModuleDDS)
 
@@ -1261,6 +1282,386 @@ Operations that can block the thread:
 
 Blocked threads yield at the deadline and resume when the blocking condition
 clears or time elapses.
+
+
+## Garbage Collection & Thread Coordination
+
+Roxal uses a hybrid memory model: **atomic reference counting** for prompt
+reclamation, plus a **cooperative stop-the-world tracing collector**
+(`SimpleMarkSweepGC`, a singleton) that reclaims reference cycles and anything
+the refcounts alone cannot free. Both operate on the same per-object
+`ObjControl` block (see the MVCC section below for its layout). Native-frame
+roots come from **conservative scanning of parked C++ stacks**; heap-resident
+native roots are **typed, self-registering members** (`GCRoots.h`); interpreter
+roots come from the **ThreadManager thread index**. Destruction and freeing
+are performed by the **collector role only** — mutators queue garbage, they
+never destroy it.
+
+### Object lifecycle
+
+`newObj<T>()` allocates one contiguous block `[ObjControl | pad | T]`;
+`ctrl->allocationSize` covers the whole block. Registration of the control
+block is **lock-free**: each thread bump-appends into its own
+`AllocationSegment` (slot store, then count release-publish); a full segment
+is sealed and a fresh one CAS-pushed onto the global chain. The collector
+iterates the chain only while the world is stopped, compacts tombstoned slots
+in sealed segments, and unlinks empty ones. `unregisterAllocation` runs only
+on the reclaimer side, under the GC mutex — that lock is what makes freeing a
+control block impossible mid-mark.
+
+Two paths lead to destruction, both ending in the same place:
+
+- **Refcount zero-crossing** (`Obj::decRef` slow path): guarded by a CAS on
+  `control->collecting` so only the *first* zero-crossing acts. It sets
+  `control->obj = nullptr` and pushes the control block onto the **retire
+  queue**.
+- **Tracing sweep** (`performCollection`): unmarked objects get the same
+  treatment and are pushed onto the same queue.
+
+The retire queue is an intrusive lock-free CAS chain through
+`ObjControl::retiredObj`/`retireNext` (link-then-publish, so the consumer's
+take-all sees only fully linked chains; the consumer reverses for FIFO).
+Producers wake the collector thread on the empty→non-empty transition; RT
+yield-section holders never notify (the collector's idle poll picks their
+retires up), keeping the RT path syscall-free.
+
+**Only the collector role destroys objects**: the dedicated collector thread
+drains the queue between/after collections (and when idle), and the shutdown
+path drains it once the collector thread is stopped. `VM::freeObjects()` is
+the reclaimer body: per batch it calls `dropReferences()` on *every* pending
+object first (severing outgoing edges — including native edges like a
+combinator's promise/future state), takes a **weak-count hold on the whole
+batch**, runs all destructors, and only then releases the holds and frees the
+blocks. The batch-wide hold closes the class of same-batch use-after-frees
+where one dying object's destructor touches another dying object's storage.
+Actor instances are not destroyed inline: their joins are handed to the
+ThreadManager lifecycle thread (below).
+
+A **reclaim fence** (`reclaimInProgress_`) keeps parked mutators parked until
+the collection's retired batch has been destroyed — which is what makes the
+script-facing `gc()` a deterministic collect-AND-reclaim point. RT yield
+sections do *not* consult the fence: RT cycles resume as soon as the world
+restarts, and reclamation overlaps them (flat-cycle goal).
+
+### Actor finalization and thread joins
+
+`ThreadManager` is the **join authority**. A dying `ActorInstance` is queued
+via `enqueueActorFinalize`; a lazily started lifecycle thread joins the
+actor's worker and destroys the instance. The reclaimer never blocks on a
+thread exit. `Thread::join` is idempotent (join-once under a per-Thread
+mutex, taken inside a `GCSafeBlockScope`), so script `join()`, actor
+finalization, and shutdown joins cannot race a double-join.
+`ThreadManager::waitLifecycleIdle()` drains the queue deterministically —
+`gc()` calls it so actor teardown is complete when `gc()` returns.
+
+### Triggering collections
+
+Collections are requested by `requestCollect()` — automatically when
+`bytesAllocatedSinceLastCollect_` crosses the auto-trigger threshold
+(`--gc-threshold <KB>`, default 64 MiB) or explicitly via the script-facing
+`gc()` builtin. For ordinary threads `gc()` blocks (yieldably, like `wait()`)
+until the collection has run, its garbage has actually been destroyed
+(reclaim fence), and actor finalization has quiesced. Called from inside an
+RT yield section it degrades to request-and-return — a blocking wait there
+would violate the RT contract.
+
+### The stop-the-world barrier: MutatorContext
+
+Every physical thread that touches GC state has exactly ONE
+`MutatorContext` (created lazily on first GC contact) with a state machine:
+`Inactive` / `Running` / `Parked` / `SafeBlocked`. Nested enters (interpreter
+frames inside participant covers, etc.) are a depth counter on the same
+context — there is no double-registration and no owner-marked parking. A
+collection may start when:
+
+```
+no context is Running   &&   rtSectionCount_ == 0
+```
+
+State transitions happen under the GC mutex (the same lock the barrier is
+evaluated under). Parking captures the thread's stack (registers spilled,
+SP recorded) for the conservative scanner. The mark phase runs with the GC
+mutex held; mutators stay parked until the sweep — and, for a `gc()`-style
+wait, the reclaim — completes. Because every mutator is parked (or covered,
+below), root scans iterate containers **without taking their locks** — and in
+several cases *must not* take them (a collector that locks `varsLock` etc.
+inverts against mutators that hold those locks across allocating operations).
+
+### The root set
+
+Three sources, in decreasing order of "how much code has to care":
+
+1. **Conservative stack scan** (default ON): every parked thread's captured
+   C++ stack is scanned with a dual rule — (i) NaN-tagged object Values
+   (payload masked of const/weak bits), (ii) any word resolving into a
+   registered allocation (`[ObjControl, ObjControl+allocationSize)` range
+   lookup, interior pointers included). Hits are **marked**: an object
+   referenced only from a C++ local or a callee-saved register survives the
+   sweep. This retires the historical unrooted-local bug class for stack
+   references. The kill switch `ROXAL_GC_CONSERVATIVE=0` is a **diagnostic
+   precise mode** (scan still runs, hits only compared) — not a safe
+   configuration for code holding native-stack-only references. Trade-off:
+   prompt cycle death is no longer guaranteed (a stale stack word can pin a
+   dropped cycle until the slot is overwritten; quantified by the shadow-scan
+   stats).
+2. **Typed persistent roots** (`GCRoots.h`): heap-resident C++ state that
+   retains Values declares it in the type —
+   `PersistentRoot<Value>` / `TracedMember<Container>` / `TracedRef<T>`
+   members self-register with the collector and are traced while the world
+   is stopped. Container shapes get a `GCTraceAdapter` specialization;
+   an unadapted type without a custom tracer is a **compile error**, so a
+   root that silently traces nothing cannot be written. This replaces all
+   hand-enumerated root visitors. Rule (greppable, clang-tidy planned):
+   module/engine classes never hold raw `Value` (or Value-container)
+   members — wrap them. Never retain raw `Obj*` in native state at all —
+   wrap in a `Value` held by a typed root.
+3. **Interpreter roots**: the `ThreadManager` non-owning thread index is the
+   **sole** interpreter-root source — every `roxal::Thread` self-registers in
+   its constructor and unregisters in its destructor, so there are no
+   special-cased thread lists and no way to forget one
+   (`visitSingleThreadRoots` walks stack, frames incl. tail args, open
+   upvalues, pending conversions, event-dispatch state, native continuations,
+   wait state; it is exported so holders of suspended Threads outside the
+   registry — e.g. a FuncNode's yielded execution thread — reuse the complete
+   field list). Plus: globals, `ObjModuleType::allModules` (module vars via
+   `ObjModuleType::trace`), interned strings, the dataflow engine's
+   signals/islands/FuncNodes (`traceAllSignals`, incl. `FuncNode::trace`:
+   closures, const args, defaults, previous I/O, yield state), and the
+   pending/draining event queues.
+
+### The coverage invariant
+
+> Every thread that touches GC-managed state (allocates objects, holds
+> `Value`s in C++ locals, mutates traced containers) during a window where a
+> collection could run must be **(a)** parked at a safepoint, **(b)** a
+> Running context the barrier waits for, **(c)** inside an RT yield
+> section, or **(d)** inside a no-park section.
+
+A thread outside all four is invisible to the barrier: the collector can
+sweep objects that live only in its C++ stack/locals, and its writes race the
+mark phase. This is the single most important rule when adding threads or
+native code. The mechanisms:
+
+#### Generic registration (`onThreadEnter` / `onThreadExit`)
+
+Applied automatically by `VM::execute()` for the outermost frame (enters
+Running on the thread's context). Such threads park at the per-instruction
+safepoint polls. Nothing to do manually.
+
+#### `ExternalParticipant` — for threads outside execute()
+
+An RAII Running cover for any thread that touches GC state *outside* the
+interpreter: DDS/gRPC reader threads delivering into signals, actor worker
+dispatch loops, compute-server connection handlers, compilation
+(`RoxalCompiler::compile()` and cache loads hold one — the compiling thread
+holds in-progress GC objects in compiler C++ state), host threads pumping
+natives. While one is held the barrier waits for the thread to reach
+`pollSafepointIfRequested()`, which parks it for the duration of the
+collection.
+
+Two usage patterns:
+
+- **Persistent** (e.g. `Thread::act`'s dispatch loop): construct once, poll
+  at the top of every loop iteration. Use when the loop is naturally
+  poll-shaped and never blocks indefinitely between polls.
+- **Scoped** (e.g. the DDS/gRPC reader delivery phase): construct around
+  exactly the GC-touching region, poll immediately after construction and
+  between work items — never while holding un-stored `Value` locals. Use when
+  the thread otherwise blocks in something the GC cannot wake
+  (`dds_waitset_wait`, `cq->Next`, `recv`) — a persistent participant there
+  would stall every collection until the next message.
+
+Helpers:
+
+- `SimpleMarkSweepGC::currentThreadIsExternalParticipant()` — consulted by
+  `VM::execute` so a participant-covered thread that evaluates a closure does
+  **not** also enter Running a second time via onThreadEnter (nesting is a
+  depth counter; the check keeps the poll sites unambiguous).
+- `SimpleMarkSweepGC::pollCurrentThreadParticipant()` — parks the calling
+  thread's outermost participant, no-op if it has none. Use in shared helper
+  code that may run on either kind of thread. **Every blocking wait loop on a
+  thread that might hold a participant must call this** (or poll a concrete
+  participant): a registered thread blocked without polling deadlocks `gc()`
+  process-wide. (This exact bug: an actor worker awaiting a remote-compute
+  future via a native invoked outside `execute()` — see
+  `pollVmThreadSafepointIfRequested()` in ComputeConnection.cpp.)
+
+#### `GCYieldScope` — RT threads never park, never block
+
+A hard-real-time thread (e.g. a 2 ms control-loop callback driving
+`tickFor()`/`runFor()`) cannot park at a barrier and cannot block on the GC
+mutex. It instead brackets its GC-touching slice in a *yield section*:
+
+```cpp
+if (SimpleMarkSweepGC::GCYieldScope gcs{}; gcs) {
+    // GC-touching RT work: drain telemetry into signals, tickFor, runFor
+} else {
+    // collection pending/in progress: skip this cycle entirely
+}
+```
+
+`tryEnterGCSection()` never blocks: it fails while a collection is requested
+or running (the RT thread skips the cycle; values go stale for one collection
+and snap current after). While a section is held the collector's barrier
+waits (bounded — the remainder of one RT slice; `execute()`/`tickFor()` yield
+out early when a request arrives, see `Thread::rtYieldOnGC` and the
+`TickResult::Busy`/island early-out paths). Enter/exit are lock-free
+(`rtSectionCount_` atomic, seq-cst Dekker pairing with `requestCollect`).
+A `requestCollect()` *from inside* a section defers its thread-waking side
+effects to the next non-RT safepoint poll (`deferredGCWakePending_`) — waking
+sleepers takes locks the RT path must not touch.
+
+#### `GCNoParkScope` — registered but must not park
+
+Keeps the thread's context **unparked** (Running) through nested safepoint
+polls so the barrier waits the section out — the thread still counts, never
+parks, and never skips work. With conservative marking on, in-progress
+compiler products in C++ stack locals are already scan-covered; the compiler
+therefore holds a no-park scope only under the precise-mode kill switch,
+where those locals would otherwise be invisible.
+
+#### `ScopedGCMutatorCover` — host bootstrap phases
+
+Exported in VM.h for embedders. Enters Running (via `onThreadEnter`) across a
+native phase that allocates GC objects outside `execute()`. Collections are
+effectively deferred while a cover is held (the covered thread never reaches
+a poll). Use for bounded setup phases, not steady-state loops.
+
+#### `GCSafeBlockScope` — registered threads blocking in opaque calls
+
+A registered thread about to block in a call the GC can neither wake nor
+poll (`std::thread::join` is the canonical case — script `join()`, shutdown
+joins, the dataflow engine's contended evaluator-mutex waits) brackets the
+call in a `GCSafeBlockScope`: entry moves the context to SafeBlocked (with
+the stack captured up to the scope object) so the barrier proceeds without
+it; exit waits out any in-flight collection before the thread resumes
+mutating. Keep the scope tight — code inside must not touch GC state. Prefer
+a polling wait (`pollCurrentThreadParticipant()` / `safepoint()`) when the
+wait *can* poll; use the block scope only for truly opaque calls.
+
+#### Typed persistent roots — Values retained in C++ containers
+
+Any module (or other component) that stores `Value`s in C++ state beyond one
+call declares the member as a typed root (see `GCRoots.h` and the root-set
+section above):
+
+```cpp
+class ModuleFoo : public BuiltinModule {
+    PersistentRoot<Value> defaultThing;
+    TracedMember<std::unordered_map<std::string, Value>> things;
+    TracedMember<std::vector<Binding>> bindings { &traceBindings };  // custom tracer
+};
+```
+
+The member itself registers/unregisters; forgetting is a compile error, not a
+silent heap corruption. Pair module-held roots with an `onModuleUnloading()`
+override that clears the containers while the VM object graph is still
+alive — Values lingering into the module destructor decRef objects the
+shutdown sweep already freed. Roots may not be created or destroyed inside an
+RT yield section (debug assert). Current heavy users: ModuleDDS, ModuleGrpc
+(incl. ActiveStreamState and ProtoAdapter decl maps), the compute server's
+actor registry, the compiler's scope/import roots, `SerializationContext`
+(a GC root whose `retained` vector keeps deserialization back-references
+alive for the whole read).
+
+### The collector/reclaimer thread (`ROXAL_GC_DEDICATED_THREAD`)
+
+A dedicated non-RT thread exists in **every build profile**: it is the sole
+runtime **reclaimer**, draining the retire queue whenever producers wake it
+(10 ms idle poll as a lost-wake backstop — also how RT-section retires get
+picked up). Without it, refcount-dead objects would sit undestroyed until an
+unrelated tracing collection. The thread demotes itself to `SCHED_OTHER` (an
+RT parent's policy is inherited).
+
+The CMake option (**default ON on Linux**, OFF elsewhere; exported as
+`ROXAL_HAS_GC_DEDICATED_THREAD` in `roxal_features.cmake` and defined on the
+`roxal_abi` interface target) decides who performs **collections**:
+
+- **ON**: this thread also performs every runtime collection. Mutators
+  reaching a safepoint park-and-wait instead of self-electing, and RT-only
+  workloads collect without any mutator's cooperation. It honours
+  `VM::rtCoreExclusion()` affinity, re-checked per collection.
+- **OFF (inline collections)**: whichever registered thread reaches a
+  safepoint first self-elects and collects (and reclaims its own batch);
+  everyone else waits. The thread here only reclaims between collections —
+  its idle-wait predicate deliberately ignores pending collection requests
+  (a permanently-true predicate would spin without releasing the GC mutex
+  and starve the mutators trying to park). Inline election is also the
+  fallback while the thread isn't alive (before VM construction completes,
+  after `stopCollectorThread()` during shutdown — the shutdown path then
+  drains the retire queue itself).
+
+The class layout is **identical in both modes** (opaque
+`unique_ptr<CollectorThreadState>` pimpl + an atomic flag, both
+unconditional) so embedders compiling the header with different flags cannot
+ODR-break the singleton. Only code is `#ifdef`-gated. Lifecycle: spawned at
+the end of `VM::VM()` (after `vmConstructed`), joined in `VM::shutdown()`
+right after `requestExit()` and before `setVM(nullptr)`.
+
+### Rules of thumb for new code
+
+- **New thread that touches Values/objects?** Give it an
+  `ExternalParticipant` (persistent if poll-shaped, scoped if it blocks in
+  unwakeable waits) — or run its GC-touching part under one.
+- **New blocking wait** reachable from a registered thread? Poll inside the
+  loop: `safepoint(*VM::thread)` if inside execute,
+  `pollCurrentThreadParticipant()` otherwise (both is fine). If the wait
+  sleeps on a condvar the GC should be able to shorten, include
+  `isCollectionRequested()` in the predicate and make sure
+  `VM::wakeAllThreadsForGC()` reaches it. For a wait that cannot poll at all
+  (`std::thread::join`, opaque native calls, contended locks held by a
+  parkable owner), wrap it in `GCSafeBlockScope`.
+- **New C++ state retaining Values beyond one call?** Typed root member
+  (`PersistentRoot`/`TracedMember`/`TracedRef`) + `onModuleUnloading` clear.
+  Never retain raw `Obj*` — wrap in a `Value`; and remember refcounts alone
+  do **not** protect against the tracing sweep; reachability from a root
+  does. Do not rely on the conservative scan for anything that outlives the
+  C++ frame holding it.
+- **RT context?** `GCYieldScope` around the slice; never call anything that
+  can park or take the GC mutex from inside; `gc()` becomes async there.
+- **Native phase allocating outside execute()?** `ScopedGCMutatorCover`.
+- **Collector-side scans** run lock-free by invariant; do not "fix" them by
+  taking mutator locks (lock-order inversion — see the comments at the
+  `visitRoots` scans).
+- **Destructor semantics**: destructors run on the collector thread (or the
+  ThreadManager lifecycle thread for actors). Anything needing synchronous
+  release at scope exit (files, sockets, DDS entities, streams) needs
+  explicit `close()`/dispose semantics — destruction is promptly *queued*,
+  not scope-tied. A script that must observe reclamation calls `gc()`.
+
+### Observability & debugging
+
+- `ROXAL_GC_STATS=1` — one shutdown line: collections performed (+ which
+  collector mode), RT cycles yielded, last collector/RT-section thread ids,
+  and `sectionCollectorViolations` (collections performed by a thread holding
+  an RT yield section — **must be 0**; positive evidence, not absence of
+  crashes).
+- `ROXAL_GC_CONSERVATIVE=0` — diagnostic precise mode (see the root-set
+  section). `ROXAL_GC_SHADOW_SCAN=0` disables the shadow-scan statistics
+  gathering. `sys._runtests('gc_scanner')`
+  (`tests/gc_scanner_selftest.rox`) asserts scanner recall for each stack
+  reference form: raw `Obj*`, NaN-tagged (plain/const/weak) words, and a
+  callee-saved-register-only reference.
+- `--gc-threshold <KB>` — force frequent collections; `--gc-threshold 1` +
+  `tests/gc_construct_stress.rox` is the standard coverage smoke.
+- `sys._runtests('gc_coordination')` — C++-level coordination hammer
+  (`SimpleMarkSweepGC::runCoordinationSelfTest`): RT yield sections vs
+  `requestCollect` (incl. the deferred-wake path), persistent + nested
+  participants, `GCSafeBlockScope`, intern churn -- asserts collections ran
+  with zero section-collector violations and counters returned to rest;
+  hard-exits on a barrier deadlock (watchdog). Runs in the suite as
+  `tests/gc_selftest.rox`. `tests/gc_coordination_stress.rox` covers the
+  same ground at the script level (actors + dataflow islands + forked
+  `gc()` loop + `join()`).
+- `ROXAL_GC_QUARANTINE=1` — debug: the reclaimer runs the full destruction
+  path but wipes the object with `0xEF` and leaks the block instead of
+  freeing. Any stale access then faults deterministically *with the
+  accessor's stack*, under unmodified allocator timing — invaluable when
+  ASan/TSan perturb a heap-corruption repro out of existence (they change
+  allocator layout, scheduling, and effective allocation rates).
+- The value stack is bounds-checked on every push in all builds
+  (`Thread::push`); overflow raises a runtime error naming
+  `VM::configureStackLimits`.
 
 
 ## Constness and MVCC

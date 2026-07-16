@@ -43,14 +43,34 @@ bool isApplicationStatus(grpc::StatusCode code)
 ModuleGrpc::ModuleGrpc()
     : targetAddress("127.0.0.1:50051")
 {
+    // Rooting: every Value-holding member here, in ProtoAdapter, and in
+    // ACUCommunicator is a typed root (PersistentRoot/TracedMember).
     moduleTypeValue = Value::objVal(newModuleTypeObj(toUnicodeString("grpc")));
     ObjModuleType::allModules.push_back(moduleTypeValue);
 }
 
 ModuleGrpc::~ModuleGrpc()
 {
-    if (!moduleTypeValue.isNil())
+    if (!moduleTypeValue->isNil())
         destroyModuleType(moduleTypeValue);
+}
+
+void ModuleGrpc::onModuleUnloading(VM& vm)
+{
+    (void)vm;
+    // Release every roxal Value retained in plain C++ containers NOW, while
+    // the VM's object graph is still alive; letting them linger into the
+    // module destructor decRefs objects the shutdown sweep already freed
+    // (same teardown hole as ModuleDDS).  Stream reader threads are joined
+    // FIRST (stopAllStreams cancels + joins): a reader mid-decode consults
+    // the adapter's decl maps, and clearing them under it throws "No
+    // declaration for message type" out of the reader thread (terminate).
+    if (connector)
+        connector->stopAllStreams();
+    connector.reset();
+    if (adapter)
+        adapter->clearDecls();
+    protoModules->clear();
 }
 
 void ModuleGrpc::ensureConnector()
@@ -135,13 +155,13 @@ Value ModuleGrpc::importProto(const std::string& protoFilename)
 
 Value ModuleGrpc::getOrCreateModule(const std::string& name)
 {
-    auto it = protoModules.find(name);
-    if (it != protoModules.end())
+    auto it = protoModules->find(name);
+    if (it != protoModules->end())
         return it->second;
 
     Value moduleVal = Value::moduleTypeVal(toUnicodeString(name));
     ObjModuleType::allModules.push_back(moduleVal);
-    protoModules[name] = moduleVal;
+    (*protoModules)[name] = moduleVal;
     // make available as global
     vm().globals.storeGlobal(toUnicodeString(name), moduleVal);
     return moduleVal;

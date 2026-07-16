@@ -4,6 +4,7 @@
 
 #include "ComputeConnection.h"
 #include "SimpleMarkSweepGC.h"
+#include "GCRoots.h"
 #include "VM.h"
 #include "Thread.h"
 
@@ -55,40 +56,26 @@ Value waitForComputeFuture(FutureT& future, SimpleMarkSweepGC::ExternalParticipa
     return future.get();
 }
 
-class ServerActorRegistry final : public SimpleMarkSweepGC::ExternalRootProvider {
+// Actor registry: the map member IS the GC root (TracedMember);
+// the mutex guards cross-thread map mutation, while tracing happens with the
+// world stopped.
+class ServerActorRegistry final {
 public:
-    explicit ServerActorRegistry(SimpleMarkSweepGC& gc)
-        : gc_(gc)
-    {
-        gc_.registerExternalRootProvider(this);
-    }
-
-    ~ServerActorRegistry() override
-    {
-        gc_.unregisterExternalRootProvider(this);
-    }
-
-    void visitRoots(ValueVisitor& visitor) override
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        for (const auto& entry : actors_) {
-            visitComputeValue(visitor, entry.second);
-        }
-    }
+    ServerActorRegistry() = default;
 
     int64_t addActor(const Value& actorVal)
     {
         std::lock_guard<std::mutex> lock(mutex_);
         int64_t actorId = nextActorId_++;
-        actors_[actorId] = actorVal;
+        (*actors_)[actorId] = actorVal;
         return actorId;
     }
 
     Value lookupActor(int64_t actorId)
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        auto it = actors_.find(actorId);
-        if (it == actors_.end()) {
+        auto it = actors_->find(actorId);
+        if (it == actors_->end()) {
             return Value::nilVal();
         }
         return it->second;
@@ -97,12 +84,12 @@ public:
     Value takeActor(int64_t actorId)
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        auto it = actors_.find(actorId);
-        if (it == actors_.end()) {
+        auto it = actors_->find(actorId);
+        if (it == actors_->end()) {
             return Value::nilVal();
         }
         Value actorVal = it->second;
-        actors_.erase(it);
+        actors_->erase(it);
         return actorVal;
     }
 
@@ -110,18 +97,17 @@ public:
     {
         std::lock_guard<std::mutex> lock(mutex_);
         std::vector<Value> drained;
-        drained.reserve(actors_.size());
-        for (auto& entry : actors_) {
+        drained.reserve(actors_->size());
+        for (auto& entry : *actors_) {
             drained.push_back(entry.second);
         }
-        actors_.clear();
+        actors_->clear();
         return drained;
     }
 
 private:
-    SimpleMarkSweepGC& gc_;
     std::mutex mutex_;
-    std::unordered_map<int64_t, Value> actors_;
+    TracedMember<std::unordered_map<int64_t, Value>> actors_;
     int64_t nextActorId_ { 1 };
 };
 
@@ -291,9 +277,19 @@ struct RemoteSpawnDependency {
     icu::UnicodeString moduleName;
     icu::UnicodeString symbolName;
     std::uint64_t fingerprint { 0 };
-    Value deserializedValue;
-    Value canonicalValue;
+    Value deserializedValue;   // allowed-raw: traced via traceSpawnDependencies
+    Value canonicalValue;      // allowed-raw: traced via traceSpawnDependencies
 };
+
+// Custom tracer for TracedRef<std::vector<RemoteSpawnDependency>>.
+void traceSpawnDependencies(ValueVisitor& visitor,
+                            const std::vector<RemoteSpawnDependency>& deps)
+{
+    for (const auto& dependency : deps) {
+        visitComputeValue(visitor, dependency.deserializedValue);
+        visitComputeValue(visitor, dependency.canonicalValue);
+    }
+}
 
 std::uint64_t computeTypeFingerprint(const Value& typeValue)
 {
@@ -602,14 +598,12 @@ void ComputeServer::listen(std::uint16_t port)
 void ComputeServer::handleClient(int clientFd)
 {
     ptr<ComputeConnection> conn = make_ptr<ComputeConnection>(clientFd, false);
-    ServerActorRegistry actors(SimpleMarkSweepGC::instance());
+    ServerActorRegistry actors;
 
     auto cleanupActors = [&]() {
         SimpleMarkSweepGC::ExternalParticipant gcParticipant(SimpleMarkSweepGC::instance());
         std::vector<Value> actorValues = actors.drainActors();
-        gcParticipant.setRootVisitor([&](ValueVisitor& visitor) {
-            visitComputeValues(visitor, actorValues);
-        });
+        TracedRef<std::vector<Value>> actorValuesRoot { actorValues };
         for (auto& actorVal : actorValues) {
             shutdownActorForServer(actorVal);
         }
@@ -657,16 +651,12 @@ void ComputeServer::handleClient(int clientFd)
                 Value actorTypeVal = Value::nilVal();
                 Value actorVal = Value::nilVal();
                 std::vector<Value> initArgs;
-                gcParticipant.setRootVisitor([&](ValueVisitor& visitor) {
-                    for (const auto& dependency : dependencies) {
-                        visitComputeValue(visitor, dependency.deserializedValue);
-                        visitComputeValue(visitor, dependency.canonicalValue);
-                    }
-                    visitComputeValue(visitor, actorOwnerModule);
-                    visitComputeValue(visitor, actorTypeVal);
-                    visitComputeValue(visitor, actorVal);
-                    visitComputeValues(visitor, initArgs);
-                });
+                TracedRef<std::vector<RemoteSpawnDependency>> dependenciesRoot {
+                    dependencies, &traceSpawnDependencies };
+                TracedRef<Value> ownerRoot { actorOwnerModule };
+                TracedRef<Value> typeRoot { actorTypeVal };
+                TracedRef<Value> actorRoot { actorVal };
+                TracedRef<std::vector<Value>> initArgsRoot { initArgs };
                 dependencies.reserve(dependencyCount);
 
                 RemoteTypeCanonicalizer canonicalizer;
@@ -783,11 +773,9 @@ void ComputeServer::handleClient(int clientFd)
                 CallSpec callSpec = decodeCallSpecBytes(p, end);
                 std::vector<Value> args = deserializeValueListForServer(p, end, ctx);
                 Value callee = bindActorMethodForServer(actorVal, methodName);
-                gcParticipant.setRootVisitor([&](ValueVisitor& visitor) {
-                    visitComputeValue(visitor, actorVal);
-                    visitComputeValue(visitor, callee);
-                    visitComputeValues(visitor, args);
-                });
+                TracedRef<Value> actorRoot { actorVal };
+                TracedRef<Value> calleeRoot { callee };
+                TracedRef<std::vector<Value>> argsRoot { args };
 
                 // Dispatch in a background thread so the read loop remains free to
                 // process CALL_RESULT frames from the client (back-channel replies).
@@ -803,13 +791,14 @@ void ComputeServer::handleClient(int clientFd)
                     SimpleMarkSweepGC::ExternalParticipant workerParticipant(SimpleMarkSweepGC::instance());
                     Value completion = Value::nilVal();
                     Value result = Value::nilVal();
-                    workerParticipant.setRootVisitor([&](ValueVisitor& visitor) {
-                        visitComputeValue(visitor, actorVal);
-                        visitComputeValue(visitor, callee);
-                        visitComputeValues(visitor, args);
-                        visitComputeValue(visitor, completion);
-                        visitComputeValue(visitor, result);
-                    });
+                    // Captures live in the closure's heap storage -- the
+                    // conservative stack scan cannot see them; these refs
+                    // are load-bearing.
+                    TracedRef<Value> wActorRoot { actorVal };
+                    TracedRef<Value> wCalleeRoot { callee };
+                    TracedRef<std::vector<Value>> wArgsRoot { args };
+                    TracedRef<Value> wCompletionRoot { completion };
+                    TracedRef<Value> wResultRoot { result };
                     workerReadyPromise.set_value();
                     try {
                         Value* argTop = args.empty() ? nullptr : args.data() + args.size();
@@ -856,9 +845,7 @@ void ComputeServer::handleClient(int clientFd)
                     const std::uint8_t* vend = p + len;
                     ptr<SerializationContext> ctx = make_ptr<NetworkSerializationContext>(conn.get());
                     Value result = Value::nilVal();
-                    gcParticipant.setRootVisitor([&](ValueVisitor& visitor) {
-                        visitComputeValue(visitor, result);
-                    });
+                    TracedRef<Value> resultRoot { result };
                     result = deserializeValueForServer(p, vend, ctx);
                     gcParticipant.pollSafepointIfRequested();
                     conn->resolveCall(callId, std::move(result));
@@ -882,9 +869,7 @@ void ComputeServer::handleClient(int clientFd)
                 SimpleMarkSweepGC::ExternalParticipant gcParticipant(SimpleMarkSweepGC::instance());
                 int64_t actorId = static_cast<int64_t>(readU64(p, end));
                 Value actorVal = actors.takeActor(actorId);
-                gcParticipant.setRootVisitor([&](ValueVisitor& visitor) {
-                    visitComputeValue(visitor, actorVal);
-                });
+                TracedRef<Value> actorRoot { actorVal };
                 if (actorVal.isNonNil()) {
                     shutdownActorForServer(actorVal);
                 }

@@ -1,0 +1,8 @@
+# C++-level GC coordination self-test (SimpleMarkSweepGC::
+# runCoordinationSelfTest): hammers RT yield sections vs requestCollect
+# (incl. the deferred-wake path), persistent + nested ExternalParticipants,
+# GCSafeBlockScope, and interned-string churn from concurrent threads, then
+# asserts collections ran with zero section-collector violations and all
+# counters returned to rest.  The verdict prints on stdout; the counter
+# summary prints on stderr and is shape-checked by gc_selftest.err.
+_runtests('gc_coordination')

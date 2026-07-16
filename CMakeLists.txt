@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.12)
 
-project(roxal VERSION 0.8.24 LANGUAGES CXX C)
+project(roxal VERSION 0.8.25 LANGUAGES CXX C)
 set(ROXAL_PRERELEASE "pre" CACHE STRING "SemVer prerelease label (e.g. alpha.1, rc.1)")
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -32,6 +32,18 @@ option(ROXAL_ENABLE_DDS "Enable CycloneDDS support" OFF)
 option(ROXAL_ENABLE_REGEX "Enable regex module (requires libpcre2)" OFF)
 option(ROXAL_ENABLE_XML "Enable XML parsing/writing support" OFF)
 option(ROXAL_ENABLE_SOCKET "Enable socket module (POSIX sockets)" ON)
+# Dedicated GC collector thread: runtime collections run on their own non-RT
+# thread (demoted to SCHED_OTHER, kept off the RT core) instead of electing a
+# mutator inline.  Default ON on Linux (desktop sim and RT hardware hosts
+# alike); OFF elsewhere (e.g. VxWorks kernel module / threadless targets,
+# which keep the portable any-thread inline election).  The GC class layout
+# is identical either way -- only code is gated.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(_roxal_gc_dedicated_default ON)
+else()
+    set(_roxal_gc_dedicated_default OFF)
+endif()
+option(ROXAL_GC_DEDICATED_THREAD "Run GC collections on a dedicated non-RT thread" ${_roxal_gc_dedicated_default})
 option(ROXAL_COMPUTE_SERVER "Enable compute server (roxal --server) and 'at' remote actor support" OFF)
 if(ROXAL_COMPUTE_SERVER)
     set(ROXAL_ENABLE_SOCKET ON CACHE BOOL "Enabled implicitly by ROXAL_COMPUTE_SERVER" FORCE)
@@ -292,6 +304,7 @@ set(COMPILER_SOURCES
     compiler/TypeDeducer.cpp
     compiler/Value.cpp
     compiler/SimpleMarkSweepGC.cpp
+    compiler/ThreadManager.cpp
     compiler/Thread.cpp
     compiler/VM.cpp
     compiler/linenoise.c
@@ -302,7 +315,6 @@ list(APPEND COMPILER_SOURCES compiler/ModuleSys.cpp)
 list(APPEND COMPILER_SOURCES compiler/TestRefOrient.cpp)
 list(APPEND COMPILER_SOURCES compiler/LazyModuleRegistry.cpp)
 list(APPEND COMPILER_SOURCES compiler/RuntimeConfig.cpp)
-list(APPEND COMPILER_SOURCES compiler/RTCallbackManager.cpp)
 
 if(ROXAL_ENABLE_FILEIO)
     list(APPEND COMPILER_SOURCES compiler/ModuleFileIO.cpp)
@@ -454,6 +466,7 @@ target_compile_definitions(roxal_abi INTERFACE
     $<$<BOOL:${ROXAL_ENABLE_MEDIA}>:ROXAL_ENABLE_MEDIA>
     $<$<BOOL:${ROXAL_ENABLE_QT}>:ROXAL_ENABLE_QT>
     $<$<BOOL:${ROXAL_COMPUTE_SERVER}>:ROXAL_COMPUTE_SERVER>
+    $<$<BOOL:${ROXAL_GC_DEDICATED_THREAD}>:ROXAL_GC_DEDICATED_THREAD>
     ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
     ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
     ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"
@@ -588,6 +601,7 @@ file(WRITE "${CMAKE_BINARY_DIR}/roxal_features.cmake"
     "set(ROXAL_HAS_XML ${ROXAL_ENABLE_XML})\n"
     "set(ROXAL_HAS_MEDIA ${ROXAL_ENABLE_MEDIA})\n"
     "set(ROXAL_HAS_COMPUTE_SERVER ${ROXAL_COMPUTE_SERVER})\n"
+    "set(ROXAL_HAS_GC_DEDICATED_THREAD ${ROXAL_GC_DEDICATED_THREAD})\n"
     # qt is a dlopen'd plugin (libroxalqt.so), not linked into libroxal.a, so a
     # host that links roxal doesn't need to link Qt.  Exported so hosts can still
     # detect the qt module -- e.g. to place the plugin next to their binary and

@@ -17,6 +17,11 @@ func createSignals():
 
 createSignals()
 
+# Destruction is promptly QUEUED to the collector, not scope-tied: gc() is
+# the deterministic collect-and-reclaim fence guaranteeing the signals
+# created above are torn down before the graph is inspected.
+gc()
+
 print('after:')
 print(_df_graph())
 

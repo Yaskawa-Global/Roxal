@@ -17,7 +17,7 @@ when monitor changes as evt:
 monitor = 1
 wait(us=20000)
 
-_dataflow.tick()
+_dataflow_tick()
 wait(us=20000)
 
 var islands = _df_islands()

@@ -12,6 +12,8 @@
 #include <mutex>
 
 #include "BuiltinModule.h"
+#include "GCRoots.h"
+#include "SimpleMarkSweepGC.h"
 
 namespace roxal {
 
@@ -19,6 +21,11 @@ class DdsAdapter;
 struct StructInfo;
 struct FieldType;
 
+// This module retains roxal Values in C++ containers (idlModules,
+// typesByFullName_, TopicSupport::handle, signal bindings) mutated at
+// runtime.  They are rooted via typed members (PersistentRoot/TracedMember,
+// GC v2 phase B pilot) -- the member IS the root, so a new Value-holding
+// member cannot be forgotten the way a hand-written visitRoots() line could.
 class ModuleDDS : public BuiltinModule {
 public:
     ModuleDDS();
@@ -26,6 +33,8 @@ public:
 
     void registerBuiltins(VM& vm) override;
     void onModuleLoaded(VM& vm) override;
+    // Release Value-holding C++ containers before the VM's shutdown sweep.
+    void onModuleUnloading(VM& vm) override;
     void initialize() override {};
     Value moduleType() const override { return moduleTypeValue; }
 
@@ -40,24 +49,37 @@ public:
                     std::vector<std::string>* outGlobals = nullptr);
 
 private:
-    Value moduleTypeValue;
+    PersistentRoot<Value> moduleTypeValue;
     std::unique_ptr<DdsAdapter> adapter;
-    std::unordered_map<std::string, Value> idlModules;
+    TracedMember<std::unordered_map<std::string, Value>> idlModules;
     // canonical idl path -> rosProfile it was imported with (conflict guard)
     std::unordered_map<std::string, bool> idlProfileByPath_;
     // Full IDL scoped name (e.g. "sensor_msgs::msg::dds_::Image_") -> generated type Value.
     // Consulted first by resolveTypeValue so deeply-nested (ROS-style) type names resolve.
-    std::unordered_map<std::string, Value> typesByFullName_;
+    TracedMember<std::unordered_map<std::string, Value>> typesByFullName_;
     struct TopicSupport {
         std::shared_ptr<dds_topic_descriptor_t> descriptor;
         std::shared_ptr<ddsi_typeinfo> typeinfo;
         std::string typeName;
         dds_entity_t entity{0};
-        Value handle;
+        Value handle;  // allowed-raw: traced via supportBy* traceSupportMap
         std::shared_ptr<std::vector<std::string>> nameStorage;
     };
-    std::unordered_map<std::string, std::shared_ptr<TopicSupport>> supportByType;
-    std::unordered_map<dds_entity_t, std::shared_ptr<TopicSupport>> supportByEntity;
+    // Custom tracers: TopicSupport/SignalBinding are module-private, so the
+    // generic GCTraceAdapter cannot see their Value fields.
+    template<typename K>
+    static void traceSupportMap(
+        ValueVisitor& visitor,
+        const std::unordered_map<K, std::shared_ptr<TopicSupport>>& map)
+    {
+        for (const auto& entry : map)
+            if (entry.second && entry.second->handle.isObj())
+                visitor.visit(entry.second->handle);
+    }
+    TracedMember<std::unordered_map<std::string, std::shared_ptr<TopicSupport>>>
+        supportByType { &ModuleDDS::traceSupportMap<std::string> };
+    TracedMember<std::unordered_map<dds_entity_t, std::shared_ptr<TopicSupport>>>
+        supportByEntity { &ModuleDDS::traceSupportMap<dds_entity_t> };
     mutable std::unordered_map<std::string, std::vector<size_t>> cachedOffsets;
     mutable std::unordered_map<std::string, size_t> cachedSizes;
     mutable std::unordered_set<std::string> computingLayouts;
@@ -73,11 +95,11 @@ private:
 
     bool functionsLinked{false};
     bool typesRegistered{false};
-    Value participantType{};
-    Value topicType{};
-    Value writerType{};
-    Value readerType{};
-    Value defaultParticipant{};
+    PersistentRoot<Value> participantType {};
+    PersistentRoot<Value> topicType {};
+    PersistentRoot<Value> writerType {};
+    PersistentRoot<Value> readerType {};
+    PersistentRoot<Value> defaultParticipant {};
     void linkNativeFunctions();
     void registerNativeTypes();
     static void setProperty(ObjectInstance* obj, const icu::UnicodeString& name, const Value& v);
@@ -126,7 +148,7 @@ private:
     void stopReaderThread();
 
     struct SignalBinding {
-        Value signal;
+        Value signal;  // allowed-raw: traced via traceSignalBindings
         dds_entity_t entity;
         std::string typeName;
         std::shared_ptr<dds_topic_descriptor_t> descriptor;
@@ -136,8 +158,15 @@ private:
         // sample in order).
         dds_history_kind_t historyKind{DDS_HISTORY_KEEP_LAST};
     };
-    std::vector<SignalBinding> writerSignals;
-    std::vector<SignalBinding> readerSignals;
+    static void traceSignalBindings(ValueVisitor& visitor,
+                                    const std::vector<SignalBinding>& bindings)
+    {
+        for (const auto& binding : bindings)
+            if (binding.signal.isObj())
+                visitor.visit(binding.signal);
+    }
+    TracedMember<std::vector<SignalBinding>> writerSignals { &ModuleDDS::traceSignalBindings };
+    TracedMember<std::vector<SignalBinding>> readerSignals { &ModuleDDS::traceSignalBindings };
     std::atomic<bool> readerThreadRunning{false};
     std::thread readerThread;
     mutable std::mutex signalMutex;

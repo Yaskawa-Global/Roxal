@@ -41,7 +41,15 @@ struct StreamHandle {
     ~StreamHandle() {
         cancelled = true;
         if (readerThread.joinable()) {
-            readerThread.join();
+            // The reader loop itself can be the last owner (it holds a
+            // shared_ptr copy of the handle): a self-join throws
+            // resource_deadlock_would_occur -> std::terminate.  The thread
+            // is returning anyway -- detach it.
+            if (readerThread.get_id() == std::this_thread::get_id()) {
+                readerThread.detach();
+            } else {
+                readerThread.join();
+            }
         }
     }
 };

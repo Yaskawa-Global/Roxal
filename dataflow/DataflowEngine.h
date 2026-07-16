@@ -6,6 +6,7 @@
 #include <set>
 #include <memory>
 #include <mutex>
+#include <condition_variable>
 
 namespace df {
 
@@ -28,7 +29,10 @@ public:
         Complete,      // All funcs evaluated for this tick
         Yielded,       // Time budget exhausted mid-evaluation, more work pending
         Overrun,       // Tick exceeded its period - error condition
-        Error          // Runtime error during execution
+        Error,         // Runtime error during execution
+        Busy           // Evaluator lock held (event-island evaluation in
+                       // flight on the engine thread); nothing was done --
+                       // an RT host retries next cycle rather than blocking
     };
 
     // Access the singleton instance. If \p create is false and the engine has
@@ -54,12 +58,25 @@ public:
     TimeDuration tickPeriod() const;
     uint64_t currentTickNumber() const;
 
-    // Run the engine
+    // Run the engine (the engine actor thread's main loop; queued once at
+    // VM construction).  This thread is the ONLY periodic driver besides an
+    // embedding RT host using tickFor() -- there is deliberately no other
+    // way to pump the schedule.
     void run(); // call tick() forever
-    void runFor(TimeDuration duration); // call tick() for the duration
+
+    // Internal single-step hook (script `_dataflow_tick()`): queue one tick
+    // for the ENGINE thread to execute and wait (yieldably, parking for any
+    // collection) until it completes.  Keeps test/dev single-stepping off
+    // the calling thread so the sole-driver invariant holds.
+    void requestTickAndWait();
 
     // Stop the engine (causes run() to exit)
     void stop();
+
+    // Wake run()'s idle drain sleep (see m_pendingEventCv).  Called by
+    // stop() and by VM::wakeAllThreadsForGC so a dormant engine thread
+    // reaches its GC poll / shutdown check promptly.
+    void wakeDrain();
 
     // run for single engine tick (GCD of all clock signals)
     //  (if waitForTickStart==true and TimePoint::currentTime() is not yet tick-number*tick-period, wait until then)
@@ -75,12 +92,38 @@ public:
     // Check if there's pending work from a yielded tick
     bool hasYieldedWork() const { return m_yieldState.active; }
 
+    // Per-node budget-overrun attribution.  A budgeted tick (tickFor) can be
+    // blown two ways: a single FuncNode execution completes past the deadline
+    // (the node couldn't yield -- a native func, or a script func between
+    // yield points), or a yielded tick's resumable work still doesn't fit in
+    // the tick period.  Both record the offending node here so the host can
+    // name the culprit instead of just seeing Overrun/late ticks.  Records
+    // aggregate per node until drained via consumeNodeOverruns(); the first
+    // occurrence per node also emits one stderr warning so engines running
+    // without a consuming host still surface it.
+    struct NodeOverrun {
+        std::string nodeName;         // FuncNode name (auto-generated names embed the script construction site)
+        TimeDuration cost;            // most recent measured cost (node execution, or whole-tick elapsed for period overruns)
+        TimeDuration overBudget;      // most recent overshoot past the deadline/period
+        uint64_t occurrences { 0 };   // overruns attributed to this node since last drain
+    };
+
+    // Drain accumulated overrun records (host log/telemetry hook; the engine
+    // analogue of VM::consumeNativeCallOverrun).
+    std::vector<NodeOverrun> consumeNodeOverruns();
+
     // evaluate the network without advancing time or ticking clocks
     // useful for initializing signal values when new nodes are added
     void evaluate();
 
     // Mark the network as modified so caches will be rebuilt on next tick/evaluate
     void markNetworkModified();
+
+    // Change a registered signal's execution domain.  Serialized under the
+    // engine mutex (which every network-cache rebuild holds while reading
+    // domains) and followed by a rebuild request -- the only safe way to
+    // change domain after registration (see Signal::setDomain).
+    void setSignalDomain(const ptr<Signal>& signal, Signal::Domain domain);
 
     // clear everything ready for new network to be instantiated
     void clear();
@@ -183,7 +226,7 @@ private:
 
     // Latched true on the first tickFor() call: an embedding host (e.g. an
     // RT control loop) has taken ownership of the PERIODIC schedule.  From
-    // then on the engine's own run()/runFor() loops stop ticking periodic
+    // then on the engine's own run() loop stops ticking periodic
     // islands (they'd race the host's tickFor on the same islands) and
     // reduce to servicing the event-update queue -- the actor thread stays
     // the home of event-driven islands (vision streams etc.), keeping their
@@ -202,6 +245,48 @@ private:
         ptr<FuncNode> yieldedFunc;
     };
     YieldState m_yieldState;
+
+    // Overrun-attribution store (see NodeOverrun above).  Guarded by its own
+    // mutex: recording happens on the ticking thread, draining on whatever
+    // thread the host logs from.  m_nodeOverrunWarned throttles the stderr
+    // warning to once per node per engine lifetime (NOT per drain -- a
+    // chronic offender shouldn't spam every consume cycle).
+    void recordNodeOverrun(const std::string& nodeName, TimeDuration cost, TimeDuration overBudget);
+    std::mutex m_nodeOverrunMutex;
+    std::map<std::string, NodeOverrun> m_nodeOverruns;
+    std::set<std::string> m_nodeOverrunWarned;
+
+    // Advisory RT lint: when a host drives the periodic schedule (tickFor),
+    // warn once per island composition about script-closure nodes on that
+    // schedule -- script execution is budget-sliced, but any single
+    // non-yieldable stretch can still blow the tick.  Advisory only (stderr),
+    // never an error; silenced with ROXAL_RT_LINT=0.  The host-driven latch
+    // and network rebuilds only SET m_rtLintPending -- the scan and printing
+    // run on the engine thread's loop (rtLintIslands), never on the budgeted
+    // tick path (stderr I/O alone can blow an RT slice).  m_rtLintAdvised
+    // dedupes repeat compositions across rebuilds.
+    void rtLintIslands();
+    std::atomic<bool> m_rtLintPending { false };
+    std::set<std::string> m_rtLintAdvised;
+
+    // Evaluate any background-domain periodic islands that have come due,
+    // on the calling (engine) thread with no tick budget.  Returns true if
+    // any island was evaluated; soonestDue is set to the earliest pending
+    // due time across background islands (zero if there are none) so idle
+    // loops can size their sleeps.  Serialized against tickFor and event
+    // evaluation by m_evalMutex.
+    bool serviceBackgroundIslands(TimePoint& soonestDue);
+
+    // Fast precheck for the run loops: true if the last network-cache build
+    // produced at least one background periodic island.
+    std::atomic<bool> m_haveBackgroundIslands { false };
+
+    // Single-step tick requests (requestTickAndWait): monotonically counted
+    // so a waiter observes exactly its own tick completing.  Serviced only
+    // by the engine thread's run() loop.
+    bool servicePendingTickRequests();
+    std::atomic<uint64_t> m_tickRequests { 0 };
+    std::atomic<uint64_t> m_tickRequestsDone { 0 };
 
     // Resume a previously yielded tick evaluation
     TickResult resumeTickEvaluation(TimePoint deadline);
@@ -232,6 +317,18 @@ private:
         std::vector<ptr<FuncNode>> funcs;
         std::map<TimeDuration, std::vector<ptr<FuncNode>>> executionOrders;
         TimeDuration tickPeriod { TimeDuration::zero() };
+
+        // Background-domain island: any member signal declared
+        // Signal::Domain::Background.  Kept off the shared periodic schedule
+        // (tick/tickFor); serviced by serviceBackgroundIslands() on the
+        // engine's own thread with no tick budget.
+        bool background { false };
+
+        // Next due evaluation time for a background periodic island.  Owned
+        // by the servicing thread (engine thread, under m_evalMutex+m_mutex);
+        // zero = not yet scheduled (first service aligns it to a period
+        // boundary).  Reset by buildNetworkCacheData.
+        TimePoint bgNextDue { TimePoint::zero() };
     };
 
     std::vector<NetworkIsland> m_networkIslands;
@@ -290,6 +387,13 @@ private:
     // thread. Guarded by m_pendingEventMutex (not m_mutex: producers must
     // never block on network evaluation).
     std::mutex m_pendingEventMutex;
+    // Drain OWNERSHIP: exactly one drainer may run processPendingEventUpdates
+    // at a time -- two engine-loop variants could historically race here and
+    // both callers, and the drained batch lives in a member
+    // (m_drainingEventUpdates, rooted for the GC tracer) that must have a
+    // single owner.  try_lock'd; losers return "no work" (producers notify
+    // m_pendingEventCv on enqueue, so a backed-off drainer re-wakes).
+    std::mutex m_eventDrainMutex;
     // Each entry holds an ObjSignal wrapper Value (not a bare ptr<Signal>):
     // Values are the house convention for stored references, the wrapper's
     // trace() covers everything the signal owns, and holding it keeps the
@@ -297,6 +401,30 @@ private:
     // The container itself is still invisible to the GC mark phase, so
     // tracePendingEventUpdates() below is called during root collection.
     std::vector<std::pair<roxal::Value, TimePoint>> m_pendingEventUpdates;
+    // Woken by producers on enqueue, by stop(), and by the GC's
+    // wakeAllThreadsForGC (via wakeDrain) so the idle drain sleep in run()
+    // never stalls teardown or a collection barrier.
+    std::condition_variable m_pendingEventCv;
+
+public:
+    // GC mark-phase hook: root the buffered time->Value history of EVERY
+    // signal the engine still holds (registered signals + network-island
+    // signals, including stale islands pending a rebuild).  The tracing GC
+    // otherwise only reaches a signal's values through a live ObjSignal
+    // wrapper -- but the engine keeps signals alive (and their maps
+    // populated) after the last wrapper dies, and destroying such a map
+    // later decRefs objects the tracer already swept (use-after-free).
+    // Rooting them here matches the refcount reality: buffered Values live
+    // exactly as long as some signal map holds them.
+    void traceAllSignals(roxal::ValueVisitor& visitor);
+private:
+    // The batch currently being drained/evaluated.  Swapped out of
+    // m_pendingEventUpdates under m_pendingEventMutex and kept HERE (a
+    // member, not a drain-local) so the wrapper Values stay visible to
+    // tracePendingEventUpdates() while the drain evaluates islands -- the
+    // draining thread can park at a GC safepoint mid-drain (closure FuncNode
+    // evaluation), and a drain-local batch would be unrooted at that moment.
+    std::vector<std::pair<roxal::Value, TimePoint>> m_drainingEventUpdates;
     // Drain the queue (engine/VM thread only). Returns true if any were run.
     bool processPendingEventUpdates();
 

@@ -17,6 +17,7 @@
 
 #include "Value.h"
 #include "Object.h"
+#include "GCRoots.h"
 
 class ErrorPrinter;
 
@@ -65,6 +66,12 @@ namespace roxal {
         void addProtoSearchPath(const std::string& path);
         bool nameMatch(const std::string& fullName, const std::string& name) const;
 
+        // The decl maps are typed GC roots (TracedMember, v2 phase B) --
+        // self-registered for the adapter's lifetime.
+        // Release retained Values while the VM object graph is still alive
+        // (module unloading, before the shutdown sweep).
+        void clearDecls();
+
     private:
         ObjObjectType* enumTypeFromDescriptor(const google::protobuf::EnumDescriptor* enumDesc) const;
         Value enumValueFromNumber(const google::protobuf::EnumDescriptor* enumDesc, int number) const;
@@ -74,8 +81,8 @@ namespace roxal {
         std::unique_ptr<google::protobuf::compiler::Importer> m_importer;
         std::unique_ptr<google::protobuf::DynamicMessageFactory> m_dynfactory;
         std::vector<const google::protobuf::ServiceDescriptor*> m_serviceList;
-        std::unordered_map<std::string, Value> m_declByFullName;
-        std::unordered_map<std::string, Value> m_declByShortName;
+        TracedMember<std::unordered_map<std::string, Value>> m_declByFullName;
+        TracedMember<std::unordered_map<std::string, Value>> m_declByShortName;
         std::unordered_set<std::string> m_searchPaths;
         std::string m_lastPackage;
         mutable std::recursive_mutex m_mutex;

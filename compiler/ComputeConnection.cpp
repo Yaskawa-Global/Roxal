@@ -3,6 +3,7 @@
 #ifdef ROXAL_COMPUTE_SERVER
 
 #include <compiler/SimpleMarkSweepGC.h>
+#include <compiler/GCRoots.h>
 #include <compiler/VM.h>
 #include <compiler/Thread.h>
 
@@ -43,6 +44,15 @@ void visitComputeValues(ValueVisitor& visitor, const std::vector<Value>& values)
 
 void pollVmThreadSafepointIfRequested()
 {
+    // Actor worker threads carry a persistent ExternalParticipant
+    // (Thread::act) and so count toward the collection barrier even when
+    // they invoke a compute native OUTSIDE execute() (execute_depth == 0,
+    // e.g. a remote-actor proxy method).  Park that registration here --
+    // without this, a thread blocked in waitForComputeFuture never parks
+    // and a concurrent gc() deadlocks the whole process (barrier waits on
+    // it forever).  No-op for threads without a participant.
+    SimpleMarkSweepGC::pollCurrentThreadParticipant();
+
     if (VM::thread && VM::thread->execute_depth > 0) {
         SimpleMarkSweepGC& gc = SimpleMarkSweepGC::instance();
         if (gc.isCollectionRequested()) {
@@ -923,10 +933,8 @@ void ComputeConnection::handleIncomingCall(uint64_t callId, int64_t actorId,
     // CALL_RESULT back — same pattern as ComputeServer::handleClient CallMethod.
     // Run in a detached thread so the reader loop is not blocked.
     SimpleMarkSweepGC::ExternalParticipant handoffParticipant(SimpleMarkSweepGC::instance());
-    handoffParticipant.setRootVisitor([&](ValueVisitor& visitor) {
-        visitComputeValue(visitor, actorVal);
-        visitComputeValues(visitor, args);
-    });
+    TracedRef<Value> actorRoot { actorVal };
+    TracedRef<std::vector<Value>> argsRoot { args };
     auto connWeak = weak_from_this();
     std::promise<void> workerReadyPromise;
     auto workerReady = workerReadyPromise.get_future();
@@ -941,13 +949,13 @@ void ComputeConnection::handleIncomingCall(uint64_t callId, int64_t actorId,
         Value callee = Value::nilVal();
         Value completion = Value::nilVal();
         Value result = Value::nilVal();
-        gcParticipant.setRootVisitor([&](ValueVisitor& visitor) {
-            visitComputeValue(visitor, actorVal);
-            visitComputeValue(visitor, callee);
-            visitComputeValues(visitor, args);
-            visitComputeValue(visitor, completion);
-            visitComputeValue(visitor, result);
-        });
+        // Captures live in the closure's heap storage -- the conservative
+        // stack scan cannot see them; these refs are load-bearing.
+        TracedRef<Value> wActorRoot { actorVal };
+        TracedRef<Value> wCalleeRoot { callee };
+        TracedRef<std::vector<Value>> wArgsRoot { args };
+        TracedRef<Value> wCompletionRoot { completion };
+        TracedRef<Value> wResultRoot { result };
         workerReadyPromise.set_value();
 
         auto sendResult = [&](bool ok, const Value& resultOrNil, const std::string& errMsg) {
@@ -1099,9 +1107,7 @@ void ComputeConnection::readerLoop()
                     const std::uint8_t* vend = p + len;
                     ptr<SerializationContext> ctx = make_ptr<NetworkSerializationContext>(this);
                     Value result = Value::nilVal();
-                    gcParticipant.setRootVisitor([&](ValueVisitor& visitor) {
-                        visitComputeValue(visitor, result);
-                    });
+                    TracedRef<Value> resultRoot { result };
                     result = deserializeValue(p, vend, ctx);
                     gcParticipant.pollSafepointIfRequested();
                     resolveCall(callId, std::move(result));
@@ -1140,9 +1146,7 @@ void ComputeConnection::readerLoop()
                 // Deserialize args
                 ptr<SerializationContext> ctx = make_ptr<NetworkSerializationContext>(this);
                 std::vector<Value> args;
-                gcParticipant.setRootVisitor([&](ValueVisitor& visitor) {
-                    visitComputeValues(visitor, args);
-                });
+                TracedRef<std::vector<Value>> argsRoot { args };
                 args = deserializeValueList(p, end, ctx);
                 gcParticipant.pollSafepointIfRequested();
                 handleIncomingCall(callId, actorId, method, args, cs);

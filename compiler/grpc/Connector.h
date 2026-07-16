@@ -13,6 +13,7 @@
 #include <functional>
 
 #include "ArgsView.h"
+#include "GCRoots.h"
 #include "Value.h"
 #include "ClientCall.h"
 #include "ProtoAdapter.h"
@@ -57,14 +58,14 @@ struct ActiveStreamState {
     std::string methodName;
 
     // Input signal tracking (for client streaming)
-    std::vector<Value> inputSignalValues;  // Weak refs to input signals
-    std::vector<Value> frozenArgs;         // Original call arguments (for non-signal params)
+    std::vector<Value> inputSignalValues;  // allowed-raw: traced via traceActiveStreams (weak refs to input signals)
+    std::vector<Value> frozenArgs;         // allowed-raw: traced via traceActiveStreams (original non-signal args)
     std::vector<size_t> signalArgIndices;  // Which args are signals
     std::atomic<int> stoppedSignalCount{0};
     int totalSignalCount{0};
 
     // Output signal (for server streaming)
-    Value outputSignal;  // The output signal value
+    Value outputSignal;  // allowed-raw: traced via traceActiveStreams
 
     // Cleanup callbacks registered with signals
     std::vector<std::function<void()>> cleanupCallbacks;
@@ -92,6 +93,12 @@ public:
                         bool serverStreaming,
                         std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 
+    // Cancel every active stream AND join its reader thread.  Must run
+    // before any state the reader decodes against is torn down (e.g.
+    // ProtoAdapter::clearDecls at module unloading): cancel alone leaves the
+    // reader mid-decode.  Idempotent; also runs from the destructor.
+    void stopAllStreams();
+
 private:
     // Build a request message from current argument values
     std::string buildRequestFromArgs(const std::string& methodName,
@@ -106,7 +113,19 @@ private:
     void onInputSignalStopped(std::shared_ptr<ActiveStreamState> state);
 
     // Active streams
-    std::vector<std::shared_ptr<ActiveStreamState>> m_activeStreams;
+    // Typed GC root (TracedMember, v2 phase B): the Values in
+    // ActiveStreamState (signals, frozen args) live ONLY here once the
+    // script drops its handles -- without rooting, a collection sweeps
+    // their targets while the stream is still delivering.  Traced with the
+    // world stopped and WITHOUT m_streamsMutex (the reader-thread erase
+    // path destructs Values while holding it -- taking it at trace time
+    // would invert the lock order; the reader parks via its scoped
+    // ExternalParticipant during collections).
+    static void traceActiveStreams(
+        ValueVisitor& visitor,
+        const std::vector<std::shared_ptr<ActiveStreamState>>& streams);
+    TracedMember<std::vector<std::shared_ptr<ActiveStreamState>>> m_activeStreams {
+        &ACUCommunicator::traceActiveStreams };
     std::mutex m_streamsMutex;
 };
 

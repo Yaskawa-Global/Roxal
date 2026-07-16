@@ -514,6 +514,19 @@ public:
         return std::forward<Fn>(fn)(m);
     }
 
+    // Run fn against the underlying map WHILE HOLDING the map's lock.
+    // Use when fn must dereference stored values (e.g. compare pointed-to
+    // contents): a concurrent eraser that also synchronizes on this lock
+    // (like ~ObjString's intern-table self-erase) cannot proceed to free
+    // the pointee while fn runs.  fn must not call back into this map.
+    template<typename Fn>
+    auto lockedApply(Fn&& fn)
+        -> decltype(std::forward<Fn>(fn)(std::declval<std::unordered_map<Key, T>&>()))
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        return std::forward<Fn>(fn)(m);
+    }
+
 
     // apply f to each map entry *while map is locked*
     //  (exceptions thrown by f are ignored)

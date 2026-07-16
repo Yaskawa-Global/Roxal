@@ -1,4 +1,12 @@
 // Verify that the mark-sweep collector reclaims container cycles.
+//
+// Conservative stack scanning can transiently retain a
+// dropped cycle through a stale operand slot in the live interpreter
+// dispatch frame; re-executing the same opcode mix (list construct +
+// append + weakref + nil) overwrites those slots, so the cycle dies
+// within a few churn+gc rounds.  Under precise-roots configurations the
+// first gc() collects it and the loop exits immediately -- the printed
+// output is identical either way.
 
 lst1 = []
 lst2 = []
@@ -16,6 +24,18 @@ print(_weak_alive(w1))
 print(_weak_alive(w2))
 
 gc()
+
+rounds = 0
+while (_weak_alive(w1) or _weak_alive(w2)) and rounds < 10:
+    c1 = []
+    c2 = []
+    c1.append(c2)
+    c2.append(rounds)
+    cw = _weakref(c1)
+    c1 = nil
+    c2 = nil
+    gc()
+    rounds = rounds + 1
 
 print(_weak_alive(w1))
 print(_weak_alive(w2))

@@ -1,6 +1,7 @@
 #ifdef ROXAL_ENABLE_GRPC
 
 #include "ClientCall.h"
+#include "SimpleMarkSweepGC.h"
 #include <stdexcept>
 #include <chrono>
 
@@ -203,8 +204,18 @@ void ClientCall::ServerReadLoop(std::shared_ptr<StreamHandle> handle)
             message.append(reinterpret_cast<const char*>(s.begin()), s.size());
         }
 
-        // Invoke callback with the received message
+        // Invoke callback with the received message.  GC coverage: the
+        // callback (Connector::onServerMessage) builds a full Roxal Value
+        // tree from the wire message and writes a signal -- many GC
+        // allocations on this otherwise-unregistered reader thread.  A
+        // SCOPED participant (per message, not loop-persistent: nothing
+        // wakes the blocking cq->Next on a GC request) makes the collector
+        // wait for / park this thread around exactly the Value-touching
+        // phase.  Same pattern as the DDS reader thread (ModuleDDS).
         if (handle->onServerMessage) {
+            roxal::SimpleMarkSweepGC::ExternalParticipant participant(
+                roxal::SimpleMarkSweepGC::instance());
+            participant.pollSafepointIfRequested();  // park up-front if a barrier is forming
             handle->onServerMessage(message);
         }
 
@@ -219,8 +230,11 @@ void ClientCall::ServerReadLoop(std::shared_ptr<StreamHandle> handle)
     bool ok;
     handle->cq->Next(&gotTag, &ok);
 
-    // Invoke end callback
+    // Invoke end callback (touches Values / signal state -- cover like above)
     if (handle->onStreamEnd) {
+        roxal::SimpleMarkSweepGC::ExternalParticipant participant(
+            roxal::SimpleMarkSweepGC::instance());
+        participant.pollSafepointIfRequested();
         handle->onStreamEnd(status);
     }
 }

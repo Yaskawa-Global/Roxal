@@ -10,6 +10,7 @@
 #include <core/ordered_map.h>
 
 #include "Chunk.h"
+#include "GCRoots.h"
 #include "Object.h"
 #include "TypeDeducer.h"
 
@@ -162,7 +163,7 @@ protected:
                         const icu::UnicodeString& moduleName);
     const SuffixRegistration* lookupSuffix(const icu::UnicodeString& suffix) const;
 
-    std::map<ModuleInfo,Value> importedModules;
+    std::map<ModuleInfo,Value> importedModules;  // allowed-raw: rooted by importedModulesRoot
 
 public:
     // Drop this compiler's per-instance imported-modules cache.  Used by the
@@ -235,10 +236,34 @@ protected:
             if (scopeType == ScopeType::Scope) return "Scope";
             return "?";
         }
+
+        // Compiler roots: expose the in-progress GC objects
+        // this scope retains to the mark phase (see lexicalScopesRoot).  A
+        // scope subclass that grows a Value member MUST extend its override.
+        virtual void traceValues(ValueVisitor& visitor) const { (void)visitor; }
     };
     typedef std::vector<ptr<LexicalScope>> LexicalScopes;
     typedef LexicalScopes::iterator Scope;
     LexicalScopes lexicalScopes;
+
+    // Compiler roots: the in-progress compilation products
+    // (per-scope ObjFunctions incl. their chunk constant tables, const
+    // bindings, module types, imported modules) are reachable only through
+    // this compiler's state -- these member roots keep them visible to the
+    // mark phase so a thread can PARK mid-compile (nested module load /
+    // import) under conservative marking, instead of the barrier waiting
+    // out the whole compile (GCNoParkScope, kept only as the
+    // precise-mode fallback -- see compile()).  Declared AFTER their
+    // targets: member init order guarantees the targets exist first, and
+    // C++ codegen temps in stack locals are covered by the parked-stack
+    // scan.
+    static void traceLexicalScopes(ValueVisitor& visitor, const LexicalScopes& scopes) {
+        for (const auto& scope : scopes)
+            if (scope)
+                scope->traceValues(visitor);
+    }
+    TracedRef<LexicalScopes> lexicalScopesRoot { lexicalScopes, &RoxalCompiler::traceLexicalScopes };
+    TracedRef<std::map<ModuleInfo,Value>> importedModulesRoot { importedModules };
     void outputScopes();
 
     void enterModuleScope(const icu::UnicodeString& packageName,
@@ -306,12 +331,21 @@ protected:
         int scopeDepth;
 
         struct ConstBinding {
-            Value value;
+            Value value;   // allowed-raw: traced via FunctionScope::traceValues
             ast::LinePos line;
         };
         std::vector<std::unordered_map<icu::UnicodeString, ConstBinding>> constBindings;
 
-        Value           function; // ObjFunction
+        void traceValues(ValueVisitor& visitor) const override {
+            if (function.isObj())
+                visitor.visit(function);   // chunk constants trace transitively
+            for (const auto& bindings : constBindings)
+                for (const auto& entry : bindings)
+                    if (entry.second.value.isObj())
+                        visitor.visit(entry.second.value);
+        }
+
+        Value           function; // allowed-raw: traced via traceValues (ObjFunction)
         FunctionType    functionType;
         ptr<type::Type> type;
 
@@ -445,10 +479,16 @@ protected:
         }
         virtual ~ModuleScope() {}
 
+        void traceValues(ValueVisitor& visitor) const override {
+            FunctionScope::traceValues(visitor);
+            if (moduleType.isObj())
+                visitor.visit(moduleType);
+        }
+
         icu::UnicodeString packageName;
         icu::UnicodeString moduleName;
         icu::UnicodeString sourceName;
-        Value moduleType;  // ObjModuleType
+        Value moduleType;  // allowed-raw: traced via traceValues (ObjModuleType)
         std::unordered_map<icu::UnicodeString, VarTypeSpec> moduleVarTypes;
         std::unordered_set<icu::UnicodeString> moduleVarTypeConst; // vars declared as var x: const T
         std::unordered_map<icu::UnicodeString, ast::LinePos> moduleVarLines;

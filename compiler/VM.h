@@ -101,6 +101,27 @@ struct CallFrame {
 };
 
 
+// GC coverage for host-thread code that touches GC state OUTSIDE execute():
+// compilation / cache deserialization, embedder init that builds Values or
+// stores module vars (e.g. a robot host's init walk), pre-run global installs,
+// post-execute teardown.  Such threads are invisible to the collector's
+// stop-the-world set, so a concurrent collection could sweep objects that
+// exist only on their C++ stacks.  Constructing this makes the thread a GC
+// ExternalParticipant for the scope (the collector waits for scope exit;
+// bounded by the covered phase).  No-op when the thread is already covered
+// (participant / RT yield-section / inside execute()).  Used internally by
+// the VM's own host-entry APIs and exported for embedders.
+class ScopedGCMutatorCover {
+public:
+    ScopedGCMutatorCover();
+    ~ScopedGCMutatorCover();
+    ScopedGCMutatorCover(const ScopedGCMutatorCover&) = delete;
+    ScopedGCMutatorCover& operator=(const ScopedGCMutatorCover&) = delete;
+private:
+    void* participant_ { nullptr };  // SimpleMarkSweepGC::ExternalParticipant* (opaque: keep GC header out of VM.h)
+};
+
+
 // Generic integration point for a host UI event loop (e.g. Qt's QGuiApplication).
 // A native module installs an implementation via VM::setHostEventLoop(); the VM
 // dispatch loop then services it cooperatively — blocking on waitForEvents() when
@@ -360,6 +381,13 @@ public:
     /// Clears the stored overrun on read. Call from the same thread as runFor().
     static std::string consumeNativeCallOverrun();
 
+    /// Main-thread identity: the host's own thread that runs scripts/REPL
+    /// (as opposed to spawned actor/worker threads).  Consulted by the host
+    /// UI event-loop pump, which may only be driven from that thread.
+    /// markMainThread() latches the first calling thread; later calls no-op.
+    static void markMainThread();
+    static bool onMainThread();
+
     // =========================================================================
     // Internal call mechanics (used by the above APIs)
     // =========================================================================
@@ -540,7 +568,12 @@ public:
     ExecutionStatus joinAllThreads(uint64_t skipId = 0);
 
 
-    static constexpr size_t DefaultMaxStack = 1024;
+    // 16K Values (128KB) per thread: 1024 proved too small for real event
+    // traffic -- a camera-frame backlog pumped recursively through change
+    // handlers nests ~2 slots per pending event, so a half-second stall
+    // (e.g. one large GC pause) overflowed the old limit.  Thread::push
+    // bounds-checks in all builds; this is headroom, not a safety net.
+    static constexpr size_t DefaultMaxStack = 16384;
     static constexpr size_t DefaultMaxCallFrames = 128;
 
     static std::string versionString();
@@ -624,8 +657,6 @@ protected:
     // destructor is a no-op after an explicit host-driven shutdown.
     std::atomic_bool shutdownComplete_ {false};
     std::atomic_int exitCodeValue {0};
-
-    std::atomic_bool objectCleanupPending {false};
 
     // Persistent thread used for REPL execution so that state such as event
     // handlers persists across entered lines.
@@ -827,9 +858,6 @@ public:
 
     void resetStack();
     void freeObjects();
-    void requestObjectCleanup();
-    bool consumePendingObjectCleanup();
-    bool isObjectCleanupPending() const;
     void cleanupWeakRegistries();
     void unwindFrame();
     void raiseException(Value exc);
@@ -937,6 +965,7 @@ public:
     Value signal_stop_builtin(ArgsView args);
     Value signal_tick_builtin(ArgsView args);
     Value signal_freq_builtin(ArgsView args);
+    Value signal_domain_builtin(ArgsView args);
     Value signal_set_builtin(ArgsView args);
     Value signal_on_changed_builtin(ArgsView args);
 
@@ -973,9 +1002,9 @@ public:
     Value df_graphdot_native(ArgsView args);
 
     // DataflowEngine actor native methods
-    Value dataflow_tick_native(ArgsView args);
+    // Engine-thread bootstrap only (queued once at VM construction); not
+    // registered as a script-callable method.
     Value dataflow_run_native(ArgsView args);
-    Value dataflow_run_for_native(ArgsView args);
 
     // Builtin property getters
     Value signal_value_getter(Value& receiver);
@@ -998,20 +1027,9 @@ public:
     Value ffi_native(ArgsView args);
 
 private:
-    bool isCurrentThreadActorWorker() const;
-    // Actor workers are not allowed to synchronously join other actor threads
-    // during GC teardown because they might be the very threads being joined.
-    // We therefore collect actor instances that need their worker shut down in
-    // a queue and let whichever non-actor thread next runs the GC drain it.
-    void enqueueActorFinalizer(ActorInstance* actorInst);
-    void drainActorFinalizerQueue(std::vector<ActorInstance*>& out);
-    void finalizeActorInstances(std::vector<ActorInstance*>& actors);
-
-    std::mutex actorFinalizerMutex;
-    // Stores actor instances whose workers must be joined from a safe
-    // (non-actor) context.  Entries are populated by actor worker threads and
-    // drained by regular VM threads before the objects are finally deleted.
-    std::deque<ActorInstance*> pendingActorFinalizers;
+    // Serializes reclamation-role handoffs (dedicated collector thread,
+    // inline-electing thread's tail, shutdown path).  Contention is ~zero.
+    std::mutex freeObjectsMutex_;
 };
 
 

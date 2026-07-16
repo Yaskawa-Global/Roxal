@@ -34,6 +34,9 @@ wait(us=1000)
 a = nil
 oa = nil
 
-wait(us=10000)
+# Actor teardown is asynchronous (retire queue -> collector -> lifecycle
+# join); gc() is the deterministic fence: collected, reclaimed, AND actor
+# workers joined/unsubscribed before the next emit.
+gc()
 
 emit E() // should trigger none

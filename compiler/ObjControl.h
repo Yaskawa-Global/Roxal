@@ -73,6 +73,21 @@ struct ObjControl {
     // its destructor runs (for example, for containers that store self
     // references).
     std::atomic<bool> collecting;
+    // Allocation-registry segment backpointer (segment + slot index): lets
+    // unregisterAllocation tombstone its slot without searching.  Written
+    // once at registration (thread-private), read/updated only by the
+    // collector (compaction) and the locked unregister path.
+    void* allocSeg { nullptr };
+    std::uint32_t allocSlot { 0 };
+
+    // Retire queue (reclamation): intrusive MPSC link + the Obj pointer the
+    // reclaimer destroys (obj is nulled at retire time for weak-deref
+    // safety, so the pointer must ride separately).  retireNext is written
+    // by the retiring thread before the CAS publish and read only by the
+    // reclaimer after taking the whole chain.
+    Obj* retiredObj { nullptr };
+    ObjControl* retireNext { nullptr };
+
     // Records the last collection epoch that marked this object. The GC bumps
     // its global epoch each cycle, letting us treat "marked" as
     // (markEpoch == currentEpoch) without clearing a separate bit on every

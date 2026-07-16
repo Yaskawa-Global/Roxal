@@ -4,6 +4,8 @@
 
 #include "BuiltinModule.h"
 #include "Connector.h"
+#include "GCRoots.h"
+#include "SimpleMarkSweepGC.h"
 
 #include <optional>
 #include <memory>
@@ -12,6 +14,14 @@
 
 namespace roxal {
 
+// Rooting: this module retains roxal Values in C++ containers
+// (protoModules, ProtoAdapter decl maps, and -- critically --
+// ActiveStreamState signal/arg Values in the connector, which may be the
+// ONLY reference once the script drops its stream handles).  Own members
+// are typed roots (PersistentRoot/TracedMember, GC v2 phase B); the
+// adapter/connector internals keep their visitRoots() methods, reached
+// through a delegating root member (their conversion to typed members is
+// a later B1 step).
 class ModuleGrpc : public BuiltinModule {
 public:
     ModuleGrpc();
@@ -21,6 +31,8 @@ public:
 
     void registerBuiltins(VM& vm) override;
     void onModuleLoaded(VM& vm) override;
+    // Release Value-holding C++ containers before the VM's shutdown sweep.
+    void onModuleUnloading(VM& vm) override;
 
     inline Value moduleType() const override { return moduleTypeValue; }
 
@@ -42,12 +54,12 @@ private:
                          const std::vector<ptr<type::Type>>& returnTypes = {},
                          const std::vector<Value>& defaultValues = {});
 
-    Value moduleTypeValue; // ObjModuleType*
+    PersistentRoot<Value> moduleTypeValue; // ObjModuleType*
     std::string targetAddress;
     std::shared_ptr<grpc::Channel> channel;
     std::unique_ptr<ProtoAdapter> adapter;
     std::unique_ptr<ACUCommunicator> connector;
-    std::unordered_map<std::string, Value> protoModules; // name -> ObjModuleType
+    TracedMember<std::unordered_map<std::string, Value>> protoModules; // name -> ObjModuleType
 };
 
 }

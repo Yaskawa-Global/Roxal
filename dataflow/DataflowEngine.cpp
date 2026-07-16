@@ -2,8 +2,12 @@
 #include "FuncNode.h"
 #include "compiler/VM.h"
 #include "compiler/Object.h"
+#include "compiler/SimpleMarkSweepGC.h"
 #include "core/common.h"
 
+#include <optional>
+
+#include <cstdlib>
 #include <stdexcept>
 #include <numeric>
 #include <thread>
@@ -363,6 +367,14 @@ void DataflowEngine::clear()
 void DataflowEngine::stop()
 {
     m_shouldStop = true;
+    wakeDrain();   // rouse an idle run() so it observes the stop promptly
+}
+
+void DataflowEngine::wakeDrain()
+{
+    // Notify without holding m_pendingEventMutex: the waiter re-checks its
+    // predicate under the lock, and the timed wait covers a lost wake.
+    m_pendingEventCv.notify_all();
 }
 
 
@@ -381,8 +393,159 @@ uint64_t DataflowEngine::currentTickNumber() const
 
 
 
+void DataflowEngine::setSignalDomain(const ptr<Signal>& signal, Signal::Domain domain)
+{
+    if (!signal)
+        return;
+    {
+        // Every cache rebuild reads signal domains under m_mutex; writing
+        // under it means an in-flight rebuild can never observe a torn or
+        // mid-change value.
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        signal->setDomain(domain);
+    }
+    markNetworkModified();   // rerun the build with the new domain
+}
+
+
+void DataflowEngine::requestTickAndWait()
+{
+    const uint64_t target = m_tickRequests.fetch_add(1, std::memory_order_acq_rel) + 1;
+    wakeDrain();
+    // Yieldable wait: the engine thread executes the tick (it is the sole
+    // periodic driver); this thread parks for any collection that starts
+    // meanwhile -- the engine thread itself can park mid-tick, so a
+    // non-parking waiter would deadlock the barrier.
+    while (m_tickRequestsDone.load(std::memory_order_acquire) < target) {
+        if (m_shouldStop.load(std::memory_order_relaxed))
+            return;   // engine stopping: the tick will never run
+        if (roxal::VM::thread && roxal::VM::thread->execute_depth > 0) {
+            auto& gc = roxal::SimpleMarkSweepGC::instance();
+            if (gc.isCollectionRequested())
+                gc.safepoint(*roxal::VM::thread);
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(200));
+    }
+}
+
+
+bool DataflowEngine::servicePendingTickRequests()
+{
+    bool ticked = false;
+    uint64_t want = m_tickRequests.load(std::memory_order_acquire);
+    while (m_tickRequestsDone.load(std::memory_order_relaxed) < want) {
+        tick(/*waitForTickStart=*/false);
+        m_tickRequestsDone.fetch_add(1, std::memory_order_release);
+        ticked = true;
+        want = m_tickRequests.load(std::memory_order_acquire);
+    }
+    return ticked;
+}
+
+
+bool DataflowEngine::serviceBackgroundIslands(TimePoint& soonestDue)
+{
+    soonestDue = TimePoint::zero();
+    if (!m_haveBackgroundIslands.load(std::memory_order_relaxed))
+        return false;
+
+    // Serialize against tickFor's periodic evaluation and the event path.
+    // This runs on the engine thread, which may block -- but a contended
+    // wait is covered as GC-safe blocking for the same reason as in
+    // processEventDrivenSignalUpdate: the in-flight evaluator may be parked
+    // at a safepoint while holding the mutex.
+    std::unique_lock<std::recursive_mutex> evalLock(m_evalMutex, std::try_to_lock);
+    if (!evalLock.owns_lock()) {
+        roxal::SimpleMarkSweepGC::GCSafeBlockScope blockCover;
+        evalLock.lock();
+    }
+
+    if (m_networkModified)
+        buildNetworkCacheData();
+
+    const TimePoint now = TimePoint::currentTime();
+
+    // Under m_mutex: find due islands, tick their due sources, and advance
+    // their schedules.  Evaluation happens on island COPIES outside m_mutex
+    // (same pattern as tickFor) -- closures can run arbitrarily long.
+    std::vector<std::pair<NetworkIsland, TimePoint>> due;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        for (auto& island : m_networkIslands) {
+            if (!island.background || island.tickPeriod == TimeDuration::zero())
+                continue;
+
+            if (island.bgNextDue == TimePoint::zero())
+                island.bgNextDue = nextPeriodOnPeriodBoundary(island.tickPeriod);
+
+            if (now < island.bgNextDue) {
+                if (soonestDue == TimePoint::zero() || island.bgNextDue < soonestDue)
+                    soonestDue = island.bgNextDue;
+                continue;
+            }
+
+            const TimePoint evalTime = island.bgNextDue;
+            for (const auto& signal : island.signals) {
+                if (!signal->isSourceSignal()
+                    || signal->period() == TimeDuration::zero())
+                    continue;
+                if ((evalTime % signal->period()) == TimeDuration::zero()) {
+                    signal->tick(evalTime);
+                    updateSignalConsumerInputAvailability(signal, evalTime);
+                }
+            }
+
+            // Best-effort schedule: if servicing fell behind (background
+            // work may overrun its own period), skip the missed periods
+            // rather than replaying them.
+            do {
+                island.bgNextDue = island.bgNextDue + island.tickPeriod;
+            } while (island.bgNextDue <= now);
+            if (soonestDue == TimePoint::zero() || island.bgNextDue < soonestDue)
+                soonestDue = island.bgNextDue;
+
+            due.emplace_back(island, evalTime);
+        }
+    }
+
+    // No tick budget: background work runs to completion on this thread
+    // (same unbudgeted evaluation as the event-driven path).
+    for (auto& entry : due)
+        evaluateIsland(entry.first,
+                       resolveEvaluationTime(entry.first, entry.second),
+                       TimePoint::max());
+
+    return !due.empty();
+}
+
+
 void DataflowEngine::run() {
     m_shouldStop = false;
+
+    // GC coverage for the whole loop.  The engine's actor thread reaches here
+    // via a boundNative dispatch (no VM::execute frame) and is normally
+    // already covered by the actor dispatch loop's persistent participant
+    // (Thread::act) -- poll THAT here via pollCurrentThreadParticipant().
+    // Only a bare foreign thread with no coverage at all gets a participant
+    // of its own; a script VM thread calling run() is registered by its
+    // outer execute() (VM::execute skips re-registration for participant
+    // threads) and polls via safepoint().  Poll ONLY at points where no
+    // un-stored Value locals are held (top of loop / gap loop).
+    const bool needsParticipant =
+        (roxal::VM::thread == nullptr || roxal::VM::thread->execute_depth == 0)
+        && !roxal::SimpleMarkSweepGC::currentThreadIsExternalParticipant();
+    std::optional<roxal::SimpleMarkSweepGC::ExternalParticipant> gcParticipant;
+    if (needsParticipant)
+        gcParticipant.emplace(roxal::SimpleMarkSweepGC::instance());
+    auto gcPoll = [&] {
+        if (roxal::SimpleMarkSweepGC::currentThreadIsExternalParticipant()) {
+            roxal::SimpleMarkSweepGC::pollCurrentThreadParticipant();
+        } else if (roxal::VM::thread && roxal::VM::thread->execute_depth > 0) {
+            auto& gc = roxal::SimpleMarkSweepGC::instance();
+            if (gc.isCollectionRequested())
+                gc.safepoint(*roxal::VM::thread);
+        }
+    };
 
     {
         std::lock_guard<std::recursive_mutex> lock(m_mutex);
@@ -397,6 +560,8 @@ void DataflowEngine::run() {
     }
 
     while (!m_shouldStop) {
+        gcPoll();   // no engine Value locals held here: safe park point
+
         if (m_networkModified) {
             buildNetworkCacheData();
 
@@ -412,10 +577,39 @@ void DataflowEngine::run() {
             // Purely event-driven network, OR a host drives the periodic
             // schedule via tickFor() (m_hostDriven): this loop reduces to
             // servicing updates handed off from non-VM producer threads
-            // (see processEventDrivenSignalUpdate) -- event-driven islands
-            // evaluate here on the actor thread, off the host's RT budget.
-            if (!processPendingEventUpdates())
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            // (see processEventDrivenSignalUpdate) plus any background-
+            // domain periodic islands -- both evaluate here on the actor
+            // thread, off the host's RT budget.  Deferred RT-lint scans
+            // (queued by the tick path) also print from here.
+            if (m_rtLintPending.exchange(false, std::memory_order_relaxed))
+                rtLintIslands();
+            bool didWork = processPendingEventUpdates();
+            TimePoint bgDue;
+            didWork |= serviceBackgroundIslands(bgDue);
+            didWork |= servicePendingTickRequests();
+            if (!didWork) {
+                // Idle: sleep on the pending-event condvar instead of a 1ms
+                // poll -- truly dormant with no traffic, ~us delivery with.
+                // The predicate also wakes for stop() (teardown join stays
+                // prompt) and for a GC request (the collection barrier must
+                // not wait out this sleep; VM::wakeAllThreadsForGC calls
+                // wakeDrain()).  The timed fallback covers any missed wake
+                // -- shortened when a background island comes due sooner.
+                auto waitDur = std::chrono::microseconds(10000);
+                if (bgDue != TimePoint::zero()) {
+                    auto us = (bgDue - TimePoint::currentTime()).microSecs();
+                    if (us < 10000)
+                        waitDur = std::chrono::microseconds(us > 0 ? us : 0);
+                }
+                std::unique_lock<std::mutex> lk(m_pendingEventMutex);
+                m_pendingEventCv.wait_for(lk, waitDur, [&]{
+                    return m_shouldStop.load(std::memory_order_relaxed)
+                        || !m_pendingEventUpdates.empty()
+                        || m_tickRequests.load(std::memory_order_relaxed)
+                               != m_tickRequestsDone.load(std::memory_order_relaxed)
+                        || roxal::SimpleMarkSweepGC::instance().isCollectionRequested();
+                });
+            }
             continue;
         }
 
@@ -426,12 +620,20 @@ void DataflowEngine::run() {
             continue;
         }
 
-        // Service handed-off event updates at least once per tick cycle (at
-        // fast tick rates, e.g. 1kHz, the gap loop below never runs), then
-        // keep servicing at 1ms granularity while waiting out longer tick
-        // gaps, taking the final (<1ms) stretch as a precise sleep so tick
-        // timing is unchanged.
+        // Service handed-off event updates and background islands at least
+        // once per tick cycle (at fast tick rates, e.g. 1kHz, the gap loop
+        // below never runs), then keep servicing at 1ms granularity while
+        // waiting out longer tick gaps, taking the final (<1ms) stretch as
+        // a precise sleep so tick timing is unchanged.  (Background islands
+        // are excluded from m_tickPeriod's grid, so tick() below never
+        // reaches them -- this is their only servicing in engine-driven
+        // mode too.)
         processPendingEventUpdates();
+        {
+            TimePoint bgDue;
+            serviceBackgroundIslands(bgDue);
+        }
+        servicePendingTickRequests();
         // Re-check m_shouldStop AND m_hostDriven throughout the tick gap -- the
         // outer loop only re-checks them once per tick, but this gap can span a
         // whole tick period (and sleepUntil below waits out the rest):
@@ -448,7 +650,12 @@ void DataflowEngine::run() {
         while (!m_shouldStop
                && !m_hostDriven.load(std::memory_order_relaxed)
                && TimePoint::currentTime() + TimeDuration::milliSecs(1) < m_tickStart) {
-            if (!processPendingEventUpdates())
+            gcPoll();   // gap can span a whole tick period: stay parkable
+            bool gapWork = processPendingEventUpdates();
+            TimePoint bgDue;
+            gapWork |= serviceBackgroundIslands(bgDue);
+            gapWork |= servicePendingTickRequests();
+            if (!gapWork)
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         if (m_shouldStop || m_hostDriven.load(std::memory_order_relaxed))
@@ -458,78 +665,19 @@ void DataflowEngine::run() {
     }
 }
 
-void DataflowEngine::runFor(TimeDuration duration)
-{
-    if (m_networkModified)
-        buildNetworkCacheData();
-
-
-    auto runUntil = TimePoint::currentTime() + duration;
-
-    if (m_tickPeriod == TimeDuration::zero())
-        m_runStart = TimePoint::currentTime();
-    else
-        m_runStart = nextPeriodOnPeriodBoundary(m_tickPeriod);
-    //std::cout << "currentTime=" << TimePoint::currentTime().humanString() << " start=" << start.humanString() << std::endl;//!!!
-    #if TRACE_EXECUTION
-    trace(TraceEntry{TimePoint::currentTime(), "runFor() schedule initial signal ticks", signalsStart, std::nullopt, std::nullopt});
-    #endif
-
-
-    // keep running until we are out of time or stop is requested
-    while (TimePoint::currentTime() < runUntil && !m_shouldStop) {
-
-        if (m_networkModified) {
-            buildNetworkCacheData();
-            if (m_tickPeriod > TimeDuration::zero()) {
-                m_runStart = nextPeriodOnPeriodBoundary(m_tickPeriod);
-                m_tickNumber = 0;
-            }
-            continue; // start loop again with updated timing
-        }
-
-        if (m_hostDriven.load(std::memory_order_relaxed)
-            || m_tickPeriod == TimeDuration::zero()) {
-            // Purely event-driven network, OR a host drives the periodic
-            // schedule via tickFor() (m_hostDriven): reduce to servicing the
-            // pending-event queue (see run() for the full rationale).
-            if (!processPendingEventUpdates())
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            continue;
-        }
-
-        m_tickStart = m_runStart + m_tickPeriod*m_tickNumber;
-
-        if (m_tickStart < TimePoint::currentTime()) {
-            m_runStart = nextPeriodOnPeriodBoundary(m_tickPeriod);
-            m_tickNumber = 0;
-            continue;
-        }
-
-        // Service handed-off event updates at least once per tick cycle (at
-        // fast tick rates the gap loop below never runs), then keep
-        // servicing at 1ms granularity while waiting out longer tick gaps,
-        // taking the final (<1ms) stretch as a precise sleep.
-        processPendingEventUpdates();
-        while (TimePoint::currentTime() + TimeDuration::milliSecs(1) < m_tickStart) {
-            if (!processPendingEventUpdates())
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        }
-        sleepUntil(m_tickStart);
-
-        tick(/*waitForTickStart=*/false);
-
-    }
-
-
-    #if TRACE_EXECUTION
-    printTrace();
-    #endif
-}
-
-
 void DataflowEngine::tick(bool waitForTickStart)
 {
+    // Engine-thread periodic driver (run() and the _dataflow_tick() request
+    // path are the only callers).  Serialize against event-driven island
+    // evaluation and a host's tickFor; a contended wait is covered as
+    // GC-safe blocking (the in-flight evaluator can park at a safepoint
+    // while holding the mutex).
+    std::unique_lock<std::recursive_mutex> evalLock(m_evalMutex, std::try_to_lock);
+    if (!evalLock.owns_lock()) {
+        roxal::SimpleMarkSweepGC::GCSafeBlockScope blockCover;
+        evalLock.lock();
+    }
+
     if (m_networkModified)
         buildNetworkCacheData();
 
@@ -560,33 +708,41 @@ void DataflowEngine::tick(bool waitForTickStart)
     }
 
 
-    for(const auto& signal : signals) {
-        if (signal->isSourceSignal()) {
-            if (signal->period() == TimeDuration::zero())
-                continue;
+    {
+        std::lock_guard<std::recursive_mutex> sourceLock(m_mutex);
+        for(const auto& signal : signals) {
+            if (signal->isSourceSignal()) {
+                if (signal->period() == TimeDuration::zero())
+                    continue;
 
-            // should this source tick now?
-            if ((m_tickStart % signal->period()) == TimeDuration::zero()) { // yes
+                // Background-island sources tick on their own schedule in
+                // serviceBackgroundIslands() -- never here (double-advance).
+                if (signal->inBackgroundIsland())
+                    continue;
 
-                #if 0
-                Value previousValue = signal->lastValue();
-                #endif
+                // should this source tick now?
+                if ((m_tickStart % signal->period()) == TimeDuration::zero()) { // yes
 
-                signal->tick(m_tickStart);
+                    #if 0
+                    Value previousValue = signal->lastValue();
+                    #endif
 
-                #if 0
-                Value currentValue = signal->lastValue();
-                bool valueChanged = (currentValue != previousValue);
-                std::cout << "ticked source signal " << signal->name();
-                if (valueChanged)
-                            std::cout << " changed from " << previousValue << " to " << currentValue;
-                else
-                            std::cout << " unchanged at " << currentValue;
-                std::cout << std::endl;
-                #endif
+                    signal->tick(m_tickStart);
 
-                updateSignalConsumerInputAvailability(signal, m_tickStart);
+                    #if 0
+                    Value currentValue = signal->lastValue();
+                    bool valueChanged = (currentValue != previousValue);
+                    std::cout << "ticked source signal " << signal->name();
+                    if (valueChanged)
+                                std::cout << " changed from " << previousValue << " to " << currentValue;
+                    else
+                                std::cout << " unchanged at " << currentValue;
+                    std::cout << std::endl;
+                    #endif
 
+                    updateSignalConsumerInputAvailability(signal, m_tickStart);
+
+                }
             }
         }
     }
@@ -651,19 +807,109 @@ void DataflowEngine::evaluateNetwork(TimePoint evaluationTime)
 }
 
 
+void DataflowEngine::recordNodeOverrun(
+    const std::string& nodeName, TimeDuration cost, TimeDuration overBudget)
+{
+    bool firstOccurrence = false;
+    {
+        std::lock_guard<std::mutex> lock(m_nodeOverrunMutex);
+        auto& rec = m_nodeOverruns[nodeName];
+        rec.nodeName = nodeName;
+        rec.cost = cost;
+        rec.overBudget = overBudget;
+        rec.occurrences++;
+        firstOccurrence = m_nodeOverrunWarned.insert(nodeName).second;
+    }
+
+    // One stderr line per node, ever.  Printing from the ticking thread is
+    // itself slow, but this fires only on a cycle that already overran, and
+    // only the first time -- repeat offenders just bump the record for the
+    // host to drain.
+    if (firstOccurrence) {
+        std::cerr << "DataflowEngine: node '" << nodeName
+                  << "' overran the tick budget: cost " << cost.humanString()
+                  << ", " << overBudget.humanString()
+                  << " past the deadline (repeats aggregated; drain via "
+                     "consumeNodeOverruns())" << std::endl;
+    }
+}
+
+
+std::vector<DataflowEngine::NodeOverrun> DataflowEngine::consumeNodeOverruns()
+{
+    std::vector<NodeOverrun> result;
+    std::lock_guard<std::mutex> lock(m_nodeOverrunMutex);
+    result.reserve(m_nodeOverruns.size());
+    for (auto& entry : m_nodeOverruns)
+        result.push_back(std::move(entry.second));
+    m_nodeOverruns.clear();
+    return result;
+}
+
+
+void DataflowEngine::rtLintIslands()
+{
+    static const bool lintEnabled = [] {
+        const char* env = std::getenv("ROXAL_RT_LINT");
+        return !(env && env[0] == '0');
+    }();
+    if (!lintEnabled)
+        return;
+
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    for (const auto& island : m_networkIslands) {
+        // Event-driven islands aren't on the host's periodic schedule
+        if (island.tickPeriod == TimeDuration::zero())
+            continue;
+
+        std::string scriptNodes;
+        for (const auto& func : island.funcs) {
+            if (func->closure.isNil())
+                continue;   // native nodes are the expected RT payload
+            if (!scriptNodes.empty())
+                scriptNodes += ", ";
+            scriptNodes += "'" + func->name() + "'";
+        }
+        if (scriptNodes.empty())
+            continue;
+
+        if (!m_rtLintAdvised.insert(scriptNodes).second)
+            continue;
+
+        std::cerr << "DataflowEngine: advisory: periodic island (period "
+                  << island.tickPeriod.humanString()
+                  << ") on the host tick schedule contains script node(s) "
+                  << scriptNodes
+                  << " -- script execution is budget-sliced, but a single"
+                     " non-yieldable stretch can overrun the tick; if this"
+                     " work doesn't need the periodic schedule, move it to"
+                     " an event-driven or background island"
+                     " (ROXAL_RT_LINT=0 silences this)" << std::endl;
+    }
+}
+
+
 DataflowEngine::TickResult DataflowEngine::tickFor(TimeDuration budget)
 {
     // The host is driving the periodic schedule from here on: the engine's
     // own run()/runFor() loops must stop ticking periodic islands (see
     // m_hostDriven) or the two drivers race on the same islands.
-    m_hostDriven.store(true, std::memory_order_relaxed);
+    if (!m_hostDriven.exchange(true, std::memory_order_relaxed))
+        m_rtLintPending.store(true, std::memory_order_relaxed);    // first latch: lint the already-built network (on the engine thread)
 
-    // Interim single-evaluator guard: serialize periodic evaluation here with
-    // the actor thread's event-driven evaluation (processEventDrivenSignalUpdate)
-    // so they never touch engine state concurrently.  Released on every return,
+    // Single-evaluator guard: serialize periodic evaluation here with the
+    // actor thread's event-driven evaluation (processEventDrivenSignalUpdate)
+    // so they never touch engine state concurrently.  TRY-lock: an RT host
+    // must never block on an in-flight event-island evaluation (which can run
+    // arbitrarily long, e.g. ANN inference) -- on contention, return Busy and
+    // let the host retry next cycle (one late tick, same tolerance as GC
+    // lateness).  recursive_mutex::try_lock succeeds re-entrantly, so the
+    // internal resume path is unaffected.  Released on every return,
     // including the Yielded budget-slice path, so the actor thread gets the
-    // engine between our slices.  See m_evalMutex.
-    std::lock_guard<std::recursive_mutex> evalLock(m_evalMutex);
+    // engine between our slices.
+    std::unique_lock<std::recursive_mutex> evalLock(m_evalMutex, std::try_to_lock);
+    if (!evalLock.owns_lock())
+        return TickResult::Busy;
 
     auto deadline = TimePoint::currentTime() + budget;
 
@@ -672,7 +918,15 @@ DataflowEngine::TickResult DataflowEngine::tickFor(TimeDuration budget)
         // Check if we've overrun the tick period
         auto elapsed = TimePoint::currentTime() - m_yieldState.tickTime;
         if (m_tickPeriod > TimeDuration::zero() && elapsed >= m_tickPeriod) {
-            // Tick has exceeded its period - overrun error
+            // Tick has exceeded its period - overrun error.  If a specific
+            // func was mid-execution across slices when the period expired,
+            // it is the culprit -- name it.  (A boundary yield with no func
+            // in flight means the tick's total work didn't fit; the host's
+            // own cycle timing covers that case.)
+            if (m_yieldState.funcWasExecuting && m_yieldState.yieldedFunc) {
+                recordNodeOverrun(m_yieldState.yieldedFunc->name(),
+                                  elapsed, elapsed - m_tickPeriod);
+            }
             m_yieldState.active = false;
             return TickResult::Overrun;
         }
@@ -699,6 +953,13 @@ DataflowEngine::TickResult DataflowEngine::tickFor(TimeDuration budget)
                 if (signal->period() == TimeDuration::zero())
                     continue;
 
+                // Background-island sources are ticked by
+                // serviceBackgroundIslands() on the engine thread, on the
+                // island's own schedule -- ticking them here too would
+                // double-advance them.
+                if (signal->inBackgroundIsland())
+                    continue;
+
                 // Should this source tick now?
                 if ((m_tickStart.load() % signal->period()) == TimeDuration::zero()) {
                     signal->tick(m_tickStart);
@@ -722,8 +983,11 @@ DataflowEngine::TickResult DataflowEngine::tickFor(TimeDuration budget)
         // They do NOT belong on the host's periodic schedule: their work is
         // unbounded relative to an RT budget (e.g. camera-frame tensor
         // transforms), and scheduling them here starves the host's
-        // remaining budget via the yield/resume path.
-        if (islandsCopy[i].tickPeriod == TimeDuration::zero())
+        // remaining budget via the yield/resume path.  Background-domain
+        // islands are likewise off the host's schedule -- the engine thread
+        // services them (serviceBackgroundIslands) with no tick budget.
+        if (islandsCopy[i].tickPeriod == TimeDuration::zero()
+            || islandsCopy[i].background)
             continue;
 
         TimePoint islandTime = resolveEvaluationTime(islandsCopy[i], m_tickStart);
@@ -765,9 +1029,21 @@ DataflowEngine::TickResult DataflowEngine::resumeTickEvaluation(TimePoint deadli
 
     // If a func was mid-execution, resume it first
     if (m_yieldState.funcWasExecuting && m_yieldState.yieldedFunc) {
+        const TimePoint resumeStart = TimePoint::currentTime();
         auto result = m_yieldState.yieldedFunc->resumeExecution(deadline);
         if (result == FuncExecResult::Yielded)
             return TickResult::Yielded;
+
+        // Same attribution as the fresh-execution site: completing past the
+        // deadline means this resume slice was blown by the node.
+        {
+            const TimePoint resumeEnd = TimePoint::currentTime();
+            if (result == FuncExecResult::Completed && resumeEnd > deadline) {
+                recordNodeOverrun(m_yieldState.yieldedFunc->name(),
+                                  resumeEnd - resumeStart,
+                                  resumeEnd - deadline);
+            }
+        }
 
         if (result == FuncExecResult::Error) {
             m_yieldState.active = false;
@@ -784,9 +1060,10 @@ DataflowEngine::TickResult DataflowEngine::resumeTickEvaluation(TimePoint deadli
 
     // Continue evaluating from saved position
     for (size_t i = m_yieldState.islandIndex; i < islandsCopy.size(); ++i) {
-        // Same event-island skip as tickFor's fresh-tick loop (indices into
-        // islandsCopy stay aligned -- we skip, not remove).
-        if (islandsCopy[i].tickPeriod == TimeDuration::zero())
+        // Same event-island + background-island skip as tickFor's fresh-tick
+        // loop (indices into islandsCopy stay aligned -- we skip, not remove).
+        if (islandsCopy[i].tickPeriod == TimeDuration::zero()
+            || islandsCopy[i].background)
             continue;
 
         size_t startPeriodIndex = (i == m_yieldState.islandIndex) ? m_yieldState.periodIndex : 0;
@@ -849,12 +1126,45 @@ DataflowEngine::TickResult DataflowEngine::evaluateIsland(
             for (size_t funcIdx = funcStart; funcIdx < funcsForPeriod.size(); ++funcIdx) {
                 const auto& func = funcsForPeriod[funcIdx];
 
+                // RT GC yield: if the evaluating thread holds a GC yield
+                // section (an RT host slice) and a collection is now pending,
+                // suspend at this func boundary via the normal resumable
+                // yield -- bounding the collector's wait on the RT slice to
+                // ~one FuncNode instead of the rest of the tick.  Only
+                // section holders trigger this; actor-thread event
+                // evaluation is unaffected.
+                if (roxal::SimpleMarkSweepGC::inGCYieldSectionOnThisThread() &&
+                    roxal::SimpleMarkSweepGC::instance().isCollectionRequested()) {
+                    m_yieldState.periodIndex = periodIdx;
+                    m_yieldState.funcIndex = funcIdx;
+                    m_yieldState.funcWasExecuting = false;
+                    m_yieldState.yieldedFunc = nullptr;
+                    return TickResult::Yielded;
+                }
+
                 if (!func->inputsAvailableAt(evaluationTime))
                     continue;
+
+                // Budgeted evaluations time each node: a Completed result
+                // that lands past the deadline means the node could not
+                // yield (native func, or script between yield points) --
+                // attribute the overrun to it.  A Yielded result is the
+                // cooperative path and isn't charged.
+                const bool budgeted = deadline != TimePoint::max();
+                const TimePoint execStart =
+                    budgeted ? TimePoint::currentTime() : TimePoint::zero();
 
                 auto result = func->conditionallyExecute(evaluationTime, deadline);
 
                 if (result == FuncExecResult::Completed) {
+                    if (budgeted) {
+                        const TimePoint execEnd = TimePoint::currentTime();
+                        if (execEnd > deadline) {
+                            recordNodeOverrun(func->name(),
+                                              execEnd - execStart,
+                                              execEnd - deadline);
+                        }
+                    }
                     functionsExecuted++;
                     for (auto& output : func->m_outputs)
                         updateSignalConsumerInputAvailability(output.signal, evaluationTime);
@@ -930,39 +1240,153 @@ void DataflowEngine::processEventDrivenSignalUpdate(ptr<Signal> signal, TimePoin
         // Wrap before taking the queue lock: ObjSignal construction touches
         // the engine mutex (wrapper registration).
         roxal::Value wrapper = roxal::Value::signalVal(std::move(signal));
-        std::lock_guard<std::mutex> lock(m_pendingEventMutex);
-        m_pendingEventUpdates.emplace_back(std::move(wrapper), timestamp);
+        {
+            std::lock_guard<std::mutex> lock(m_pendingEventMutex);
+            m_pendingEventUpdates.emplace_back(std::move(wrapper), timestamp);
+        }
+        // Rouse the engine thread's idle drain sleep.  State was modified
+        // under m_pendingEventMutex, so the waiter's predicate cannot miss it.
+        m_pendingEventCv.notify_all();
         return;
     }
 
-    // Interim single-evaluator guard: serialize this event-driven evaluation
-    // with tickFor()'s periodic evaluation so the two drivers never mutate
-    // engine state concurrently.  Held only around the evaluation itself, NOT
-    // the foreign-thread queue path above (which merely enqueues).  See
-    // m_evalMutex.
-    std::lock_guard<std::recursive_mutex> evalLock(m_evalMutex);
+    // Bounded event pump: island evaluation runs closures, and a closure can
+    // set() another event-driven signal -- which lands right back here on
+    // the same thread.  Evaluating that nested update in place would recurse
+    // one C++ frame per chain link (m_evalMutex is recursive), so a long
+    // handler chain -- or a cycle -- becomes stack exhaustion.  Instead,
+    // only the OUTERMOST call on a thread evaluates: nested calls append to
+    // a per-thread queue that the outermost call drains iteratively after
+    // the current island completes.  Depth stays O(1); a chained update now
+    // evaluates after the in-flight island finishes instead of preempting
+    // it mid-evaluation (the island's remaining funcs see consistent
+    // pre-chain inputs).
+    static thread_local bool tlEvaluatingEventChain = false;
+    static thread_local std::vector<std::pair<ptr<Signal>, TimePoint>> tlChainedUpdates;
 
-    if (m_networkModified)
-        buildNetworkCacheData();
+    if (tlEvaluatingEventChain) {
+        tlChainedUpdates.emplace_back(std::move(signal), timestamp);
+        return;
+    }
 
-    NetworkIsland islandSnapshot;
-    bool found = false;
-
-    {
-        std::lock_guard<std::recursive_mutex> lock(m_mutex);
-        for (const auto& island : m_networkIslands) {
-            if (std::find(island.signals.begin(), island.signals.end(), signal) != island.signals.end()) {
-                islandSnapshot = island;
-                found = true;
-                break;
-            }
+    // Single-evaluator guard: serialize this event-driven evaluation with
+    // tickFor()'s periodic evaluation so the two drivers never mutate engine
+    // state concurrently.  Held only around the evaluation itself (and the
+    // chain drain), NOT the foreign-thread queue path above (which merely
+    // enqueues).  See m_evalMutex.
+    //
+    // Contended acquisition is covered as GC-safe blocking: the current
+    // evaluator can park at a safepoint mid-island while holding the mutex,
+    // and a waiter still counted as Running would stall the collection
+    // barrier against it -- a circular wait.  RT yield-section holders never
+    // take the covered path: a section's tickFor slice already holds
+    // m_evalMutex recursively, so their try-lock succeeds immediately (and
+    // they must not touch GC coordination state anyway).
+    std::unique_lock<std::recursive_mutex> evalLock(m_evalMutex, std::try_to_lock);
+    if (!evalLock.owns_lock()) {
+        if (roxal::SimpleMarkSweepGC::inGCYieldSectionOnThisThread()) {
+            evalLock.lock();
+        } else {
+            roxal::SimpleMarkSweepGC::GCSafeBlockScope blockCover;
+            evalLock.lock();
         }
     }
 
-    if (!found)
-        return;
+    tlEvaluatingEventChain = true;
+    struct ChainGuard {
+        // Reset on ALL exits: an evaluation throw must not leave the thread
+        // marked mid-chain (every later set() would defer with no drainer).
+        // Pending chained updates are dropped with it -- same outcome as
+        // the abandoned recursion.
+        ~ChainGuard() { tlEvaluatingEventChain = false; tlChainedUpdates.clear(); }
+    } chainGuard;
 
-    evaluateIsland(islandSnapshot, timestamp);
+    ptr<Signal> nextSignal = std::move(signal);
+    TimePoint nextTime = timestamp;
+    uint64_t chained = 0;
+    // A handler chain that never converges (cross-island update cycle) was
+    // previously unbounded recursion (stack overflow); keep it a detectable
+    // error rather than a silent spin.
+    constexpr uint64_t kMaxChainedUpdates = 100000;
+
+    for (;;) {
+        if (m_networkModified)
+            buildNetworkCacheData();
+
+        NetworkIsland islandSnapshot;
+        bool found = false;
+
+        {
+            std::lock_guard<std::recursive_mutex> lock(m_mutex);
+            for (const auto& island : m_networkIslands) {
+                if (std::find(island.signals.begin(), island.signals.end(), nextSignal) != island.signals.end()) {
+                    islandSnapshot = island;
+                    found = true;
+                    break;
+                }
+            }
+        }
+
+        if (found)
+            evaluateIsland(islandSnapshot, nextTime);
+
+        if (tlChainedUpdates.empty())
+            break;
+
+        if (++chained > kMaxChainedUpdates)
+            throw std::runtime_error(
+                "DataflowEngine: event-driven update chain did not converge "
+                "(signal handlers keep setting each other; check for an "
+                "update cycle across islands)");
+
+        nextSignal = std::move(tlChainedUpdates.front().first);
+        nextTime = tlChainedUpdates.front().second;
+        tlChainedUpdates.erase(tlChainedUpdates.begin());
+    }
+}
+
+void DataflowEngine::traceAllSignals(roxal::ValueVisitor& visitor)
+{
+    // Runs on the collector with the GC mutex held.  Lock order:
+    // GC mutex_ -> m_mutex -> (per-signal) m_valuesMutex.  Safe: no code
+    // parks at a GC safepoint or allocates GC objects while holding m_mutex,
+    // so no holder can block against the collector; Signal::trace already
+    // takes m_valuesMutex from GC context (via ObjSignal::trace).
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    std::set<const Signal*> seen;
+    auto traceOne = [&](const ptr<Signal>& s) {
+        if (!s)
+            return;
+        if (!seen.insert(s.get()).second)
+            return;
+        s->trace(visitor);
+    };
+    for (const auto& s : signals)
+        traceOne(s);
+    for (const auto& island : m_networkIslands)
+        for (const auto& s : island.signals)
+            traceOne(s);
+
+    // FuncNodes retain strong Values too (closure, const args, defaults,
+    // previous inputs/outputs, yielded execution state) -- trace every node
+    // the engine holds, incl. stale-island copies pending a rebuild.
+    std::set<const FuncNode*> seenFuncs;
+    auto traceFunc = [&](const ptr<FuncNode>& f) {
+        if (!f)
+            return;
+        if (!seenFuncs.insert(f.get()).second)
+            return;
+        f->trace(visitor);
+    };
+    for (const auto& entry : funcs)
+        traceFunc(entry.second);
+    for (const auto& island : m_networkIslands) {
+        for (const auto& f : island.funcs)
+            traceFunc(f);
+        for (const auto& order : island.executionOrders)
+            for (const auto& f : order.second)
+                traceFunc(f);
+    }
 }
 
 void DataflowEngine::tracePendingEventUpdates(roxal::ValueVisitor& visitor)
@@ -972,23 +1396,48 @@ void DataflowEngine::tracePendingEventUpdates(roxal::ValueVisitor& visitor)
         if (upd.first.isObj())
             visitor.visit(upd.first);
     }
+    // Also root the batch currently being drained (see m_drainingEventUpdates):
+    // the draining thread may be parked at a safepoint mid-evaluation.
+    for (const auto& upd : m_drainingEventUpdates) {
+        if (upd.first.isObj())
+            visitor.visit(upd.first);
+    }
 }
 
 bool DataflowEngine::processPendingEventUpdates()
 {
-    std::vector<std::pair<roxal::Value, TimePoint>> pending;
+    // Single-consumer enforcement: the always-on actor loop and a
+    // host-driven runFor() can call this concurrently, and the batch below
+    // lives in a MEMBER -- a second drainer swapping into
+    // m_drainingEventUpdates while the first iterates it would clobber the
+    // vector under it (lost updates, UAF).  Losing is benign: the winner
+    // owns the whole batch, and producers notify m_pendingEventCv on
+    // enqueue, so a backed-off drainer re-wakes.
+    std::unique_lock<std::mutex> drainLock(m_eventDrainMutex, std::try_to_lock);
+    if (!drainLock.owns_lock())
+        return false;
+
     {
         std::lock_guard<std::mutex> lock(m_pendingEventMutex);
-        pending.swap(m_pendingEventUpdates);
+        if (m_pendingEventUpdates.empty())
+            return false;
+        // Swap into the MEMBER batch (not a local): the wrapper Values must
+        // stay visible to tracePendingEventUpdates() while we evaluate below
+        // -- this thread can park at a GC safepoint mid-drain (closure
+        // FuncNode evaluation), and a drain-local batch would be unrooted
+        // there.  m_drainingEventUpdates is empty here: only this function
+        // fills it, m_eventDrainMutex enforces a single drainer, and it is
+        // emptied before return.
+        m_drainingEventUpdates.swap(m_pendingEventUpdates);
     }
-    if (pending.empty())
-        return false;
 
     // Coalesce to the newest timestamp per underlying signal (distinct
     // wrapper Values can refer to the same signal): islands re-read current
     // signal values, so evaluating once per signal per drain is enough.
+    // (Reading m_drainingEventUpdates without the lock is fine: only this
+    // thread mutates it, and the tracer only READS it under the lock.)
     std::vector<std::pair<ptr<Signal>, TimePoint>> latest;
-    for (auto& upd : pending) {
+    for (auto& upd : m_drainingEventUpdates) {
         if (!roxal::isSignal(upd.first))
             continue;
         ptr<Signal> sig = roxal::asSignal(upd.first)->signal;
@@ -1003,6 +1452,16 @@ bool DataflowEngine::processPendingEventUpdates()
     }
     for (auto& upd : latest)
         processEventDrivenSignalUpdate(upd.first, upd.second);
+
+    // Release the batch.  Swap out under the lock, destruct OUTSIDE it: the
+    // wrapper decRefs can hit unregisterAllocation (GC mutex), and the GC's
+    // root scan takes m_pendingEventMutex while holding its own mutex --
+    // never touch GC state while holding m_pendingEventMutex.
+    std::vector<std::pair<roxal::Value, TimePoint>> done;
+    {
+        std::lock_guard<std::mutex> lock(m_pendingEventMutex);
+        done.swap(m_drainingEventUpdates);
+    }
     return true;
 }
 
@@ -1012,8 +1471,16 @@ void DataflowEngine::evaluate()
     if (m_networkModified)
         buildNetworkCacheData();
 
-    // For evaluation, use time zero and ensure all source signals have initial values
-    TimePoint evalTime = m_tickStart.load();
+    // Initialization is stamped at TIME ZERO -- the same convention as the
+    // Signal constructor's initial entry.  m_tickStart must NOT be used
+    // here: while the engine sleeps toward the next boundary, m_tickStart
+    // is in the FUTURE, and sampling reads the latest-timestamped entry,
+    // so a future-stamped initial value shadows every event-driven set()
+    // for up to one tick period after a func lift (each lift re-runs
+    // this).  Zero is also aligned to every signal's period grid and
+    // always precedes tickStart, so the periodic-write diagnostics never
+    // flag initialization writes.
+    const TimePoint evalTime = TimePoint::zero();
 
     // Ensure all source signals have values at evaluation time
     for(const auto& signal : signals) {
@@ -1494,8 +1961,27 @@ void DataflowEngine::buildNetworkCacheData()
     precomputeFuncPeriods();
 
     std::set<TimeDuration> globalSourcePeriods {};
+    bool haveBackground = false;
 
     for (auto& island : m_networkIslands) {
+        // Resolve the island's execution domain: background if ANY member
+        // signal declares it.  Kept off the shared periodic schedule --
+        // its source periods must not contribute to the global tick period
+        // (a slow/odd background period would otherwise drag the shared
+        // grid finer for everyone), and the tick paths skip it by the
+        // per-signal derived flag.
+        island.background = false;
+        for (const auto& signal : island.signals) {
+            if (signal->domain() == Signal::Domain::Background) {
+                island.background = true;
+                break;
+            }
+        }
+        island.bgNextDue = TimePoint::zero();
+        haveBackground |= island.background;
+        for (const auto& signal : island.signals)
+            signal->setInBackgroundIsland(island.background);
+
         std::set<TimeDuration> islandSourcePeriods {};
 
         for (const auto& signal : island.signals) {
@@ -1506,12 +1992,15 @@ void DataflowEngine::buildNetworkCacheData()
                 continue;
 
             islandSourcePeriods.insert(signal->period());
-            globalSourcePeriods.insert(signal->period());
+            if (!island.background)
+                globalSourcePeriods.insert(signal->period());
         }
 
         island.tickPeriod = longestDividingPeriod(islandSourcePeriods);
         precomputeExecutionOrders(island);
     }
+
+    m_haveBackgroundIslands.store(haveBackground, std::memory_order_relaxed);
 
     m_tickPeriod = longestDividingPeriod(globalSourcePeriods);
 
@@ -1519,6 +2008,11 @@ void DataflowEngine::buildNetworkCacheData()
     m_runStart = TimePoint::zero();
 
     m_networkModified = false;
+
+    // Rebuilds happen on the ticking thread too (tickFor's fresh-tick path):
+    // defer the lint scan + printing to the engine thread.
+    if (m_hostDriven.load(std::memory_order_relaxed))
+        m_rtLintPending.store(true, std::memory_order_relaxed);
 }
 
 

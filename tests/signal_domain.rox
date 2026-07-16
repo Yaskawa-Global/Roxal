@@ -1,0 +1,33 @@
+# signal execution domains: background-domain islands are serviced by the
+# engine's own thread, off the shared periodic schedule (RT hosts skip them)
+
+func bump(x:int) -> int:
+  return x + 1
+
+# background-domain clock via the domain method
+c = clock(10)
+c.domain("background")
+print("c domain: " + c.domain())
+
+# rt-domain clock (default) alongside
+c2 = clock(10)
+print("c2 domain: " + c2.domain())
+
+inc = bump(c)
+inc2 = bump(c2)
+
+c.tick()
+c2.tick()
+wait(us=250000)
+c.tick()
+c2.tick()
+wait(us=250000)
+
+print("bg inc: " + int(inc))
+print("rt inc: " + int(inc2))
+
+# constructor domain argument
+var s = signal(10, 7, "bgsrc", "background")
+print("s domain: " + s.domain())
+var s2 = signal(10, 7, "rtsrc", "rt")
+print("s2 domain: " + s2.domain())

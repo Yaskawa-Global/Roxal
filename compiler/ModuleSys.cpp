@@ -3,7 +3,7 @@
 #include "Object.h"
 #include "Chunk.h"
 #include "SimpleMarkSweepGC.h"
-#include "RTCallbackManager.h"
+#include "ThreadManager.h"
 #include "core/AST.h"
 #include <core/json5.h>
 #include <core/TimePoint.h>
@@ -1530,6 +1530,7 @@ void ModuleSys::registerBuiltins(VM& vm)
         addSys("typeof", [this](VM& vm, ArgsView a){ return typeof_native(vm,a); });
         addSys("_df_graph", [this](VM& vm, ArgsView a){ return df_graph_native(vm,a); });
         addSys("_df_islands", [this](VM& vm, ArgsView a){ return df_islands_native(vm,a); });
+        addSys("_dataflow_tick", [this](VM& vm, ArgsView a){ return df_tick_native(vm,a); });
         addSys("_df_graphdot", [this](VM& vm, ArgsView a){ return df_graphdot_native(vm,a); });
         addSys("loadlib", [this](VM& vm, ArgsView a){ return loadlib_native(vm,a); }, nullptr, {}, 0x1);
 
@@ -2307,7 +2308,17 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
 
     auto suite = toUTF8StdString(asStringObj(args[0])->s);
 
-    if (suite == "dataflow") {
+    if (suite == "gc_coordination") {
+        const bool pass = SimpleMarkSweepGC::instance().runCoordinationSelfTest();
+        std::cout << "GC coordination self-test "
+                  << (pass ? "PASSED" : "FAILED") << std::endl;
+    }
+    else if (suite == "gc_scanner") {
+        const bool pass = SimpleMarkSweepGC::instance().runScannerRecallSelfTest();
+        std::cout << "GC scanner recall self-test "
+                  << (pass ? "PASSED" : "FAILED") << std::endl;
+    }
+    else if (suite == "dataflow") {
         // TODO: Dataflow tests have been moved out - need to implement new roxal-based tests
         std::cout << "Dataflow tests temporarily disabled during Func class elimination" << std::endl;
         if (auto engine = df::DataflowEngine::instance(false))
@@ -2375,122 +2386,6 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
         }
 
         std::cout << "Passed " << passes << " failed " << fails << std::endl;
-    }
-    else if (suite == "rtcallback_start" || suite == "rtcallback_results") {
-        // RT Callback timing test
-        // rtcallback_start: Registers a callback that collects timing data
-        // rtcallback_results: Unregisters callback and reports final statistics
-        // The Roxal script should call wait() between start and results
-
-        auto& rtMgr = RTCallbackManager::instance();
-
-        // Shared state between start and results (static persists across calls)
-        static const int64_t intervalUs = 1000;      // 1ms interval
-        static const int64_t maxAcceptableJitterUs = 500; // Output error if lateness > 500us (non-RT system)
-
-        struct TimingSample {
-            int64_t scheduledUs;
-            int64_t actualUs;
-            int64_t latenessUs;
-        };
-        static std::vector<TimingSample> samples;
-        static std::mutex sampleMutex;
-        static RTCallbackHandle testHandle = InvalidRTCallbackHandle;
-        static bool hadError = false;
-
-        if (suite == "rtcallback_start") {
-            // Clear any previous test data
-            {
-                std::lock_guard<std::mutex> lock(sampleMutex);
-                samples.clear();
-                samples.reserve(1000);  // Pre-allocate for ~1 second of samples
-                hadError = false;
-            }
-
-            // Unregister any previous callback
-            if (testHandle != InvalidRTCallbackHandle) {
-                rtMgr.unregisterCallback(testHandle);
-                testHandle = InvalidRTCallbackHandle;
-            }
-
-            // Register the test callback
-            testHandle = rtMgr.registerCallback(
-                [](TimePoint scheduledTime) {
-                    auto now = TimePoint::currentTime();
-                    int64_t scheduledUs = scheduledTime.microSecs();
-                    int64_t actualUs = now.microSecs();
-                    int64_t latenessUs = actualUs - scheduledUs;
-
-                    std::lock_guard<std::mutex> lock(sampleMutex);
-                    samples.push_back({scheduledUs, actualUs, latenessUs});
-
-                    // Output error immediately if jitter is too high
-                    if (latenessUs > maxAcceptableJitterUs) {
-                        std::cerr << "RT JITTER ERROR: lateness=" << latenessUs
-                                  << "us > " << maxAcceptableJitterUs << "us threshold" << std::endl;
-                        hadError = true;
-                    }
-                },
-                intervalUs,
-                0  // No abort on lateness for testing
-            );
-
-            std::cout << "rtcallback_start: registered 1ms callback" << std::endl;
-        }
-        else { // rtcallback_results
-            // Unregister the callback
-            if (testHandle != InvalidRTCallbackHandle) {
-                rtMgr.unregisterCallback(testHandle);
-                testHandle = InvalidRTCallbackHandle;
-            }
-
-            // Analyze results
-            std::lock_guard<std::mutex> lock(sampleMutex);
-
-            if (samples.empty()) {
-                std::cerr << "rtcallback FAILED: No callback invocations recorded" << std::endl;
-                return Value::nilVal();
-            }
-
-            // Calculate statistics
-            int64_t minLateness = std::numeric_limits<int64_t>::max();
-            int64_t maxLateness = std::numeric_limits<int64_t>::min();
-            int64_t sumLateness = 0;
-
-            for (const auto& s : samples) {
-                minLateness = std::min(minLateness, s.latenessUs);
-                maxLateness = std::max(maxLateness, s.latenessUs);
-                sumLateness += s.latenessUs;
-            }
-
-            double meanLateness = static_cast<double>(sumLateness) / samples.size();
-
-            // Calculate standard deviation (jitter)
-            double sumSquaredDiff = 0;
-            for (const auto& s : samples) {
-                double diff = s.latenessUs - meanLateness;
-                sumSquaredDiff += diff * diff;
-            }
-            double stddevLateness = std::sqrt(sumSquaredDiff / samples.size());
-
-            // Final pass/fail based on max lateness
-            bool passed = (maxLateness < maxAcceptableJitterUs) && !hadError;
-            if (passed) {
-                // On success, output fixed string to stdout (for .out matching)
-                std::cout << "rtcallback PASSED" << std::endl;
-            } else {
-                // On failure, output detailed stats to stderr (test will fail)
-                std::cerr << "rtcallback FAILED" << std::endl;
-                std::cerr << "  Invocations: " << samples.size() << std::endl;
-                std::cerr << "  Min lateness: " << minLateness << " us" << std::endl;
-                std::cerr << "  Max lateness: " << maxLateness << " us" << std::endl;
-                std::cerr << "  Mean lateness: " << std::fixed << std::setprecision(1)
-                          << meanLateness << " us" << std::endl;
-                std::cerr << "  Jitter (stddev): " << std::fixed << std::setprecision(1)
-                          << stddevLateness << " us" << std::endl;
-                std::cerr << "  Threshold: " << maxAcceptableJitterUs << " us" << std::endl;
-            }
-        }
     }
     else if (suite == "rt_execution") {
         // RT Execution tests for tickFor() deadline-aware execution
@@ -2999,8 +2894,16 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                         Value closureVal = closureOpt.value();
                         // DON'T restore savedThread here - let engine operations use fresh thread
 
-                        // Use 10Hz (100ms period) to allow time for multiple small time slices
-                        auto inputSignal = df::Signal::newSourceSignal(10.0, Value::intVal(1), "df_multi_input");
+                        // 1Hz (1s period): the assertion is that a sliced
+                        // closure completes across MULTIPLE resumes, not that
+                        // the work fits a tight period or slice count.  Fixed
+                        // per-slice overhead dominates 500us slices in a
+                        // debug build (only a few dozen script iterations of
+                        // progress per slice), so both the period and the
+                        // resume cap below carry generous headroom -- this
+                        // subtest sat exactly at the old caps and flipped
+                        // with unrelated binary-layout changes.
+                        auto inputSignal = df::Signal::newSourceSignal(1.0, Value::intVal(1), "df_multi_input");
 
                         ptr<df::FuncNode> funcNode = make_ptr<df::FuncNode>(
                             "dfMultiResumeFunc",
@@ -3015,7 +2918,7 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                         int yieldCount = (result == df::DataflowEngine::TickResult::Yielded) ? 1 : 0;
 
                         // Keep resume slices short enough that completion requires multiple passes.
-                        const int maxIterations = 400;
+                        const int maxIterations = 1500;
                         for (int i = 0; i < maxIterations && result == df::DataflowEngine::TickResult::Yielded; ++i) {
                             result = engine.tickFor(TimeDuration::microSecs(500));
                             if (result == df::DataflowEngine::TickResult::Yielded)
@@ -3327,9 +3230,27 @@ Value ModuleSys::gc_builtin(VM& vm, ArgsView args)
     SimpleMarkSweepGC& collector = SimpleMarkSweepGC::instance();
     collector.requestCollect();
 
+    // From inside an RT GC-yield section (a host RT slice executing script
+    // via runFor), gc() is ASYNCHRONOUS: parking at the safepoint here would
+    // deadlock against the collection barrier waiting on our own section.
+    // The request is made; the slice yields right after this call and the
+    // collection runs off-RT.  Returns 0 (nothing freed synchronously).
+    if (SimpleMarkSweepGC::inGCYieldSectionOnThisThread()) {
+        return Value::intVal(0);
+    }
+
     if (VM::thread) {
         collector.safepoint(*VM::thread);
     }
+
+    // Deterministic quiesce for scripts: the safepoint above already waits
+    // out the collection AND its reclamation (the reclaim fence); actor
+    // teardown additionally passes through the lifecycle thread (worker
+    // join + destruction), so wait that out too.  gc() thus means
+    // "collected, reclaimed, and actor teardown complete" -- tests and
+    // teardown-sensitive scripts rely on it.  Only this script-facing
+    // builtin waits on the lifecycle; the collector never does.
+    ThreadManager::instance().waitLifecycleIdle();
 
     size_t freed = collector.lastCollectionFreed();
     size_t clamped = std::min(freed, static_cast<size_t>(std::numeric_limits<int32_t>::max()));
@@ -4873,6 +4794,17 @@ Value ModuleSys::df_graph_native(VM& vm, ArgsView args)
     auto engine = df::DataflowEngine::instance();
     auto str = engine->graph();
     return Value::stringVal(toUnicodeString(str));
+}
+
+Value ModuleSys::df_tick_native(VM& vm, ArgsView args)
+{
+    if (args.size() != 0)
+        throw std::invalid_argument("_dataflow_tick has no arguments");
+
+    // Single-step the dataflow engine: the tick executes on the ENGINE
+    // thread (the sole periodic driver); this thread waits it out.
+    df::DataflowEngine::instance()->requestTickAndWait();
+    return Value::nilVal();
 }
 
 Value ModuleSys::df_islands_native(VM& vm, ArgsView args)

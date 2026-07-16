@@ -85,6 +85,14 @@ public:
 
     void addToEngine();
 
+    // GC mark-phase hook: visit every strong Roxal Value this node retains
+    // (closure, constant args, input defaults, previous inputs/outputs,
+    // yielded execution state incl. the preserved execution thread's stack).
+    // The engine can keep a FuncNode alive after its script-side wrapper
+    // dies; without this the tracer sweeps those Values' targets and later
+    // evaluation / destruction touches freed objects.
+    void trace(roxal::ValueVisitor& visitor) const;
+
     roxal::Value closure;
     NativeFunc nativeFunc;
     ConstArgMap constArgs;

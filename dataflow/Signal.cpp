@@ -33,11 +33,16 @@ ptr<Signal> Signal::newSignal(double freq, Value initial, std::optional<std::str
     return s;
 }
 
-ptr<Signal> Signal::newSourceSignal(double freq, Value initial, std::optional<std::string> name)
+ptr<Signal> Signal::newSourceSignal(double freq, Value initial, std::optional<std::string> name,
+                                    Domain domain)
 {
     auto s = ptr<Signal>::from_raw(new Signal(freq, initial, name));
     s->isClock = false;
     s->isSource = true;
+    // Set before engine registration: a registered signal's domain may only
+    // change via DataflowEngine::setSignalDomain (rebuilds read it under the
+    // engine mutex).
+    s->m_domain = domain;
     DataflowEngine::instance()->addSignal(s);
     return s;
 }
@@ -194,8 +199,15 @@ void Signal::setValueAt(TimePoint t, const Value& v)
     if (!m_eventDriven) {
         auto age = t - tickStart;
 #ifdef DEBUG_BUILD
+        // Diagnostic only, on stderr: stdout is byte-compared by the test
+        // harness.  KNOWN BENIGN MISFIRE: the check is phase-relative to
+        // tickStart, which rebases concurrently on network rebuilds -- an
+        // absolutely grid-aligned write (e.g. t=200ms, period=100ms) can be
+        // flagged when tickStart momentarily sits at an odd phase of this
+        // signal's period.  (An absolute check would misfire instead on
+        // set()'s deliberate tickStart+period scheduling.)
         if (t >= tickStart && (age % m_period != TimeDuration::zero())) {
-            std::cout << "setValueAt Signal " + name() + " for time " + t.humanString() +
+            std::cerr << "setValueAt Signal " + name() + " for time " + t.humanString() +
                 " not a multiple of period " + m_period.humanString() << std::endl;
         }
 #endif

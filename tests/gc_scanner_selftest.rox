@@ -1,0 +1,9 @@
+# C++-level conservative shadow-scanner recall self-test
+# (SimpleMarkSweepGC::runScannerRecallSelfTest):
+# each case keeps an alive-but-unrooted object referenced ONLY as a raw
+# Obj*, as NaN-tagged (plain/const/weak) stack words, or from a callee-
+# saved register, forces a collection, and asserts the shadow scanner
+# flagged the object the precise mark missed.  Verdict prints on stdout;
+# the case summary prints on stderr and is shape-checked by
+# gc_scanner_selftest.err.
+_runtests('gc_scanner')

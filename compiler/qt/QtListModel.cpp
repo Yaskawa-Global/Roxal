@@ -4,6 +4,7 @@
 #include "VM.h"
 #include "Object.h"
 #include "SimpleMarkSweepGC.h"
+#include "GCRoots.h"
 #include "ModuleQtConvert.h"
 #include "QtListModel.h"
 #include "QtTreeModel.h"   // QtModelHub also owns + GC-roots tree models
@@ -243,36 +244,37 @@ bool RoxalListModel::setCell(int row, const QByteArray& roleName, const Value& v
 }
 
 // ============================================================
-// QtModelHub (owner + GC ExternalRootProvider)
+// QtModelHub (owner; model containers are the GC roots -- TracedMember, v2 B)
 // ============================================================
 
-struct QtModelHub::Impl : SimpleMarkSweepGC::ExternalRootProvider {
-    std::vector<std::unique_ptr<RoxalListModel>> models;
-    std::vector<std::unique_ptr<RoxalTreeModel>> treeModels;
-    std::vector<std::unique_ptr<RoxalTableModel>> tableModels;
-    std::vector<std::unique_ptr<QSortFilterProxyModel>> proxies;   // qt.SortFilterModel
-    bool rootRegistered { false };
-
+struct QtModelHub::Impl {
     // Keep each live model's rows/roots (and their elements, transitively) + row type
     // reachable. These Values are held by C++ (a non-Obj QObject), so the mark-sweep
-    // collector can't see them without this.
-    void visitRoots(ValueVisitor& visitor) override {
-        for (auto& m : models) {
-            if (!m) continue;
-            visitor.visit(m->typeValue());
-            visitor.visit(m->rowsValue());
-        }
-        for (auto& m : treeModels) {
-            if (!m) continue;
-            visitor.visit(m->typeValue());
-            visitor.visit(m->rootsValue());
-        }
-        for (auto& m : tableModels) {
+    // collector can't see them without these roots.
+    template<typename M>
+    static void traceRowModels(ValueVisitor& visitor,
+                               const std::vector<std::unique_ptr<M>>& ms) {
+        for (auto& m : ms) {
             if (!m) continue;
             visitor.visit(m->typeValue());
             visitor.visit(m->rowsValue());
         }
     }
+    static void traceTreeModels(ValueVisitor& visitor,
+                                const std::vector<std::unique_ptr<RoxalTreeModel>>& ms) {
+        for (auto& m : ms) {
+            if (!m) continue;
+            visitor.visit(m->typeValue());
+            visitor.visit(m->rootsValue());
+        }
+    }
+    TracedMember<std::vector<std::unique_ptr<RoxalListModel>>> models {
+        &Impl::traceRowModels<RoxalListModel> };
+    TracedMember<std::vector<std::unique_ptr<RoxalTreeModel>>> treeModels {
+        &Impl::traceTreeModels };
+    TracedMember<std::vector<std::unique_ptr<RoxalTableModel>>> tableModels {
+        &Impl::traceRowModels<RoxalTableModel> };
+    std::vector<std::unique_ptr<QSortFilterProxyModel>> proxies;   // qt.SortFilterModel
 };
 
 QtModelHub::QtModelHub() : impl_(std::make_unique<Impl>()) {}
@@ -286,29 +288,21 @@ QtModelHub& QtModelHub::instance()
 
 void QtModelHub::init()
 {
-    if (!impl_->rootRegistered) {
-        SimpleMarkSweepGC::instance().registerExternalRootProvider(impl_.get());
-        impl_->rootRegistered = true;
-    }
 }
 
 void QtModelHub::shutdown()
 {
     impl_->proxies.clear();      // proxies first — never outlive their source models
-    impl_->models.clear();       // delete the QAbstract*Models while Qt is still alive
-    impl_->treeModels.clear();
-    impl_->tableModels.clear();
-    if (impl_->rootRegistered) {
-        SimpleMarkSweepGC::instance().unregisterExternalRootProvider(impl_.get());
-        impl_->rootRegistered = false;
-    }
+    impl_->models->clear();      // delete the QAbstract*Models while Qt is still alive
+    impl_->treeModels->clear();
+    impl_->tableModels->clear();
 }
 
 RoxalListModel* QtModelHub::create(const Value& rowType, const Value& rows)
 {
     auto m = std::make_unique<RoxalListModel>(rowType, rows);
     RoxalListModel* raw = m.get();
-    impl_->models.push_back(std::move(m));
+    impl_->models->push_back(std::move(m));
     return raw;
 }
 
@@ -316,7 +310,7 @@ RoxalTreeModel* QtModelHub::createTree(const Value& rowType, const Value& roots)
 {
     auto m = std::make_unique<RoxalTreeModel>(rowType, roots);
     RoxalTreeModel* raw = m.get();
-    impl_->treeModels.push_back(std::move(m));
+    impl_->treeModels->push_back(std::move(m));
     return raw;
 }
 
@@ -327,7 +321,7 @@ RoxalTableModel* QtModelHub::createTable(const Value& rowType, const Value& colu
     // a hub call, wouldn't reach a Roxal try/except), so buildColumns won't fault.
     m->buildColumns(columns);
     RoxalTableModel* raw = m.get();
-    impl_->tableModels.push_back(std::move(m));
+    impl_->tableModels->push_back(std::move(m));
     return raw;
 }
 

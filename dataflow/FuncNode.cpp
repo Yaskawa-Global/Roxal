@@ -107,13 +107,14 @@ FuncNode::FuncNode(const std::string& name,
                     paramSignalIndex.push_back(-1);
                 }
             }
-            // compute max input frequency
+            // Compute max input frequency.  All-event-driven inputs
+            // (every frequency 0) produce an EVENT-DRIVEN output (freq 0),
+            // matching the operator()(Signals) path -- a periodic output
+            // on an event island is incoherent (its writes happen at set()
+            // times, not on any grid).
             double maxFreq = 0.0;
             for (auto& sig : signalArgs)
                 maxFreq = std::max(maxFreq, sig->frequency());
-
-            if (maxFreq <= 0.0)
-                maxFreq = 1.0;
 
             createOutputSignals(maxFreq);
             m_operatorSignalsCalled = true;
@@ -155,17 +156,54 @@ FuncNode::FuncNode(const std::string& name,
             paramSignalIndex.push_back(-1);
         }
     }
+    // All-event-driven inputs -> event-driven output (see the closure ctor).
     double maxFreq = 0.0;
     for (auto& sig : signalArgs)
         maxFreq = std::max(maxFreq, sig->frequency());
-    if (maxFreq <= 0.0)
-        maxFreq = 1.0;
     createOutputSignals(maxFreq);
     m_operatorSignalsCalled = true;
 }
 
 FuncNode::~FuncNode()
 {
+}
+
+void FuncNode::trace(roxal::ValueVisitor& visitor) const
+{
+    auto visitValue = [&](const roxal::Value& v) {
+        if (v.isObj())
+            visitor.visit(v);
+    };
+
+    visitValue(closure);
+    for (const auto& entry : constArgs)
+        visitValue(entry.second);
+    for (const auto& in : m_inputs) {
+        if (in.defaultValue.has_value())
+            visitValue(in.defaultValue.value());
+    }
+    for (const auto& v : previousInputValues)
+        visitValue(v);
+    for (const auto& v : previousOutputValues)
+        visitValue(v);
+    for (const auto& v : m_funcYieldState.inputValues)
+        visitValue(v);
+    for (const auto& v : m_funcYieldState.pendingOutputFutures)
+        visitValue(v);
+    // Per-output default values (returned by initialValueForOutput) are
+    // retained Values too.
+    for (const auto& d : m_outputDefaults) {
+        if (d.has_value())
+            visitValue(d.value());
+    }
+    // A yielded execution preserves interpreter state on a Thread that may
+    // not be in the VM's thread registry -- run the COMPLETE thread root
+    // scan on it (stack, frames incl. tail args, upvalues, event-dispatch,
+    // native continuations, wait state, ...), not a partial copy.
+    if (m_funcYieldState.executionThread) {
+        roxal::SimpleMarkSweepGC::visitSingleThreadRoots(
+            *m_funcYieldState.executionThread, visitor);
+    }
 }
 
 const std::string& FuncNode::name() const

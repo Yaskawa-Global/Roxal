@@ -41,8 +41,6 @@ inline int32_t checkedInt32(int64_t v, const char* what) {
 }
 
 
-atomic_vector<Obj*> Obj::unrefedObjs {};
-
 void Obj::decRef()
 {
     auto prevCount = control->strong.fetch_sub(1, std::memory_order_relaxed);
@@ -52,8 +50,10 @@ void Obj::decRef()
                 dropReferences();
             }
             control->obj = nullptr;
-            unrefedObjs.push_back(this);
-            SimpleMarkSweepGC::instance().notifyCleanupPending();
+            // Reclamation: queue for the collector role; destruction is
+            // promptly queued, never inline (RT slices stay destructor-free
+            // and there is exactly ONE destructor-running context).
+            SimpleMarkSweepGC::instance().retireObject(this);
         }
     }
 }
@@ -795,11 +795,16 @@ ObjString::ObjString(const UnicodeString& us)
 
 ObjString::~ObjString()
 {
-    // remove ourself from the strings intern table
+    // Remove ourself from the strings intern table.  find + compare + erase
+    // must be ONE critical section: with a split lookup/erase, a thread
+    // interning a replacement at this key between the two operations would
+    // have its fresh entry wrongly erased.
     if (internKey != 0 || !s.isEmpty()) {
-        auto existing = strings.lookup(internKey);
-        if (existing.has_value() && existing.value() == this)
-            strings.erase(internKey);
+        strings.lockedApply([&](auto& interned) {
+            auto it = interned.find(internKey);
+            if (it != interned.end() && it->second == this)
+                interned.erase(it);
+        });
     }
 }
 
@@ -865,81 +870,131 @@ unique_ptr<ObjString, UnreleasedObj> roxal::newObjString(const UnicodeString& s,
 {
     if (wasInterned) *wasInterned = false;
 
-    uint32_t attempt = 0;
-    while (true) {
-        uint64_t key = computeInternKey(s, attempt);
-        auto existing = strings.lookup(key);
-        if (existing.has_value()) {
-            ObjString* objStr = existing.value();
+    // THREAD-SAFETY: every access that dereferences a table entry (content
+    // compare, tryIncRef) must run under the map's lock.  A raw pointer
+    // fetched via lookup() can otherwise be destroyed AND freed between the
+    // lookup and the dereference: a drain thread's ~ObjString first performs
+    // its locked self-erase and then delObj frees the block -- holding the
+    // lock here blocks that dtor before any member teardown, so both `s`
+    // and the refcount stay valid while we look.
+
+    // Fast path: reuse a live interned instance.
+    ObjString* reused = nullptr;
+    strings.lockedApply([&](auto& interned) {
+        uint32_t attempt = 0;
+        while (true) {
+            uint64_t key = computeInternKey(s, attempt);
+            auto it = interned.find(key);
+            if (it == interned.end())
+                return;
+            ObjString* objStr = it->second;
             if (objStr && objStr->s == s) {
-                // Atomically try to take a strong reference to prevent
-                // the string from being freed by another thread before
-                // the caller's Value::incRef() runs.
+                // Take a strong reference atomically w.r.t. the zero-crossing
+                // so a dying string is never resurrected.
                 if (objStr->tryIncRef()) {
-                    if (wasInterned) *wasInterned = true;
-                    return unique_ptr<ObjString, UnreleasedObj>(objStr);
+                    reused = objStr;
+                } else {
+                    // Dying (strong == 0): drop the stale entry; its dtor's
+                    // conditional self-erase tolerates the missing entry.
+                    interned.erase(it);
                 }
-                // String is dying (strong == 0); remove stale entry and create new
-                strings.erase(key);
-                break;
+                return;
             }
             ++attempt;
-            continue;
         }
-        break;
+    });
+    if (reused) {
+        if (wasInterned) *wasInterned = true;
+        return unique_ptr<ObjString, UnreleasedObj>(reused);
     }
 
-    // create new
+    // Create new.  Allocation must NOT run under the map lock: newObj takes
+    // the GC mutex via registerAllocation.
     #ifdef DEBUG_BUILD
     auto objStr = newObj<ObjString>(std::string(__func__)+" '" + toUTF8StdString(s) + "'",__FILE__,__LINE__,s);
     #else
     auto objStr = newObj<ObjString>(s);
     #endif
-    uint64_t key = computeInternKey(s, 0);
-    // Check for collision with a different string at this key
-    uint32_t attempt2 = 0;
-    while (true) {
-        key = computeInternKey(s, attempt2);
-        auto existing = strings.lookup(key);
-        if (existing.has_value()) {
-            ObjString* other = existing.value();
-            if (other && other->s != s) {
-                ++attempt2;
+
+    // Publish: key selection and insertion in ONE critical section.  Split
+    // select/store lets two equal-content creators pick the same slot with
+    // neither seeing the other.  If an equal-content LIVE entry appeared
+    // while we allocated (another creator won the race), ADOPT the winner --
+    // returning our candidate would hand equal-content interned strings
+    // distinct identities.  A DYING equal-content entry (strong == 0) is
+    // overwritten instead (its dtor's self-erase is conditional on `== this`,
+    // so it never removes our entry when it dies).
+    ObjString* adopted = nullptr;
+    strings.lockedApply([&](auto& interned) {
+        uint32_t attempt = 0;
+        while (true) {
+            uint64_t k = computeInternKey(s, attempt);
+            auto it = interned.find(k);
+            if (it != interned.end() && it->second && it->second->s != s) {
+                ++attempt;
                 continue;
             }
+            if (it != interned.end() && it->second && it->second->s == s
+                && it->second->tryIncRef()) {
+                adopted = it->second;
+                return;
+            }
+            objStr->internKey = k;
+            interned[k] = objStr.get();
+            return;
         }
-        break;
+    });
+    if (adopted) {
+        // Discard the losing candidate through the normal death path (its
+        // internKey is still 0, so its dtor never touches the table).
+        Value discard = Value::objVal(std::move(objStr));
+        (void)discard;
+        if (wasInterned) *wasInterned = true;
+        return unique_ptr<ObjString, UnreleasedObj>(adopted);
     }
-    objStr->internKey = key;
-    strings.store(key, objStr.get());
     return objStr;
 }
 
 void roxal::updateInternedString(ObjString* obj, const UnicodeString& newVal)
 {
     if (!obj) return;
-    if (obj->internKey != 0)
-        strings.erase(obj->internKey);
+    // Detach under the lock, ownership-checked: our entry may already have
+    // been replaced by another string at this key -- a blind erase would
+    // remove the replacement.  Detaching BEFORE the mutation also keeps the
+    // invariant that locked readers never content-compare a string whose
+    // UnicodeString is mid-assignment.
+    if (obj->internKey != 0) {
+        strings.lockedApply([&](auto& interned) {
+            auto it = interned.find(obj->internKey);
+            if (it != interned.end() && it->second == obj)
+                interned.erase(it);
+        });
+    }
     obj->s = newVal;
     obj->hash = obj->s.hashCode();
 
-    uint32_t attempt = 0;
-    while (true) {
-        uint64_t key = computeInternKey(obj->s, attempt);
-        auto existing = strings.lookup(key);
-        if (existing.has_value()) {
-            ObjString* other = existing.value();
-            if (other == obj || (other && other->s == obj->s)) {
-                obj->internKey = key;
-                return;
+    // Locked for the same reason as the newObjString collision loop: the
+    // content compare dereferences a raw entry that a concurrent drain
+    // thread may otherwise destroy+free mid-compare.
+    strings.lockedApply([&](auto& interned) {
+        uint32_t attempt = 0;
+        while (true) {
+            uint64_t key = computeInternKey(obj->s, attempt);
+            auto it = interned.find(key);
+            if (it != interned.end()) {
+                ObjString* other = it->second;
+                if (other == obj || (other && other->s == obj->s)) {
+                    obj->internKey = key;
+                    return;
+                }
+                ++attempt;
+                continue;
             }
-            ++attempt;
-            continue;
+            obj->internKey = key;
+            interned[key] = obj;
+            return;
         }
-        obj->internKey = key;
-        strings.store(key, obj);
-        break;
-    }
+    });
 }
 
 void ObjString::write(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
@@ -3323,6 +3378,21 @@ void ObjCombinator::trace(ValueVisitor& visitor) const
 void ObjCombinator::dropReferences()
 {
     cancel();
+    // Sever EVERY owned edge, including Values hidden in native state: the
+    // promise's shared state stores the winning Value (set_value copies it
+    // in), an edge dropReferences must release like any other -- otherwise
+    // it survives until the DESTRUCTOR's shared-state release, and within a
+    // reclaim batch the payload object may already be destroyed by then
+    // (order-dependent use-after-free; caught by ROXAL_GC_QUARANTINE on
+    // anyof churn).  Slot resolvedValues are the same class of edge.
+    {
+        std::lock_guard<std::mutex> lk(mutex);
+        for (auto& slot : slots) {
+            slot.resolvedValue = Value::nilVal();
+        }
+        outputFuture = Value::nilVal();
+        promise.reset();
+    }
 }
 unique_ptr<Obj, UnreleasedObj> ObjNative::clone(roxal::ptr<CloneContext> ctx) const {
     (void)ctx; // native functions are immutable; share the reference
@@ -3897,6 +3967,11 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 
 void ObjModuleType::trace(ValueVisitor& visitor) const
 {
+    // Unlocked by necessity -- taking varsLock here would invert against
+    // mutators that hold it across GC-touching work (see the visitRoots
+    // comment in SimpleMarkSweepGC.cpp).  Safe under the coverage invariant:
+    // module-var mutators are either inside execute() (parked during a
+    // collection) or covered by an ExternalParticipant / yield section.
     vars.unsafeForEachModuleVar([&visitor](const auto& nameValue) {
         visitor.visit(nameValue.second.value);
         if (nameValue.second.hasSignal())

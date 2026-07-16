@@ -1,0 +1,17 @@
+# Deep event-driven update chain: each handler invocation sets the signal
+# again.  Handler dispatch used to recurse one native frame per chain link
+# (stack overflow on long chains); the engine drains chained updates
+# iteratively at the outermost update, so depth stays constant.
+
+var chain = 0
+var last = 0
+
+when chain changes:
+  last = chain
+  if chain < 20000:
+    chain = chain + 1
+
+chain = 1
+wait(ms=500)
+print("last: " + last)
+print("chain: " + chain)

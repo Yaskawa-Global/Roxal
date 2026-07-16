@@ -210,7 +210,6 @@ struct Obj {
     }
 
 
-    static atomic_vector<Obj*> unrefedObjs;
 
     #ifdef DEBUG_TRACE_MEMORY
     static atomic_map<Obj*, std::string> allocatedObjs;

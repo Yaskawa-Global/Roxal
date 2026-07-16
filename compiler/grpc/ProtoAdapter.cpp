@@ -165,9 +165,9 @@ std::vector<Value> ProtoAdapter::allocateObjects(const std::string& protoFile)
             // Use file name as marker since multiple files can share same package
             std::string depFileName = depFile->name();
             std::string processedKey = "_file_processed:" + depFileName;
-            if (m_declByFullName.find(processedKey) == m_declByFullName.end()) {
+            if (m_declByFullName->find(processedKey) == m_declByFullName->end()) {
                 // Mark as processed to avoid infinite recursion
-                m_declByFullName[processedKey] = Value::nilVal();
+                (*m_declByFullName)[processedKey] = Value::nilVal();
                 auto depObjects = allocateObjectsFromFileDesc(depFile);
                 objects.insert(objects.end(), depObjects.begin(), depObjects.end());
             }
@@ -195,7 +195,7 @@ std::vector<Value> ProtoAdapter::allocateObjectsFromFileDesc(const google::proto
             return;
 
         // Skip if already registered
-        if (m_declByFullName.find(enumDesc->full_name()) != m_declByFullName.end())
+        if (m_declByFullName->find(enumDesc->full_name()) != m_declByFullName->end())
             return;
 
         Value declVal = Value::objectTypeVal(toUnicodeString(enumDesc->name()), false, false, true);
@@ -213,8 +213,8 @@ std::vector<Value> ProtoAdapter::allocateObjectsFromFileDesc(const google::proto
             enumObj->enumLabelValues[labelName.hashCode()] = std::make_pair(labelName, enumValue);
         }
 
-        m_declByFullName.emplace(enumDesc->full_name(), declVal);
-        m_declByShortName.emplace(enumDesc->name(), declVal);
+        m_declByFullName->emplace(enumDesc->full_name(), declVal);
+        m_declByShortName->emplace(enumDesc->name(), declVal);
         objects.push_back(declVal);
     };
 
@@ -234,7 +234,7 @@ std::vector<Value> ProtoAdapter::allocateObjectsFromFileDesc(const google::proto
         const Descriptor* msgDesc = file_desc->message_type(i);
 
         // Skip if already registered
-        if (m_declByFullName.find(msgDesc->full_name()) != m_declByFullName.end())
+        if (m_declByFullName->find(msgDesc->full_name()) != m_declByFullName->end())
             continue;
 
         registerNestedEnums(msgDesc);
@@ -308,8 +308,8 @@ std::vector<Value> ProtoAdapter::allocateObjectsFromFileDesc(const google::proto
             obj->propertyOrder.push_back(hash);
         }
 
-        m_declByFullName.emplace(msgDesc->full_name(), declVal);
-        m_declByShortName.emplace(msgDesc->name(), declVal);
+        m_declByFullName->emplace(msgDesc->full_name(), declVal);
+        m_declByShortName->emplace(msgDesc->name(), declVal);
         objects.push_back(declVal);
     }
 
@@ -794,14 +794,14 @@ bool ProtoAdapter::nameMatch(const std::string& fullName, const std::string& nam
 
 Value ProtoAdapter::declForFullName(const std::string& fullName) const
 {
-    auto it = m_declByFullName.find(fullName);
-    if (it != m_declByFullName.end())
+    auto it = m_declByFullName->find(fullName);
+    if (it != m_declByFullName->end())
         return it->second;
     auto pos = fullName.find_last_of('.');
     if (pos != std::string::npos) {
         std::string shortName = fullName.substr(pos + 1);
-        auto sit = m_declByShortName.find(shortName);
-        if (sit != m_declByShortName.end())
+        auto sit = m_declByShortName->find(shortName);
+        if (sit != m_declByShortName->end())
             return sit->second;
     }
     return Value::nilVal();
@@ -811,6 +811,12 @@ Value ProtoAdapter::declForFullName(const std::string& fullName) const
 void ProtoAdapter::logError(const std::string& errormsg) const
 {
     std::cerr << errormsg << std::endl;
+}
+
+void ProtoAdapter::clearDecls()
+{
+    m_declByFullName->clear();
+    m_declByShortName->clear();
 }
 
 #endif // ROXAL_ENABLE_GRPC

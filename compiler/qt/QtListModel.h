@@ -87,7 +87,7 @@ private:
 };
 
 // Owns every live RoxalListModel and keeps its Roxal Values (rows + type) alive via
-// a GC ExternalRootProvider. Singleton; lifetime bracketed by ModuleQt (init() at
+// typed GC roots (TracedMember). Singleton; lifetime bracketed by ModuleQt (init() at
 // module load, shutdown() at script-complete teardown), mirroring QtSignalHub.
 class QtModelHub {
 public:

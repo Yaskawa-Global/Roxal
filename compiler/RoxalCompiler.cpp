@@ -111,6 +111,25 @@ Value RoxalCompiler::compile(std::istream& source, const std::string& name,
                              Value existingModule,
                              const std::string& sourceNameOverride)
 {
+    // GC coverage for the compile: compilation typically runs OUTSIDE
+    // execute(), so without a cover this thread's context is Inactive and
+    // the collection barrier does not wait for it -- a collection could
+    // then scan/sweep while compile code is actively running with its
+    // stack uncaptured (the Inactive contract forbids holding unrooted GC
+    // pointers, which a compiler mid-flight plainly does).  The
+    // participant cover makes the context Running for the whole compile:
+    // the barrier waits between safepoints, nested pauses (a lazy
+    // builtin-module load running its module script; recursive import
+    // resolution) PARK normally, and the parked-stack scan plus the
+    // lexicalScopesRoot / importedModulesRoot / SerializationContext roots
+    // cover the in-progress products.  Under the precise-mode kill switch
+    // (ROXAL_GC_CONSERVATIVE=0) stack temps are NOT scan-covered, so
+    // additionally stay unparked and let collections wait out the compile.
+    SimpleMarkSweepGC::ExternalParticipant compileCover(SimpleMarkSweepGC::instance());
+    std::optional<SimpleMarkSweepGC::GCNoParkScope> gcNoPark;
+    if (!SimpleMarkSweepGC::conservativeMarkingEnabled())
+        gcNoPark.emplace();
+
     Value function { Value::nilVal() };
     currentModuleHasDynamicImport = false;
     currentDynamicImports.clear();
@@ -271,6 +290,15 @@ Value RoxalCompiler::compile(std::istream& source, const std::string& name,
 
 Value RoxalCompiler::loadFileCache(const std::filesystem::path& sourcePath) const
 {
+    // Same coverage rationale as compile(): cache deserialization runs
+    // outside execute() and must count as Running so collections wait for
+    // it between safepoints (SerializationContext roots the partially
+    // linked graph if a nested pause parks us).
+    SimpleMarkSweepGC::ExternalParticipant loadCover(SimpleMarkSweepGC::instance());
+    std::optional<SimpleMarkSweepGC::GCNoParkScope> gcNoPark;
+    if (!SimpleMarkSweepGC::conservativeMarkingEnabled())
+        gcNoPark.emplace();
+
     if (!cacheReadEnabled)
         return Value::nilVal();
 

@@ -31,14 +31,54 @@ ACUCommunicator::ACUCommunicator(std::shared_ptr<grpc::Channel> channel, ProtoAd
 
 ACUCommunicator::~ACUCommunicator()
 {
-    // Cancel all active streams
-    std::lock_guard<std::mutex> lock(m_streamsMutex);
-    for (auto& state : m_activeStreams) {
-        if (state->handle) {
+    stopAllStreams();
+}
+
+void ACUCommunicator::stopAllStreams()
+{
+    // Take ownership outside the lock: the reader threads' stream-end
+    // callbacks erase from m_activeStreams under m_streamsMutex, so joining
+    // while holding it would deadlock.
+    std::vector<std::shared_ptr<ActiveStreamState>> streams;
+    {
+        std::lock_guard<std::mutex> lock(m_streamsMutex);
+        streams.swap(*m_activeStreams);
+    }
+    for (auto& state : streams) {
+        if (state && state->handle) {
             m_caller->CancelStream(state->handle);
         }
     }
-    m_activeStreams.clear();
+    for (auto& state : streams) {
+        if (state && state->handle && state->handle->readerThread.joinable()) {
+            state->handle->readerThread.join();
+        }
+    }
+}
+
+void ACUCommunicator::traceActiveStreams(
+    ValueVisitor& visitor,
+    const std::vector<std::shared_ptr<ActiveStreamState>>& streams)
+{
+    // Runs on the collector during a collection: VM-thread mutators are
+    // parked and the reader-thread mutation (the stream-end erase) happens
+    // inside a scoped ExternalParticipant (ClientCall::ServerReadLoop), so
+    // plain iteration without m_streamsMutex is safe -- and required: the
+    // erase path destructs Values (decRef -> GC state) while holding the
+    // lock, so taking it at trace time would invert the lock order.
+    auto visit = [&](const Value& v) {
+        if (v.isObj())
+            visitor.visit(v);
+    };
+    for (const auto& state : streams) {
+        if (!state)
+            continue;
+        for (const auto& v : state->inputSignalValues)
+            visit(v);
+        for (const auto& v : state->frozenArgs)
+            visit(v);
+        visit(state->outputSignal);
+    }
 }
 
 Value ACUCommunicator::call(const std::string& methodName,
@@ -127,9 +167,9 @@ Value ACUCommunicator::callStreaming(const std::string& methodName,
         // Remove from active streams
         {
             std::lock_guard<std::mutex> lock(m_streamsMutex);
-            auto it = std::find(m_activeStreams.begin(), m_activeStreams.end(), state);
-            if (it != m_activeStreams.end()) {
-                m_activeStreams.erase(it);
+            auto it = std::find(m_activeStreams->begin(), m_activeStreams->end(), state);
+            if (it != m_activeStreams->end()) {
+                m_activeStreams->erase(it);
             }
         }
     };
@@ -161,7 +201,7 @@ Value ACUCommunicator::callStreaming(const std::string& methodName,
     // Store active stream
     {
         std::lock_guard<std::mutex> lock(m_streamsMutex);
-        m_activeStreams.push_back(state);
+        m_activeStreams->push_back(state);
     }
 
     // Return appropriate value

@@ -4,6 +4,7 @@
 #include "VM.h"
 #include "Object.h"
 #include "SimpleMarkSweepGC.h"
+#include "GCRoots.h"
 #include "ModuleQtConvert.h"
 #include "dataflow/Signal.h"
 #include "QtBindable.h"
@@ -315,19 +316,20 @@ void RoxalPropertyMap::pushAll()
 }
 
 // ============================================================
-// QtBindHub (owner + GC ExternalRootProvider)
+// QtBindHub (owner; the maps member is the GC root -- TracedMember, v2 B)
 // ============================================================
 
-struct QtBindHub::Impl : SimpleMarkSweepGC::ExternalRootProvider {
-    std::vector<std::unique_ptr<RoxalPropertyMap>> maps;
-    std::unordered_map<ObjectInstance*, RoxalPropertyMap*> byObject;
-    bool rootRegistered { false };
-
-    // Keep each exposed object reachable (its properties + change signals follow).
-    void visitRoots(ValueVisitor& visitor) override {
+struct QtBindHub::Impl {
+    // Keep each exposed object reachable (its properties + change signals
+    // follow).  Registered for the Impl's whole lifetime; shutdown()
+    // clears the container, so post-shutdown traces see nothing.
+    static void traceMaps(ValueVisitor& visitor,
+                          const std::vector<std::unique_ptr<RoxalPropertyMap>>& maps) {
         for (auto& m : maps)
             if (m) visitor.visit(m->objValue());
     }
+    TracedMember<std::vector<std::unique_ptr<RoxalPropertyMap>>> maps { &Impl::traceMaps };
+    std::unordered_map<ObjectInstance*, RoxalPropertyMap*> byObject;
 };
 
 QtBindHub::QtBindHub() : impl_(std::make_unique<Impl>()) {}
@@ -341,20 +343,12 @@ QtBindHub& QtBindHub::instance()
 
 void QtBindHub::init()
 {
-    if (!impl_->rootRegistered) {
-        SimpleMarkSweepGC::instance().registerExternalRootProvider(impl_.get());
-        impl_->rootRegistered = true;
-    }
 }
 
 void QtBindHub::shutdown()
 {
     impl_->byObject.clear();
-    impl_->maps.clear();   // destroys the wrappers (sets their alive-guard false)
-    if (impl_->rootRegistered) {
-        SimpleMarkSweepGC::instance().unregisterExternalRootProvider(impl_.get());
-        impl_->rootRegistered = false;
-    }
+    impl_->maps->clear();   // destroys the wrappers (sets their alive-guard false)
 }
 
 RoxalPropertyMap* QtBindHub::wrap(const Value& obj)
@@ -366,7 +360,7 @@ RoxalPropertyMap* QtBindHub::wrap(const Value& obj)
         return it->second;   // idempotent: one wrapper per object
     auto m = std::make_unique<RoxalPropertyMap>(obj);
     RoxalPropertyMap* raw = m.get();
-    impl_->maps.push_back(std::move(m));
+    impl_->maps->push_back(std::move(m));
     impl_->byObject[key] = raw;
     return raw;
 }

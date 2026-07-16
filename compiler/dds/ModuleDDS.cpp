@@ -7,6 +7,7 @@
 #include "Object.h"
 #include "Value.h"
 #include "VM.h"
+#include "SimpleMarkSweepGC.h"
 #include "dataflow/Signal.h"
 
 #include <dds/dds.h>
@@ -39,6 +40,9 @@ static Value getFieldValue(const Value& msg, const std::string& name);
 
 ModuleDDS::ModuleDDS()
 {
+    // Rooting: every Value-holding member is a PersistentRoot/TracedMember
+    // (GC v2 phase B pilot) -- self-registered with the collector, no
+    // hand-written visitRoots() enumeration to forget entries in.
     moduleTypeValue = Value::objVal(newModuleTypeObj(toUnicodeString("dds")));
     ObjModuleType::allModules.push_back(moduleTypeValue);
 }
@@ -46,8 +50,32 @@ ModuleDDS::ModuleDDS()
 ModuleDDS::~ModuleDDS()
 {
     stopReaderThread();
-    if (!moduleTypeValue.isNil())
+    if (!moduleTypeValue->isNil())
         destroyModuleType(moduleTypeValue);
+}
+
+void ModuleDDS::onModuleUnloading(VM& vm)
+{
+    (void)vm;
+    // Release every roxal Value this module retains in plain C++ containers
+    // NOW, while the VM's object graph is still alive.  These containers are
+    // invisible to the GC mark phase; the shutdown collection sweeps their
+    // targets as unreachable, and letting the Values linger into the module
+    // destructor (static teardown, after VM::shutdown) decRefs freed objects
+    // (ASan/teardown-SEGV confirmed via TopicSupport::handle).  The reader
+    // thread is stopped first -- it consults these maps.
+    stopReaderThread();
+    writerSignals->clear();
+    readerSignals->clear();
+    supportByType->clear();
+    supportByEntity->clear();
+    idlModules->clear();
+    typesByFullName_->clear();
+    participantType = Value();
+    topicType = Value();
+    writerType = Value();
+    readerType = Value();
+    defaultParticipant = Value();
 }
 
 void ModuleDDS::registerBuiltins(VM& vm)
@@ -153,10 +181,10 @@ Value ModuleDDS::importIdl(const std::string& idlFilename,
     // wire name stays the mangled sensor_msgs::msg::dds_::Image_ (the type
     // Value itself carries the mangled name via fullNameByType_).
     for (const auto& alias : adapter->rosAliases()) {
-        auto it = typesByFullName_.find(alias.second);
-        if (it == typesByFullName_.end())
+        auto it = typesByFullName_->find(alias.second);
+        if (it == typesByFullName_->end())
             continue;
-        typesByFullName_.emplace(alias.first, it->second);
+        typesByFullName_->emplace(alias.first, it->second);
         storeAtScope(moduleVal, alias.first, it->second);
     }
 
@@ -201,13 +229,13 @@ Value ModuleDDS::importIdl(const std::string& idlFilename,
 
 Value ModuleDDS::getOrCreateModule(const std::string& name)
 {
-    auto it = idlModules.find(name);
-    if (it != idlModules.end())
+    auto it = idlModules->find(name);
+    if (it != idlModules->end())
         return it->second;
 
     Value moduleVal = Value::moduleTypeVal(toUnicodeString(name));
     ObjModuleType::allModules.push_back(moduleVal);
-    idlModules[name] = moduleVal;
+    (*idlModules)[name] = moduleVal;
 
     // make available as global
     vm().globals.storeGlobal(toUnicodeString(name), moduleVal);
@@ -285,7 +313,7 @@ void ModuleDDS::registerGeneratedTypes(Value moduleVal, const std::vector<Value>
             continue;
         }
         // Item 1: index by full name so resolveTypeValue resolves deeply-nested (ROS) types.
-        typesByFullName_[full] = typeVal;
+        (*typesByFullName_)[full] = typeVal;
         // Item 2: expose the type at its real nested-module path.
         storeAtScope(moduleVal, full, typeVal);
     }
@@ -295,15 +323,15 @@ Value ModuleDDS::resolveTypeValue(const std::string& fullName)
 {
     // Item 1: direct full-name lookup handles arbitrarily nested / ROS-style names,
     // for which no module keyed by the parent scope exists.
-    auto direct = typesByFullName_.find(fullName);
-    if (direct != typesByFullName_.end())
+    auto direct = typesByFullName_->find(fullName);
+    if (direct != typesByFullName_->end())
         return direct->second;
 
     auto pos = fullName.rfind("::");
     std::string moduleName = pos == std::string::npos ? "" : fullName.substr(0, pos);
     std::string shortName = pos == std::string::npos ? fullName : fullName.substr(pos + 2);
-    auto modIt = idlModules.find(moduleName.empty() ? fullName : moduleName);
-    if (modIt != idlModules.end()) {
+    auto modIt = idlModules->find(moduleName.empty() ? fullName : moduleName);
+    if (modIt != idlModules->end()) {
         auto maybe = asModuleType(modIt->second)->vars.load(toUnicodeString(shortName));
         if (maybe.has_value())
             return maybe.value();
@@ -456,7 +484,7 @@ Value ModuleDDS::dds_create_participant(VM&, ArgsView args)
         throw std::runtime_error(std::string("dds_create_participant failed: ") + ::dds_strretcode(-participant));
     self = VM::instance().ddsModule;
     Value handleVal = self ? self->makeHandleValue(participant) : Value::nilVal();
-    if (!self || self->participantType.isNil())
+    if (!self || self->participantType->isNil())
         return handleVal;
     Value inst = Value::objectInstanceVal(self->participantType);
     ObjectInstance* obj = asObjectInstance(inst);
@@ -489,11 +517,11 @@ Value ModuleDDS::dds_create_topic(VM&, ArgsView args)
     auto support = self ? self->buildDynamicTopic(part, topicName, typeName, qos.get()) : nullptr;
     if (!support)
         return Value::nilVal();
-    self->supportByType[typeName] = support;
-    self->supportByEntity[support->entity] = support;
+    (*self->supportByType)[typeName] = support;
+    (*self->supportByEntity)[support->entity] = support;
 
     Value handleVal = support->handle;
-    if (!self || self->topicType.isNil())
+    if (!self || self->topicType->isNil())
         return handleVal;
     Value inst = Value::objectInstanceVal(self->topicType);
     ObjectInstance* obj = asObjectInstance(inst);
@@ -923,8 +951,8 @@ std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::buildDynamicTopic(Value part
     if (!self || !self->adapter)
         return nullptr;
 
-    auto existing = self->supportByType.find(typeName);
-    if (existing != self->supportByType.end() && existing->second && existing->second->descriptor) {
+    auto existing = self->supportByType->find(typeName);
+    if (existing != self->supportByType->end() && existing->second && existing->second->descriptor) {
         dds_entity_t topic = ::dds_create_topic(participant,
                                                 existing->second->descriptor.get(),
                                                 topicName.c_str(),
@@ -975,7 +1003,7 @@ Value ModuleDDS::dds_create_writer(VM&, ArgsView args)
     if (args.size() < 2)
         throw std::invalid_argument("dds.create_writer(participant, topic, qos=None) expects at least 2 args");
     ModuleDDS* self = VM::instance().ddsModule;
-    if (!self || self->writerType.isNil())
+    if (!self || self->writerType->isNil())
         return Value::nilVal();
     dds_entity_t participant = entityFromValue(args[0], true);
     dds_entity_t topicEnt = entityFromValue(args[1], true);
@@ -990,7 +1018,7 @@ Value ModuleDDS::dds_create_writer(VM&, ArgsView args)
             throw std::runtime_error(std::string("dds_create_writer failed: ") + dds_strretcode(-writer));
         handleVal = self->makeHandleValue(writer);
         if (topicSupport) {
-            self->supportByEntity[writer] = topicSupport;
+            (*self->supportByEntity)[writer] = topicSupport;
         }
     }
     Value inst = Value::objectInstanceVal(self->writerType);
@@ -1016,7 +1044,7 @@ Value ModuleDDS::dds_create_reader(VM&, ArgsView args)
     if (args.size() < 2)
         throw std::invalid_argument("dds.create_reader(participant, topic, qos=None) expects at least 2 args");
     ModuleDDS* self = VM::instance().ddsModule;
-    if (!self || self->readerType.isNil())
+    if (!self || self->readerType->isNil())
         return Value::nilVal();
     dds_entity_t participant = entityFromValue(args[0], true);
     dds_entity_t topicEnt = entityFromValue(args[1], true);
@@ -1031,7 +1059,7 @@ Value ModuleDDS::dds_create_reader(VM&, ArgsView args)
             throw std::runtime_error(std::string("dds_create_reader failed: ") + dds_strretcode(-reader));
         handleVal = self->makeHandleValue(reader);
         if (topicSupport) {
-            self->supportByEntity[reader] = topicSupport;
+            (*self->supportByEntity)[reader] = topicSupport;
         }
     }
     Value inst = Value::objectInstanceVal(self->readerType);
@@ -1191,13 +1219,13 @@ std::shared_ptr<ModuleDDS::TopicSupport> ModuleDDS::lookupSupport(const Value& v
 {
     dds_entity_t ent = entityFromValue(v, true);
     if (ent > 0) {
-        auto it = supportByEntity.find(ent);
-        if (it != supportByEntity.end())
+        auto it = supportByEntity->find(ent);
+        if (it != supportByEntity->end())
             return it->second;
     }
     std::string tn = typeNameFromValue(v);
-    auto it2 = supportByType.find(tn);
-    if (it2 != supportByType.end())
+    auto it2 = supportByType->find(tn);
+    if (it2 != supportByType->end())
         return it2->second;
     return nullptr;
 }
@@ -1247,7 +1275,7 @@ void ModuleDDS::registerWriterSignal(const Value& sigVal, const Value& writerVal
     auto support = lookupSupport(writerVal);
     auto desc = support ? support->descriptor : nullptr;
     std::lock_guard<std::mutex> lock(signalMutex);
-    writerSignals.push_back({sigVal.weakRef(), writer, typeName, desc});
+    writerSignals->push_back({sigVal.weakRef(), writer, typeName, desc});
     if (isSignal(sigVal)) {
         ObjSignal* objSig = asSignal(sigVal);
         auto sig = objSig->signal;
@@ -1299,7 +1327,7 @@ Value ModuleDDS::dds_writer_signal(VM& vm, ArgsView args)
     auto ensureParticipant = [&](const Value& existing) -> Value {
         if (isObjectInstance(existing) || isForeignPtr(existing))
             return existing;
-        if (self->defaultParticipant.isNonNil())
+        if (self->defaultParticipant->isNonNil())
             return self->defaultParticipant;
         std::vector<Value> pargs;
         if (qosVal.isNonNil()) {
@@ -1345,7 +1373,7 @@ Value ModuleDDS::dds_reader_signal(VM& vm, ArgsView args)
     auto ensureParticipant = [&](const Value& existing) -> Value {
         if (isObjectInstance(existing) || isForeignPtr(existing))
             return existing;
-        if (self->defaultParticipant.isNonNil())
+        if (self->defaultParticipant->isNonNil())
             return self->defaultParticipant;
         std::vector<Value> pargs;
         if (qosVal.isNonNil()) {
@@ -1394,7 +1422,7 @@ void ModuleDDS::registerReaderSignal(const Value& sigVal, const Value& readerVal
 
     {
         std::lock_guard<std::mutex> lock(signalMutex);
-        readerSignals.push_back({sigVal.weakRef(), reader, typeName, desc, historyKind});
+        readerSignals->push_back({sigVal.weakRef(), reader, typeName, desc, historyKind});
     }
     readerBindingsChanged.store(true);
     wakeReaderThread();
@@ -1486,8 +1514,8 @@ size_t ModuleDDS::typeSizeInternal(const FieldType& ft, ModuleDDS* mod)
         case FieldType::Kind::UInt64: return sizeof(uint64_t);
         case FieldType::Kind::StructRef: {
             if (mod) {
-                auto sup = mod->supportByType.find(ft.refName);
-                if (sup != mod->supportByType.end() && sup->second->descriptor)
+                auto sup = mod->supportByType->find(ft.refName);
+                if (sup != mod->supportByType->end() && sup->second->descriptor)
                     return sup->second->descriptor->m_size;
                 const StructInfo* info = mod->findStructInfo(ft.refName);
                 if (info) {
@@ -1521,8 +1549,8 @@ size_t ModuleDDS::fieldAlignInternal(const FieldType& ft, ModuleDDS* mod)
             return alignof(dds_sequence_t);
         case FieldType::Kind::StructRef: {
             if (mod) {
-                auto sup = mod->supportByType.find(ft.refName);
-                if (sup != mod->supportByType.end() && sup->second && sup->second->descriptor)
+                auto sup = mod->supportByType->find(ft.refName);
+                if (sup != mod->supportByType->end() && sup->second && sup->second->descriptor)
                     return sup->second->descriptor->m_align;
                 const StructInfo* info = mod->findStructInfo(ft.refName);
                 if (info) {
@@ -1623,8 +1651,8 @@ void ModuleDDS::fillSampleFromValue(const StructInfo& info,
                 std::string refName = canonicalName(field.type.refName);
                 const StructInfo* subInfo = findStructInfo(refName);
                 const dds_topic_descriptor_t* subDesc = nullptr;
-                auto supIt = supportByType.find(refName);
-                if (supIt != supportByType.end())
+                auto supIt = supportByType->find(refName);
+                if (supIt != supportByType->end())
                     subDesc = supIt->second ? supIt->second->descriptor.get() : nullptr;
                 if (subInfo)
                     fillSampleFromValue(*subInfo, subDesc, target, fval);
@@ -1693,8 +1721,8 @@ void ModuleDDS::fillSampleFromValue(const StructInfo& info,
                                 std::string refName = canonicalName(field.type.element->refName);
                                 const StructInfo* subInfo = findStructInfo(refName);
                                 const dds_topic_descriptor_t* subDesc = nullptr;
-                                auto sup = supportByType.find(refName);
-                                if (sup != supportByType.end())
+                                auto sup = supportByType->find(refName);
+                                if (sup != supportByType->end())
                                     subDesc = sup->second ? sup->second->descriptor.get() : nullptr;
                                 if (subInfo)
                                     fillSampleFromValue(*subInfo, subDesc, elemPtr, ev);
@@ -1756,8 +1784,8 @@ void ModuleDDS::fillSampleFromValue(const StructInfo& info,
                                 std::string refName = canonicalName(field.type.element->refName);
                                 const StructInfo* subInfo = findStructInfo(refName);
                                 const dds_topic_descriptor_t* subDesc = nullptr;
-                                auto sup = supportByType.find(refName);
-                                if (sup != supportByType.end())
+                                auto sup = supportByType->find(refName);
+                                if (sup != supportByType->end())
                                     subDesc = sup->second ? sup->second->descriptor.get() : nullptr;
                                 if (subInfo)
                                     fillSampleFromValue(*subInfo, subDesc, elemPtr, ev);
@@ -1847,8 +1875,8 @@ Value ModuleDDS::valueFromSample(const StructInfo& info,
                 std::string refName = canonicalName(field.type.refName);
                 const StructInfo* subInfo = findStructInfo(refName);
                 const dds_topic_descriptor_t* subDesc = nullptr;
-                auto sup = supportByType.find(refName);
-                if (sup != supportByType.end())
+                auto sup = supportByType->find(refName);
+                if (sup != supportByType->end())
                     subDesc = sup->second ? sup->second->descriptor.get() : nullptr;
                 Value subtypeVal = resolveTypeValue(refName);
                 if (subInfo && !subtypeVal.isNil())
@@ -1901,8 +1929,8 @@ Value ModuleDDS::valueFromSample(const StructInfo& info,
                                     std::string refName = canonicalName(field.type.element->refName);
                                     const StructInfo* subInfo = findStructInfo(refName);
                                     const dds_topic_descriptor_t* subDesc = nullptr;
-                                    auto sup = supportByType.find(refName);
-                                    if (sup != supportByType.end())
+                                    auto sup = supportByType->find(refName);
+                                    if (sup != supportByType->end())
                                         subDesc = sup->second ? sup->second->descriptor.get() : nullptr;
                                     Value subtypeVal = resolveTypeValue(refName);
                                     if (subInfo && !subtypeVal.isNil())
@@ -1961,8 +1989,8 @@ Value ModuleDDS::valueFromSample(const StructInfo& info,
                                         std::string refName = canonicalName(field.type.element->refName);
                                         const StructInfo* subInfo = findStructInfo(refName);
                                         const dds_topic_descriptor_t* subDesc = nullptr;
-                                        auto sup = supportByType.find(refName);
-                                        if (sup != supportByType.end())
+                                        auto sup = supportByType->find(refName);
+                                        if (sup != supportByType->end())
                                             subDesc = sup->second ? sup->second->descriptor.get() : nullptr;
                                         Value subtypeVal = resolveTypeValue(refName);
                                         if (subInfo && !subtypeVal.isNil())
@@ -2308,14 +2336,33 @@ void ModuleDDS::readerThreadLoop()
         bool guardWasSet = false;
         dds_take_guardcondition(readerGuard, &guardWasSet);
 
-        int count = std::min<int>(static_cast<int>(n), kMaxTriggers);
-        for (int i = 0; i < count; ++i) {
-            auto entity = static_cast<dds_entity_t>(triggered[i]);
-            if (entity <= 0)
-                continue; // the guard condition (attached with cookie 0)
-            auto it = byEntity.find(entity);
-            if (it != byEntity.end())
-                drainReaderBinding(*it->second);
+        {
+            // GC coverage for the delivery phase.  drainReaderBinding creates
+            // GC Values (sample conversions, the ObjSignal wrapper enqueued by
+            // processEventDrivenSignalUpdate's foreign path) on this otherwise
+            // unregistered thread -- invisible to the collector, they can be
+            // swept while still referenced here (use-after-free), and stores
+            // during the mark phase can hide live objects.  A SCOPED
+            // participant (not loop-persistent: nothing wakes the 1s
+            // dds_waitset_wait on a GC request, a persistent one would stall
+            // every collection) makes the collector wait for us / park us:
+            // while unparked, no mark/sweep can start; poll ONLY between
+            // bindings -- never inside drainReaderBinding, whose locals are
+            // live Values.  This thread is not RT: parking briefly is fine.
+            roxal::SimpleMarkSweepGC::ExternalParticipant participant(
+                roxal::SimpleMarkSweepGC::instance());
+            participant.pollSafepointIfRequested();  // park up-front if a barrier is forming
+
+            int count = std::min<int>(static_cast<int>(n), kMaxTriggers);
+            for (int i = 0; i < count; ++i) {
+                auto entity = static_cast<dds_entity_t>(triggered[i]);
+                if (entity <= 0)
+                    continue; // the guard condition (attached with cookie 0)
+                auto it = byEntity.find(entity);
+                if (it != byEntity.end())
+                    drainReaderBinding(*it->second);
+                participant.pollSafepointIfRequested();  // between bindings: no Value locals live
+            }
         }
     }
 

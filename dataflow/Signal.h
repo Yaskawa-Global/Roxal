@@ -25,10 +25,21 @@ class Signal
    : public roxal::enable_ptr_from_this<Signal>
 {
 public:
+    // Execution domain.  RT (default): the signal's island belongs to the
+    // shared periodic schedule -- ticked by the engine's clock, or by an
+    // embedding host's tickFor() budget slices.  Background: the island is
+    // kept OFF that schedule and serviced by the engine's own thread with
+    // no tick budget -- for periodic work whose cost can't fit an RT slice
+    // (perception, logging, telemetry decimation).  Declared per source
+    // signal; an island is background if ANY of its signals declares it
+    // (see DataflowEngine::buildNetworkCacheData).
+    enum class Domain { RT, Background };
+
     static ptr<Signal> newClockSignal(double freq, std::optional<std::string> name = {});
     static ptr<Signal> newSignal(double freq, Value initial, std::optional<std::string> name = {});
     static ptr<Signal> newSourceSignal(double freq, Value initial = Value(),
-                                      std::optional<std::string> name = {});
+                                      std::optional<std::string> name = {},
+                                      Domain domain = Domain::RT);
 
     // Template signal creation (not added to engine) - for use as type member default initializers
     static ptr<Signal> newClockSignalTemplate(double freq, std::optional<std::string> name = {});
@@ -87,6 +98,20 @@ public:
     bool isSourceSignal() const { return isSource; }
     bool isClockSignal() const { return isClock; }
     bool isRunning() const { return running; }
+
+    // Domain access.  Post-registration domain CHANGES must go through
+    // DataflowEngine::setSignalDomain -- both m_domain and the derived
+    // m_inBackgroundIsland are read/written under the engine mutex (cache
+    // rebuilds and the tick paths hold it), so a bare setDomain() on a
+    // registered signal races an in-flight rebuild.
+    Domain domain() const { return m_domain; }
+    void setDomain(Domain d) { m_domain = d; }
+
+    // Derived at network-cache build: true if this signal's island resolved
+    // to the background domain.  Read by the periodic tick paths (under the
+    // engine mutex) to keep background sources off the shared schedule.
+    bool inBackgroundIsland() const { return m_inBackgroundIsland; }
+    void setInBackgroundIsland(bool b) { m_inBackgroundIsland = b; }
 
     // Get the last value of the signal
     Value lastValue() const;
@@ -149,6 +174,9 @@ protected:
     bool isClock;  // True if this signal counts up at freq
 
     bool running = false; // True if source signal should advance each tick
+
+    Domain m_domain = Domain::RT;
+    bool m_inBackgroundIsland = false;  // derived at network-cache build
 
     // if true, advance once on next engine tick then clear
     bool tickPending = false;

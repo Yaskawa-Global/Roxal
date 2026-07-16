@@ -6,6 +6,8 @@
 #include <unordered_map>
 #include <mutex>
 #include <condition_variable>
+
+#include "ThreadManager.h"
 #include <optional>
 
 #include "core/atomic.h"
@@ -31,6 +33,9 @@ public:
         result = ExecutionStatus::OK;
         frames.reserve(256);
         actorInstanceRaw.store(nullptr, std::memory_order_relaxed);
+        // Every Thread self-registers in the complete non-owning
+        // index (the collector's sole interpreter-root source).
+        ThreadManager::instance().registerThread(this);
     }
     Thread(Thread&) = delete;
     virtual ~Thread();
@@ -133,6 +138,15 @@ public:
     std::atomic<uint64_t> nextPendingEventId { 0 };
 
     int execute_depth;
+
+    // RT hosts set this on a Thread they drive from a real-time loop (e.g.
+    // via runFor): when a GC collection is requested, execute() YIELDS back
+    // to the host instead of parking at the stop-the-world safepoint (a
+    // parked RT thread would trip the host's hardware watchdog, and inside
+    // an RT GC-yield section it would deadlock the collection barrier).
+    // See the safepoint poll sites in VM::execute and
+    // SimpleMarkSweepGC::tryEnterGCSection.
+    bool rtYieldOnGC { false };
 
     // State event handler dispatch within execute().
     // Handlers are pushed as regular call frames one at a time.
@@ -489,6 +503,12 @@ public:
 
 private:
     ptr<std::thread> osthread;
+    // Join-once serialization: the actor lifecycle thread and script-end /
+    // shutdown joinAllThreads can race to join the same worker; joining a
+    // std::thread twice is UB (observed as a futex hang on the reaped tid).
+    // The second caller serializes here, observes osthread == nullptr, and
+    // returns.
+    std::mutex joinMutex_;
 
     // Weak reference to the associated actor instance so the worker does not
     // keep itself alive once all other strong references disappear.

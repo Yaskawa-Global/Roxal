@@ -1,7 +1,11 @@
 // deliberately create a cycle of object references that reference-counting can't clean up (only a GC can)
 
-// Note: this will only fail in runtests.py if DEBUG_TRACE_MEMORY is defined in CMakeLists.txt to output leaked objects
-//  (unless we introduce a way to query the number of heap allocated values)
+// Conservative stack scanning can transiently retain a
+// dropped cycle through a stale operand slot in the live interpreter
+// dispatch frame; the churn+gc loop re-executes the same opcode mix
+// (construct + property store + weakref + nil) to overwrite those slots.
+// Under precise-roots configurations the first gc() collects everything
+// and the loop exits immediately -- printed output is identical.
 
 type A object:
   var a :A
@@ -44,6 +48,18 @@ print(_weak_alive(w4))
 print(_weak_alive(w5))
 
 gc()
+
+rounds = 0
+while (_weak_alive(w1) or _weak_alive(w2) or _weak_alive(w3) or _weak_alive(w4) or _weak_alive(w5)) and rounds < 10:
+    c1 = A()
+    c2 = A()
+    c1.a = c2
+    c2.a = c1
+    cw = _weakref(c1)
+    c1 = nil
+    c2 = nil
+    gc()
+    rounds = rounds + 1
 
 print(_weak_alive(w1))
 print(_weak_alive(w2))

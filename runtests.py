@@ -125,7 +125,7 @@ tests = [
     'andtest', 'ortest', 'not', 'not_nil_conversion_err', 'is_not_nil', 'is_not_non_nil',
     'nil_to_ref_types', 'nil_to_value_type_err', 'nil_to_range_err', 'nil_to_typed_prop_err', 'range_content_eq',
     'arith', 'factorial', 'defaultvalues', 'construct_defaults', 'typeof_test', 'invoke_method',
-    'change_notifier', 'gc_nested_invoke', 'gc_construct_stress',
+    'change_notifier', 'gc_nested_invoke', 'gc_construct_stress', 'gc_coordination_stress', 'gc_selftest', 'gc_scanner_selftest',
     'dict', 'dict2', 'dict_keyerror', 'dict_dot', 'dict_dot_keyerror', 'dict_self_reference', 'list', 'list2', 'list_negative_index', 'list_self_reference', 'copyinto_list', 'copyinto_list_unicode', 'copyinto_sublist', 'copyinto_signal',
     'list_add_test', 'list_concat_shallow', 'list_methods', 'list_add_nonlist_err', 'list_remove_notfound_err', 'list_pop_empty_err', 'list_dict_equal', 'test_filter_map_reduce', 'list_method_exception', 'test_paren_continuation',
     'list_packed_repr', 'list_packed_semantics', 'list_packed_transitions', 'list_packed_reserve', 'list_packed_const', 'list_packed_serialize', 'range', 'range2', 'enum1', 'enum2', 'enum3', 'upvalue_leak',
@@ -135,11 +135,11 @@ tests = [
     'signal_func_nocall', 'signal_func_exec', 'signal_index', 'signal_when_stmt', 'signal_when_threads', 'when_expression', 'signal_when_in_method', 'signal_when_becomes', 'signal_on_changed_test',
     'module_var_when_changed', 'module_var_when_changed_string', 'module_var_when_becomes', 'object_member_when_changed', 'when_obj_becomes', 'when_accessor_var_changes',
     'test_signal_value_property', 'test_signal_name_property', 'signal_named_param', 'construct_by_signal', 'signal_run_stop', 'signal_source', 'signal_default_err', 'signal_network1',
-    'signal_islands',
+    'signal_islands', 'signal_domain',
     'dataflow_clocktest1', 'multi_clock', 'clock_error', 'clock_name_param',
     'event1', 'event_when_stmt', 'event_emit_keyword', 'event_when_method', 'event_remove_method', 'event_ref', 'event_actor_ref', 'event_actor_ref2', 'event_actor_ref3', 'event_actor_ref4', 'event_instance_emit',
     'event_payload', 'event_implicit_constructor', 'event_type_when', 'event_target_filter',
-    'event_in_sleep', 'event_in_sleep2', 'event_cascade',
+    'event_in_sleep', 'event_in_sleep2', 'event_cascade', 'event_chain_depth',
     'until_event', 'until_signal', 'signal_vector_dot',
     'if_suffix_basic', 'if_suffix_assignment', 'if_suffix_mutex_err',
     'nonstrict-assign', 'nonstrict-assign-err', 'strict-assign', 'strict-assign-err',
@@ -379,7 +379,6 @@ tests += compute_server_tests
 long_running_tests = [
     'gc_stress',
     'const_mvcc_stress',
-    'rtcallback_test',
 ]
 
 # implementation doesn't yet allow these tests to pass (do not add to this list without human consent)
@@ -852,6 +851,32 @@ try:
             # Qt GUI tests run headless via the offscreen platform plugin.
             test_env = dict(env_base)
             test_env['QT_QPA_PLATFORM'] = 'offscreen'
+        if test in ('event_actor_ref4',):
+            # Forces gc() while an actor worker is mid-handler: correctness
+            # of the worker's C++-stack-held references depends on
+            # conservative marking (the precise-mode kill switch deliberately
+            # drops that coverage and is a diagnostic mode, not a safe
+            # configuration for this pattern).
+            test_env = dict(test_env)
+            test_env['ROXAL_GC_CONSERVATIVE'] = '1'
+        if test in ('gc_list_cycle', 'object_user_ref_cycle'):
+            # Prompt cycle-death assertions are a PRECISE-roots property:
+            # conservative stack scanning may pin a dropped
+            # cycle via a stale operand slot in the live dispatch frame --
+            # documented retention behavior, not a leak (pinning is covered
+            # by the shadow-scan stats and gc_scanner_selftest).  Run these
+            # two tests with conservative marking off regardless of the
+            # ambient environment.
+            test_env = dict(test_env)
+            test_env['ROXAL_GC_CONSERVATIVE'] = '0'
+        if test in ('rt_execution',):
+            # Deliberately runs script closures on a host-driven periodic
+            # schedule -- the RT-path advisory lint would fire (correctly)
+            # from the engine thread at nondeterministic points in the
+            # captured output.  Silence it; the lint itself is exercised
+            # implicitly everywhere else.
+            test_env = dict(test_env)
+            test_env['ROXAL_RT_LINT'] = '0'
 
         try:
             compProc = subprocess.run(

@@ -1,6 +1,7 @@
 #include "Thread.h"
 #include "VM.h"
 #include "Object.h"
+#include "SimpleMarkSweepGC.h"
 #ifdef ROXAL_COMPUTE_SERVER
 #include "ComputeConnection.h"
 #endif
@@ -12,6 +13,36 @@
 #endif
 
 using namespace roxal;
+
+namespace {
+// Actor workers (and the internal fork() threads) are ALWAYS non-RT: a
+// worker spawned from an RT-scheduled parent (e.g. an actor constructed
+// from a SCHED_FIFO control-loop slice) inherits the parent's policy and
+// would compete with the control loop at RT priority.  Demote
+// unconditionally -- same pattern as the dedicated GC collector thread --
+// and additionally keep the worker off the host's reserved RT core when
+// core exclusion is configured.
+void demoteWorkerToNonRT()
+{
+#ifdef __linux__
+    struct sched_param param {};
+    param.sched_priority = 0;
+    pthread_setschedparam(pthread_self(), SCHED_OTHER, &param);
+
+    const int excludeCore = VM::instance().rtCoreExclusion();
+    if (excludeCore >= 0) {
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        const unsigned int numCpus = std::thread::hardware_concurrency();
+        for (unsigned int i = 0; i < numCpus; ++i) {
+            if (static_cast<int>(i) != excludeCore)
+                CPU_SET(i, &cpuset);
+        }
+        pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+    }
+#endif
+}
+} // namespace
 
 #ifdef ROXAL_COMPUTE_SERVER
 namespace {
@@ -38,6 +69,12 @@ icu::UnicodeString remoteMethodNameForCall(const ActorInstance::MethodCallInfo& 
 
 Thread::~Thread()
 {
+    // Unregister from the thread index FIRST: the collector must never see
+    // a partially-destructed Thread (destruction runs on an unparked
+    // mutator, so no scan is concurrent -- the mutex makes the set edit
+    // safe regardless).
+    ThreadManager::instance().unregisterThread(this);
+
     openUpvalues.clear();
 
     // remove any event subscriptions for this thread
@@ -154,27 +191,7 @@ void Thread::spawn(Value closure)
 
     state = State::Spawned;
     osthread = make_ptr<std::thread>([this,closure]() {
-        // When running in an RT context, ensure actor threads don't run on the
-        // RT core and use normal (non-RT) scheduling policy.
-        #ifdef __linux__
-        {
-            int excludeCore = VM::instance().rtCoreExclusion();
-            if (excludeCore >= 0) {
-                cpu_set_t cpuset;
-                CPU_ZERO(&cpuset);
-                unsigned int numCpus = std::thread::hardware_concurrency();
-                for (unsigned int i = 0; i < numCpus; ++i) {
-                    if (static_cast<int>(i) != excludeCore)
-                        CPU_SET(i, &cpuset);
-                }
-                pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
-
-                struct sched_param param {};
-                param.sched_priority = 0;
-                pthread_setschedparam(pthread_self(), SCHED_OTHER, &param);
-            }
-        }
-        #endif
+        demoteWorkerToNonRT();
 
         try {
             auto& vm { VM::instance() };
@@ -213,9 +230,6 @@ void Thread::spawn(Value closure)
 
 void Thread::join(ActorInstance* actorInstOverride)
 {
-    if (state == State::Constructed || osthread == nullptr || !osthread->joinable())
-        return;
-
     // When GC schedules this thread for shutdown it may only hold a raw pointer
     // to the actor instance.  Start with the override supplied by the finalizer
     // and fall back to the cached raw pointer if needed before attempting to
@@ -223,48 +237,71 @@ void Thread::join(ActorInstance* actorInstOverride)
     ActorInstance* inst = actorInstOverride;
     if (inst == nullptr)
         inst = actorInstanceRaw.load(std::memory_order_acquire);
-    if (actor) {
-        if (inst == nullptr && actorInstance.isAlive())
-            inst = asActorInstance(actorInstance);
-        if (inst != nullptr) {
-            std::lock_guard<std::mutex> lock { inst->queueMutex };
-            quit = true;
-            inst->queueConditionVar.notify_one();
+
+    {
+        // GC-safe blocking region FIRST, then the join-once mutex: a second
+        // joiner waiting on the mutex must count as quiescent, or the
+        // collection barrier waits on it while the first joiner waits on a
+        // worker that may itself need that collection to exit (four-way
+        // deadlock).  The region also covers osthread->join(), as before:
+        // the target thread may need a collection to complete before it
+        // exits (e.g. a forked gc() loop) -- without this, script join(),
+        // actor finalization joins, and shutdown joins can all deadlock the
+        // collection barrier.
+        SimpleMarkSweepGC::GCSafeBlockScope blockScope;
+        // Join-once: concurrent joiners (the actor lifecycle thread vs
+        // script-end / shutdown joinAllThreads) serialize here; the loser
+        // observes osthread == nullptr and returns.  Joining a std::thread
+        // twice is UB (observed as a futex hang on the reaped tid).
+        std::lock_guard<std::mutex> joinLock { joinMutex_ };
+        if (state == State::Constructed || osthread == nullptr || !osthread->joinable())
+            return;
+
+        if (actor) {
+            if (inst == nullptr && actorInstance.isAlive())
+                inst = asActorInstance(actorInstance);
+            if (inst != nullptr) {
+                std::lock_guard<std::mutex> lock { inst->queueMutex };
+                quit = true;
+                inst->queueConditionVar.notify_one();
 #ifdef ROXAL_COMPUTE_SERVER
-            // Remote proxy workers can be blocked in ComputeConnection::future.get()
-            // rather than waiting on the actor queue. Abort the transport first so
-            // pending remote calls are rejected and the worker can unwind before the
-            // blocking std::thread::join() below.
-            if (inst->isRemote) {
-                auto conn = inst->remoteConn.lock();
-                if (conn)
-                    conn->abort();
-            }
+                // Remote proxy workers can be blocked in ComputeConnection::future.get()
+                // rather than waiting on the actor queue. Abort the transport first so
+                // pending remote calls are rejected and the worker can unwind before the
+                // blocking std::thread::join() below.
+                if (inst->isRemote) {
+                    auto conn = inst->remoteConn.lock();
+                    if (conn)
+                        conn->abort();
+                }
 #endif
-        } else {
-            quit = true;
+            } else {
+                quit = true;
+            }
         }
+
+        if (osthread->get_id() == std::this_thread::get_id()) {
+            // An actor instance can be collected while the worker thread is in the
+            // middle of running its own GC safepoint. Joining the same std::thread
+            // would therefore self-deadlock. We already set quit=true and notified
+            // the queue above, so detach the std::thread and allow this worker to
+            // wind down naturally once it unwinds back out of Thread::act().
+            osthread->detach();
+        } else {
+            osthread->join();
+        }
+
+        osthread = nullptr;
+        state = State::Completed;
     }
 
-    if (osthread->get_id() == std::this_thread::get_id()) {
-        // An actor instance can be collected while the worker thread is in the
-        // middle of running its own GC safepoint. Joining the same std::thread
-        // would therefore self-deadlock. We already set quit=true and notified
-        // the queue above, so detach the std::thread and allow this worker to
-        // wind down naturally once it unwinds back out of Thread::act().
-        osthread->detach();
-    } else {
-        osthread->join();
-    }
-
-    osthread = nullptr;
+    // Reference cleanup outside the blocked region (Value assignments touch
+    // GC refcounts, which the region contract forbids).
     if (inst)
         inst->thread.reset();
     actorInstance = Value::nilVal();
     actorInstanceRaw.store(nullptr, std::memory_order_release);
     actor = false;
-
-    state = State::Completed;
 }
 
 
@@ -282,10 +319,28 @@ void Thread::act(Value actorInstance)
     asActorInstance(actorInstance)->alive.store(true, std::memory_order_release);
 
     osthread = make_ptr<std::thread>([this]() {
+        // Actors always run on their own NON-RT thread (see
+        // demoteWorkerToNonRT): never inherit an RT parent's policy.
+        demoteWorkerToNonRT();
+
         try {
             auto& vm { VM::instance() };
 
             vm.thread = ptr_from_this(); // set thread local storage member
+
+            // GC coverage for the WHOLE actor-thread lifetime.  The dispatch
+            // loop handles Values (queued callees / args / results) outside
+            // any vm.execute() frame -- invisible to the collector, they can
+            // be swept while live on this C++ stack, and stores here can hide
+            // objects from an in-flight mark.  As a persistent
+            // ExternalParticipant the thread is either unparked (no
+            // collection can start) or parked at a known-safe point: the
+            // top-of-loop poll below, or a safepoint inside execute()
+            // (VM::execute skips its own registration for participant
+            // threads).  Post-loop teardown is covered too -- the participant
+            // is destroyed only when this scope unwinds.
+            SimpleMarkSweepGC::ExternalParticipant gcParticipant(
+                SimpleMarkSweepGC::instance());
 
             Value actorVal = this->actorInstance;
             if (!actorVal.isAlive()) {
@@ -307,14 +362,23 @@ void Thread::act(Value actorInstance)
             push(actorVal);
 
             do {
+                // Park here if a collection barrier is forming -- no queued-
+                // call Values are held at this point.  (wakeAllThreadsForGC
+                // notifies queueConditionVar via Thread::wake, and the wait
+                // predicate below returns on a pending request, so an idle
+                // actor reaches this poll promptly.)
+                gcParticipant.pollSafepointIfRequested();
 
                 ActorInstance::MethodCallInfo callInfo {};
                 {
                     std::unique_lock<std::mutex> lock { actorInst->queueMutex };
                     actorInst->queueConditionVar.wait(lock,[&]()
                     {
-                        // wake when quitting, when a method is queued, or when events are pending
-                        return quit || !actorInst->callQueue.empty() || !pendingEvents.empty();
+                        // wake when quitting, when a method is queued, when
+                        // events are pending, or when a GC needs this thread
+                        // to reach its poll (top of loop)
+                        return quit || !actorInst->callQueue.empty() || !pendingEvents.empty()
+                            || SimpleMarkSweepGC::instance().isCollectionRequested();
                     });
                     if (!actorInst->callQueue.empty()) {
                         callInfo = actorInst->callQueue.pop();
@@ -702,13 +766,20 @@ void Thread::wake()
 
 void Thread::push(const Value& value)
 {
+    // Bounds check in ALL builds: the stack is a fixed-capacity buffer and
+    // this is the single choke point for every push.  Without the check a
+    // deep dispatch (e.g. a large event backlog pumped recursively inside
+    // handlers) silently streams NaN-boxed Values past the buffer into
+    // adjacent heap chunks -- corruption that surfaces as unrelated
+    // double-frees/SEGVs much later.  One predicted branch per push is
+    // noise next to interpreter dispatch cost.
+    if (stackTop == stack.end())
+        throw std::runtime_error(
+            "Value stack overflow (limit " + std::to_string(stack.size())
+            + "; deep handler/event recursion? see --stack-size)");
+
     *stackTop = value;
     stackTop++;
-
-    #ifdef DEBUG_BUILD
-    if (stackTop == stack.end())
-        throw std::runtime_error("Stack overflow");
-    #endif
 }
 
 

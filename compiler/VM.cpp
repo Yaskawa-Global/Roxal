@@ -50,8 +50,8 @@
 #ifdef ROXAL_ENABLE_REGEX
 #include "RegexWrapper.h"
 #endif
+#include "ThreadManager.h"
 #include "SimpleMarkSweepGC.h"
-#include "RTCallbackManager.h"
 #include <Eigen/Dense>
 #include <core/types.h>
 #include <core/common.h>
@@ -79,6 +79,21 @@ std::string VM::consumeNativeCallOverrun()
     std::string result;
     result.swap(nativeCallOverrun_);
     return result;
+}
+
+namespace {
+std::atomic<std::thread::id> vmMainThreadId{};
+}
+
+void VM::markMainThread()
+{
+    std::thread::id expected{};
+    vmMainThreadId.compare_exchange_strong(expected, std::this_thread::get_id());
+}
+
+bool VM::onMainThread()
+{
+    return vmMainThreadId.load(std::memory_order_relaxed) == std::this_thread::get_id();
 }
 
 namespace {
@@ -1374,6 +1389,11 @@ VM::VM()
 
     vmConstructed.store(true, std::memory_order_release);
 
+    // Dedicated GC collector thread (ROXAL_GC_DEDICATED_THREAD builds; no-op
+    // otherwise).  Spawned only after vmConstructed: the collector frees
+    // through vm_->freeObjects() and must never observe a half-built VM.
+    SimpleMarkSweepGC::instance().startCollectorThread();
+
     //CallSpec::testParamPositions();
     //Value::testPrimitiveValues();
     //testObjectValues();
@@ -1428,11 +1448,71 @@ void VM::shutdown()
     // dropReferences() run so the whole teardown sees it.
     SimpleMarkSweepGC::instance().setShuttingDown(true);
 
+    // GC coordination observability: one line per run, opt-in via
+    // ROXAL_GC_STATS=1 (unconditional output would pollute test stdout).
+    // Positive soak evidence -- collections occurred, none on a thread that
+    // ever held an RT yield-section, skip counts sane.
+    if (const char* gcStats = std::getenv("ROXAL_GC_STATS");
+        gcStats && *gcStats && *gcStats != '0') {
+        auto stats = SimpleMarkSweepGC::instance().coordinationStats();
+        if (stats.collections > 0 || stats.rtSectionSkips > 0) {
+            std::cout << "[GC] coordination: " << stats.collections
+                      << " collections ("
+                      << (SimpleMarkSweepGC::instance().dedicatedCollectorEnabled()
+                              ? "dedicated collector, "
+                              : "inline collector, ")
+                      << "last collector tid#" << stats.lastCollectorTid
+                      << "), " << stats.rtSectionSkips
+                      << " RT cycles yielded";
+            if (stats.rtSectionTid != 0) {
+                std::cout << "; RT section tid#" << stats.rtSectionTid;
+            }
+            if (stats.sectionCollectorViolations != 0) {
+                std::cout << "  ** " << stats.sectionCollectorViolations
+                          << " COLLECTIONS RAN ON A SECTION-HOLDING (RT) THREAD **";
+            }
+            std::cout << std::endl;
+        }
+        // Conservative shadow-scan evidence: what a
+        // conservative-roots collector would have retained, and whether any
+        // parked stack referenced an object the precise roots missed.
+        auto shadow = SimpleMarkSweepGC::instance().shadowScanStats();
+        if (shadow.collectionsScanned > 0) {
+            std::cout << "[GC] "
+                      << (SimpleMarkSweepGC::conservativeMarkingEnabled()
+                              ? "conservative-scan (marking): "
+                              : "shadow-scan: ")
+                      << shadow.collectionsScanned
+                      << " collections, " << shadow.stacksScanned << " stacks, "
+                      << shadow.wordsScanned << " words; hits "
+                      << shadow.rawHits << " raw / " << shadow.taggedHits
+                      << " tagged (" << shadow.uniqueObjects
+                      << " objects last scan); scan-only "
+                      << shadow.scanOnlyObjects << " objects / "
+                      << shadow.scanOnlyBytes << " bytes; max oracle "
+                      << shadow.oracleBuildMaxUs << "us, max scan "
+                      << shadow.scanMaxUs << "us" << std::endl;
+        }
+    }
+
     // Signal all actor threads to exit the dispatch loop and wait for them
     // before tearing down any state.  Without this, dropReferences() can clear
     // module vars while actor threads are mid-opcode, causing use-after-free.
     // requestExit also stops the dataflow engine and joins all threads.
     requestExit(0);
+
+    // Drain + join the actor lifecycle thread BEFORE stopping the collector:
+    // in-flight actor finalizations must complete (worker joins + instance
+    // destruction) while the collector can still reclaim what they release.
+    // After this point, any actor retired by the shutdown sweeps is
+    // finalized inline on this thread (safe: not a worker).
+    ThreadManager::instance().stopLifecycle();
+
+    // Join the dedicated collector (no-op when not running).  From here on
+    // the remaining shutdown collections run inline on this thread
+    // (collectNowForShutdown below).  Must precede setVM(nullptr) so a final
+    // in-flight collection can still free through the VM.
+    SimpleMarkSweepGC::instance().stopCollectorThread();
 
     SimpleMarkSweepGC::instance().setVM(nullptr);
 
@@ -1571,8 +1651,31 @@ void VM::appendModulePaths(const std::vector<std::string>& modulePaths)
     }
 }
 
+// See the declaration in VM.h.  Out-of-line with an opaque pointer so VM.h
+// doesn't need SimpleMarkSweepGC.h (nested ExternalParticipant can't be
+// forward-declared).
+ScopedGCMutatorCover::ScopedGCMutatorCover()
+{
+    if (!SimpleMarkSweepGC::currentThreadIsExternalParticipant()
+        && !SimpleMarkSweepGC::inGCYieldSectionOnThisThread()
+        && !(VM::thread && VM::thread->execute_depth > 0)) {
+        participant_ = new SimpleMarkSweepGC::ExternalParticipant(
+            SimpleMarkSweepGC::instance());
+    }
+}
+
+ScopedGCMutatorCover::~ScopedGCMutatorCover()
+{
+    delete static_cast<SimpleMarkSweepGC::ExternalParticipant*>(participant_);
+}
+
 void VM::setScriptArguments(const std::vector<std::string>& args)
 {
+    // Host-entry mutator: allocates Values and stores globals outside
+    // execute() -- cover so a concurrent collection can't sweep the fresh
+    // allocations before the store roots them.
+    ScopedGCMutatorCover gcCover;
+
     scriptArguments = args;
 
     // Update the global 'args' list
@@ -1605,16 +1708,19 @@ bool VM::cacheWritesEnabled() const
 ExecutionStatus VM::runWithImports(std::istream& source, const std::string& name,
                                     const std::vector<Value>& imports)
 {
+    // Cover the whole run: compile, execute (parks via its safepoints -- the
+    // participant makes execute skip its own registration), and the
+    // post-execute teardown (joinAllThreads/freeObjects), which otherwise
+    // touches GC state unregistered.  See ScopedGCMutatorCover.
+    ScopedGCMutatorCover gcCover;
+
     // Same shape as run(), but routes through the setup() overload that
     // pre-populates the script's module type with vars from `imports`.
     ExecutionStatus setupResult = setup(source, name, imports);
     if (setupResult != ExecutionStatus::OK)
         return setupResult;
 
-    auto& rtMgr = RTCallbackManager::instance();
-    if (!rtMgr.isMainThreadSet()) {
-        rtMgr.setMainThread();
-    }
+    markMainThread();
 
     ExecutionStatus result = ExecutionStatus::OK;
     inSynchronousExecution_.store(true, std::memory_order_release);
@@ -1645,16 +1751,15 @@ ExecutionStatus VM::runWithImports(std::istream& source, const std::string& name
 
 ExecutionStatus VM::run(std::istream& source, const std::string& name)
 {
+    // Cover the whole run -- see runWithImports for the rationale.
+    ScopedGCMutatorCover gcCover;
+
     // Setup: compile and prepare the initial call frame
     ExecutionStatus setupResult = setup(source, name);
     if (setupResult != ExecutionStatus::OK)
         return setupResult;
 
-    // Establish RT main thread for script mode (runs on current C++ thread, not spawned)
-    auto& rtMgr = RTCallbackManager::instance();
-    if (!rtMgr.isMainThreadSet()) {
-        rtMgr.setMainThread();
-    }
+    markMainThread();
 
     // Execute directly on the host thread
     ExecutionStatus result = ExecutionStatus::OK;
@@ -1712,6 +1817,10 @@ ExecutionStatus VM::setup(std::istream& source, const std::string& name)
 ExecutionStatus VM::setup(std::istream& source, const std::string& name,
                           const std::vector<Value>& imports)
 {
+    // Compilation / cache-load allocates GC objects reachable only from this
+    // C++ stack -- cover the phase so no concurrent collection sweeps them.
+    ScopedGCMutatorCover gcCover;
+
     Value function { Value::nilVal() }; // ObjFunction
 
     runtimeErrorFlag = false;
@@ -1864,6 +1973,17 @@ std::pair<ExecutionStatus, Value> VM::runFor(TimeDuration duration)
     if (inSynchronousExecution_.load(std::memory_order_acquire))
         return { ExecutionStatus::OK, Value::nilVal() };
 
+    // RT GC yield: bail BEFORE the Ready-path root mutations below (closure
+    // pickup, resetStack, frame push) -- with a collection pending those must
+    // not run outside the yield section's protection, and execute()'s own
+    // yield check only covers the interpretation phase.  Applies to threads
+    // inside a GCYieldScope or driving an rtYieldOnGC-flagged Thread.
+    if (SimpleMarkSweepGC::instance().isCollectionRequested()
+        && (SimpleMarkSweepGC::inGCYieldSectionOnThisThread()
+            || (replThread && replThread->rtYieldOnGC))) {
+        return { ExecutionStatus::Yielded, Value::nilVal() };
+    }
+
     // Check for pending closure from setupLine()
     auto state = rtState_.load(std::memory_order_acquire);
 
@@ -1881,9 +2001,7 @@ std::pair<ExecutionStatus, Value> VM::runFor(TimeDuration duration)
             replThread = make_ptr<Thread>();
         thread = replThread;
 
-        auto& rtMgr = RTCallbackManager::instance();
-        if (!rtMgr.isMainThreadSet())
-            rtMgr.setMainThread();
+        markMainThread();
 
         resetStack();
         push(closure);
@@ -1960,7 +2078,7 @@ void VM::hostOrCondVarWait(Thread* thread, TimeDuration maxWait)
 {
     // Only the main thread may drive a host UI loop; actor threads (and any build
     // without a host loop installed) fall back to the plain sleep condvar.
-    if (hostEventLoop_ && RTCallbackManager::instance().isMainThread()) {
+    if (hostEventLoop_ && onMainThread()) {
         hostEventLoop_->waitForEvents(maxWait);
         return;
     }
@@ -1974,6 +2092,9 @@ ExecutionStatus VM::runLine(std::istream& linestream,
                                   bool replMode,
                                   const std::string& sourceNameOverride)
 {
+    // Cover compile + invoke phases (see ScopedGCMutatorCover).
+    ScopedGCMutatorCover gcCover;
+
     Value function { Value::nilVal() }; // ObjFunction
 
     runtimeErrorFlag = false;
@@ -2013,11 +2134,7 @@ ExecutionStatus VM::runLine(std::istream& linestream,
 
     thread = replThread;
 
-    // Establish RT main thread for REPL mode (runs on current C++ thread, not spawned)
-    auto& rtMgr = RTCallbackManager::instance();
-    if (!rtMgr.isMainThreadSet()) {
-        rtMgr.setMainThread();
-    }
+    markMainThread();
 
     resetStack();
 
@@ -2042,6 +2159,9 @@ ExecutionStatus VM::setupLine(std::istream& linestream,
                               bool replMode,
                               const std::string& sourceNameOverride)
 {
+    // Cover the compile phase (see ScopedGCMutatorCover).
+    ScopedGCMutatorCover gcCover;
+
     // Shared compiler with runLine() — same persistent state (imported
     // modules, type deducer, suffix registry) carries across both entry
     // points.
@@ -5526,26 +5646,23 @@ void VM::wakeAllThreadsForGC()
         dataflowEngineThread->wake();
     }
 
+    // The dataflow engine's run() loop may be dormant on its pending-event
+    // condvar (not a Thread sleep) -- rouse it so it reaches its GC poll and
+    // parks; otherwise the collection barrier waits out its timed sleep.
+    if (dataflowEngine) {
+        dataflowEngine->wakeDrain();
+    }
+
     if (thread) {
         thread->wake();
     }
 }
 
 
-void VM::requestObjectCleanup()
-{
-    objectCleanupPending.store(true, std::memory_order_release);
-}
 
-bool VM::consumePendingObjectCleanup()
-{
-    return objectCleanupPending.exchange(false, std::memory_order_acq_rel);
-}
 
-bool VM::isObjectCleanupPending() const
-{
-    return objectCleanupPending.load(std::memory_order_acquire);
-}
+
+
 
 
 void VM::enableOpcodeProfiling(std::string filePath)
@@ -5674,7 +5791,36 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
     // parked outer frame. Only the OUTERMOST execute() per Thread joins the head-count;
     // nested calls run under the registration the outer frame already holds. (execute_depth
     // is still 0 here — it is incremented just below — so this reliably detects the outer.)
-    const bool outermostExecute = (thread->execute_depth == 0);
+    // RT yield-out — checked BEFORE onThreadEnter(): a section/rtYieldOnGC
+    // thread must return without touching GC state at all.  onThreadEnter
+    // takes the GC mutex, which a running collection holds through the whole
+    // mark+sweep — entering it here would block the RT thread for the
+    // duration of the collection (RT overrun) even though it intends to
+    // yield.  NOTE: rtYieldOnGC ALONE only narrows this window (a request
+    // can land between this check and onThreadEnter); hard-RT hosts must
+    // wrap the whole slice in a GCYieldScope, whose section count blocks a
+    // collection from starting at all while the slice runs.
+    if ((SimpleMarkSweepGC::inGCYieldSectionOnThisThread() || thread->rtYieldOnGC) &&
+        (valueGC.isCollectionRequested() || valueGC.isCollectionInProgress())) {
+        return std::make_pair(ExecutionStatus::Yielded, Value::nilVal());
+    }
+    // A thread already registered as a GC ExternalParticipant (e.g. the dataflow
+    // actor thread, whose whole run() loop holds one) must not register AGAIN
+    // here: participant + onThreadEnter would count it twice in activeThreads_,
+    // but it can only park once — the collection barrier would never be
+    // satisfied. Its participant registration already covers this execute().
+    //
+    // A thread inside an RT GC-yield section skips registration too:
+    // onThreadEnter/onThreadExit take the GC mutex (hard-RT paths must not
+    // block on it, however briefly), and registration would buy nothing --
+    // the collection barrier is already gated by rtSectionCount_, and the
+    // thread's interpreter roots are traced via the thread registry /
+    // replThread regardless of registration.
+    // Participants nest naturally via the context's depth counter, so
+    // a participant thread entering execute just deepens its one context --
+    // the old double-registration hazard cannot exist.
+    const bool outermostExecute = (thread->execute_depth == 0)
+        && !SimpleMarkSweepGC::inGCYieldSectionOnThisThread();
     if (outermostExecute)
         valueGC.onThreadEnter();
     struct ThreadExecutionGuard {
@@ -5684,6 +5830,16 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
     } executionGuard{valueGC, outermostExecute};
 
     if (valueGC.isCollectionRequested()) {
+        // RT yield-out: a thread inside an RT GC-yield section (or a Thread a
+        // host flagged rtYieldOnGC) must never PARK -- the collection barrier
+        // waits on its own section (deadlock), and an RT host cannot tolerate
+        // a stop-the-world pause.  Yield back to the host instead; the
+        // executionGuard dtor runs onThreadExit so the barrier doesn't count
+        // us, and this Thread's frames stay rooted via the threads registry.
+        // Resumption is the normal Yielded path (rtState_ machinery).
+        if (SimpleMarkSweepGC::inGCYieldSectionOnThisThread() || thread->rtYieldOnGC) {
+            return std::make_pair(ExecutionStatus::Yielded, Value::nilVal());
+        }
         valueGC.safepoint(*thread);
     }
 
@@ -5695,9 +5851,6 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
     const bool hasDeadline = (deadline != TimePoint::max());
     auto yieldReturn = std::make_pair(ExecutionStatus::Yielded, Value::nilVal());
     nativeCallDeadline_ = deadline; // expose to callNativeFn() for timing
-
-    // Reference to RT callback manager for instruction loop callback checks
-    auto& rtMgr = RTCallbackManager::instance();
 
     auto frame { thread->frames.end()-1 };
 
@@ -6189,7 +6342,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     return errorReturn;
                 }
 
-                runtimeError("Only object and actor instances have properties (string keys only).");
+                if (inst.isNil())
+                    runtimeError("Attempted member or property access on nil");
+                else
+                    runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+
+                                 "' for "+inst.typeName()+" value.");
                 return errorReturn;
             }
             case OpCode::MoveProp: {
@@ -6567,7 +6724,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                                  "' for type '"+toUTF8StdString(asObjectType(inst)->name)+
                                  "'. Only nested types and public const members are accessible on type values.");
                 else
-                    runtimeError("Only object and actor instances have methods and only object, actor, and dictionary instances have properties (string keys only).");
+                    runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+
+                                 "' for "+inst.typeName()+" value.");
 #ifdef DEBUG_BUILD
                 if (inst.isObj()) {
                     std::cerr << "GetProp fallback objType=" << int(objType(inst)) << std::endl;
@@ -6943,7 +7101,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                                  "' for type '"+toUTF8StdString(asObjectType(inst)->name)+
                                  "'. Only nested types and public const members are accessible on type values.");
                 else
-                    runtimeError("Only object and actor instances have methods and only object, actor, and dictionary instances have properties (string keys only).");
+                    runtimeError("Undefined method or property '"+toUTF8StdString(name->s)+
+                                 "' for "+inst.typeName()+" value.");
                 return errorReturn;
                 break;
             }
@@ -8199,10 +8358,6 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     if (thread->execute_depth > 1 && thread->frames.size() < frame_depth_on_entry) {
                         Value returnVal = pop();
 
-                        if (consumePendingObjectCleanup()) {
-                            freeObjects(); // Drain pending objects on scope exit for deterministic destruction
-                        }
-
                         if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(ExecutionStatus::OK,returnVal);
                     }
@@ -8210,10 +8365,6 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     // For top-level execute(), use original termination logic
                     if (thread->execute_depth == 1 && thread->frames.empty()) {
                         Value returnVal = pop();
-
-                        if (consumePendingObjectCleanup()) {
-                            freeObjects();
-                        }
 
                         if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(ExecutionStatus::OK,returnVal);
@@ -8237,20 +8388,12 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     // For nested execute() calls, only terminate when we return BELOW the entry depth
                     // Use < (not <=) to avoid early return when a called function returns
                     if (thread->execute_depth > 1 && thread->frames.size() < frame_depth_on_entry) {
-                        if (consumePendingObjectCleanup()) {
-                            freeObjects(); // Drain pending objects on scope exit for deterministic destruction
-                        }
-
                         if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(ExecutionStatus::OK,result);
                     }
 
                     // For top-level execute(), use original termination logic
                     if (thread->execute_depth == 1 && thread->frames.empty()) {
-                        if (consumePendingObjectCleanup()) {
-                            freeObjects();
-                        }
-
                         if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(ExecutionStatus::OK,result);
                     }
@@ -9334,19 +9477,10 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 break;
         }
 
-        // RT Callback check and deadline check - after every instruction
-        // mayNeedInvocation() returns false immediately if not main thread or no callbacks
-        if (hasDeadline) {
-            auto now = TimePoint::currentTime();
-            if (rtMgr.mayNeedInvocation()) {
-                rtMgr.checkAndInvokeCallbacks(now);
-            }
-            if (now >= deadline) {
-                if (thread->execute_depth > 0) thread->execute_depth--;
-                return yieldReturn;
-            }
-        } else if (rtMgr.mayNeedInvocation()) {
-            rtMgr.checkAndInvokeCallbacks(TimePoint::currentTime());
+        // Deadline check - after every instruction
+        if (hasDeadline && TimePoint::currentTime() >= deadline) {
+            if (thread->execute_depth > 0) thread->execute_depth--;
+            return yieldReturn;
         }
 
         // Host UI event-loop busy-pump: while actively executing, service the host
@@ -9355,7 +9489,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
         // instruction syscall storm. Main thread only; no-op in the default build.
         // (Placed before postInstructionDispatch so it runs on the execution path,
         //  not while parked — the threadSleep block below pumps the idle case.)
-        if (hostEventLoop_ && rtMgr.isMainThread()) {
+        if (hostEventLoop_ && onMainThread()) {
             auto nowUs = TimePoint::currentTime().microSecs();
             if (nowUs - lastHostPumpUs_ >= kHostPumpIntervalUs) {
                 hostEventLoop_->pump();
@@ -9366,6 +9500,13 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
         postInstructionDispatch:
 
         if (valueGC.isCollectionRequested()) {
+            // RT yield-out (see the entry-poll comment above): never park a
+            // yield-section / rtYieldOnGC thread -- yield to the host like a
+            // deadline expiry.  The frame state stays resumable and rooted.
+            if (SimpleMarkSweepGC::inGCYieldSectionOnThisThread() || thread->rtYieldOnGC) {
+                if (thread->execute_depth > 0) thread->execute_depth--;
+                return yieldReturn;
+            }
             valueGC.safepoint(*thread);
         }
 
@@ -9386,25 +9527,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 
                 auto sleepTarget = thread->threadSleepUntil.load();
 
-                // If RT callbacks are registered, wake at their deadline instead
-                // so we can service them promptly even while sleeping
-                if (rtMgr.hasCallbacks()) {
-                    auto rtDeadline = rtMgr.nextDeadline();
-                    if (rtDeadline < sleepTarget) {
-                        sleepTarget = rtDeadline;
-                    }
-                }
-
                 auto waitTime = sleepTarget - now;
                 if (waitTime.microSecs() > 0) {
                     // When a host UI loop is installed (main thread), block on it so
                     // host events wake us immediately; else the plain sleep condvar.
                     hostOrCondVarWait(thread.get(), waitTime);
-                }
-
-                // Invoke any due RT callbacks after waking
-                if (rtMgr.hasCallbacks()) {
-                    rtMgr.checkAndInvokeCallbacks(TimePoint::currentTime());
                 }
                 // Note: threadSleep stays true if we haven't reached original sleep target
             }
@@ -9509,10 +9636,6 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
         // frames may have been pushed onto or popped from the frame stack
         if (!thread->frames.empty())
             frame = thread->frames.end()-1;
-
-        if (consumePendingObjectCleanup()) {
-            freeObjects();
-        }
 
     } // for
 
@@ -10734,96 +10857,29 @@ void VM::resetStack()
 }
 
 
-bool VM::isCurrentThreadActorWorker() const
-{
-    return thread && thread->isActorThread();
-}
 
-void VM::enqueueActorFinalizer(ActorInstance* actorInst)
-{
-    // Actor workers call into freeObjects() from their own GC safepoints just
-    // like any other thread.  When they encounter another actor instance we do
-    // not let them perform the blocking join immediately—doing so risks
-    // deadlocking if two actors try to finalize each other.  Instead they push
-    // the instance onto this queue for a later, safe thread to handle.
-    if (!actorInst) {
-        return;
-    }
 
-    std::lock_guard<std::mutex> lock(actorFinalizerMutex);
-    pendingActorFinalizers.push_back(actorInst);
-    requestObjectCleanup();
-}
 
-void VM::drainActorFinalizerQueue(std::vector<ActorInstance*>& out)
-{
-    // Non-actor threads call this helper before running the regular GC pass so
-    // they can take ownership of any actor instances enqueued by worker
-    // threads.  Once an instance is moved out it will be joined and deleted in
-    // finalizeActorInstances().
-    std::lock_guard<std::mutex> lock(actorFinalizerMutex);
-    while (!pendingActorFinalizers.empty()) {
-        ActorInstance* inst = pendingActorFinalizers.front();
-        pendingActorFinalizers.pop_front();
-        if (!inst) {
-            continue;
-        }
-        out.push_back(inst);
-    }
-}
 
-void VM::finalizeActorInstances(std::vector<ActorInstance*>& actors)
-{
-    // Every ActorInstance handed to this function has already been detached
-    // from the ref-counted object graph.  The only remaining teardown step is
-    // to request the worker thread to exit and wait for it to finish.  The
-    // join() call handles both, so once it returns we can safely destroy the
-    // ActorInstance itself.
-    for (ActorInstance* inst : actors) {
-        if (!inst) {
-            continue;
-        }
-        if (auto t = inst->thread.lock()) {
-            t->join(inst);
-        }
-        delObj(inst);
-    }
 
-    actors.clear();
-}
 
 void VM::freeObjects()
 {
-    std::vector<Obj*> pending;
-    pending.reserve(64);
+    // Reclamation (collector role only): the dedicated collector thread
+    // between/after collections, an inline-electing thread's post-collection
+    // tail, or the shutdown path once the collector is stopped.  The mutex
+    // serializes those role handoffs; mutators never call this.
+    //
+    // Batch discipline: dropReferences() on EVERY object in a drained batch
+    // before any destructor runs, so a destructor observing a sibling from
+    // the same garbage cycle sees a consistent, fully dropped object.
+    // Children that hit zero during a batch land on the retire queue and
+    // form the next batch.
+    std::lock_guard<std::mutex> drainLock(freeObjectsMutex_);
 
-    const bool actorWorker = isCurrentThreadActorWorker();
-    std::vector<ActorInstance*> actorsToFinalize;
-    actorsToFinalize.reserve(16);
-
-    if (!actorWorker) {
-        // Only non-actor threads are allowed to drain the finalizer queue so
-        // that all joins are performed from a context that cannot be the
-        // target of the join itself.
-        drainActorFinalizerQueue(actorsToFinalize);
-    }
-
-    // Objects that reach zero strong references are appended to
-    // Obj::unrefedObjs by the ref-counting slow path.  We drain the queue in
-    // batches so we can dropReferences() on every pending object first,
-    // severing outgoing edges before any destructors run.  That way, if a
-    // destructor looks at another object from the same batch, it observes a
-    // consistent, fully dropped state instead of an object halfway through
-    // teardown, which prevents cross-object use-after-free hazards.
+    auto& gc = SimpleMarkSweepGC::instance();
     while (true) {
-        while (!Obj::unrefedObjs.empty()) {
-            Obj::unrefedObjs.pop_back_and_apply([&pending](Obj* obj) {
-                if (obj) {
-                    pending.push_back(obj);
-                }
-            });
-        }
-
+        std::vector<Obj*> pending = gc.drainRetiredObjects();
         if (pending.empty()) {
             break;
         }
@@ -10834,22 +10890,58 @@ void VM::freeObjects()
             }
         }
 
+        // Batch memory hold: dropReferences() severs the OBJ-graph edges,
+        // but Values hidden in native state (a promise's stored result, a
+        // signal's buffered history, ...) are only released by DESTRUCTORS
+        // -- order-dependently within the batch.  Holding one extra weak
+        // ref on every block keeps the memory of already-destructed batch
+        // members valid, so a destructor-time decRef on a sibling is a
+        // benign no-op (collecting is set) instead of a use-after-free.
+        // Blocks free in the release pass below (or later, for
+        // actor-routed instances, when the lifecycle's delObj drops the
+        // last weak ref).
+        std::vector<ObjControl*> batchControls;
+        batchControls.reserve(pending.size());
+        for (Obj* obj : pending) {
+            if (obj && obj->control) {
+                obj->control->weak.fetch_add(1, std::memory_order_relaxed);
+                batchControls.push_back(obj->control);
+            }
+        }
+
         for (Obj* obj : pending) {
             if (!obj) {
                 continue;
             }
 
             if (obj->type == ObjType::Actor) {
-                auto actorInst = static_cast<ActorInstance*>(obj);
-                if (actorWorker) {
-                    // Actor workers enqueue actor instances for later
-                    // processing.  The actual join will happen when a
-                    // non-actor thread next calls freeObjects().
-                    enqueueActorFinalizer(actorInst);
-                } else {
-                    // Non-actor threads can finalize the actor in-line once
-                    // the current batch is done dropping references.
-                    actorsToFinalize.push_back(actorInst);
+                // Two-stage actor finalization: the reclaimer NEVER joins.
+                // The lifecycle thread joins the worker, then destroys the
+                // instance (its references were dropped in this batch, same
+                // as the previous inline-finalize semantics).
+                ThreadManager::instance().enqueueActorFinalize(
+                    static_cast<ActorInstance*>(obj));
+                continue;
+            }
+
+            // ROXAL_GC_QUARANTINE=1 (debug): wipe + leak instead of freeing.
+            // Any stale access to a swept object then faults deterministically
+            // on the 0xEF pattern WITH THE ACCESSOR'S STACK, under unmodified
+            // allocator timing (ASan/MALLOC_CHECK perturb the repro away).
+            static const bool gcQuarantine = [] {
+                const char* v = std::getenv("ROXAL_GC_QUARANTINE");
+                return v && *v && *v != '0';
+            }();
+            if (gcQuarantine) {
+                if (ObjControl* ctrl = obj->control) {
+                    SimpleMarkSweepGC::instance().unregisterAllocation(ctrl);
+                    obj->~Obj();
+                    char* base = reinterpret_cast<char*>(ctrl);
+                    char* end = base + ctrl->allocationSize;
+                    char* op = reinterpret_cast<char*>(obj);
+                    if (op > base && op < end) {
+                        std::memset(op, 0xEF, static_cast<size_t>(end - op));
+                    }
                 }
                 continue;
             }
@@ -10857,15 +10949,15 @@ void VM::freeObjects()
             delObj(obj);
         }
 
-        pending.clear();
-    }
-
-    if (!actorWorker) {
-        // When freeObjects() runs on a non-actor thread we now own the right to
-        // perform the actual joins for any actors we collected above.
-        finalizeActorInstances(actorsToFinalize);
-    } else {
-        actorsToFinalize.clear();
+        // Release the batch memory holds: blocks whose last weak ref this
+        // is free here, after EVERY destructor in the batch has run.
+        // (Controls were captured before destruction: the obj->control
+        // field does not survive quarantine wipes.)
+        for (ObjControl* ctrl : batchControls) {
+            if (ctrl->weak.fetch_sub(1, std::memory_order_relaxed) == 1) {
+                delete[] reinterpret_cast<char*>(ctrl);
+            }
+        }
     }
 
     if (thread) {
@@ -10877,38 +10969,13 @@ void VM::cleanupWeakRegistries()
 {
     purgeDeadInternedStrings();
 
-    std::vector<ptr<Thread>> threadsToClean;
-    threads.unsafeApply([&threadsToClean](const auto& registered) {
-        threadsToClean.reserve(registered.size());
-        for (const auto& entry : registered) {
-            if (entry.second) {
-                threadsToClean.push_back(entry.second);
-            }
-        }
+    // Prune EVERY live thread's event registrations via the complete
+    // ThreadManager index.  Runs inside a collection (world stopped);
+    // critically, this covers the script/main thread even though the
+    // collection executes on the collector thread.
+    ThreadManager::instance().forEachThread([](Thread& t) {
+        t.pruneEventRegistrations();
     });
-
-    threadsToClean.reserve(threadsToClean.size() + 3);
-    auto appendThread = [&threadsToClean](const ptr<Thread>& candidate) {
-        if (candidate) {
-            threadsToClean.push_back(candidate);
-        }
-    };
-
-    appendThread(replThread);
-    appendThread(dataflowEngineThread);
-    appendThread(VM::thread);
-
-    std::unordered_set<Thread*> seen;
-    for (const auto& threadPtr : threadsToClean) {
-        if (!threadPtr) {
-            continue;
-        }
-        Thread* raw = threadPtr.get();
-        if (!seen.insert(raw).second) {
-            continue;
-        }
-        raw->pruneEventRegistrations();
-    }
 }
 
 
@@ -11211,6 +11278,7 @@ void VM::defineBuiltinMethods()
     defineBuiltinMethod(ValueType::Signal, "tick", std::mem_fn(&VM::signal_tick_builtin));
     defineBuiltinMethod(ValueType::Signal, "freq", std::mem_fn(&VM::signal_freq_builtin),
                         false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Signal, "domain", std::mem_fn(&VM::signal_domain_builtin));
     defineBuiltinMethod(ValueType::Signal, "set", std::mem_fn(&VM::signal_set_builtin),
                         false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x1);
     defineBuiltinMethod(ValueType::Signal, "on_changed", std::mem_fn(&VM::signal_on_changed_builtin), true);
@@ -11223,11 +11291,12 @@ void VM::defineBuiltinMethods()
     defineBuiltinMethod(ValueType::Event, "when", std::mem_fn(&VM::event_when_builtin), true);
     defineBuiltinMethod(ValueType::Event, "remove", std::mem_fn(&VM::event_remove_builtin), true);
 
-    // Actor dataflow methods — all mutate state (procs)
-    defineBuiltinMethod(ValueType::Actor, "tick", std::mem_fn(&VM::dataflow_tick_native), true);  // proc
-    defineBuiltinMethod(ValueType::Actor, "run", std::mem_fn(&VM::dataflow_run_native), true);   // proc
-    defineBuiltinMethod(ValueType::Actor, "runFor", std::mem_fn(&VM::dataflow_run_for_native), true,
-                        nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x1);
+    // NOTE: the dataflow engine is driven only by its own actor thread (the
+    // run() call queued at VM construction) or by an embedding RT host via
+    // tickFor().  There are deliberately NO script-facing actor methods for
+    // driving it -- a script-side pump is a second concurrent scheduler.
+    // Tests single-step via the sys global `_dataflow_tick()`, which hands
+    // the tick to the engine thread and waits.
 }
 
 void VM::defineBuiltinMethod(ValueType type, const std::string& name, NativeFn fn,
@@ -12460,6 +12529,39 @@ Value VM::signal_freq_builtin(ArgsView args)
     return Value::intVal(sig->frequency());
 }
 
+Value VM::signal_domain_builtin(ArgsView args)
+{
+    if ((args.size() != 1 && args.size() != 2) || !isSignal(args[0]))
+        throw std::invalid_argument("signal.domain expects an optional \"rt\"/\"background\" argument");
+
+    ObjSignal* objSignal = asSignal(args[0]);
+    auto sig = objSignal->signal;
+
+    if (args.size() == 1) {
+        const char* d = (sig->domain() == df::Signal::Domain::Background)
+                            ? "background" : "rt";
+        return Value::stringVal(toUnicodeString(d));
+    }
+
+    std::string domainStr = toString(args[1]);
+    df::Signal::Domain domain;
+    if (domainStr == "background")
+        domain = df::Signal::Domain::Background;
+    else if (domainStr == "rt")
+        domain = df::Signal::Domain::RT;
+    else
+        throw std::runtime_error("signal.domain must be \"rt\" or \"background\", got '"+domainStr+"'");
+
+    // Registered signals change domain only via the engine (serialized with
+    // network-cache rebuilds, which read domains concurrently).
+    if (auto engine = df::DataflowEngine::instance(false))
+        engine->setSignalDomain(sig, domain);
+    else
+        sig->setDomain(domain);
+
+    return args[0];
+}
+
 Value VM::signal_set_builtin(ArgsView args)
 {
     if (args.size() != 2 || !isSignal(args[0]))
@@ -12518,30 +12620,11 @@ void VM::defineNativeFunctions()
 }
 
 
-Value VM::dataflow_tick_native(ArgsView args)
-{
-    df::DataflowEngine::instance()->tick(false);
-    return Value::nilVal();
-}
-
 Value VM::dataflow_run_native(ArgsView args)
 {
     df::DataflowEngine::instance()->run();
     return Value::nilVal();
 }
-
-Value VM::dataflow_run_for_native(ArgsView args)
-{
-    if (args.size() != 2 || !args[1].isNumber())
-        throw std::invalid_argument("runFor expects single numeric argument");
-
-    // TODO: _dataflow.runFor currently blocks the script thread instead of being asynchronous
-    // This should be fixed so runFor sends a message to the dataflow actor thread and returns immediately
-    auto duration = df::TimeDuration::microSecs(args[1].asInt());
-    df::DataflowEngine::instance()->runFor(duration);
-    return Value::nilVal();
-}
-
 
 Value VM::loadlib_native(ArgsView args)
 {
@@ -12594,6 +12677,10 @@ Value VM::getBuiltinModuleType(const icu::UnicodeString& name)
 
 void VM::executeBuiltinModuleScript(const std::string& path, Value moduleType)
 {
+    // Cover compile + module-script invoke (see ScopedGCMutatorCover); runs
+    // on host threads outside execute() (VM construction, robot bootstrap).
+    ScopedGCMutatorCover gcCover;
+
     debug_assert_msg(isModuleType(moduleType),"is ObjModuleType");
     std::filesystem::path openedPath;
     std::ifstream in;
@@ -12682,10 +12769,19 @@ void VM::executeBuiltinModuleScript(const std::string& path, Value moduleType)
 
     Value closure { Value::closureVal(fn) };
     ptr<Thread> t = make_ptr<Thread>();
+    // Register the module-script Thread in the threads registry for the
+    // duration of the run: the GC root scan discovers threads through the
+    // registry (plus replThread/dataflowEngineThread and the COLLECTOR's own
+    // VM::thread) -- an unregistered Thread's interpreter stack is invisible
+    // to a collection performed by ANOTHER thread (e.g. the dataflow actor
+    // participant), which would sweep objects this script still has live on
+    // its stack.
+    threads.store(t->id(), t);
     thread = t;
     resetStack();
     invokeClosure(asClosure(closure), {});
     thread = nullptr;
+    threads.erase(t->id());
 }
 
 void VM::registerBuiltinModule(ptr<BuiltinModule> module)

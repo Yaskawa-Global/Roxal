@@ -5,6 +5,7 @@
 #include "VM.h"
 #include "Object.h"
 #include "SimpleMarkSweepGC.h"
+#include "GCRoots.h"
 #include "ModuleQtConvert.h"
 #include "ModuleQt.h"
 #include "QtSignalHub.h"
@@ -46,18 +47,15 @@ std::string makeKey(const QObject* sender, const QMetaMethod& signal)
 } // namespace
 
 // ============================================================
-// Impl (also the GC ExternalRootProvider)
+// Impl (the entries member is the GC root -- TracedMember, v2 phase B)
 // ============================================================
 
-struct QtSignalHub::Impl : SimpleMarkSweepGC::ExternalRootProvider {
-    std::unordered_map<std::string, SignalEntry> entries;
-    int nextConnId { 1 };
-    bool rootRegistered { false };
-
+struct QtSignalHub::Impl {
     // Keep callback closures + event types of live-sender connections alive.
-    void visitRoots(ValueVisitor& visitor) override {
+    static void traceEntries(ValueVisitor& visitor,
+                             const std::unordered_map<std::string, SignalEntry>& entries) {
         for (auto& kv : entries) {
-            SignalEntry& e = kv.second;
+            const SignalEntry& e = kv.second;
             if (!e.relay || !e.relay->signalSender())
                 continue; // dead sender → let its closures/event type be collected
             if (e.eventType.isNonNil())
@@ -66,13 +64,15 @@ struct QtSignalHub::Impl : SimpleMarkSweepGC::ExternalRootProvider {
                 visitor.visit(cb.closure);
         }
     }
+    TracedMember<std::unordered_map<std::string, SignalEntry>> entries { &Impl::traceEntries };
+    int nextConnId { 1 };
 
     SignalEntry& ensureEntry(QObject* sender, const QMetaMethod& signal) {
         std::string key = makeKey(sender, signal);
-        auto it = entries.find(key);
-        if (it != entries.end())
+        auto it = entries->find(key);
+        if (it != entries->end())
             return it->second;
-        SignalEntry& e = entries[key];
+        SignalEntry& e = (*entries)[key];
         e.relay = std::make_unique<QtSignalRelay>(
             sender, signal,
             [this, key](const QVariantList& vargs) { dispatch(key, vargs); });
@@ -80,8 +80,8 @@ struct QtSignalHub::Impl : SimpleMarkSweepGC::ExternalRootProvider {
     }
 
     void dispatch(const std::string& key, const QVariantList& vargs) {
-        auto it = entries.find(key);
-        if (it == entries.end())
+        auto it = entries->find(key);
+        if (it == entries->end())
             return;
         SignalEntry& e = it->second;
 
@@ -155,19 +155,11 @@ QtSignalHub& QtSignalHub::instance()
 
 void QtSignalHub::init()
 {
-    if (!impl_->rootRegistered) {
-        SimpleMarkSweepGC::instance().registerExternalRootProvider(impl_.get());
-        impl_->rootRegistered = true;
-    }
 }
 
 void QtSignalHub::shutdown()
 {
-    impl_->entries.clear(); // destroys relays (disconnects), drops Value refs
-    if (impl_->rootRegistered) {
-        SimpleMarkSweepGC::instance().unregisterExternalRootProvider(impl_.get());
-        impl_->rootRegistered = false;
-    }
+    impl_->entries->clear(); // destroys relays (disconnects), drops Value refs
 }
 
 int QtSignalHub::connectCallback(QObject* sender, const QMetaMethod& signal, const Value& handler)
@@ -203,7 +195,7 @@ Value QtSignalHub::eventTypeFor(QObject* sender, const QMetaMethod& signal)
 
 bool QtSignalHub::disconnectId(int connId)
 {
-    for (auto& kv : impl_->entries) {
+    for (auto& kv : *impl_->entries) {
         auto& cbs = kv.second.callbacks;
         for (auto it = cbs.begin(); it != cbs.end(); ++it) {
             if (it->id == connId) {

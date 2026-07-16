@@ -85,7 +85,7 @@ private:
 };
 
 // Owns every live RoxalPropertyMap and keeps its wrapped object GC-alive via a GC
-// ExternalRootProvider. Singleton; lifetime bracketed by ModuleQt (init() at module
+// its maps member is a typed GC root (TracedMember). Singleton; lifetime bracketed by ModuleQt (init() at module
 // load, shutdown() at script-complete teardown), mirroring QtModelHub / QtSignalHub.
 class QtBindHub {
 public:

@@ -16,7 +16,7 @@ namespace roxal {
 // Owns Qt signal → Roxal connections. For each (sender QObject, signal) it holds a
 // moc-free QtSignalRelay plus the Roxal delivery targets: a list of callback
 // closures (slot-style, invoked synchronously) and an optional per-signal event
-// type (for `when … occurs`). It is a GC ExternalRootProvider so those closures and
+// type (for `when … occurs`). Its entries map is a typed GC root (TracedMember) so those closures and
 // event types stay alive while connected. Singleton; lifetime bracketed by ModuleQt
 // (init() at module load, shutdown() at script-complete teardown).
 class QtSignalHub {
