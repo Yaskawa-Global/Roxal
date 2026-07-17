@@ -42,4 +42,7 @@ If you add Value members to VM and related structures, don't forget to add them 
 
 Read the conversions.md for information about type conversions (as needed) and/or `implementation-notes.md` about the implementation generally.
 
+Approach your work as an experienced software architect.  Prefer architecturally sound refactoring over shallow fixes that only address the immediate need but increase technical debt.
+If you run into a bug or unforeseen issue with something you're implementing that points at a potential design flaw or might hint at potential simplification or refactoring, stop to explain and discuss before proceeding to add complexity.
+
 See also `roxal-for-devs.md`

@@ -26,10 +26,12 @@ static std::atomic<uint64_t> gFuncCounter{0};
 
 std::string DataflowEngine::uniqueFuncName(const std::string& base)
 {
-    gFuncCounter++;
-    if (gFuncCounter == 1)
+    // Single atomic op: increment-then-re-read let two concurrent lifts
+    // observe the same count and mint duplicate names.
+    const uint64_t n = ++gFuncCounter;
+    if (n == 1)
         return base;
-    return base + "#" + std::to_string(gFuncCounter);
+    return base + "#" + std::to_string(n);
 }
 
 
@@ -1468,6 +1470,22 @@ bool DataflowEngine::processPendingEventUpdates()
 
 void DataflowEngine::evaluate()
 {
+    // Runs on SCRIPT threads (func lifts / signal operators) while the
+    // engine thread evaluates and the reclaimer thread destroys dead
+    // signal wrappers (removeSignal mutates `signals`).  Serialize with
+    // the other evaluators; a contended wait is covered as GC-safe
+    // blocking (the in-flight evaluator can park at a safepoint while
+    // holding the mutex).
+    std::unique_lock<std::recursive_mutex> evalLock(m_evalMutex, std::try_to_lock);
+    if (!evalLock.owns_lock()) {
+        if (roxal::SimpleMarkSweepGC::inGCYieldSectionOnThisThread()) {
+            evalLock.lock();
+        } else {
+            roxal::SimpleMarkSweepGC::GCSafeBlockScope blockCover;
+            evalLock.lock();
+        }
+    }
+
     if (m_networkModified)
         buildNetworkCacheData();
 
@@ -1482,12 +1500,20 @@ void DataflowEngine::evaluate()
     // flag initialization writes.
     const TimePoint evalTime = TimePoint::zero();
 
-    // Ensure all source signals have values at evaluation time
-    for(const auto& signal : signals) {
-        if (signal->isSourceSignal()) {
-            signal->evaluate(evalTime);
+    // Ensure all source signals have values at evaluation time.  m_mutex
+    // guards the container iteration: `signals` is mutated concurrently
+    // (removeSignal on the reclaimer thread destroying dead wrappers) --
+    // iterating unlocked dereferences a dangling Signal*.  Held only over
+    // this loop; evaluateNetwork below runs closures (can park at a GC
+    // safepoint) and copies its islands under m_mutex internally.
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        for(const auto& signal : signals) {
+            if (signal->isSourceSignal()) {
+                signal->evaluate(evalTime);
+            }
+            updateSignalConsumerInputAvailability(signal, signal->latestSampleTime());
         }
-        updateSignalConsumerInputAvailability(signal, signal->latestSampleTime());
     }
 
     evaluateNetwork(evalTime);
@@ -1882,6 +1908,9 @@ TimePoint DataflowEngine::nextPeriodOnPeriodBoundary(double freq) const
 
 std::map<std::string, Value> DataflowEngine::signalValues() const
 {
+    // Same container-race guard as evaluate(): callable from script
+    // threads while the reclaimer removes dead signals/funcs.
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
     std::map<std::string, Value> signalValues;
     for (auto& signal : signals) {
         signalValues[signal->name()] = signal->lastValueBefore(m_tickStart + m_tickPeriod);
