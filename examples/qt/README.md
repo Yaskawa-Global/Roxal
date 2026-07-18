@@ -40,6 +40,7 @@ walk-through see [roxal-qt-module-guide.md](roxal-qt-module-guide.md).
 | [sortfilter](sortfilter.rox) | A `qt.SortFilterModel` view over a list model | Type in the filter → the list narrows; click **Sort by name** / **Priority (high→low)** to reorder. |
 | [treeview](treeview.rox) | A `qt.TreeModel` in a QML `TreeView` | Click **Add joint to the tip** → a node is appended down the chain; expand/collapse to see it. |
 | [dynamic](dynamic.rox) | **Runtime creation** — `engine.create_component` + `Component.create` | Click **Add joint** → a numbered marker is spawned into the container. |
+| [framebuffer](framebuffer.rox) | **Pixel frames** — a `FrameView` presents uint8 `[H, W, C]` tensors; CPU-only rendering via `qt.set_render_backend("software")` | A palette-cycling plasma animates at ~12 fps, chunky nearest-neighbor pixels — no GPU used. |
 | [teapot](teapot.rox) | **3D** — Qt Quick 3D renders the Utah teapot (`RuntimeLoader`); drag to orbit | **Cycle tint** / **Pause** the spin (Roxal-driven); needs an OpenGL display. |
 | [gallery](gallery.rox) | **Widget gallery** — a tabbed `ApplicationWindow` showing off many Qt Quick Controls + visual items | Click the **Inputs / Lists / Table / Gallery / Log** tabs; every interaction is logged by Roxal (footer + Log tab). |
 

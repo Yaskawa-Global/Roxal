@@ -582,6 +582,48 @@ Text     { text: app.greeting() }          // a func's result reaches QML
 
 ---
 
+## Pixel frames: FrameView (live images, framebuffers)
+
+For showing **pixels you compute or receive** — camera frames off DDS, depth maps, NN masks,
+or a software-rendered framebuffer — the module registers a QML item type, `FrameView`
+(`import Roxal`), that displays a Roxal **image tensor**: `uint8`, shape `[H, W, C]` with 1
+(grayscale), 3 (RGB) or 4 (RGBA) channels. `media.Image` pixels are already exactly that
+(`img.to_tensor()`); float tensors convert with `astype`.
+
+```qml
+import Roxal
+FrameView { objectName: "fb"; smooth: false; anchors.fill: parent }
+```
+
+```roxal
+var fb = engine.find("fb")
+fb.present(frame)        # frame: uint8 [H, W, C] tensor — repaints the item
+fb.frame = frame         # same thing as a property; read it back → tensor
+fb.framesPresented       # frames shown so far (diagnostics/tests)
+fb.frame = nil           # clear
+```
+
+The frame is uploaded as a **scene-graph texture at its own size** and scaled to the item by
+the renderer, so presenting is cheap even when the window is large. `smooth: false` gives
+crisp nearest-neighbor pixels (low-res/retro sources); leave it on (the default) for camera
+feeds. Presenting ~35 frames/sec is no problem — the cost that matters is producing the
+pixels, not showing them.
+
+Two companions round this out:
+
+```roxal
+qt.set_render_backend("software")   # render the scene graph on the CPU — no GPU/driver
+                                    # needed (robots, containers, CI). Call before load().
+var shot = engine.grab_window()     # window → uint8 [H, W, C] tensor (screenshot/tests)
+```
+
+Everything — FrameView included — renders identically on the software backend; the
+`qt_frameview` test proves it pixel-for-pixel headlessly (`QT_QPA_PLATFORM=offscreen`).
+And for **key-driven** pixel apps (games!), handle `Keys` in QML and forward press/release
+to Roxal through a QML signal; `qt.post_key(win, code, pressed)` synthesizes keys for
+headless tests (see `tests/qt_keys.rox`). The runnable demo is
+[framebuffer.rox](framebuffer.rox) — a palette-cycling plasma presented at ~12 fps.
+
 ## Roxal signals vs Qt signals
 
 This is the one piece of vocabulary that trips people up, because **both** Roxal and Qt use the word

@@ -1,0 +1,10 @@
+// A non-uint8 tensor cannot cross into Qt as an image — the conversion fails
+// with guidance to convert the dtype first. Headless via QT_QPA_PLATFORM=offscreen.
+import qt
+
+var e = qt.Engine()
+e.load_string('import QtQuick\nimport QtQuick.Window\nWindow { Item { objectName: "panel"; function echo(x) { return x } } }')
+var panel = e.find("panel")
+
+var t = tensor(shape=[2, 2, 3])   # float64 — not an image tensor
+panel.echo(t)

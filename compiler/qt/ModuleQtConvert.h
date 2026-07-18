@@ -8,17 +8,29 @@
 class QVariant;
 class QJSValue;
 class QJSEngine;
+class QImage;
 
 namespace roxal {
+
+struct ObjTensor;
 
 // Shared converters between Qt's dynamic value types and Roxal's Value, used by
 // P1 property/method dispatch and reused by P2/P3. Recursive over containers.
 //
 // Mapping: nil↔invalid, bool, int (Int/LongLong), real (Double/Float), string↔QString,
 // list↔QVariantList, dict↔QVariantMap (string keys), vector→QVariantList(doubles),
-// QObject*→Item handle (ObjQtObject). Unsupported: read→nil, write→catchable error.
+// QObject*→Item handle (ObjQtObject), tensor(uint8 [H,W,C])↔QImage.
+// Unsupported: read→nil, write→catchable error.
 Value fromQVariant(const QVariant& v);
 QVariant toQVariant(const Value& v);
+
+// Image bridging: uint8 [H, W, C] tensors (C = 1/3/4) ↔ QImage (Grayscale8 /
+// RGB888 / RGBA8888). Tensor rows are tightly packed while QImage scanlines are
+// 4-byte aligned, so both directions copy row by row — which also decouples the
+// GC-managed tensor buffer from anything Qt holds onto (render thread, grabs).
+// Reused by FrameView (present) and window grabbing beyond generic conversion.
+QImage toQImage(const ObjTensor* t);  // throws std::runtime_error on wrong dtype/shape
+Value fromQImage(const QImage& img);  // null image → nil; other formats are converted
 
 // QJSValue (QML inline-JS / JS-engine boundary). `engine` is needed to construct
 // JS values (arrays/objects); obtain it from a wrapped object via qjsEngine(obj).

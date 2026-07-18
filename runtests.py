@@ -347,7 +347,12 @@ qt_tests = ['qt_lifecycle', 'qt_load_file',           # P0: lifecycle
             'qt_style',           # qt.set_style (Qt Quick Controls style selection)
             'qt_actor_guard',     # Qt access from an actor thread is rejected
             'qt_log',             # Qt/QML message redirection
-            'qt_load_relative']   # script-relative QML path resolution
+            'qt_load_relative',   # script-relative QML path resolution
+            'qt_image_convert',   # uint8 [H,W,C] tensor <-> QImage round-trips
+            'qt_image_convert_error',  # non-uint8 tensor -> image rejected
+            'qt_frameview',       # FrameView: present/frame, software render, grab_window pixel-exact
+            'qt_frameview_badshape',   # unsupported channel count rejected
+            'qt_keys']            # Keys handlers -> Roxal via signal; qt.post_key
 # require Qt6 (ROXAL_ENABLE_QT); run headless via QT_QPA_PLATFORM=offscreen
 compute_server_tests = [
     'remote_actor_basic',

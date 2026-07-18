@@ -1,0 +1,1 @@
+an image tensor must be uint8 with shape \[H, W, C\].*float64.*to_uint8

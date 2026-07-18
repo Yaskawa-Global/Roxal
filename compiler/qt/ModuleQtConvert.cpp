@@ -15,8 +15,12 @@
 #include <QJSEngine>
 #include <QThread>
 #include <QCoreApplication>
+#include <QImage>
+#include <QPixmap>
 
 #include <cmath>
+#include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -33,6 +37,78 @@ void roxal::ensureQtUiThread(const char* op)
             std::string("qt: '") + op + "' may only be used on the main (UI) thread — Qt "
             "objects are not accessible from actors. Send the actor's result back to the "
             "main thread (a message / event) and update the UI from there.");
+}
+
+// ============================================================
+// tensor <-> QImage
+// ============================================================
+
+QImage roxal::toQImage(const ObjTensor* t)
+{
+    if (t->dtype() != TensorDType::UInt8 || t->rank() != 3)
+        throw std::runtime_error(
+            "qt: an image tensor must be uint8 with shape [H, W, C] — got dtype " +
+            to_string(t->dtype()) + ", rank " + std::to_string(t->rank()) +
+            " (use astype('uint8', scale=...) / to_uint8() first)");
+
+    const std::vector<int64_t>& shape = t->shape();
+    const int64_t h = shape[0], w = shape[1], c = shape[2];
+    if (c != 1 && c != 3 && c != 4)
+        throw std::runtime_error(
+            "qt: an image tensor must have 1 (grayscale), 3 (RGB) or 4 (RGBA) channels — got " +
+            std::to_string(c));
+    if (h <= 0 || w <= 0 || h > std::numeric_limits<int>::max() || w > std::numeric_limits<int>::max())
+        throw std::runtime_error("qt: image tensor has invalid dimensions " +
+                                 std::to_string(h) + "x" + std::to_string(w));
+
+#ifdef ROXAL_ENABLE_ONNX
+    t->ensureCpu();
+#endif
+
+    const QImage::Format fmt = (c == 1) ? QImage::Format_Grayscale8
+                             : (c == 3) ? QImage::Format_RGB888
+                                        : QImage::Format_RGBA8888;
+    QImage img(static_cast<int>(w), static_cast<int>(h), fmt);
+    if (img.isNull())
+        throw std::runtime_error("qt: failed to allocate a " + std::to_string(w) + "x" +
+                                 std::to_string(h) + " image");
+
+    const auto* src = static_cast<const uint8_t*>(t->rawData());
+    const size_t rowBytes = static_cast<size_t>(w) * static_cast<size_t>(c);
+    for (int64_t y = 0; y < h; ++y)
+        std::memcpy(img.scanLine(static_cast<int>(y)), src + static_cast<size_t>(y) * rowBytes,
+                    rowBytes);
+    return img;
+}
+
+Value roxal::fromQImage(const QImage& image)
+{
+    if (image.isNull())
+        return Value::nilVal();
+
+    // Normalize to one of the three formats the tensor side speaks. Grayscale
+    // stays 1-channel; anything with alpha becomes RGBA; everything else RGB.
+    QImage img;
+    int64_t c;
+    if (image.format() == QImage::Format_Grayscale8) {
+        img = image;
+        c = 1;
+    } else if (image.hasAlphaChannel()) {
+        img = image.convertToFormat(QImage::Format_RGBA8888);
+        c = 4;
+    } else {
+        img = image.convertToFormat(QImage::Format_RGB888);
+        c = 3;
+    }
+
+    const int64_t h = img.height(), w = img.width();
+    const size_t rowBytes = static_cast<size_t>(w) * static_cast<size_t>(c);
+    std::vector<uint8_t> bytes(static_cast<size_t>(h) * rowBytes);
+    for (int64_t y = 0; y < h; ++y)
+        std::memcpy(bytes.data() + static_cast<size_t>(y) * rowBytes,
+                    img.constScanLine(static_cast<int>(y)), rowBytes);
+
+    return Value::objVal(newTensorObj({h, w, c}, TensorDType::UInt8, std::move(bytes)));
 }
 
 // ============================================================
@@ -74,6 +150,10 @@ Value roxal::fromQVariant(const QVariant& v)
                             fromQVariant(it.value()));
             return d;
         }
+        case QMetaType::QImage:
+            return fromQImage(v.value<QImage>());
+        case QMetaType::QPixmap:
+            return fromQImage(v.value<QPixmap>().toImage());
         default:
             break;
     }
@@ -134,6 +214,8 @@ QVariant roxal::toQVariant(const Value& v)
         QObject* o = asQtObject(v)->qobj.data();
         return QVariant::fromValue(o);
     }
+    if (isTensor(v))
+        return QVariant::fromValue(toQImage(asTensor(v)));
     throw std::runtime_error("qt: cannot convert Roxal value of type '" +
                              to_string(v.type()) + "' to a Qt value");
 }
@@ -158,6 +240,15 @@ Value roxal::fromQJSValue(const QJSValue& v, QJSEngine* engine)
         return Value::stringVal(toUnicodeString(v.toString().toStdString()));
     if (v.isQObject())
         return qtObjectValue(v.toQObject());
+    // Opaque QVariant payloads (QImage, dates, ...) report isObject() too, so the
+    // generic object walk below would flatten them into an empty dict. Probe the
+    // wrapped metatype: RetainJSObjects keeps genuine JS objects/arrays as QJSValue
+    // (→ fall through), while real variant payloads surface as their own type.
+    if (v.isObject() && !v.isArray()) {
+        const QVariant qv = v.toVariant(QJSValue::RetainJSObjects);
+        if (qv.isValid() && qv.metaType() != QMetaType::fromType<QJSValue>())
+            return fromQVariant(qv);
+    }
     if (v.isArray()) {
         const int len = v.property("length").toInt();
         Value list = Value::objVal(newListObj());

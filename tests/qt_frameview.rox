@@ -1,0 +1,40 @@
+// FrameView: present uint8 [H, W, C] tensors and render them through the
+// scene graph on the CPU-only software backend, verified pixel-exactly via
+// grab_window. Also: the frame property (write path + tensor read-back),
+// framesPresented counting, implicit size, and nil clearing.
+// Headless via QT_QPA_PLATFORM=offscreen.
+import qt
+
+qt.set_render_backend("software")   # no GPU: scene graph renders via QPainter
+
+var e = qt.Engine()
+e.load_string('import QtQuick\nimport QtQuick.Window\nimport Roxal\nWindow { visible: true; width: 32; height: 32; FrameView { objectName: "fb"; smooth: false; anchors.fill: parent } }')
+var fb = e.find("fb")
+print(fb.framesPresented)                             # 0
+
+# a 32x32 gradient, 1:1 with the window so the grab must match exactly
+var t = tensor(shape=[32, 32, 3], dtype="uint8")
+for y in range(..<32):
+  for x in range(..<32):
+    t[y, x, 0] = y * 8
+    t[y, x, 1] = x * 8
+    t[y, x, 2] = 128
+
+fb.present(t)                                         # invokable path
+print(fb.framesPresented)                             # 1
+fb.frame = t                                          # property-write path
+print(fb.framesPresented)                             # 2
+print("{fb.implicitWidth} x {fb.implicitHeight}")     # 32 x 32 (from the frame)
+
+var back = fb.frame                                   # read back -> tensor
+print(back == t)                                      # true
+
+e.run_for(100)                                        # let the scene graph render
+var shot = e.grab_window()
+print(shot.shape())                                   # [32, 32, 3]
+print(shot.dtype())                                   # uint8
+print(shot == t)                                      # pixel-exact
+
+fb.frame = nil                                        # clear; not a presented frame
+print(fb.framesPresented)                             # still 2
+print(fb.frame == nil)                                # true

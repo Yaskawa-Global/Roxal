@@ -70,6 +70,22 @@ func set_style(name:string):
   the style isn't installed."""
 
 @builtin
+func set_render_backend(name:string):
+  """Select how Qt Quick renders: "software" (CPU only — no GPU/driver needed;
+  robots, containers, CI), "opengl", "vulkan", "metal", "d3d11", "d3d12", or
+  "default" (let Qt choose for the platform). Process-wide; call before any QML
+  is loaded — raises once a window exists. Rendering-only: FrameView, models,
+  signals etc. behave identically on every backend."""
+
+@builtin
+func post_key(window, key:int, pressed:bool, repeat=false):
+  """Post a synthetic key press (pressed=true) or release (false) to `window` (a
+  window item, e.g. engine.root()), delivered like a real key: window → focused
+  item → its Keys handlers. `key` is the Qt key code — for letters/digits the
+  ASCII uppercase code (65 for A); arrows/others use Qt's Key_* values. Mainly
+  for testing key handling headless."""
+
+@builtin
 func notify(obj, name=nil):
   """Push a change of `obj` (a Roxal object exposed to QML via set_context_property)
   to QML. Roxal-side property *assignments* notify automatically; use this only to
@@ -139,6 +155,13 @@ type Engine object:
   @builtin
   func root():
     """Return the engine's root object as an item handle (nil if nothing loaded)."""
+
+  @builtin
+  func grab_window():
+    """Render the loaded window into a uint8 [H, W, C] image tensor and return it —
+    a synchronous screenshot (works headless: offscreen platform, software backend).
+    Costly; a testing/screenshot tool, not a per-frame path. See media.Image to save
+    it, or compare pixels directly in tests."""
 
   @builtin
   proc set_context_property(name:string, value):

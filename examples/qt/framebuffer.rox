@@ -1,0 +1,57 @@
+# Software framebuffer demo for the Roxal `qt` module: a palette-cycling plasma
+# at 320x200 — Doom's resolution — computed with bulk tensor ops and presented
+# to a FrameView (scaled up to the window, nearest-neighbor).
+#
+# The whole per-frame computation is three vectorized operations:
+#   idx   = (pattern + shift) rem 256      # elementwise add + wrap
+#   frame = palette.take(idx)              # 256-entry RGB palette lookup (LUT)
+#   fb.present(frame)                      # upload to the scene graph
+# ~5 ms per tick at 320x200 — per-pixel Roxal loops would be ~15x slower, so
+# keep pixel work in tensor ops and save the loops for game logic.
+#
+# Runs entirely without a GPU: qt.set_render_backend("software") renders the
+# scene graph on the CPU — same output on any machine (robot, container, CI).
+#
+# Run from the repo root:
+#   ./build/roxal examples/qt/framebuffer.rox
+#
+# The same present() pattern drives any live pixel source: camera frames
+# arriving over DDS, depth maps (astype uint8), NN masks — or a game that
+# renders to memory.
+
+import qt
+import math.*
+
+var W = 320
+var H = 200
+
+# --- once, at startup: a phase pattern (0..255 per pixel) and an RGB palette ---
+var pattern = tensor(shape=[H, W], dtype="int32")
+for y in range(..<H):
+  for x in range(..<W):
+    var v = sin(x * 0.20) + sin(y * 0.31) + sin((x + y) * 0.13)
+    pattern[y, x] = int((v + 3.0) * 42.5)
+
+var pal_data = []
+for i in range(..<256):
+  var a = i * 0.0245
+  pal_data.append(int(128 + 90 * sin(a)))
+  pal_data.append(int(128 + 90 * sin(a + 2.1)))
+  pal_data.append(int(128 + 90 * sin(a + 4.2)))
+var palette = tensor(shape=[256, 3], dtype="uint8", data=pal_data)
+
+qt.set_render_backend("software")   # comment out to use the GPU when available
+
+var engine = qt.Engine()
+engine.load('framebuffer.qml')
+var fb = engine.find("fb")
+
+# --- per tick (~30 fps): shift + wrap + palette-map, all in bulk ops ---
+var shift = 0
+qt.every(33, proc():
+  shift = (shift + 3) rem 256
+  fb.present(palette.take((pattern + shift) rem 256))
+)
+
+engine.run()
+print("window closed — bye")

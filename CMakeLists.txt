@@ -548,6 +548,7 @@ if(ROXAL_ENABLE_QT)
         compiler/qt/QtTreeModel.cpp
         compiler/qt/QtTableModel.cpp
         compiler/qt/QtBindable.cpp
+        compiler/qt/QtFrameView.cpp
         compiler/qt/QtPlugin.cpp
     )
     add_dependencies(roxalqt generate_parser)

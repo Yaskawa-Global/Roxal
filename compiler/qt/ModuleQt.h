@@ -66,6 +66,7 @@ private:
     Value engine_set_context_property_builtin(ArgsView args);
     Value engine_create_component_builtin(ArgsView args);
     Value engine_create_component_string_builtin(ArgsView args);
+    Value engine_grab_window_builtin(ArgsView args);
 
     // Component methods (args[0] = receiver Component instance). A reusable compiled
     // QQmlComponent; create() instantiates items dynamically under a chosen parent.
@@ -148,6 +149,8 @@ private:
 
     // Select the Qt Quick Controls style (Basic/Fusion/Material/…); before load().
     Value qt_set_style_builtin(ArgsView args);
+    Value qt_set_render_backend_builtin(ArgsView args);
+    Value qt_post_key_builtin(ArgsView args);
 
     // Force-push a bindable object's property to QML (for in-place collection mutation).
     Value qt_notify_builtin(ArgsView args);

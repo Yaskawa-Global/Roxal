@@ -10,6 +10,7 @@
 #include "QtTreeModel.h"
 #include "QtTableModel.h"
 #include "QtBindable.h"
+#include "QtFrameView.h"
 
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
@@ -38,6 +39,11 @@
 #include <QStringList>
 #include <QLibraryInfo>
 #include <QDir>
+#include <QSGRendererInterface>
+#include <QKeyEvent>
+#include <QWindow>
+
+#include <cctype>
 
 #include <cstdio>
 #include <cstdlib>
@@ -471,6 +477,7 @@ void ModuleQt::registerBuiltins(VM& vm)
     linkMethod("Engine", "set_context_property", [this](VM&, ArgsView a) { return engine_set_context_property_builtin(a); });
     linkMethod("Engine", "create_component",        [this](VM&, ArgsView a) { return engine_create_component_builtin(a); });
     linkMethod("Engine", "create_component_string", [this](VM&, ArgsView a) { return engine_create_component_string_builtin(a); });
+    linkMethod("Engine", "grab_window", [this](VM&, ArgsView a) { return engine_grab_window_builtin(a); });
 
     linkMethod("Component", "create", [this](VM&, ArgsView a) { return component_create_builtin(a); });
 
@@ -538,6 +545,8 @@ void ModuleQt::registerBuiltins(VM& vm)
     link("process_events", [this](VM&, ArgsView a) { return qt_process_events_builtin(a); });
     link("every",          [this](VM&, ArgsView a) { return qt_every_builtin(a); });
     link("set_style",      [this](VM&, ArgsView a) { return qt_set_style_builtin(a); });
+    link("set_render_backend", [this](VM&, ArgsView a) { return qt_set_render_backend_builtin(a); });
+    link("post_key",       [this](VM&, ArgsView a) { return qt_post_key_builtin(a); });
 
     link("notify",     [this](VM&, ArgsView a) { return qt_notify_builtin(a); });
 
@@ -568,6 +577,15 @@ void ModuleQt::onModuleLoaded(VM& vm)
     // NB: window-close is detected per-window via QQuickWindow::closing (see
     // connectRootWindowClose), not QGuiApplication::lastWindowClosed, which is
     // only emitted under Qt's exec() (we drive Qt via processEvents()).
+
+    // Register the module's QML-instantiable types (`import Roxal`). Type
+    // registrations are process-global in Qt — do this exactly once even if the
+    // module is torn down and reloaded within the process.
+    static const bool qmlTypesRegistered = [] {
+        qmlRegisterType<QtFrameView>("Roxal", 1, 0, "FrameView");
+        return true;
+    }();
+    (void)qmlTypesRegistered;
 
     // Install the host-loop hook so the VM services Qt cooperatively (shared ptr<>).
     impl_->hostLoop = make_ptr<QtHostLoop>();
@@ -817,6 +835,22 @@ Value ModuleQt::engine_root_builtin(ArgsView args)
     return qtObjectValue(roots.first());
 }
 
+Value ModuleQt::engine_grab_window_builtin(ArgsView args)
+{
+    QQmlApplicationEngine* engine = engineFromReceiver(args, "grab_window");
+    for (QObject* root : engine->rootObjects()) {
+        if (auto* win = qobject_cast<QQuickWindow*>(root)) {
+            // Synchronous render into an image (works headless: offscreen platform,
+            // software backend). Costly — a test/screenshot tool, not a frame path.
+            QImage img = win->grabWindow();
+            if (img.isNull())
+                throw std::runtime_error("Engine.grab_window(): grab failed (window not renderable)");
+            return fromQImage(img);   // → uint8 [H, W, C] tensor
+        }
+    }
+    throw std::runtime_error("Engine.grab_window(): no window loaded (load QML with a Window root first)");
+}
+
 // ---- Dynamic object creation: engine.create_component(_string) + Component.create ----
 
 namespace {
@@ -1061,6 +1095,62 @@ Value ModuleQt::qt_set_style_builtin(ArgsView args)
     // before this runs, locking it. Setting the env var keeps the style unresolved until
     // load(), so it must (as documented) be called before load()/load_string().
     qputenv("QT_QUICK_CONTROLS_STYLE", name.toUtf8());
+    return Value::nilVal();
+}
+
+Value ModuleQt::qt_set_render_backend_builtin(ArgsView args)
+{
+    ensureQtUiThread("qt.set_render_backend");
+    if (args.size() < 1 || !isString(args[0]))
+        throw std::invalid_argument("qt.set_render_backend(name) expects a backend name "
+                                    "(\"software\", \"opengl\", \"vulkan\", \"metal\", "
+                                    "\"d3d11\", \"d3d12\", \"default\")");
+    std::string name = toUTF8StdString(asStringObj(args[0])->s);
+    for (char& ch : name)
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+
+    // The scene-graph backend is process-global and latches when the first
+    // QQuickWindow is created — reject late calls loudly instead of letting the
+    // choice be silently ignored.
+    if (!QGuiApplication::allWindows().isEmpty())
+        throw std::runtime_error("qt.set_render_backend must be called before any QML is "
+                                 "loaded (a window already exists)");
+
+    QSGRendererInterface::GraphicsApi api;
+    if      (name == "software") api = QSGRendererInterface::Software;   // no GPU required
+    else if (name == "opengl")   api = QSGRendererInterface::OpenGL;
+    else if (name == "vulkan")   api = QSGRendererInterface::Vulkan;
+    else if (name == "metal")    api = QSGRendererInterface::Metal;
+    else if (name == "d3d11")    api = QSGRendererInterface::Direct3D11;
+    else if (name == "d3d12")    api = QSGRendererInterface::Direct3D12;
+    else if (name == "default")  api = QSGRendererInterface::Unknown;    // let Qt choose
+    else
+        throw std::runtime_error("qt.set_render_backend: unknown backend '" + name +
+                                 "' (expected software, opengl, vulkan, metal, d3d11, "
+                                 "d3d12 or default)");
+    QQuickWindow::setGraphicsApi(api);
+    return Value::nilVal();
+}
+
+Value ModuleQt::qt_post_key_builtin(ArgsView args)
+{
+    ensureQtUiThread("qt.post_key");
+    if (args.size() < 3 || !isQtObject(args[0]) || !args[1].isInt() || !args[2].isBool())
+        throw std::invalid_argument("qt.post_key(window, key, pressed, repeat=false) expects "
+                                    "a window item, an int Qt key code and a bool pressed");
+    QObject* o = asQtObject(args[0])->deref("qt.post_key");
+    auto* win = qobject_cast<QWindow*>(o);
+    if (!win)
+        throw std::invalid_argument("qt.post_key: first argument must be a window item "
+                                    "(e.g. engine.root() for a Window-rooted UI)");
+    const int key      = static_cast<int>(args[1].asInt());
+    const bool pressed = args[2].asBool();
+    const bool repeat  = (args.size() > 3 && args[3].isBool()) ? args[3].asBool() : false;
+    // Queued (not sent) so delivery runs inside the normal pump, exactly like a
+    // real key: window → focused item → Keys attached handlers.
+    QCoreApplication::postEvent(win, new QKeyEvent(
+        pressed ? QEvent::KeyPress : QEvent::KeyRelease, key, Qt::NoModifier,
+        QString(), repeat));
     return Value::nilVal();
 }
 

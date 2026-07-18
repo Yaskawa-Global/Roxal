@@ -1,0 +1,24 @@
+// Key handling for interactive UIs: QML Keys handlers on a focused item forward
+// press/release (with the Qt key code and auto-repeat flag) through a QML signal
+// to a Roxal handler; qt.post_key drives it headless like real typing.
+// Headless via QT_QPA_PLATFORM=offscreen.
+import qt
+
+var e = qt.Engine()
+e.load_string('import QtQuick\nimport QtQuick.Window\nWindow { objectName: "win"; visible: true; width: 64; height: 64; signal key(int code, bool down, bool repeat)\n  Item { focus: true\n    Keys.onPressed: (ev) => { key(ev.key, true, ev.isAutoRepeat); ev.accepted = true }\n    Keys.onReleased: (ev) => { key(ev.key, false, ev.isAutoRepeat) } } }')
+var win = e.find("win")
+
+var events = []
+qt.connect(win, "key", proc(code, down, repeat):
+  events.append("{code} {down} {repeat}")
+)
+
+qt.post_key(win, 65, true)          # A down
+qt.post_key(win, 65, true, true)    # A auto-repeat (a game filters these)
+qt.post_key(win, 65, false)         # A up
+qt.post_key(win, 16777236, true)    # Qt::Key_Right down
+qt.post_key(win, 16777236, false)   # Qt::Key_Right up
+e.run_for(80)
+
+for ev in events:
+  print(ev)
