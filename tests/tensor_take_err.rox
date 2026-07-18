@@ -1,0 +1,4 @@
+# take with an out-of-range index fails loudly (no silent wrap/clamp).
+var lut = tensor(shape=[4], dtype="int32", data=[1, 2, 3, 4])
+var sel = tensor(shape=[2], dtype="int32", data=[1, 4])
+lut.take(sel)

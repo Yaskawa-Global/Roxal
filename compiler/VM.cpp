@@ -4855,14 +4855,14 @@ bool VM::indexValue(const Value& indexable, int subscriptCount)
             }
             case ObjType::Tensor: {
                 ObjTensor* t = asTensor(indexable);
-                std::vector<Value> indices;
-                indices.reserve(subscriptCount);
-                for (int i = 0; i < subscriptCount; ++i)
-                    indices.push_back(pop());
-                std::reverse(indices.begin(), indices.end());
                 try {
-                    Value elt = t->index(indices);
-                    pop(); // discard indexable
+                    // The indices sit contiguously on the value stack (first
+                    // index deepest) — read them in place instead of popping
+                    // into a heap vector on this per-element hot path.
+                    const Value* idx0 = &peek(subscriptCount - 1);
+                    Value elt = t->index(idx0, static_cast<size_t>(subscriptCount));
+                    for (int i = 0; i <= subscriptCount; ++i)
+                        pop();  // the indices, then the indexable
                     push(elt);
                 } catch (std::exception& e) {
                     runtimeError(e.what());
@@ -5033,14 +5033,13 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
             } break;
             case ObjType::Tensor: {
                 ObjTensor* t = asTensor(indexable);
-                std::vector<Value> indices;
-                indices.reserve(subscriptCount);
-                for (int i = 0; i < subscriptCount; ++i)
-                    indices.push_back(pop());
-                std::reverse(indices.begin(), indices.end());
                 try {
-                    t->setIndex(indices, value);
-                    pop(); // discard indexable
+                    // Indices read in place off the stack — see the Index-op
+                    // tensor branch; this is the per-element write hot path.
+                    const Value* idx0 = &peek(subscriptCount - 1);
+                    t->setIndex(idx0, static_cast<size_t>(subscriptCount), value);
+                    for (int i = 0; i <= subscriptCount; ++i)
+                        pop();  // the indices, then the indexable
                 } catch (std::exception& e) {
                     runtimeError(e.what());
                     return false;
@@ -9624,13 +9623,27 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             }
         }
 
-        if (!processEventDispatch())
-            return errorReturn;
+        // Fast guards: the dispatch functions are no-ops unless one of these
+        // flags is set (each checks exactly these before doing any work), and
+        // this tail runs after EVERY instruction — skip the call overhead on
+        // the overwhelmingly common nothing-pending case. Identical conditions
+        // checked at identical frequency, so event latency is unchanged.
+        // (dispatch.active alone is deliberately not a trigger: with no handler
+        // return and no pending events, the call is a pure no-op then too.)
+        if (exitRequested.load() ||
+            thread->eventHandlerJustReturned ||
+            thread->pendingEventCount.load(std::memory_order_acquire) != 0) {
+            if (!processEventDispatch())
+                return errorReturn;
+        }
 
-        if (!processContinuationDispatch())
-            return errorReturn;
+        if (thread->continuationCallbackReturned) {
+            if (!processContinuationDispatch())
+                return errorReturn;
+        }
 
-        finalizeWaitSuspension();
+        if (thread->waitSuspension.active)   // the lambda's own first gate, hoisted
+            finalizeWaitSuspension();
 
         // Refresh frame pointer after processing events/continuations, as
         // frames may have been pushed onto or popped from the frame stack
@@ -11225,6 +11238,10 @@ void VM::defineBuiltinMethods()
                         false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
     defineBuiltinMethod(ValueType::Tensor, "dims", std::mem_fn(&VM::tensor_dims_builtin),
                         false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Tensor, "take", std::mem_fn(&VM::tensor_take_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Tensor, "fill", std::mem_fn(&VM::tensor_fill_builtin),
+                        false, nullptr, {}, Value::nilVal());  // mutates self in place
 
     // Orient methods — all read-only on self
     defineBuiltinMethod(ValueType::Orient, "rotate", std::mem_fn(&VM::orient_rotate_builtin),
@@ -11873,8 +11890,14 @@ Value VM::tensor_min_builtin(ArgsView args)
     int64_t n = t->numel();
     if (n == 0) throw std::invalid_argument("tensor.min on empty tensor");
     double minVal = t->at(0);
-    for (int64_t i = 1; i < n; ++i)
-        minVal = std::min(minVal, t->at(i));
+    const bool fast = withTensorDType(t->dtype(), [&]<typename T>() {
+        const T* a = static_cast<const T*>(t->rawData());
+        for (int64_t i = 1; i < n; ++i)
+            minVal = std::min(minVal, static_cast<double>(a[i]));
+    });
+    if (!fast)
+        for (int64_t i = 1; i < n; ++i)
+            minVal = std::min(minVal, t->at(i));
     return Value::realVal(minVal);
 }
 
@@ -11887,8 +11910,14 @@ Value VM::tensor_max_builtin(ArgsView args)
     int64_t n = t->numel();
     if (n == 0) throw std::invalid_argument("tensor.max on empty tensor");
     double maxVal = t->at(0);
-    for (int64_t i = 1; i < n; ++i)
-        maxVal = std::max(maxVal, t->at(i));
+    const bool fast = withTensorDType(t->dtype(), [&]<typename T>() {
+        const T* a = static_cast<const T*>(t->rawData());
+        for (int64_t i = 1; i < n; ++i)
+            maxVal = std::max(maxVal, static_cast<double>(a[i]));
+    });
+    if (!fast)
+        for (int64_t i = 1; i < n; ++i)
+            maxVal = std::max(maxVal, t->at(i));
     return Value::realVal(maxVal);
 }
 
@@ -11900,8 +11929,14 @@ Value VM::tensor_sum_builtin(ArgsView args)
     ObjTensor* t = asTensor(args[0]);
     int64_t n = t->numel();
     double s = 0.0;
-    for (int64_t i = 0; i < n; ++i)
-        s += t->at(i);
+    const bool fast = withTensorDType(t->dtype(), [&]<typename T>() {
+        const T* a = static_cast<const T*>(t->rawData());
+        for (int64_t i = 0; i < n; ++i)
+            s += static_cast<double>(a[i]);
+    });
+    if (!fast)
+        for (int64_t i = 0; i < n; ++i)
+            s += t->at(i);
     return Value::realVal(s);
 }
 
@@ -11944,6 +11979,100 @@ Value VM::tensor_dims_builtin(ArgsView args)
     return Value::intVal(static_cast<int64_t>(asTensor(args[0])->shape().size()));
 }
 
+Value VM::tensor_take_builtin(ArgsView args)
+{
+    // take(indices): gather rows of self along axis 0. Self is a table of
+    // shape [N, ...rest]; `indices` is an integer tensor of any shape; the
+    // result has shape indices.shape ++ rest and self's dtype:
+    //   out[k, ...] = self[indices[k], ...]
+    // One call does palette/LUT mapping (palette [256,3], indices [H,W] →
+    // image [H,W,3]), class-id → color maps, texture row lookups, etc.
+    if (args.size() != 2 || !isTensor(args[0]))
+        throw std::invalid_argument("tensor.take(indices) expects an indices tensor");
+    if (!isTensor(args[1]))
+        throw std::invalid_argument("tensor.take(indices): indices must be an integer tensor");
+
+    ObjTensor* table = asTensor(args[0]);
+    ObjTensor* idx = asTensor(args[1]);
+    if (table->rank() < 1)
+        throw std::invalid_argument("tensor.take: table tensor must have rank >= 1");
+    switch (idx->dtype()) {
+        case TensorDType::Int8: case TensorDType::Int16: case TensorDType::Int32:
+        case TensorDType::Int64: case TensorDType::UInt8: case TensorDType::UInt16:
+            break;
+        default:
+            throw std::invalid_argument("tensor.take: indices must have an integer dtype, got " +
+                                        to_string(idx->dtype()));
+    }
+
+    const std::vector<int64_t>& tshape = table->shape();
+    const int64_t nRows = tshape[0];
+    int64_t rowElems = 1;
+    for (size_t d = 1; d < tshape.size(); ++d)
+        rowElems *= tshape[d];
+    const size_t elemSize = tensorDTypeSize(table->dtype());
+    const size_t rowBytes = static_cast<size_t>(rowElems) * elemSize;
+
+    std::vector<int64_t> outShape = idx->shape();
+    outShape.insert(outShape.end(), tshape.begin() + 1, tshape.end());
+
+    // Validate every index BEFORE allocating the output: a live newObj
+    // unique_ptr must not be destroyed by a throw (UnreleasedObj contract),
+    // and it keeps the copy loop check-free. The dtype switch above guarantees
+    // withTensorDType dispatches, so both passes run typed (no per-element at()).
+    const int64_t n = idx->numel();
+    withTensorDType(idx->dtype(), [&]<typename I>() {
+        const I* iv = static_cast<const I*>(idx->rawData());
+        for (int64_t k = 0; k < n; ++k) {
+            const int64_t i = static_cast<int64_t>(iv[k]);
+            if (i < 0 || i >= nRows)
+                throw std::out_of_range("tensor.take: index " + std::to_string(i) +
+                                        " out of range [0, " + std::to_string(nRows) + ")");
+        }
+    });
+
+    auto out = newTensorObj(outShape, table->dtype());
+    const uint8_t* src = static_cast<const uint8_t*>(table->rawData());
+    uint8_t* dst = static_cast<uint8_t*>(out->rawDataMut());
+    withTensorDType(idx->dtype(), [&]<typename I>() {
+        const I* iv = static_cast<const I*>(idx->rawData());
+        for (int64_t k = 0; k < n; ++k) {
+            const size_t i = static_cast<size_t>(static_cast<int64_t>(iv[k]));
+            std::memcpy(dst + static_cast<size_t>(k) * rowBytes, src + i * rowBytes, rowBytes);
+        }
+    });
+    return Value::objVal(std::move(out));
+}
+
+Value VM::tensor_fill_builtin(ArgsView args)
+{
+    // fill(value): set every element of self to value, in place.
+    if (args.size() != 2 || !isTensor(args[0]))
+        throw std::invalid_argument("tensor.fill(value) expects a number");
+    if (!args[1].isNumber())
+        throw std::invalid_argument("tensor.fill(value) expects a number");
+    ObjTensor* t = asTensor(args[0]);
+    const double v = args[1].isInt() ? static_cast<double>(args[1].asInt()) : args[1].asReal();
+    const int64_t n = t->numel();
+    if (t->dtype() == TensorDType::UInt8) {
+        const int64_t iv = static_cast<int64_t>(v);
+        if (iv >= 0 && iv <= 255 && static_cast<double>(iv) == v) {
+            std::memset(t->rawDataMut(), static_cast<int>(iv), static_cast<size_t>(n));
+            return Value::nilVal();
+        }
+    }
+    const bool fast = withTensorDType(t->dtype(), [&]<typename T>() {
+        T* o = static_cast<T*>(t->rawDataMut());
+        const T tv = static_cast<T>(v);
+        for (int64_t i = 0; i < n; ++i)
+            o[i] = tv;
+    });
+    if (!fast)
+        for (int64_t i = 0; i < n; ++i)
+            t->setAt(i, v);
+    return Value::nilVal();
+}
+
 Value VM::tensor_astype_builtin(ArgsView args)
 {
     // astype(dtype, scale=1.0): elementwise-convert to a new tensor of the
@@ -11967,8 +12096,20 @@ Value VM::tensor_astype_builtin(ArgsView args)
     auto out = newTensorObj(src->shape(), dstDtype);
     ObjTensor* dst = out.get();
     const int64_t n = src->numel();
-    for (int64_t i = 0; i < n; ++i)
-        dst->setAt(i, src->at(i) * scale);
+    // Nested dtype dispatch (src x dst) → one tight typed convert loop; the
+    // generic at()/setAt() loop remains for Float16/Bool on either side.
+    bool fast = false;
+    withTensorDType(src->dtype(), [&]<typename S>() {
+        fast = withTensorDType(dstDtype, [&]<typename D>() {
+            const S* a = static_cast<const S*>(src->rawData());
+            D* o = static_cast<D*>(dst->rawDataMut());
+            for (int64_t i = 0; i < n; ++i)
+                o[i] = static_cast<D>(static_cast<double>(a[i]) * scale);
+        });
+    });
+    if (!fast)
+        for (int64_t i = 0; i < n; ++i)
+            dst->setAt(i, src->at(i) * scale);
     return Value::objVal(std::move(out));
 }
 

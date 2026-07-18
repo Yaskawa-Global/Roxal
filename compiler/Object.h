@@ -960,6 +960,27 @@ enum class TensorDType : uint8_t {
 std::string to_string(TensorDType dtype);
 TensorDType tensorDTypeFromString(const std::string& s);
 
+/// Invoke `f.template operator()<T>()` with T = the C storage type of `dtype`,
+/// so bulk operations can dispatch the dtype ONCE and run a tight typed loop
+/// (auto-vectorizable) instead of switching per element in at()/setAt().
+/// Returns false — without calling f — for dtypes with no directly computable
+/// storage type (Float16, Bool); callers fall back to the generic path.
+template <typename F>
+inline bool withTensorDType(TensorDType dtype, F&& f)
+{
+    switch (dtype) {
+        case TensorDType::Float32: f.template operator()<float>();    return true;
+        case TensorDType::Float64: f.template operator()<double>();   return true;
+        case TensorDType::Int8:    f.template operator()<int8_t>();   return true;
+        case TensorDType::Int16:   f.template operator()<int16_t>();  return true;
+        case TensorDType::Int32:   f.template operator()<int32_t>();  return true;
+        case TensorDType::Int64:   f.template operator()<int64_t>();  return true;
+        case TensorDType::UInt8:   f.template operator()<uint8_t>();  return true;
+        case TensorDType::UInt16:  f.template operator()<uint16_t>(); return true;
+        default: return false;
+    }
+}
+
 struct ObjTensor : public Obj
 {
     ObjTensor();
@@ -1002,9 +1023,17 @@ struct ObjTensor : public Obj
     int64_t numel() const;  // total number of elements
     TensorDType dtype() const { return dtype_; }
 
-    // Element access (multi-dimensional indexing)
-    Value index(const std::vector<Value>& indices) const;
-    void setIndex(const std::vector<Value>& indices, const Value& v);
+    // Element access (multi-dimensional indexing). The span forms read the
+    // indices in place — e.g. straight off the VM value stack — so a scalar
+    // t[y, x, c] access allocates nothing; the vector forms delegate.
+    Value index(const Value* indices, size_t count) const;
+    Value index(const std::vector<Value>& indices) const {
+        return index(indices.data(), indices.size());
+    }
+    void setIndex(const Value* indices, size_t count, const Value& v);
+    void setIndex(const std::vector<Value>& indices, const Value& v) {
+        setIndex(indices.data(), indices.size(), v);
+    }
 
     // Single flat index access - works with both native and ORT storage.
     // Reads from ORT buffer directly without copying when ORT-backed.

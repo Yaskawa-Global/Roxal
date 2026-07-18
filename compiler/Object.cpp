@@ -4751,41 +4751,43 @@ int64_t ObjTensor::flatIndex(const std::vector<int64_t>& indices) const
     return idx;
 }
 
-Value ObjTensor::index(const std::vector<Value>& indices) const
+Value ObjTensor::index(const Value* indices, size_t count) const
 {
-    if (indices.size() != shape_.size())
+    if (count != shape_.size())
         throw std::runtime_error("Tensor index rank mismatch: expected " +
-            std::to_string(shape_.size()) + " indices, got " + std::to_string(indices.size()));
+            std::to_string(shape_.size()) + " indices, got " + std::to_string(count));
 
     // Check if any index is a range
     bool hasRange = false;
-    for (const auto& v : indices) {
-        if (isRange(v)) {
+    for (size_t d = 0; d < count; ++d) {
+        if (isRange(indices[d])) {
             hasRange = true;
             break;
         }
     }
 
     if (!hasRange) {
-        // All integer indices - return scalar
-        std::vector<int64_t> idxs;
-        idxs.reserve(indices.size());
-        for (const auto& v : indices) {
-            if (!v.isInt())
+        // All integer indices - return scalar. Walk the strides directly (same
+        // bounds semantics as flatIndex) — no temporary index vector.
+        int64_t flatIdx = 0;
+        for (size_t d = 0; d < count; ++d) {
+            if (!indices[d].isInt())
                 throw std::runtime_error("Tensor index must be integer or range");
-            idxs.push_back(v.asInt());
+            const int64_t ix = indices[d].asInt();
+            if (ix < 0 || ix >= shape_[d])
+                throw std::runtime_error("Tensor index out of bounds");
+            flatIdx += ix * strides_[d];
         }
-        int64_t flatIdx = flatIndex(idxs);
         return Value::realVal(at(flatIdx));
     }
 
     // Has ranges - build sub-tensor
     // For each dimension, collect the list of indices to extract
     std::vector<std::vector<int64_t>> dimIndices;
-    dimIndices.reserve(indices.size());
+    dimIndices.reserve(count);
     std::vector<int64_t> resultShape;
 
-    for (size_t d = 0; d < indices.size(); ++d) {
+    for (size_t d = 0; d < count; ++d) {
         const Value& idx = indices[d];
         int64_t dimSize = shape_[d];
 
@@ -4855,16 +4857,22 @@ Value ObjTensor::index(const std::vector<Value>& indices) const
     return Value::tensorVal(resultShape, resultData, dtype_);
 }
 
-void ObjTensor::setIndex(const std::vector<Value>& indices, const Value& v)
+void ObjTensor::setIndex(const Value* indices, size_t count, const Value& v)
 {
-    std::vector<int64_t> idxs;
-    idxs.reserve(indices.size());
-    for (const auto& idx : indices) {
-        if (!idx.isInt())
+    if (count != shape_.size())
+        throw std::runtime_error("Tensor index rank mismatch");
+
+    // Walk the strides directly (same bounds semantics as flatIndex) — no
+    // temporary index vector on this per-element hot path.
+    int64_t flatIdx = 0;
+    for (size_t d = 0; d < count; ++d) {
+        if (!indices[d].isInt())
             throw std::runtime_error("Tensor index must be integer");
-        idxs.push_back(idx.asInt());
+        const int64_t ix = indices[d].asInt();
+        if (ix < 0 || ix >= shape_[d])
+            throw std::runtime_error("Tensor index out of bounds");
+        flatIdx += ix * strides_[d];
     }
-    int64_t flatIdx = flatIndex(idxs);
 
     if (!v.isNumber())
         throw std::runtime_error("Tensor element must be numeric");

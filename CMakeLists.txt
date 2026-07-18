@@ -7,6 +7,19 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE)
 endif()
 
+# Optimized x86 builds target x86-64-v2 (SSE4.2/POPCNT era — any x86-64 CPU
+# from ~2009 on): hot loops vectorize better and popcount becomes a single
+# instruction instead of libgcc's __popcountdi2. Set empty (-DROXAL_RELEASE_MARCH=)
+# for fully portable x86 binaries; non-x86 hosts (e.g. arm64) are unaffected.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    set(ROXAL_RELEASE_MARCH "x86-64-v2" CACHE STRING
+        "Value for -march= in Release/RelWithDebInfo builds (empty to disable)")
+    if(ROXAL_RELEASE_MARCH)
+        string(APPEND CMAKE_CXX_FLAGS_RELEASE " -march=${ROXAL_RELEASE_MARCH}")
+        string(APPEND CMAKE_CXX_FLAGS_RELWITHDEBINFO " -march=${ROXAL_RELEASE_MARCH}")
+    endif()
+endif()
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 enable_testing()

@@ -247,6 +247,7 @@ tests = [
     'tensor_basic', 'tensor_math', 'tensor_compare', 'tensor_convert', 'math_min_max_sum',
     'tensor_convert_err', 'matrix_tensor_err', 'vector_tensor_err',
     'tensor_slice', 'tensor_bytes', 'tensor_bytes_move', 'tensor_dtype_storage',
+    'tensor_take', 'tensor_take_err',
     'tensor_bytes_len_err', 'tensor_bytes_conflict_err', 'tensor_uint16',
     'tensor_introspect',
     'math_relu', 'math_softmax', 'math_argmax', 'math_clamp',
