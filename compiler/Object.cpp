@@ -4751,6 +4751,42 @@ int64_t ObjTensor::flatIndex(const std::vector<int64_t>& indices) const
     return idx;
 }
 
+void ObjTensor::collectSliceIndices(const Value* indices, size_t count,
+                                    std::vector<std::vector<int64_t>>& dimIndices,
+                                    std::vector<int64_t>& sliceShape) const
+{
+    dimIndices.clear();
+    dimIndices.reserve(count);
+    sliceShape.clear();
+
+    for (size_t d = 0; d < count; ++d) {
+        const Value& idx = indices[d];
+        int64_t dimSize = shape_[d];
+
+        if (idx.isInt()) {
+            int64_t i = idx.asInt();
+            if (i < 0 || i >= dimSize)
+                throw std::runtime_error("Tensor index out of bounds at dimension " + std::to_string(d));
+            dimIndices.push_back({i});
+            // Single index - dimension is squeezed out (not added to slice shape)
+        } else if (isRange(idx)) {
+            ObjRange* r = asRange(idx);
+            int64_t rangeLen = r->length(dimSize);
+            std::vector<int64_t> dimIdx;
+            dimIdx.reserve(rangeLen);
+            for (int64_t j = 0; j < rangeLen; ++j) {
+                int64_t target = r->targetIndex(j, dimSize);
+                if (target >= 0 && target < dimSize)
+                    dimIdx.push_back(target);
+            }
+            sliceShape.push_back(static_cast<int64_t>(dimIdx.size()));
+            dimIndices.push_back(std::move(dimIdx));
+        } else {
+            throw std::runtime_error("Tensor index must be integer or range");
+        }
+    }
+}
+
 Value ObjTensor::index(const Value* indices, size_t count) const
 {
     if (count != shape_.size())
@@ -4784,34 +4820,59 @@ Value ObjTensor::index(const Value* indices, size_t count) const
     // Has ranges - build sub-tensor
     // For each dimension, collect the list of indices to extract
     std::vector<std::vector<int64_t>> dimIndices;
-    dimIndices.reserve(count);
     std::vector<int64_t> resultShape;
+    collectSliceIndices(indices, count, dimIndices, resultShape);
 
-    for (size_t d = 0; d < count; ++d) {
-        const Value& idx = indices[d];
-        int64_t dimSize = shape_[d];
-
-        if (idx.isInt()) {
-            int64_t i = idx.asInt();
-            if (i < 0 || i >= dimSize)
-                throw std::runtime_error("Tensor index out of bounds at dimension " + std::to_string(d));
-            dimIndices.push_back({i});
-            // Single index - dimension is squeezed out (not added to result shape)
-        } else if (isRange(idx)) {
-            ObjRange* r = asRange(idx);
-            int64_t rangeLen = r->length(dimSize);
-            std::vector<int64_t> dimIdx;
-            dimIdx.reserve(rangeLen);
-            for (int64_t j = 0; j < rangeLen; ++j) {
-                int64_t target = r->targetIndex(j, dimSize);
-                if (target >= 0 && target < dimSize)
-                    dimIdx.push_back(target);
+    // Fast path: when every dimension selects either a single index or a
+    // contiguous ascending run (unit-step ranges — the overwhelmingly common
+    // slice), the selection is a rectangular sub-block. Copy it as raw bytes,
+    // one memcpy per innermost run (the last dim's stride is 1 in row-major),
+    // instead of the generic per-element gather through double. Works for
+    // every dtype. Step/reverse ranges keep the generic path below.
+    {
+        bool contiguous = true;
+        bool empty = false;
+        for (const auto& di : dimIndices) {
+            if (di.empty()) {
+                empty = true;
+                break;
             }
-            dimIndices.push_back(dimIdx);
-            // Range - add dimension to result shape
-            resultShape.push_back(dimIdx.size());
-        } else {
-            throw std::runtime_error("Tensor index must be integer or range");
+            if (di.back() - di.front() + 1 != static_cast<int64_t>(di.size())) {
+                contiguous = false;
+                break;
+            }
+        }
+        if (empty || contiguous) {
+            auto result = newTensorObj(resultShape, dtype_);
+            const int64_t n = result->numel();
+            if (n > 0) {
+                const size_t elem = tensorDTypeSize(dtype_);
+                const int64_t runLen = static_cast<int64_t>(dimIndices.back().size());
+                const int64_t runs = n / runLen;
+                const uint8_t* srcB = static_cast<const uint8_t*>(rawData());
+                uint8_t* dstB = static_cast<uint8_t*>(result->rawDataMut());
+                int64_t srcOff = 0;
+                for (size_t d = 0; d < count; ++d)
+                    srcOff += dimIndices[d].front() * strides_[d];
+                std::vector<int64_t> pos(count, 0);
+                const size_t runBytes = static_cast<size_t>(runLen) * elem;
+                for (int64_t r = 0;;) {
+                    std::memcpy(dstB + static_cast<size_t>(r) * runBytes,
+                                srcB + static_cast<size_t>(srcOff) * elem, runBytes);
+                    if (++r == runs)
+                        break;
+                    // advance the outer-dims odometer (contiguous selections:
+                    // each step in dim d moves the source offset by strides_[d])
+                    for (int64_t d = static_cast<int64_t>(count) - 2; d >= 0; --d) {
+                        srcOff += strides_[d];
+                        if (++pos[d] < static_cast<int64_t>(dimIndices[d].size()))
+                            break;
+                        srcOff -= static_cast<int64_t>(dimIndices[d].size()) * strides_[d];
+                        pos[d] = 0;
+                    }
+                }
+            }
+            return Value::objVal(std::move(result));
         }
     }
 
@@ -4862,22 +4923,116 @@ void ObjTensor::setIndex(const Value* indices, size_t count, const Value& v)
     if (count != shape_.size())
         throw std::runtime_error("Tensor index rank mismatch");
 
-    // Walk the strides directly (same bounds semantics as flatIndex) — no
-    // temporary index vector on this per-element hot path.
-    int64_t flatIdx = 0;
+    bool hasRange = false;
     for (size_t d = 0; d < count; ++d) {
-        if (!indices[d].isInt())
-            throw std::runtime_error("Tensor index must be integer");
-        const int64_t ix = indices[d].asInt();
-        if (ix < 0 || ix >= shape_[d])
-            throw std::runtime_error("Tensor index out of bounds");
-        flatIdx += ix * strides_[d];
+        if (isRange(indices[d])) {
+            hasRange = true;
+            break;
+        }
     }
 
-    if (!v.isNumber())
-        throw std::runtime_error("Tensor element must be numeric");
-    double dv = v.isInt() ? static_cast<double>(v.asInt()) : v.asReal();
-    setAt(flatIdx, dv);
+    if (!hasRange) {
+        // Walk the strides directly (same bounds semantics as flatIndex) — no
+        // temporary index vector on this per-element hot path.
+        int64_t flatIdx = 0;
+        for (size_t d = 0; d < count; ++d) {
+            if (!indices[d].isInt())
+                throw std::runtime_error("Tensor index must be integer or range");
+            const int64_t ix = indices[d].asInt();
+            if (ix < 0 || ix >= shape_[d])
+                throw std::runtime_error("Tensor index out of bounds");
+            flatIdx += ix * strides_[d];
+        }
+
+        if (!v.isNumber())
+            throw std::runtime_error("Tensor element must be numeric");
+        double dv = v.isInt() ? static_cast<double>(v.asInt()) : v.asReal();
+        setAt(flatIdx, dv);
+        return;
+    }
+
+    // Slice assignment: t[a:b, c] = <tensor matching the slice shape> | <number>.
+    // The slice shape squeezes integer-indexed dimensions, so a tensor value
+    // must have exactly the shape that reading the same slice would return.
+    std::vector<std::vector<int64_t>> dimIndices;
+    std::vector<int64_t> sliceShape;
+    collectSliceIndices(indices, count, dimIndices, sliceShape);
+
+    int64_t sliceNumel = 1;
+    for (auto s : sliceShape) sliceNumel *= s;
+
+    auto shapeStr = [](const std::vector<int64_t>& s) {
+        std::string out = "[";
+        for (size_t i = 0; i < s.size(); ++i) {
+            if (i) out += ", ";
+            out += std::to_string(s[i]);
+        }
+        return out + "]";
+    };
+
+    const ObjTensor* src = nullptr;
+    double scalar = 0.0;
+    if (isTensor(v)) {
+        src = asTensor(v);
+        if (src->shape() != sliceShape)
+            throw std::runtime_error("Tensor slice assignment shape mismatch: slice is " +
+                shapeStr(sliceShape) + " but value is " + shapeStr(src->shape()));
+    } else if (v.isNumber()) {
+        scalar = v.isInt() ? static_cast<double>(v.asInt()) : v.asReal();
+    } else {
+        throw std::runtime_error("Tensor slice assignment requires a tensor or number value");
+    }
+
+    if (sliceNumel == 0)
+        return;
+
+    // Self-assignment (t[...] = t): hold a COW alias so rawDataMut() below
+    // detaches the destination buffer and reads see the original data.
+    Value srcAlias;
+    if (src == this) {
+        srcAlias = Value::objVal(clone(nullptr));
+        src = asTensor(srcAlias);
+    }
+
+    // Walk the slice in row-major order (matching the source tensor's layout),
+    // maintaining the destination flat index incrementally — an odometer over
+    // dimIndices. store(k, flat) writes source element k at flat offset flat.
+    const size_t ndim = dimIndices.size();
+    auto writeAll = [&](auto&& store) {
+        std::vector<size_t> pos(ndim, 0);
+        int64_t flat = 0;
+        for (size_t d = 0; d < ndim; ++d)
+            flat += dimIndices[d][0] * strides_[d];
+        for (int64_t k = 0;;) {
+            store(k, flat);
+            if (++k == sliceNumel)
+                break;
+            for (size_t d = ndim; d-- > 0;) {
+                flat -= dimIndices[d][pos[d]] * strides_[d];
+                if (++pos[d] < dimIndices[d].size()) {
+                    flat += dimIndices[d][pos[d]] * strides_[d];
+                    break;
+                }
+                pos[d] = 0;
+                flat += dimIndices[d][0] * strides_[d];
+            }
+        }
+    };
+
+    // One COW/epoch via rawDataMut(), then typed stores (dtype dispatched once).
+    const bool fast = withTensorDType(dtype_, [&]<typename T>() {
+        T* dst = static_cast<T*>(rawDataMut());
+        if (src) {
+            writeAll([&](int64_t k, int64_t flat) { dst[flat] = static_cast<T>(src->at(k)); });
+        } else {
+            const T tv = static_cast<T>(scalar);
+            writeAll([&](int64_t, int64_t flat) { dst[flat] = tv; });
+        }
+    });
+    if (!fast) {
+        // Float16/Bool: generic per-element stores
+        writeAll([&](int64_t k, int64_t flat) { setAt(flat, src ? src->at(k) : scalar); });
+    }
 }
 
 Value ObjTensor::reshape(const std::vector<int64_t>& newShape) const

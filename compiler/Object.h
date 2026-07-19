@@ -1057,6 +1057,16 @@ struct ObjTensor : public Obj
     bool equals(const ObjTensor* other, double eps = 1e-15) const;
     void set(const ObjTensor* other);
 
+    /// True when this tensor's storage is not COW-shared with any other
+    /// tensor (mutating in place cannot be observed through another handle).
+    bool bufferUnique() const {
+#ifdef ROXAL_ENABLE_ONNX
+        return ort_value_ && ort_value_.use_count() == 1 && !isOnGpu();
+#else
+        return data_ && data_.use_count() == 1;
+#endif
+    }
+
     unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
     unique_ptr<Obj, UnreleasedObj> shallowClone() const override;
 
@@ -1093,6 +1103,15 @@ private:
 
     void computeStrides();
     int64_t flatIndex(const std::vector<int64_t>& indices) const;
+
+    // Expand a mixed integer/range index list into per-dimension index lists.
+    // Integer indices contribute a single-element list and are squeezed out of
+    // sliceShape; ranges contribute their in-bounds expansion and one
+    // sliceShape dimension. Shared by index() and setIndex() so read-slice and
+    // write-slice semantics cannot drift.
+    void collectSliceIndices(const Value* indices, size_t count,
+                             std::vector<std::vector<int64_t>>& dimIndices,
+                             std::vector<int64_t>& sliceShape) const;
 };
 
 inline bool isTensor(const Value& v) { return isObjType(v, ObjType::Tensor); }

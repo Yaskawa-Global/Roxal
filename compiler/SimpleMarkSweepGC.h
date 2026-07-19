@@ -210,7 +210,10 @@ public:
     void registerPersistentRoot(class GCRootBase* root);
     void unregisterPersistentRoot(class GCRootBase* root);
 
-    bool isCollectionRequested() const noexcept;
+    // inline: the interpreter polls this once per dispatched opcode
+    bool isCollectionRequested() const noexcept {
+        return collectionRequested_.load(std::memory_order_acquire);
+    }
     std::uint64_t currentEpoch() const noexcept;
     size_t lastCollectionFreed() const noexcept;
     bool isCollectionInProgress() const noexcept;

@@ -4715,6 +4715,80 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
 }
 
 
+namespace {
+
+enum class TensorEwFast { Add, Sub, Mul, Div, Rem };
+
+} // namespace
+
+// In-place tensor(+)scalar for dead temporaries. When the tensor operand on
+// the stack is the sole owner of both its object (strong 1, no weak refs) and
+// its data buffer (no COW sharing), the result reuses its storage instead of
+// allocating a new tensor — expression chains like ((t[a:b] - x) * y + z)
+// then allocate once for the slice and mutate in place through the chain.
+// Semantics are identical to the allocating kernels in Value.cpp
+// (tensorEwMap): result dtype is the operand dtype, elements computed through
+// double. Returns false whenever ownership, dtype, operand kinds, or operand
+// values (zero divisors) don't allow it; the caller falls through to the
+// existing allocating path.
+static bool tensorScalarInPlaceFast(Value& tv, const Value& sv, TensorEwFast op)
+{
+    if (!isTensor(tv) || tv.isConst())
+        return false;
+    if (!(sv.isInt() || sv.isReal()))
+        return false;
+    ObjTensor* t = asTensor(tv);
+    ObjControl* c = t->control;
+    // weak baseline is 1: the strong refs collectively hold one weak ref on
+    // the control block; >1 means user weak refs exist
+    if (c->strong.load(std::memory_order_acquire) != 1 ||
+        c->weak.load(std::memory_order_acquire) != 1)
+        return false;
+    if (!t->bufferUnique())
+        return false;
+
+    int64_t irhs = 0;
+    if (op == TensorEwFast::Rem) {
+        // mod() converts non-int divisors; keep that on the generic path
+        if (!sv.isInt())
+            return false;
+        irhs = sv.asIntUnchecked();
+        if (irhs == 0)
+            return false;   // generic path raises the proper error
+    }
+    const double s = sv.isInt() ? double(sv.asIntUnchecked()) : sv.asRealUnchecked();
+    if (op == TensorEwFast::Div && s == 0.0)
+        return false;       // generic path raises the proper error
+
+    const int64_t n = t->numel();
+    return withTensorDType(t->dtype(), [&]<typename T>() {
+        T* o = static_cast<T*>(t->rawDataMut());
+        switch (op) {
+            case TensorEwFast::Add:
+                for (int64_t i = 0; i < n; ++i)
+                    o[i] = static_cast<T>(static_cast<double>(o[i]) + s);
+                break;
+            case TensorEwFast::Sub:
+                for (int64_t i = 0; i < n; ++i)
+                    o[i] = static_cast<T>(static_cast<double>(o[i]) - s);
+                break;
+            case TensorEwFast::Mul:
+                for (int64_t i = 0; i < n; ++i)
+                    o[i] = static_cast<T>(static_cast<double>(o[i]) * s);
+                break;
+            case TensorEwFast::Div:
+                for (int64_t i = 0; i < n; ++i)
+                    o[i] = static_cast<T>(static_cast<double>(o[i]) / s);
+                break;
+            case TensorEwFast::Rem:
+                for (int64_t i = 0; i < n; ++i)
+                    o[i] = static_cast<T>(static_cast<double>(
+                        static_cast<int64_t>(static_cast<double>(o[i])) % irhs));
+                break;
+        }
+    });
+}
+
 bool VM::indexValue(const Value& indexable, int subscriptCount)
 {
     if (indexable.isObj()) {
@@ -5037,6 +5111,17 @@ bool VM::setIndexValue(const Value& indexable, int subscriptCount, Value& value)
                     // Indices read in place off the stack — see the Index-op
                     // tensor branch; this is the per-element write hot path.
                     const Value* idx0 = &peek(subscriptCount - 1);
+                    bool anyRange = false;
+                    for (int i = 0; i < subscriptCount; ++i) {
+                        if (isRange(idx0[i])) {
+                            anyRange = true;
+                            break;
+                        }
+                    }
+                    if (anyRange && !isTensor(value)) {
+                        if (!resolveValue(value))
+                            return false;
+                    }
                     t->setIndex(idx0, static_cast<size_t>(subscriptCount), value);
                     for (int i = 0; i <= subscriptCount; ++i)
                         pop();  // the indices, then the indexable
@@ -7539,6 +7624,23 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 break;
             }
             case OpCode::Equal: {
+                // fast path: plain int/real comparison
+                {
+                    Value& fa = peek(1);
+                    const Value& fb = peek(0);
+                    if (fa.isInt() && fb.isInt()) {
+                        fa = Value(fa.asIntUnchecked() == fb.asIntUnchecked());
+                        pop();
+                        break;
+                    }
+                    if ((fa.isInt() || fa.isReal()) && (fb.isInt() || fb.isReal())) {
+                        const double fav = fa.isInt() ? double(fa.asIntUnchecked()) : fa.asRealUnchecked();
+                        const double fbv = fb.isInt() ? double(fb.asIntUnchecked()) : fb.asRealUnchecked();
+                        fa = Value(fav == fbv);
+                        pop();
+                        break;
+                    }
+                }
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
 
@@ -7642,6 +7744,23 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 break;
             }
             case OpCode::Greater: {
+                // fast path: plain int/real comparison
+                {
+                    Value& fa = peek(1);
+                    const Value& fb = peek(0);
+                    if (fa.isInt() && fb.isInt()) {
+                        fa = Value(fa.asIntUnchecked() > fb.asIntUnchecked());
+                        pop();
+                        break;
+                    }
+                    if ((fa.isInt() || fa.isReal()) && (fb.isInt() || fb.isReal())) {
+                        const double fav = fa.isInt() ? double(fa.asIntUnchecked()) : fa.asRealUnchecked();
+                        const double fbv = fb.isInt() ? double(fb.asIntUnchecked()) : fb.asRealUnchecked();
+                        fa = Value(fav > fbv);
+                        pop();
+                        break;
+                    }
+                }
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
 
@@ -7659,6 +7778,23 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 break;
             }
             case OpCode::Less: {
+                // fast path: plain int/real comparison
+                {
+                    Value& fa = peek(1);
+                    const Value& fb = peek(0);
+                    if (fa.isInt() && fb.isInt()) {
+                        fa = Value(fa.asIntUnchecked() < fb.asIntUnchecked());
+                        pop();
+                        break;
+                    }
+                    if ((fa.isInt() || fa.isReal()) && (fb.isInt() || fb.isReal())) {
+                        const double fav = fa.isInt() ? double(fa.asIntUnchecked()) : fa.asRealUnchecked();
+                        const double fbv = fb.isInt() ? double(fb.asIntUnchecked()) : fb.asRealUnchecked();
+                        fa = Value(fav < fbv);
+                        pop();
+                        break;
+                    }
+                }
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
 
@@ -7676,6 +7812,23 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 break;
             }
             case OpCode::GreaterEqual: {
+                // fast path: plain int/real comparison
+                {
+                    Value& fa = peek(1);
+                    const Value& fb = peek(0);
+                    if (fa.isInt() && fb.isInt()) {
+                        fa = Value(fa.asIntUnchecked() >= fb.asIntUnchecked());
+                        pop();
+                        break;
+                    }
+                    if ((fa.isInt() || fa.isReal()) && (fb.isInt() || fb.isReal())) {
+                        const double fav = fa.isInt() ? double(fa.asIntUnchecked()) : fa.asRealUnchecked();
+                        const double fbv = fb.isInt() ? double(fb.asIntUnchecked()) : fb.asRealUnchecked();
+                        fa = Value(fav >= fbv);
+                        pop();
+                        break;
+                    }
+                }
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
 
@@ -7693,6 +7846,23 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 break;
             }
             case OpCode::LessEqual: {
+                // fast path: plain int/real comparison
+                {
+                    Value& fa = peek(1);
+                    const Value& fb = peek(0);
+                    if (fa.isInt() && fb.isInt()) {
+                        fa = Value(fa.asIntUnchecked() <= fb.asIntUnchecked());
+                        pop();
+                        break;
+                    }
+                    if ((fa.isInt() || fa.isReal()) && (fb.isInt() || fb.isReal())) {
+                        const double fav = fa.isInt() ? double(fa.asIntUnchecked()) : fa.asRealUnchecked();
+                        const double fbv = fb.isInt() ? double(fb.asIntUnchecked()) : fb.asRealUnchecked();
+                        fa = Value(fav <= fbv);
+                        pop();
+                        break;
+                    }
+                }
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
 
@@ -7710,6 +7880,23 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 break;
             }
             case OpCode::NotEqual: {
+                // fast path: plain int/real comparison
+                {
+                    Value& fa = peek(1);
+                    const Value& fb = peek(0);
+                    if (fa.isInt() && fb.isInt()) {
+                        fa = Value(fa.asIntUnchecked() != fb.asIntUnchecked());
+                        pop();
+                        break;
+                    }
+                    if ((fa.isInt() || fa.isReal()) && (fb.isInt() || fb.isReal())) {
+                        const double fav = fa.isInt() ? double(fa.asIntUnchecked()) : fa.asRealUnchecked();
+                        const double fbv = fb.isInt() ? double(fb.asIntUnchecked()) : fb.asRealUnchecked();
+                        fa = Value(fav != fbv);
+                        pop();
+                        break;
+                    }
+                }
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
 
@@ -7727,6 +7914,28 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 break;
             }
             case OpCode::Add: {
+                // fast path: plain int/real arithmetic — skips the future check,
+                // operator-hash dispatch and generic binaryOp Value churn
+                {
+                    Value& fa = peek(1);
+                    const Value& fb = peek(0);
+                    if (fa.isInt() && fb.isInt()) {
+                        fa = Value::intVal(fa.asIntUnchecked() + fb.asIntUnchecked());
+                        pop();
+                        break;
+                    }
+                    if ((fa.isInt() || fa.isReal()) && (fb.isInt() || fb.isReal())) {
+                        const double fav = fa.isInt() ? double(fa.asIntUnchecked()) : fa.asRealUnchecked();
+                        const double fbv = fb.isInt() ? double(fb.asIntUnchecked()) : fb.asRealUnchecked();
+                        fa = Value::realVal(fav + fbv);
+                        pop();
+                        break;
+                    }
+                    if (tensorScalarInPlaceFast(fa, fb, TensorEwFast::Add)) {
+                        pop();
+                        break;
+                    }
+                }
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
 
@@ -7770,6 +7979,28 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 break;
             }
             case OpCode::Subtract: {
+                // fast path: plain int/real arithmetic — skips the future check,
+                // operator-hash dispatch and generic binaryOp Value churn
+                {
+                    Value& fa = peek(1);
+                    const Value& fb = peek(0);
+                    if (fa.isInt() && fb.isInt()) {
+                        fa = Value::intVal(fa.asIntUnchecked() - fb.asIntUnchecked());
+                        pop();
+                        break;
+                    }
+                    if ((fa.isInt() || fa.isReal()) && (fb.isInt() || fb.isReal())) {
+                        const double fav = fa.isInt() ? double(fa.asIntUnchecked()) : fa.asRealUnchecked();
+                        const double fbv = fb.isInt() ? double(fb.asIntUnchecked()) : fb.asRealUnchecked();
+                        fa = Value::realVal(fav - fbv);
+                        pop();
+                        break;
+                    }
+                    if (tensorScalarInPlaceFast(fa, fb, TensorEwFast::Sub)) {
+                        pop();
+                        break;
+                    }
+                }
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
 
@@ -7787,6 +8018,28 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 break;
             }
             case OpCode::Multiply: {
+                // fast path: plain int/real arithmetic — skips the future check,
+                // operator-hash dispatch and generic binaryOp Value churn
+                {
+                    Value& fa = peek(1);
+                    const Value& fb = peek(0);
+                    if (fa.isInt() && fb.isInt()) {
+                        fa = Value::intVal(fa.asIntUnchecked() * fb.asIntUnchecked());
+                        pop();
+                        break;
+                    }
+                    if ((fa.isInt() || fa.isReal()) && (fb.isInt() || fb.isReal())) {
+                        const double fav = fa.isInt() ? double(fa.asIntUnchecked()) : fa.asRealUnchecked();
+                        const double fbv = fb.isInt() ? double(fb.asIntUnchecked()) : fb.asRealUnchecked();
+                        fa = Value::realVal(fav * fbv);
+                        pop();
+                        break;
+                    }
+                    if (tensorScalarInPlaceFast(fa, fb, TensorEwFast::Mul)) {
+                        pop();
+                        break;
+                    }
+                }
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
 
@@ -7804,6 +8057,14 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 break;
             }
             case OpCode::Divide: {
+                {
+                    Value& fa = peek(1);
+                    const Value& fb = peek(0);
+                    if (tensorScalarInPlaceFast(fa, fb, TensorEwFast::Div)) {
+                        pop();
+                        break;
+                    }
+                }
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
 
@@ -7839,6 +8100,14 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 break;
             }
             case OpCode::Modulo: {
+                {
+                    Value& fa = peek(1);
+                    const Value& fb = peek(0);
+                    if (tensorScalarInPlaceFast(fa, fb, TensorEwFast::Rem)) {
+                        pop();
+                        break;
+                    }
+                }
                 // TODO: support decimal
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
@@ -8263,6 +8532,38 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             }
             case OpCode::Index: {
                 uint8_t argCount = readByte();
+                // fast path: range[int] with non-negative int bounds — the
+                // desugared for-in loop's element fetch. Skips the generic
+                // dispatch and the double ObjRange::length() computation.
+                if (argCount == 1) {
+                    const Value& fi = peek(0);
+                    const Value& ft = peek(1);
+                    if (fi.isInt() && isRange(ft)) {
+                        ObjRange* fr = asRange(ft);
+                        if ((fr->start.isInt() || fr->start.isNil()) && fr->stop.isInt() &&
+                            (fr->step.isInt() || fr->step.isNil())) {
+                            const int64_t stepi = fr->step.isNil() ? 1 : fr->step.asIntUnchecked();
+                            const int64_t starti = fr->start.isNil() ? 0 : fr->start.asIntUnchecked();
+                            const int64_t stopi = fr->stop.asIntUnchecked();
+                            if (stepi > 0 && starti >= 0 && stopi >= 0) {
+                                int64_t len = 0;
+                                if (fr->closed) {
+                                    if (starti <= stopi)
+                                        len = (stopi - starti) / stepi + 1;
+                                } else {
+                                    if (starti < stopi)
+                                        len = (stopi - starti - 1) / stepi + 1;
+                                }
+                                const int64_t idx = fi.asIntUnchecked();
+                                if (idx >= 0 && idx < len) {
+                                    peek(1) = Value::intVal(starti + idx * stepi);
+                                    pop();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
                 if (tryAwaitFuture(peek(argCount)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
                 if (!indexValue(peek(argCount), argCount))
@@ -11243,6 +11544,85 @@ void VM::defineBuiltinMethods()
     defineBuiltinMethod(ValueType::Tensor, "fill", std::mem_fn(&VM::tensor_fill_builtin),
                         false, nullptr, {}, Value::nilVal());  // mutates self in place
 
+    {
+        // Fused gather-blit primitives (see tensor-fusion-design.md). Each
+        // writes into self (the destination) and returns nil. Named params so
+        // lut/mask/wrap can be passed by name. Indices/positions are the
+        // leading positional args; lut/mask/wrap trail with defaults.
+        using PT = type::Type::FuncType::ParamType;
+        auto param = [](const char* name, type::BuiltinType bt, bool hasDefault) {
+            PT p(toUnicodeString(name));
+            p.type = make_ptr<type::Type>(bt);
+            p.hasDefault = hasDefault;
+            return p;
+        };
+
+        // sample_col(x, y0, y1, src, base, step, lut=nil, mask=nil, wrap=true)
+        {
+            ptr<type::Type> ft = make_ptr<type::Type>(type::BuiltinType::Func);
+            ft->func = type::Type::FuncType();
+            ft->func->params = {
+                param("x", type::BuiltinType::Int, false),
+                param("y0", type::BuiltinType::Int, false),
+                param("y1", type::BuiltinType::Int, false),
+                param("src", type::BuiltinType::Tensor, false),
+                param("base", type::BuiltinType::Real, false),
+                param("step", type::BuiltinType::Real, false),
+                param("lut", type::BuiltinType::Tensor, true),
+                param("mask", type::BuiltinType::Tensor, true),
+                param("wrap", type::BuiltinType::Bool, true),
+            };
+            std::vector<Value> defs{Value::nilVal(), Value::nilVal(), Value::nilVal(),
+                                    Value::nilVal(), Value::nilVal(), Value::nilVal(),
+                                    Value::nilVal(), Value::nilVal(), Value(true)};
+            defineBuiltinMethod(ValueType::Tensor, "sample_col",
+                                std::mem_fn(&VM::tensor_sample_col_builtin),
+                                false, ft, defs, Value::nilVal());  // mutates self
+        }
+        // sample_span(y, x0, x1, src, u0, du, v0, dv, lut=nil, wrap=true)
+        {
+            ptr<type::Type> ft = make_ptr<type::Type>(type::BuiltinType::Func);
+            ft->func = type::Type::FuncType();
+            ft->func->params = {
+                param("y", type::BuiltinType::Int, false),
+                param("x0", type::BuiltinType::Int, false),
+                param("x1", type::BuiltinType::Int, false),
+                param("src", type::BuiltinType::Tensor, false),
+                param("u0", type::BuiltinType::Real, false),
+                param("du", type::BuiltinType::Real, false),
+                param("v0", type::BuiltinType::Real, false),
+                param("dv", type::BuiltinType::Real, false),
+                param("lut", type::BuiltinType::Tensor, true),
+                param("wrap", type::BuiltinType::Bool, true),
+            };
+            std::vector<Value> defs{Value::nilVal(), Value::nilVal(), Value::nilVal(),
+                                    Value::nilVal(), Value::nilVal(), Value::nilVal(),
+                                    Value::nilVal(), Value::nilVal(), Value::nilVal(),
+                                    Value(true)};
+            defineBuiltinMethod(ValueType::Tensor, "sample_span",
+                                std::mem_fn(&VM::tensor_sample_span_builtin),
+                                false, ft, defs, Value::nilVal());  // mutates self
+        }
+        // remap(src, umap, vmap, lut=nil, wrap=false, clamp=true)
+        {
+            ptr<type::Type> ft = make_ptr<type::Type>(type::BuiltinType::Func);
+            ft->func = type::Type::FuncType();
+            ft->func->params = {
+                param("src", type::BuiltinType::Tensor, false),
+                param("umap", type::BuiltinType::Tensor, false),
+                param("vmap", type::BuiltinType::Tensor, false),
+                param("lut", type::BuiltinType::Tensor, true),
+                param("wrap", type::BuiltinType::Bool, true),
+                param("clamp", type::BuiltinType::Bool, true),
+            };
+            std::vector<Value> defs{Value::nilVal(), Value::nilVal(), Value::nilVal(),
+                                    Value::nilVal(), Value(false), Value(true)};
+            defineBuiltinMethod(ValueType::Tensor, "remap",
+                                std::mem_fn(&VM::tensor_remap_builtin),
+                                false, ft, defs, Value::nilVal());  // mutates self
+        }
+    }
+
     // Orient methods — all read-only on self
     defineBuiltinMethod(ValueType::Orient, "rotate", std::mem_fn(&VM::orient_rotate_builtin),
                         false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x1);
@@ -12070,6 +12450,287 @@ Value VM::tensor_fill_builtin(ArgsView args)
     if (!fast)
         for (int64_t i = 0; i < n; ++i)
             t->setAt(i, v);
+    return Value::nilVal();
+}
+
+namespace {
+
+// --- fused gather-blit support (tensor.sample_col / sample_span / remap) ---
+
+inline bool blitIsIntDtype(TensorDType d) {
+    switch (d) {
+        case TensorDType::Int8: case TensorDType::Int16: case TensorDType::Int32:
+        case TensorDType::Int64: case TensorDType::UInt8: case TensorDType::UInt16:
+            return true;
+        default: return false;
+    }
+}
+
+inline int64_t blitFloorMod(int64_t a, int64_t n) {
+    int64_t r = a % n;
+    return (r < 0) ? r + n : r;
+}
+
+// A validated gather source: resolves one output cell's value bytes for a
+// source position `p` (flat index over the indexed axes). Shared by the three
+// blit primitives — they differ only in how `p` and the destination cell are
+// computed.
+struct BlitSrc {
+    ObjTensor* src = nullptr;
+    const uint8_t* srcRaw = nullptr;
+    size_t srcRowBytes = 0;      // bytes per indexed source element (direct path)
+    ObjTensor* lut = nullptr;    // null in the direct-color/indexed-no-lut path
+    const uint8_t* lutRaw = nullptr;
+    size_t lutRowBytes = 0;
+    int64_t lutRows = 0;
+    ObjTensor* mask = nullptr;   // null unless masked (sprite transparency)
+    size_t valBytes = 0;         // bytes written per output cell (== dst cell)
+
+    // value bytes for source position p, or null if masked-out
+    inline const uint8_t* value(int64_t p) const {
+        if (mask && static_cast<int64_t>(mask->at(p)) == 0)
+            return nullptr;
+        if (lut) {
+            int64_t si = static_cast<int64_t>(src->at(p));
+            if (si < 0) si = 0;
+            else if (si >= lutRows) si = lutRows - 1;
+            return lutRaw + static_cast<size_t>(si) * lutRowBytes;
+        }
+        return srcRaw + static_cast<size_t>(p) * srcRowBytes;
+    }
+};
+
+// Validate a gather source against destination `dst` and populate `b`. dst is
+// [H,W] (indexed/scalar) or [H,W,C] (direct color); srcIndexDims is how many
+// leading src axes are gathered (1 = column, 2 = span/remap). The value dtype
+// (lut if present, else src) must equal dst's; indices/masks must be integer.
+// Throws on any mismatch, before the caller mutates dst. Returns dst channels.
+int64_t buildBlitSrc(ObjTensor* dst, ObjTensor* src, const Value& lutV,
+                     const Value& maskV, int64_t srcIndexDims, BlitSrc& b,
+                     const char* who)
+{
+    const int64_t dstRank = dst->rank();
+    if (dstRank != 2 && dstRank != 3)
+        throw std::invalid_argument(std::string(who) + ": destination must be 2-D [H,W] or 3-D [H,W,C]");
+    const int64_t dstChannels = (dstRank == 3) ? dst->shape()[2] : 1;
+    const size_t elemSize = tensorDTypeSize(dst->dtype());
+
+    if (src->rank() < srcIndexDims)
+        throw std::invalid_argument(std::string(who) + ": source rank too low");
+
+    b.src = src;
+    b.srcRaw = static_cast<const uint8_t*>(src->rawData());
+    int64_t srcValElems = 1;
+    for (int64_t d = srcIndexDims; d < src->rank(); ++d)
+        srcValElems *= src->shape()[d];
+    b.srcRowBytes = static_cast<size_t>(srcValElems) * tensorDTypeSize(src->dtype());
+
+    ObjTensor* lut = (!lutV.isNil() && isTensor(lutV)) ? asTensor(lutV) : nullptr;
+    b.mask = (!maskV.isNil() && isTensor(maskV)) ? asTensor(maskV) : nullptr;
+
+    if (lut) {
+        // indexed: src holds integer indices into lut; lut supplies the values
+        if (!blitIsIntDtype(src->dtype()))
+            throw std::invalid_argument(std::string(who) + ": src must be an integer tensor when a lut is given");
+        if (lut->rank() < 1 || lut->rank() > 2)
+            throw std::invalid_argument(std::string(who) + ": lut must be 1-D [M] or 2-D [M,C]");
+        if (lut->dtype() != dst->dtype())
+            throw std::invalid_argument(std::string(who) + ": lut dtype must match destination");
+        const int64_t lutChannels = (lut->rank() == 2) ? lut->shape()[1] : 1;
+        if (lutChannels != dstChannels)
+            throw std::invalid_argument(std::string(who) + ": lut channels must match destination channels");
+        b.lut = lut;
+        b.lutRaw = static_cast<const uint8_t*>(lut->rawData());
+        b.lutRows = lut->shape()[0];
+        b.lutRowBytes = static_cast<size_t>(lutChannels) * elemSize;
+        b.valBytes = b.lutRowBytes;
+    } else {
+        // direct: src supplies the values (scalar indexed frame, or color rows)
+        if (src->dtype() != dst->dtype())
+            throw std::invalid_argument(std::string(who) + ": src dtype must match destination (or supply a lut)");
+        if (srcValElems != dstChannels)
+            throw std::invalid_argument(std::string(who) + ": src channels must match destination channels");
+        b.valBytes = static_cast<size_t>(srcValElems) * elemSize;
+    }
+
+    if (b.mask && !blitIsIntDtype(b.mask->dtype()))
+        throw std::invalid_argument(std::string(who) + ": mask must be an integer tensor");
+    return dstChannels;
+}
+
+} // namespace
+
+Value VM::tensor_sample_col_builtin(ArgsView args)
+{
+    // sample_col(x, y0, y1, src, base, step, lut=nil, mask=nil, wrap=true):
+    // 1-D affine gather into destination column x, rows [y0,y1). For output
+    // row k: idx = wrap? floormod(int(base+step*k), N) : clamp; the value is
+    // lut[src[idx]] (indexed) or src[idx] (direct); mask[idx]==0 leaves the
+    // cell. Writes in place, returns nil. See tensor-fusion-design.md.
+    if (args.size() < 7 || !isTensor(args[0]))
+        throw std::invalid_argument("tensor.sample_col expects (x, y0, y1, src, base, step, ...)");
+    ObjTensor* dst = asTensor(args[0]);
+    if (args[0].isConst())
+        throw std::invalid_argument("tensor.sample_col: destination is const");
+    if (!args[1].isInt() || !args[2].isInt() || !args[3].isInt())
+        throw std::invalid_argument("tensor.sample_col: x, y0, y1 must be ints");
+    if (!isTensor(args[4]))
+        throw std::invalid_argument("tensor.sample_col: src must be a tensor");
+    if (!args[5].isNumber() || !args[6].isNumber())
+        throw std::invalid_argument("tensor.sample_col: base, step must be numbers");
+    ObjTensor* src = asTensor(args[4]);
+    const int64_t x  = args[1].asInt();
+    int64_t y0 = args[2].asInt();
+    int64_t y1 = args[3].asInt();
+    const double base = args[5].isInt() ? double(args[5].asInt()) : args[5].asReal();
+    const double step = args[6].isInt() ? double(args[6].asInt()) : args[6].asReal();
+    const Value lutV  = (args.size() > 7) ? args[7] : Value::nilVal();
+    const Value maskV = (args.size() > 8) ? args[8] : Value::nilVal();
+    const bool wrap   = (args.size() > 9 && args[9].isBool()) ? args[9].asBool() : true;
+
+    const int64_t H = dst->shape()[0];
+    const int64_t W = dst->shape()[1];
+    if (x < 0 || x >= W)
+        throw std::invalid_argument("tensor.sample_col: x out of range");
+    const int64_t N = src->shape()[0];
+    if (N <= 0)
+        throw std::invalid_argument("tensor.sample_col: empty src");
+    if (y0 < 0) y0 = 0;
+    if (y1 > H) y1 = H;
+    if (y1 <= y0) return Value::nilVal();
+
+    BlitSrc b;
+    buildBlitSrc(dst, src, lutV, maskV, 1, b, "tensor.sample_col");
+
+    uint8_t* dstRaw = static_cast<uint8_t*>(dst->rawDataMut());
+    const int64_t rows = y1 - y0;
+    for (int64_t k = 0; k < rows; ++k) {
+        int64_t ii = static_cast<int64_t>(std::floor(base + step * double(k)));
+        int64_t idx = wrap ? blitFloorMod(ii, N)
+                           : (ii < 0 ? 0 : (ii >= N ? N - 1 : ii));
+        const uint8_t* vp = b.value(idx);
+        if (!vp) continue;
+        uint8_t* cell = dstRaw + static_cast<size_t>((y0 + k) * W + x) * b.valBytes;
+        std::memcpy(cell, vp, b.valBytes);
+    }
+    return Value::nilVal();
+}
+
+Value VM::tensor_sample_span_builtin(ArgsView args)
+{
+    // sample_span(y, x0, x1, src, u0, du, v0, dv, lut=nil, wrap=true): 2-D
+    // affine gather into destination row y, columns [x0,x1). For output col k:
+    // ui=wrap(int(u0+du*k),SW), vi=wrap(int(v0+dv*k),SH); value is
+    // lut[src[vi,ui]] or src[vi,ui]. Writes in place, returns nil.
+    if (args.size() < 9 || !isTensor(args[0]))
+        throw std::invalid_argument("tensor.sample_span expects (y, x0, x1, src, u0, du, v0, dv, ...)");
+    ObjTensor* dst = asTensor(args[0]);
+    if (args[0].isConst())
+        throw std::invalid_argument("tensor.sample_span: destination is const");
+    if (!args[1].isInt() || !args[2].isInt() || !args[3].isInt())
+        throw std::invalid_argument("tensor.sample_span: y, x0, x1 must be ints");
+    if (!isTensor(args[4]))
+        throw std::invalid_argument("tensor.sample_span: src must be a tensor");
+    for (int i = 5; i <= 8; ++i)
+        if (!args[i].isNumber())
+            throw std::invalid_argument("tensor.sample_span: u0, du, v0, dv must be numbers");
+    ObjTensor* src = asTensor(args[4]);
+    const int64_t y  = args[1].asInt();
+    int64_t x0 = args[2].asInt();
+    int64_t x1 = args[3].asInt();
+    auto num = [](const Value& v) { return v.isInt() ? double(v.asInt()) : v.asReal(); };
+    const double u0 = num(args[5]), du = num(args[6]);
+    const double v0 = num(args[7]), dv = num(args[8]);
+    const Value lutV = (args.size() > 9) ? args[9] : Value::nilVal();
+    const bool wrap  = (args.size() > 10 && args[10].isBool()) ? args[10].asBool() : true;
+
+    const int64_t H = dst->shape()[0];
+    const int64_t W = dst->shape()[1];
+    if (y < 0 || y >= H)
+        throw std::invalid_argument("tensor.sample_span: y out of range");
+    if (src->rank() < 2)
+        throw std::invalid_argument("tensor.sample_span: src must be 2-D [SH,SW] (+channels)");
+    const int64_t SH = src->shape()[0];
+    const int64_t SW = src->shape()[1];
+    if (SH <= 0 || SW <= 0)
+        throw std::invalid_argument("tensor.sample_span: empty src");
+    if (x0 < 0) x0 = 0;
+    if (x1 > W) x1 = W;
+    if (x1 <= x0) return Value::nilVal();
+
+    BlitSrc b;
+    buildBlitSrc(dst, src, lutV, Value::nilVal(), 2, b, "tensor.sample_span");
+
+    uint8_t* dstRaw = static_cast<uint8_t*>(dst->rawDataMut());
+    const int64_t cols = x1 - x0;
+    for (int64_t k = 0; k < cols; ++k) {
+        int64_t uu = static_cast<int64_t>(std::floor(u0 + du * double(k)));
+        int64_t vv = static_cast<int64_t>(std::floor(v0 + dv * double(k)));
+        int64_t ui = wrap ? blitFloorMod(uu, SW) : (uu < 0 ? 0 : (uu >= SW ? SW - 1 : uu));
+        int64_t vi = wrap ? blitFloorMod(vv, SH) : (vv < 0 ? 0 : (vv >= SH ? SH - 1 : vv));
+        const uint8_t* vp = b.value(vi * SW + ui);
+        if (!vp) continue;
+        uint8_t* cell = dstRaw + static_cast<size_t>(y * W + (x0 + k)) * b.valBytes;
+        std::memcpy(cell, vp, b.valBytes);
+    }
+    return Value::nilVal();
+}
+
+Value VM::tensor_remap_builtin(ArgsView args)
+{
+    // remap(src, umap, vmap, lut=nil, wrap=false, clamp=true): gather each
+    // destination pixel (r,c) from src at (int(vmap[r,c]), int(umap[r,c])).
+    // umap/vmap are [H,W] floats. Out-of-range: wrap, else clamp, else skip
+    // (leaves the destination pixel). General image warp (undistortion,
+    // rectification, rotozoom). Writes in place, returns nil.
+    if (args.size() < 4 || !isTensor(args[0]))
+        throw std::invalid_argument("tensor.remap expects (src, umap, vmap, ...)");
+    ObjTensor* dst = asTensor(args[0]);
+    if (args[0].isConst())
+        throw std::invalid_argument("tensor.remap: destination is const");
+    if (!isTensor(args[1]) || !isTensor(args[2]) || !isTensor(args[3]))
+        throw std::invalid_argument("tensor.remap: src, umap, vmap must be tensors");
+    ObjTensor* src  = asTensor(args[1]);
+    ObjTensor* umap = asTensor(args[2]);
+    ObjTensor* vmap = asTensor(args[3]);
+    const Value lutV = (args.size() > 4) ? args[4] : Value::nilVal();
+    const bool wrap  = (args.size() > 5 && args[5].isBool()) ? args[5].asBool() : false;
+    const bool clampToEdge = (args.size() > 6 && args[6].isBool()) ? args[6].asBool() : true;
+
+    const int64_t H = dst->shape()[0];
+    const int64_t W = dst->shape()[1];
+    if (umap->rank() < 2 || vmap->rank() < 2 ||
+        umap->shape()[0] != H || umap->shape()[1] != W ||
+        vmap->shape()[0] != H || vmap->shape()[1] != W)
+        throw std::invalid_argument("tensor.remap: umap/vmap must be [H,W] matching the destination");
+    if (src->rank() < 2)
+        throw std::invalid_argument("tensor.remap: src must be 2-D [SH,SW] (+channels)");
+    const int64_t SH = src->shape()[0];
+    const int64_t SW = src->shape()[1];
+    if (SH <= 0 || SW <= 0)
+        throw std::invalid_argument("tensor.remap: empty src");
+
+    BlitSrc b;
+    buildBlitSrc(dst, src, lutV, Value::nilVal(), 2, b, "tensor.remap");
+
+    uint8_t* dstRaw = static_cast<uint8_t*>(dst->rawDataMut());
+    const int64_t np = H * W;
+    for (int64_t p = 0; p < np; ++p) {
+        int64_t ui = static_cast<int64_t>(std::floor(umap->at(p)));
+        int64_t vi = static_cast<int64_t>(std::floor(vmap->at(p)));
+        if (wrap) {
+            ui = blitFloorMod(ui, SW);
+            vi = blitFloorMod(vi, SH);
+        } else if (clampToEdge) {
+            ui = ui < 0 ? 0 : (ui >= SW ? SW - 1 : ui);
+            vi = vi < 0 ? 0 : (vi >= SH ? SH - 1 : vi);
+        } else if (ui < 0 || ui >= SW || vi < 0 || vi >= SH) {
+            continue;  // out of bounds and no wrap/clamp: leave the pixel
+        }
+        const uint8_t* vp = b.value(vi * SW + ui);
+        if (!vp) continue;
+        std::memcpy(dstRaw + static_cast<size_t>(p) * b.valBytes, vp, b.valBytes);
+    }
     return Value::nilVal();
 }
 

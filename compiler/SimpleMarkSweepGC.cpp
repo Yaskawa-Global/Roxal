@@ -745,10 +745,6 @@ bool SimpleMarkSweepGC::isEnabled() const noexcept {
     return gcEnabled_.load(std::memory_order_acquire);
 }
 
-bool SimpleMarkSweepGC::isCollectionRequested() const noexcept {
-    return collectionRequested_.load(std::memory_order_acquire);
-}
-
 std::uint64_t SimpleMarkSweepGC::currentEpoch() const noexcept {
     return epoch_.load(std::memory_order_relaxed);
 }

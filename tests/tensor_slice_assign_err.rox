@@ -1,0 +1,3 @@
+# Slice assignment with mismatched shape must fail
+var t = tensor(4, data=[1,2,3,4])
+t[0:3] = tensor(2, data=[1,2])

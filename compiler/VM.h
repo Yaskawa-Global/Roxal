@@ -672,7 +672,9 @@ protected:
         assert(isFunction(asClosure(thread->frames.back().closure)->function));
         assert(isModuleType(asFunction(asClosure(thread->frames.back().closure)->function)->moduleType));
         #endif
-        auto currentFrame { thread->frames.back() };
+        // reference, not copy: this runs on every module-variable access, and
+        // copying the CallFrame (with its Values) dominated interpreter profiles
+        auto& currentFrame { thread->frames.back() };
 
         return asModuleType(asFunction(asClosure(currentFrame.closure)->function)->moduleType);
     }
@@ -923,6 +925,9 @@ public:
     Value tensor_astype_builtin(ArgsView args);
     Value tensor_take_builtin(ArgsView args);
     Value tensor_fill_builtin(ArgsView args);
+    Value tensor_sample_col_builtin(ArgsView args);
+    Value tensor_sample_span_builtin(ArgsView args);
+    Value tensor_remap_builtin(ArgsView args);
     Value tensor_shape_builtin(ArgsView args);
     Value tensor_dtype_builtin(ArgsView args);
     Value tensor_dims_builtin(ArgsView args);

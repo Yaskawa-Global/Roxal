@@ -61,10 +61,54 @@ public:
 
     static void resetIdCounter(uint64_t value=1) { nextId.store(value); }
 
-    void push(const Value& value);
-    Value pop();
-    void popN(size_t n);
-    Value& peek(int distance);
+    // inline: these are the interpreter's per-opcode stack primitives
+    void push(const Value& value)
+    {
+        // Bounds check in ALL builds: the stack is a fixed-capacity buffer and
+        // this is the single choke point for every push.  Without the check a
+        // deep dispatch (e.g. a large event backlog pumped recursively inside
+        // handlers) silently streams NaN-boxed Values past the buffer into
+        // adjacent heap chunks -- corruption that surfaces as unrelated
+        // double-frees/SEGVs much later.  One predicted branch per push is
+        // noise next to interpreter dispatch cost.
+        if (stackTop == stack.end())
+            throw std::runtime_error(
+                "Value stack overflow (limit " + std::to_string(stack.size())
+                + "; deep handler/event recursion? see --stack-size)");
+
+        *stackTop = value;
+        stackTop++;
+    }
+
+    Value pop()
+    {
+        #ifdef DEBUG_BUILD
+        if (stackTop == stack.begin())
+            throw std::runtime_error("Stack underflow");
+        #endif
+
+        stackTop--;
+        auto retValue = *stackTop; // copy (hold ref)
+
+        if (stackTop->isObj())
+            *stackTop = Value(); // ensure to call decRef on objects
+
+        return retValue;
+    }
+
+    void popN(size_t n)
+    {
+        for(size_t i=0; i<n; i++) pop();
+    }
+
+    Value& peek(int distance)
+    {
+        #ifdef DEBUG_BUILD
+        if (stackTop - stack.begin() <= distance)
+            throw std::runtime_error("Stack underflow access ("+std::to_string(distance)+" stacksize:"+std::to_string(stackTop - stack.begin())+")");
+        #endif
+        return *(stackTop - 1 - distance);
+    }
 
     using ValueStack = std::vector<Value>;
     ValueStack stack;

@@ -1,0 +1,81 @@
+# Tensor slice assignment tests
+
+# print a 1D tensor's elements on one line (all test values are integral)
+proc show1(t, n):
+  var line = ''
+  for i in range(..<n):
+    if i > 0:
+      line = line + ' '
+    line = line + string(int(t[i]))
+  print(line)
+
+# print a 2D tensor row by row
+proc show2(t, rows, cols):
+  for r in range(..<rows):
+    var line = ''
+    for c in range(..<cols):
+      if c > 0:
+        line = line + ' '
+      line = line + string(int(t[r, c]))
+    print(line)
+
+# === 1D: assign tensor into a range ===
+var t = tensor(6, data=[0,0,0,0,0,0])
+t[1:4] = tensor(3, data=[10,20,30])
+show1(t, 6)
+
+# scalar broadcast into a slice
+t[0:2] = 7
+show1(t, 6)
+
+# empty slice is a no-op
+t[3:3] = 99
+show1(t, 6)
+
+# step range
+var s = tensor(8, data=[0,0,0,0,0,0,0,0])
+s[0:8:2] = tensor(4, data=[1,2,3,4])
+show1(s, 8)
+
+# closed range (inclusive)
+s[5..7] = 9
+show1(s, 8)
+
+# === 2D: column write (range + int) ===
+var m = tensor(3, 4, data=[0,0,0,0,0,0,0,0,0,0,0,0])
+m[0:3, 1] = tensor(3, data=[1,2,3])
+show2(m, 3, 4)
+
+# row write (int + range)
+m[2, 0:4] = tensor(4, data=[5,6,7,8])
+show2(m, 3, 4)
+
+# rectangular paste
+m[0:2, 2:4] = tensor(2, 2, data=[11,12,13,14])
+show2(m, 3, 4)
+
+# scalar broadcast rectangle
+m[0:2, 0:2] = 4
+show2(m, 3, 4)
+
+# === dtype conversion on write (uint8 destination, float64 source) ===
+var u = tensor(shape=[4], dtype="uint8")
+u[0:4] = tensor(4, data=[1.0, 2.0, 3.0, 250.0])
+show1(u, 4)
+
+# === whole-tensor self assignment (identity, must not corrupt) ===
+var w = tensor(3, data=[1,2,3])
+w[0:3] = w
+show1(w, 3)
+
+# === value semantics: destination write doesn't alias the source ===
+var a = tensor(4, data=[1,2,3,4])
+var b = tensor(4, data=[0,0,0,0])
+b[0:4] = a
+a[0] = 99
+show1(b, 4)
+
+# === round trip: read slice, write it back elsewhere ===
+var img = tensor(3, 3, data=[1,2,3,4,5,6,7,8,9])
+img[0:3, 0] = img[0:3, 2]
+show2(img, 3, 3)

@@ -3790,7 +3790,7 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
 }
 
 
-std::mutex VariablesMap::globalsLock {};
+SpinLock VariablesMap::globalsLock {};
 VariablesMap::VarsMap VariablesMap::globals {};
 
 

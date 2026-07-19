@@ -20,6 +20,23 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     endif()
 endif()
 
+# Link-time optimization for optimized builds. On by default for everything
+# except Debug (LTO ~doubles link time, unwanted while iterating). Turn off
+# with -DROXAL_ENABLE_LTO=OFF. Measured ~10% on real workloads; it does not
+# help the bare interpreter loop (GCC won't inline the small Value helpers
+# into the very large VM::execute regardless).
+option(ROXAL_ENABLE_LTO "Link-time optimization for optimized (non-Debug) builds" ON)
+if(ROXAL_ENABLE_LTO AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT ROXAL_IPO_OK OUTPUT ROXAL_IPO_MSG)
+    if(ROXAL_IPO_OK)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+        message(STATUS "LTO enabled for ${CMAKE_BUILD_TYPE} build")
+    else()
+        message(WARNING "LTO requested but unsupported by the toolchain: ${ROXAL_IPO_MSG}")
+    endif()
+endif()
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 enable_testing()

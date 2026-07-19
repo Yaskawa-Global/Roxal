@@ -199,7 +199,7 @@ public:
 
     /// @brief Constructs a boolean value.
     /// @param b The boolean value.
-    explicit Value(bool b) { val = b ? (QNAN | TagTrue) : (QNAN | TagFalse); }
+    explicit Value(bool b) { val.store(b ? (QNAN | TagTrue) : (QNAN | TagFalse), std::memory_order_release); }
     static inline Value boolVal(bool b) { return Value(b); }
     static inline Value trueVal() { return Value(true); }
     static inline Value falseVal() { return Value(false); }
@@ -207,25 +207,25 @@ public:
 
     /// @brief Constructs a byte value.
     /// @param b The byte value.
-    explicit Value(uint8_t b) { val = QNAN | TagByte | static_cast<uint64_t>(b); }
+    explicit Value(uint8_t b) { val.store(QNAN | TagByte | static_cast<uint64_t>(b), std::memory_order_release); }
     static inline Value byteVal(uint8_t b) { return Value(b); }
     static Value boxedByteVal(uint8_t b);
 
     /// @brief Constructs an integer value (inline 32-bit storage). Prefer intVal() to handle boxing.
     /// @param i The integer value.
-    explicit Value(int32_t i) { val = QNAN | TagInt | static_cast<uint64_t>(static_cast<uint32_t>(i)); }
+    explicit Value(int32_t i) { val.store(QNAN | TagInt | static_cast<uint64_t>(static_cast<uint32_t>(i)), std::memory_order_release); }
     static Value intVal(int64_t i);
     static Value boxedIntVal(int64_t i);
 
     /// @brief Constructs a real value.
     /// @param r The real value.
-    explicit Value(double r) { val = (*reinterpret_cast<uint64_t*>(&r)); }
+    explicit Value(double r) { val.store(*reinterpret_cast<uint64_t*>(&r), std::memory_order_release); }
     static inline Value realVal(double r) { return Value(r); }
     static Value boxedRealVal(double r);
 
     /// @brief Constructs a value of the specified builtin type.
     /// @param bt The builtin type.
-    explicit Value(ValueType bt) { val = QNAN | TagType | uint64_t(bt); }
+    explicit Value(ValueType bt) { val.store(QNAN | TagType | uint64_t(bt), std::memory_order_release); }
     static inline Value typeVal(ValueType bt) { return Value(bt); }
     static Value boxedTypeVal(ValueType bt);
 
@@ -236,7 +236,7 @@ public:
     explicit Value(unique_ptr<Obj, D> o);
 
     explicit Value(int16_t enumLabelValue, uint16_t enumTypeId)
-        { val = QNAN | TagEnum | (0xffffffff & (enumLabelValue | (uint64_t(enumTypeId) << 16))); }
+        { val.store(QNAN | TagEnum | (0xffffffff & (enumLabelValue | (uint64_t(enumTypeId) << 16))), std::memory_order_release); }
     static inline Value enumVal(int16_t labelVal, uint16_t enumTypeId) { return Value(labelVal, enumTypeId); }
 
 
@@ -336,7 +336,10 @@ public:
     /// @param v The value to copy.
     Value(const Value& v)
     {
-        val.store(v.val.load());
+        // relaxed/release: cross-thread Value publication is synchronized by
+        // locks or GC safepoints; a seq_cst store here is an mfence on every
+        // Value copy in the interpreter
+        val.store(v.val.load(std::memory_order_relaxed), std::memory_order_release);
         if (isObj() || isBoxed()) {
             if (isWeak()) incWeakObj();
             else incRefObj();
@@ -354,7 +357,7 @@ public:
             else decRefObj();
         }
 
-        val.store(v.val.load());
+        val.store(v.val.load(std::memory_order_relaxed), std::memory_order_release);
         if (isObj() || isBoxed()) {
             if (isWeak()) incWeakObj();
             else incRefObj();
@@ -379,11 +382,11 @@ public:
     /// @brief Unboxes the value from an object if it is boxed.
     void unbox();
 
-    bool isWeak() const { return (val.load() & WeakMask) != 0; }
+    bool isWeak() const { return (val.load(std::memory_order_relaxed) & WeakMask) != 0; }
     Value weakRef() const;
     Value strongRef() const;
 
-    bool isConst() const { return (val.load() & ConstMask) != 0; }
+    bool isConst() const { return (val.load(std::memory_order_relaxed) & ConstMask) != 0; }
     Value constRef() const;
     Value mutableRef() const;
 
@@ -457,6 +460,17 @@ public:
     /// @param strict If true, performs strict type checking. If false, allows type coercion.
     /// @return The real value.
     double asReal(bool strict=true) const;
+
+    /// Unchecked accessors for hot interpreter paths: the caller must have
+    /// established isInt()/isReal() first (no future/signal/boxed handling).
+    inline int64_t asIntUnchecked() const {
+        uint64_t i { val.load(std::memory_order_relaxed) & ~(QNAN | TypeTag) };
+        return *reinterpret_cast<int32_t*>(&i);
+    }
+    inline double asRealUnchecked() const {
+        uint64_t bits { val.load(std::memory_order_relaxed) };
+        return *reinterpret_cast<double*>(&bits);
+    }
 
     /// @brief Checks if the value is a number (integer, real, or byte).
     /// @return True if the value is a number, false otherwise.
@@ -689,6 +703,26 @@ std::ostream& operator<<(std::ostream& out, const Value& v);
 // map of variables to values
 //  (use for each mnodule's variables; also maintains builtin globals)
 //  (all inline for performance)
+/// Tiny test-and-set lock for very short, mostly-uncontended critical
+/// sections (VariablesMap accesses: a hash lookup / Value assign). An
+/// uncontended acquire/release pair is a few instructions vs. a pthread
+/// mutex call pair per module-variable access in the interpreter.
+class SpinLock
+{
+public:
+    void lock() noexcept {
+        while (flag.test_and_set(std::memory_order_acquire)) {
+#if defined(__x86_64__) || defined(__i386__)
+            __builtin_ia32_pause();
+#endif
+        }
+    }
+    void unlock() noexcept { flag.clear(std::memory_order_release); }
+
+private:
+    std::atomic_flag flag = ATOMIC_FLAG_INIT;
+};
+
 class VariablesMap
 {
 public:
@@ -719,13 +753,13 @@ public:
 
     void clearGlobals()
     {
-        std::lock_guard<std::mutex> lock(globalsLock);
+        std::lock_guard lock(globalsLock);
         globals.clear();
     }
 
     void clear()
     {
-        std::lock_guard<std::mutex> lock(varsLock);
+        std::lock_guard lock(varsLock);
         vars.clear();
     }
 
@@ -733,13 +767,13 @@ public:
     bool exists(int32_t nameHash) const
     {
         {
-            std::lock_guard<std::mutex> lock(varsLock);
+            std::lock_guard lock(varsLock);
             auto it = vars.find(nameHash);
             if (it != vars.end())
                 return true;
         }
         {
-            std::lock_guard<std::mutex> lock(globalsLock);
+            std::lock_guard lock(globalsLock);
             auto it = globals.find(nameHash);
             if (it != globals.end())
                 return true;
@@ -753,7 +787,7 @@ public:
 
     // global only exists?
     bool existsGlobal(int32_t nameHash) const {
-        std::lock_guard<std::mutex> lock(globalsLock);
+        std::lock_guard lock(globalsLock);
         auto it = globals.find(nameHash);
         return (it != globals.end());
     }
@@ -766,7 +800,7 @@ public:
     std::optional<Value> load(int32_t nameHash) const
     {
         {
-            std::lock_guard<std::mutex> lock(varsLock);
+            std::lock_guard lock(varsLock);
 
             auto it = vars.find(nameHash);
             if (it != vars.end())
@@ -775,7 +809,7 @@ public:
 
         // try globals
         {
-            std::lock_guard<std::mutex> lock(globalsLock);
+            std::lock_guard lock(globalsLock);
 
             auto it = globals.find(nameHash);
             if (it != globals.end())
@@ -791,7 +825,7 @@ public:
 
     bool isModuleVar(int32_t nameHash) const
     {
-        std::lock_guard<std::mutex> lock(varsLock);
+        std::lock_guard lock(varsLock);
         return vars.find(nameHash) != vars.end();
     }
 
@@ -804,7 +838,7 @@ public:
     // return: was stored (e.g. if exists and overwrite=false, returns false)
     bool store(int32_t nameHash, const icu::UnicodeString& name, const Value& value, bool overwrite=false)
     {
-        std::lock_guard<std::mutex> lock(varsLock);
+        std::lock_guard lock(varsLock);
         auto it = vars.find(nameHash);
         if (it != vars.end()) {
             if (!overwrite)
@@ -830,7 +864,7 @@ public:
     // returns if stored (i.e. exists).  globals not considered
     bool storeIfExists(int32_t nameHash, const icu::UnicodeString& name, const Value& value)
     {
-        std::lock_guard<std::mutex> lock(varsLock);
+        std::lock_guard lock(varsLock);
         auto it = vars.find(nameHash);
         if (it == vars.end())
             return false;
@@ -842,7 +876,7 @@ public:
     // store global var value (will overwrite, module vars not considered)
     void storeGlobal(const icu::UnicodeString& name, const Value& value)
     {
-        std::lock_guard<std::mutex> lock(globalsLock);
+        std::lock_guard lock(globalsLock);
         auto it = globals.find(name.hashCode());
         if (it != globals.end()) {
             it->second.first = name;
@@ -860,7 +894,7 @@ public:
                        const std::string& signalName)
     {
         {
-            std::lock_guard<std::mutex> lock(varsLock);
+            std::lock_guard lock(varsLock);
             auto it = vars.find(nameHash);
             if (it != vars.end()) {
                 if (it->second.first.isEmpty())
@@ -870,7 +904,7 @@ public:
         }
 
         {
-            std::lock_guard<std::mutex> lock(globalsLock);
+            std::lock_guard lock(globalsLock);
             auto it = globals.find(nameHash);
             if (it != globals.end()) {
                 if (it->second.first.isEmpty())
@@ -890,7 +924,7 @@ public:
     // iterate over each module var and call f (with const).  globals not considered.
     void forEach(std::function<void(const NameValue&)> f)
     {
-        std::lock_guard<std::mutex> lock(varsLock);
+        std::lock_guard lock(varsLock);
         for(const auto& entry : vars) {
             try {
                 f(NameValue(entry.second.first, entry.second.second.value));
@@ -901,7 +935,7 @@ public:
 
     std::vector<NameValue> snapshot() const
     {
-        std::lock_guard<std::mutex> lock(varsLock);
+        std::lock_guard lock(varsLock);
         std::vector<NameValue> copy;
         copy.reserve(vars.size());
         for (const auto& entry : vars) {
@@ -912,7 +946,7 @@ public:
 
     std::vector<NameValue> snapshotGlobals() const
     {
-        std::lock_guard<std::mutex> lock(globalsLock);
+        std::lock_guard lock(globalsLock);
         std::vector<NameValue> copy;
         copy.reserve(globals.size());
         for (const auto& entry : globals) {
@@ -957,7 +991,7 @@ public:
     // list of module variable names (globals not considered)
     std::vector<icu::UnicodeString> variableNames() const
     {
-        std::lock_guard<std::mutex> lock(varsLock);
+        std::lock_guard lock(varsLock);
         std::vector<icu::UnicodeString> keys;
         for(const auto& entry : vars)
             keys.push_back(entry.second.first);
@@ -969,10 +1003,10 @@ protected:
     // TODO: use something other than UnicodeString?? (ObjString* or Value??)
     typedef std::unordered_map<int32_t, std::pair<icu::UnicodeString, MonitoredValue>> VarsMap;
 
-    mutable std::mutex varsLock;
+    mutable SpinLock varsLock;
     VarsMap vars;
 
-    static std::mutex globalsLock;
+    static SpinLock globalsLock;
     static VarsMap globals;
 };
 

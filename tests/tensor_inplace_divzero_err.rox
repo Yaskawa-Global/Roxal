@@ -1,0 +1,4 @@
+# A reusable temporary divided by zero must still raise the standard error
+# (the in-place fast path bails to the generic path for zero divisors)
+var t = tensor(3, data=[1.0, 2.0, 3.0])
+var r = (t + 1.0) / 0

@@ -1,0 +1,29 @@
+# Temporary-reuse in tensor elementwise ops: expression chains may reuse a
+# dead temporary's buffer, but named operands and COW aliases must never be
+# affected, and results must match the allocating path exactly.
+
+# named var is not mutated by expression use
+var t = tensor(4, data=[1.0, 2.0, 3.0, 4.0])
+var r = t + 10
+print(string(int(t[0])) + ' ' + string(int(t[3])))
+print(string(int(r[0])) + ' ' + string(int(r[3])))
+
+# chain over a slice temp computes correctly, source unchanged
+var c = (t[0:3] + 1.0) * 2.0 - 0.5
+print(string(c[0]) + ' ' + string(c[2]))
+print(string(int(t[0])))
+
+# COW alias: computing from an alias leaves both operands unchanged
+var u = t
+var r2 = u * 3.0
+print(string(int(u[1])) + ' ' + string(int(t[1])) + ' ' + string(int(r2[1])))
+
+# int dtype chain incl rem keeps integer semantics
+var ti = tensor(shape=[4], dtype="int32", data=[10, 20, 30, 40])
+var m = ((ti + 5) * 2) rem 7
+print(string(int(m[0])) + ' ' + string(int(m[1])) + ' ' + string(int(m[2])) + ' ' + string(int(m[3])))
+print(string(int(ti[0])))
+
+# division chain
+var d = (t * 2.0) / 4.0
+print(string(d[3]))
