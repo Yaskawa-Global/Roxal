@@ -1,0 +1,1405 @@
+# Doom wall renderer: front-to-back BSP traversal with per-column clip arrays.
+#
+# Structure transcribed from linuxdoom r_bsp.c / r_segs.c, reworked per
+# PLAN.md decisions: float math instead of 16.16 fixed-point and BAM angles,
+# and per-column ceiling/floor clip arrays doing double duty as the occlusion
+# mechanism (Doom's solidsegs list is a seg-level fast path over the same
+# information; correctness only needs the clip arrays).
+#
+# Per drawn column the pixel work is the M1 bulk-op recipe:
+#   tv  = ((ramp[y0:y1] - 99.5) * invscale + texmid ...).astype -> rem
+#   col = texture_column.take(tv)          # vertical texture gather
+#   frame[y0:y1, x] = cmrow.take(col)      # light diminishing (COLORMAP row)
+#
+# Projection: 90-degree FOV at 320x200 -> focal length 160. View space:
+# forward (cos a, sin a), screen-right (sin a, -cos a); map +y is north.
+
+import math.*
+import wad.*
+import gfx.*
+import mapdata.*
+import things.*
+
+var W = 320
+var H = 200
+var FOCAL = 160.0
+var CENTERY = 100
+var NEAR = 1.0        # near plane, map units
+
+# --- loaded state (setup) ---
+var wadref = nil
+var md = nil          # MapData
+var tl = nil          # TexLib
+var pal = nil         # [256,3]
+var cm_rows = []      # 34 x [256] colormap row tensors
+var C_CEIL = 0
+var C_FLOOR = 0
+
+var DEBUG_FLAT = 0   # perf triage: 1 = flat-fill columns, 2 = skip pixel work
+var stat_segs = 0    # per-frame work counters (reset in render_view)
+var stat_cols = 0
+var stat_draws = 0
+
+var frame = tensor(shape=[H, W], dtype="uint8")
+var ramp_data = []
+for i in range(..<H):
+  ramp_data.append(i)
+var ramp = tensor(shape=[H], dtype="float64", data=ramp_data)
+
+# per-column clip state (reset per frame): drawable y range is
+# [ceilclip[x]+1, floorclip[x]-1] — same convention as Doom's
+# ceilingclip/floorclip arrays
+var ceilclip = []
+var floorclip = []
+for i in range(..<W):
+  ceilclip.append(-1)
+  floorclip.append(H)
+var open_cols = W
+
+# --- view state (render_view) ---
+var view_x = 0.0
+var view_y = 0.0
+var view_z = 41.0
+var view_cos = 1.0
+var view_sin = 0.0
+
+# nearest palette index to (r,g,b) — for the flat-colored ceiling/floor
+func nearest_color(r:int, g:int, b:int) -> int:
+  var best = 0
+  var bestd = 1000000000
+  for i in range(..<256):
+    var dr = int(pal[i, 0]) - r
+    var dg = int(pal[i, 1]) - g
+    var db = int(pal[i, 2]) - b
+    var d = dr * dr + dg * dg + db * db
+    if d < bestd:
+      bestd = d
+      best = i
+  return best
+
+# hot map arrays hoisted out of MapData (a property access costs ~0.5us;
+# these are read constantly in the render loops)
+var vx = []
+var vy = []
+var seg_v1 = []
+var seg_v2 = []
+var seg_line = []
+var seg_dir = []
+var seg_off = []
+var ss_count2 = []
+var ss_first2 = []
+var nd_x = []
+var nd_y = []
+var nd_dx = []
+var nd_dy = []
+var nd_right = []
+var nd_left = []
+var nd_rtop = []
+var nd_rbot = []
+var nd_rleft = []
+var nd_rright = []
+var nd_ltop = []
+var nd_lbot = []
+var nd_lleft = []
+var nd_lright = []
+var lines = []
+var sides = []
+var sectors = []
+# per-sidedef textures, composed up-front (Patch or nil): kills per-seg dict
+# lookups and first-use composition hitches
+var sd_up = []
+var sd_lo = []
+var sd_mid = []
+
+# --- M4 state: visplanes, sky, sprites ---
+var flats1d = {}      # flat name -> [4096] uint8 tensor (row-major 64x64)
+var sec_floorflat = []   # per-sector flat tensors (nil = sky)
+var sec_ceilflat = []
+var sec_ceilsky = []     # per-sector bool
+var skytex = nil      # composed sky texture (Patch) or nil
+var skyv = nil        # [200] int32 sky row ramp (v = y rem skyh)
+var skyang = []       # per-column angle offset atan((x+0.5-160)/160)
+var xramp = nil       # [W] float64 of (x + 0.5 - 160), for span u/v ramps
+var sprites = {}      # 'PREFA' -> {rot(0-8) -> [lumpindex, flipped]}
+var spr_patches = {}  # lump index -> decoded Patch
+var view_ang = 0.0
+
+# occlusion cull for sprites: a subsector is "seen" this frame if the BSP walk
+# visited it (subtrees behind solid walls are culled by bbox_visible). Only
+# sprites in seen subsectors project — vanilla adds sprites per rendered
+# subsector. Frame-stamped so the reset is one integer bump, not a clear.
+var ss_stamp = []
+var frame_id = 0
+
+proc setup(w_, mapname:string):
+  wadref = w_
+  md = load_map(wadref, mapname)
+  tl = TexLib(wadref)
+  pal = playpal(wadref)
+  var cm = colormap(wadref)
+  cm_rows = []
+  for i in range(..<34):
+    cm_rows.append(cm[i, 0:256])
+  C_CEIL = nearest_color(44, 44, 52)
+  C_FLOOR = nearest_color(72, 62, 52)
+
+  vx = md.vx
+  vy = md.vy
+  seg_v1 = md.seg_v1
+  seg_v2 = md.seg_v2
+  seg_line = md.seg_line
+  seg_dir = md.seg_dir
+  seg_off = md.seg_off
+  ss_count2 = md.ss_count
+  ss_first2 = md.ss_first
+  nd_x = md.nd_x
+  nd_y = md.nd_y
+  nd_dx = md.nd_dx
+  nd_dy = md.nd_dy
+  nd_right = md.nd_right
+  nd_left = md.nd_left
+  nd_rtop = md.nd_rtop
+  nd_rbot = md.nd_rbot
+  nd_rleft = md.nd_rleft
+  nd_rright = md.nd_rright
+  nd_ltop = md.nd_ltop
+  nd_lbot = md.nd_lbot
+  nd_lleft = md.nd_lleft
+  nd_lright = md.nd_lright
+  lines = md.lines
+  sides = md.sides
+  sectors = md.sectors
+
+  ss_stamp = []
+  for i in range(..<len(md.ss_first)):
+    ss_stamp.append(0)
+  frame_id = 0
+
+  sd_up = []
+  sd_lo = []
+  sd_mid = []
+  for s in md.sides:
+    sd_up.append(tex_or_nil(s.upper))
+    sd_lo.append(tex_or_nil(s.lower))
+    sd_mid.append(tex_or_nil(s.mid))
+
+  # flats referenced by sectors, flattened to [4096] for take-based spans
+  flats1d = {}
+  sec_floorflat = []
+  sec_ceilflat = []
+  sec_ceilsky = []
+  for sec in md.sectors:
+    sec_floorflat.append(flat1d_of(sec.floorpic))
+    sec_ceilsky.append(sec.ceilpic == 'F_SKY1')
+    if sec.ceilpic == 'F_SKY1':
+      sec_ceilflat.append(nil)
+    else:
+      sec_ceilflat.append(flat1d_of(sec.ceilpic))
+
+  # sky texture by episode/map convention (E1->SKY1...; MAPxx by range)
+  var skyname = 'SKY1'
+  if len(mapname) == 4 and mapname[0] == 'E':
+    skyname = 'SKY' + mapname[1]
+  if skyname in tl.defs:
+    skytex = tl.compose(skyname)
+  else:
+    skytex = nil
+  if skytex != nil:
+    var svdata = []
+    for i in range(..<H):
+      svdata.append(i rem skytex.h)
+    skyv = tensor(shape=[H], dtype="int32", data=svdata)
+  skyang = []
+  for i in range(..<W):
+    skyang.append(atan((i + 0.5 - 160.0) / 160.0))
+
+  var xrdata = []
+  for i in range(..<W):
+    xrdata.append(i + 0.5 - 160.0)
+  xramp = tensor(shape=[W], dtype="float64", data=xrdata)
+
+  # sprite lump index: PREFIX+FRAME -> rotation -> [lump, flipped]
+  sprites = {}
+  spr_patches = {}
+  var inspr = false
+  for i in range(..<wadref.num_lumps):
+    var nm = wadref.names[i]
+    if nm == 'S_START' or nm == 'SS_START':
+      inspr = true
+      continue
+    if nm == 'S_END' or nm == 'SS_END':
+      inspr = false
+      continue
+    if not inspr or wadref.sizes[i] == 0:
+      continue
+    if len(nm) >= 6:
+      add_sprite_lump(nm[0:5], nm[5], i, false)
+    if len(nm) == 8:
+      add_sprite_lump(nm[0:4] + nm[6], nm[7], i, true)
+
+  load_hud()
+
+var ROTDIG = {'0': 0, '1': 1, '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8}
+
+proc add_sprite_lump(key:string, rotch:string, lump:int, flipped:bool):
+  if not (rotch in ROTDIG):
+    return
+  var rot = ROTDIG[rotch]
+  if not (key in sprites):
+    sprites[key] = {}
+  sprites[key][rot] = [lump, flipped]
+
+# flat as a [64,64] tensor for sample_span; missing names fall back to black
+func flat1d_of(name:string):
+  if name in flats1d:
+    return flats1d[name]
+  var f = nil
+  if wadref.find(name) >= 0 and len(wadref.lump_named(name)) == 4096:
+    f = tensor(shape=[64, 64], dtype="uint8", data=wadref.lump_named(name))
+  else:
+    f = tensor(shape=[64, 64], dtype="uint8")
+  flats1d[name] = f
+  return f
+
+# BSP point-on-side: 0 = right/front child, 1 = left/back child
+func point_on_side(x:real, y:real, n:int) -> int:
+  var dx = x - nd_x[n]
+  var dy = y - nd_y[n]
+  if nd_dy[n] * dx > dy * nd_dx[n]:
+    return 0
+  return 1
+
+# subsector containing a point (BSP descent); returns subsector index
+func point_in_subsector(x:real, y:real) -> int:
+  if len(nd_x) == 0:
+    return 0
+  var node = len(nd_x) - 1
+  while node < 32768:
+    if point_on_side(x, y, node) == 0:
+      node = nd_right[node]
+    else:
+      node = nd_left[node]
+  return node - 32768
+
+# sector index a subsector belongs to (via its first seg's front sidedef)
+func subsector_sector(ss:int) -> int:
+  var si = ss_first2[ss]
+  var line = lines[seg_line[si]]
+  var sd = line.side0
+  if seg_dir[si] == 1:
+    sd = line.side1
+  return sides[sd].sector
+
+func sector_at(x:real, y:real) -> int:
+  return subsector_sector(point_in_subsector(x, y))
+
+var ML_BLOCKING = 1
+var ML_TWOSIDED = 4
+var ML_DONTPEGTOP = 8
+var ML_DONTPEGBOTTOM = 16
+
+# --- current-seg parameters (Doom's rw_* globals), set by add_seg ---
+var cur_two = false
+var cur_solid = false
+var cur_midtex = nil
+var cur_uptex = nil
+var cur_lotex = nil
+var cur_midmid = 0.0
+var cur_upmid = 0.0
+var cur_lomid = 0.0
+var cur_hasup = false
+var cur_haslo = false
+var cur_worldtop = 0.0
+var cur_worldbot = 0.0
+var cur_backtop = 0.0
+var cur_backbot = 0.0
+var cur_lightbase = 0
+var cur_uoff = 0
+var cur_sx1 = 0.0
+var cur_span = 1.0
+var cur_invd1 = 0.0
+var cur_invd2 = 0.0
+var cur_uz1 = 0.0
+var cur_uz2 = 0.0
+# current-seg visplanes (nil = not marked); top/bottom written via property
+# chains — aliasing a tensor property into a var takes a COW copy!
+var cur_cplane = nil
+var cur_fplane = nil
+# drawseg capture for the masked/sprite pass
+var cur_recsil = false   # record per-column opening clips
+var cur_masktex = nil    # masked mid texture on a two-sided line
+var cur_maskmid = 0.0
+
+# solid-column intervals (Doom's solidsegs): sorted inclusive [first,last]
+# ranges of fully-occluded columns, with sentinels either side of the screen.
+# The screen is fully covered when the sentinels merge into one range.
+var sol_first = []
+var sol_last = []
+
+# --- visplanes (r_plane.c): ceiling/floor regions collected during the wall
+# --- pass, drawn afterwards as horizontal spans (u,v are linear per row).
+# Planes are pooled across frames; top/bottom are int32 tensors so the
+# per-frame reset is two fills, not 640 list writes. top>bottom = empty col.
+type Plane object:
+  var height:real = 0.0    # world height
+  var flatname:string = ''
+  var flat = nil           # [4096] tensor; nil = sky
+  var light:int = 0
+  var minx:int = 320
+  var maxx:int = -1
+  var top = nil            # [W] int32 tensors
+  var bottom = nil
+
+var pool_planes = []
+var planes_used = 0
+var planes_by_key = {}
+var spanstart = []
+for i in range(..<H):
+  spanstart.append(0)
+
+# find or create the plane for (height, flat, light) usable over [x1,x2]:
+# reuse a same-key plane only when the column ranges are disjoint (each plane
+# stores one row range per column)
+func get_plane(height:real, flatname:string, flat, light:int, x1:int, x2:int):
+  var key = flatname + '|' + string(height) + '|' + string(light)
+  if not (key in planes_by_key):
+    planes_by_key[key] = []
+  for p in planes_by_key[key]:
+    if x2 < p.minx or x1 > p.maxx:
+      return p
+  var p = nil
+  if planes_used < len(pool_planes):
+    p = pool_planes[planes_used]
+  else:
+    p = Plane()
+    p.top = tensor(shape=[W], dtype="int32")
+    p.bottom = tensor(shape=[W], dtype="int32")
+    pool_planes.append(p)
+  planes_used = planes_used + 1
+  p.height = height
+  p.flatname = flatname
+  p.flat = flat
+  p.light = light
+  p.minx = W
+  p.maxx = -1
+  p.top.fill(H)
+  p.bottom.fill(-1)
+  planes_by_key[key].append(p)
+  return p
+
+var stat_spans = 0
+
+# horizontal flat span (R_MapPlane): row y, columns x1..x2 inclusive
+proc map_span(p, y:int, x1:int, x2:int, dz:real):
+  stat_spans = stat_spans + 1
+  var dist = dz * FOCAL / (100.0 - (y + 0.5))
+  var li = 31 - int(p.light / 8) + int(dist / 128.0)
+  if li < 0:
+    li = 0
+  if li > 31:
+    li = 31
+  var step = dist / FOCAL
+  # affine (u,v) across the span: xr[k] = (x1+k) - 159.5. +65536 (a multiple of
+  # 64) keeps values positive; sample_span's floor+floormod handles wrap.
+  var xbase = x1 - 159.5
+  var u0 = xbase * (view_sin * step) + (view_x + view_cos * dist + 65536.0)
+  var v0 = xbase * (view_cos * step) + (65536.0 - view_y - view_sin * dist)
+  frame.sample_span(y, x1, x2 + 1, p.flat, u0, view_sin * step, v0, view_cos * step, lut=cm_rows[li])
+
+# sky column for screen column x between rows t..b inclusive
+proc sky_col(x:int, t:int, b:int):
+  var su = int((view_ang + skyang[x]) / 1.5707963267948966 * skytex.w + skytex.w * 1024.0) rem skytex.w
+  frame[t:b+1, x] = skytex.pix[0:skytex.h, su].take(skyv[t:b+1])
+
+proc draw_plane(p):
+  if p.maxx < p.minx:
+    return
+  if p.flat == nil:
+    if skytex == nil:
+      return
+    for x in range(p.minx ..< p.maxx + 1):
+      var t = int(p.top[x])
+      var b = int(p.bottom[x])
+      if b >= t:
+        sky_col(x, t, b)
+    return
+  var dz = p.height - view_z
+  if dz == 0.0:
+    return
+  # R_MakeSpans across the plane's columns
+  var pt = H
+  var pb = -1
+  for x in range(p.minx ..< p.maxx + 2):
+    var ct = H
+    var cb = -1
+    if x <= p.maxx:
+      ct = int(p.top[x])
+      cb = int(p.bottom[x])
+    var t1 = pt
+    var b1 = pb
+    var t2 = ct
+    var b2 = cb
+    while t1 < t2 and t1 <= b1:
+      map_span(p, t1, spanstart[t1], x - 1, dz)
+      t1 = t1 + 1
+    while b1 > b2 and b1 >= t1:
+      map_span(p, b1, spanstart[b1], x - 1, dz)
+      b1 = b1 - 1
+    while t2 < t1 and t2 <= b2:
+      spanstart[t2] = x
+      t2 = t2 + 1
+    while b2 > b1 and b2 >= t2:
+      spanstart[b2] = x
+      b2 = b2 - 1
+    pt = ct
+    pb = cb
+
+proc draw_planes():
+  for i in range(..<planes_used):
+    draw_plane(pool_planes[i])
+
+# --- drawsegs: per drawn range, data the masked/sprite pass needs ---
+var ds_x1 = []
+var ds_x2 = []
+var ds_solid = []
+var ds_top = []      # per-column opening captures (nil for solid segs)
+var ds_bot = []
+var ds_sx1 = []
+var ds_span = []
+var ds_invd1 = []
+var ds_invd2 = []
+var ds_uz1 = []
+var ds_uz2 = []
+var ds_uoff = []
+var ds_light = []
+var ds_mtex = []     # masked mid texture or nil
+var ds_mmid = []
+var ds_mdrawn = []   # per-column drawn flags for the masked pass
+var ds_count = 0
+
+# draw the current seg's columns over inclusive range [x1, x2].
+# All helpers are inlined: a VM call costs ~1.4us and this is the hottest
+# interpreted loop in the renderer. Order per column follows R_RenderSegLoop:
+# mark visplanes (pre-clip values), draw wall pieces, update clips, then
+# capture the opening for the drawseg.
+proc draw_range(x1:int, x2:int):
+  stat_cols = stat_cols + (x2 - x1 + 1)
+  if cur_cplane != nil:
+    if x1 < cur_cplane.minx:
+      cur_cplane.minx = x1
+    if x2 > cur_cplane.maxx:
+      cur_cplane.maxx = x2
+  if cur_fplane != nil:
+    if x1 < cur_fplane.minx:
+      cur_fplane.minx = x1
+    if x2 > cur_fplane.maxx:
+      cur_fplane.maxx = x2
+  var rtop = nil
+  var rbot = nil
+  if cur_recsil or cur_solid:
+    ds_x1.append(x1)
+    ds_x2.append(x2)
+    ds_solid.append(cur_solid)
+    ds_sx1.append(cur_sx1)
+    ds_span.append(cur_span)
+    ds_invd1.append(cur_invd1)
+    ds_invd2.append(cur_invd2)
+    ds_uz1.append(cur_uz1)
+    ds_uz2.append(cur_uz2)
+    ds_uoff.append(cur_uoff)
+    ds_light.append(cur_lightbase)
+    if cur_solid:
+      ds_top.append(nil)
+      ds_bot.append(nil)
+      ds_mtex.append(nil)
+      ds_mmid.append(0.0)
+      ds_mdrawn.append(nil)
+    else:
+      rtop = []
+      rbot = []
+      ds_top.append(rtop)
+      ds_bot.append(rbot)
+      ds_mtex.append(cur_masktex)
+      ds_mmid.append(cur_maskmid)
+      if cur_masktex != nil:
+        var dr = []
+        for i in range(..<(x2 - x1 + 1)):
+          dr.append(false)
+        ds_mdrawn.append(dr)
+      else:
+        ds_mdrawn.append(nil)
+    ds_count = ds_count + 1
+  for x in range(x1 ..< x2 + 1):
+    var cc = ceilclip[x]
+    var fc = floorclip[x]
+    if cc + 1 >= fc:
+      if rtop != nil:
+        rtop.append(-1)
+        rbot.append(H)
+      continue
+    stat_draws = stat_draws + 1
+    var t = (x + 0.5 - cur_sx1) / cur_span
+    var invd = cur_invd1 + (cur_invd2 - cur_invd1) * t
+    var depth = 1.0 / invd
+    var scale = FOCAL * invd
+    var invscale = depth / FOCAL
+
+    var li = cur_lightbase + int(depth / 128.0)
+    if li < 0:
+      li = 0
+    if li > 31:
+      li = 31
+    var cmrow = cm_rows[li]
+
+    var yt = 100.0 - cur_worldtop * scale
+    var yb = 100.0 - cur_worldbot * scale
+    var yti = int(floor(yt + 0.5))
+    var ybi = int(floor(yb + 0.5))
+
+    # visplane rows for this column (against the pre-update clips)
+    if cur_cplane != nil:
+      var ce = yti
+      if ce > fc:
+        ce = fc
+      if ce - 1 >= cc + 1:
+        cur_cplane.top[x] = cc + 1
+        cur_cplane.bottom[x] = ce - 1
+    if cur_fplane != nil:
+      var fst = ybi
+      if fst < cc + 1:
+        fst = cc + 1
+      if fc - 1 >= fst:
+        cur_fplane.top[x] = fst
+        cur_fplane.bottom[x] = fc - 1
+
+    if not cur_two:
+      if cur_midtex != nil:
+        var u = (cur_uz1 + (cur_uz2 - cur_uz1) * t) * depth
+        var texx = (int(u + cur_uoff) + cur_midtex.w * 1024) rem cur_midtex.w
+        var y0 = yti
+        var y1 = ybi
+        if y0 < cc + 1:
+          y0 = cc + 1
+        if y1 > fc:
+          y1 = fc
+        if y1 > y0 and DEBUG_FLAT == 0:
+          var th = cur_midtex.h
+          frame.sample_col(x, y0, y1, cur_midtex.pix[0:th, texx], (y0 - 99.5) * invscale + cur_midmid, invscale, lut=cmrow)
+      ceilclip[x] = H
+      floorclip[x] = 0
+    else:
+      var u = (cur_uz1 + (cur_uz2 - cur_uz1) * t) * depth
+      if cur_hasup:
+        var ybc = 100.0 - cur_backtop * scale
+        var ybci = int(floor(ybc + 0.5))
+        if cur_uptex != nil:
+          var y0 = yti
+          var y1 = ybci
+          if y0 < cc + 1:
+            y0 = cc + 1
+          if y1 > fc:
+            y1 = fc
+          if y1 > y0 and DEBUG_FLAT == 0:
+            var th = cur_uptex.h
+            var texx = (int(u + cur_uoff) + cur_uptex.w * 1024) rem cur_uptex.w
+            frame.sample_col(x, y0, y1, cur_uptex.pix[0:th, texx], (y0 - 99.5) * invscale + cur_upmid, invscale, lut=cmrow)
+        if ybci - 1 > cc:
+          ceilclip[x] = ybci - 1
+      else:
+        if yti - 1 > cc:
+          ceilclip[x] = yti - 1
+      if cur_haslo:
+        var ybf = 100.0 - cur_backbot * scale
+        var ybfi = int(floor(ybf + 0.5))
+        if cur_lotex != nil:
+          var y0 = ybfi
+          var y1 = ybi
+          if y0 < cc + 1:
+            y0 = cc + 1
+          if y1 > fc:
+            y1 = fc
+          if y1 > y0 and DEBUG_FLAT == 0:
+            var th = cur_lotex.h
+            var texx = (int(u + cur_uoff) + cur_lotex.w * 1024) rem cur_lotex.w
+            frame.sample_col(x, y0, y1, cur_lotex.pix[0:th, texx], (y0 - 99.5) * invscale + cur_lomid, invscale, lut=cmrow)
+        if ybfi < fc:
+          floorclip[x] = ybfi
+      else:
+        if ybi < fc:
+          floorclip[x] = ybi
+      if cur_solid:
+        ceilclip[x] = H
+        floorclip[x] = 0
+    if rtop != nil:
+      rtop.append(ceilclip[x])
+      rbot.append(floorclip[x])
+
+# R_ClipSolidWallSegment: draw the parts of [first,last] not yet covered by a
+# solid range, then merge the range into the interval list
+proc clip_solid(first:int, last:int):
+  var i = 0
+  while sol_last[i] < first - 1:
+    i = i + 1
+  if first < sol_first[i]:
+    if last < sol_first[i] - 1:
+      draw_range(first, last)
+      sol_first.insert(i, first)
+      sol_last.insert(i, last)
+      return
+    draw_range(first, sol_first[i] - 1)
+    sol_first[i] = first
+  if last <= sol_last[i]:
+    return
+  var j = i
+  var absorbed = false
+  while last >= sol_first[j + 1] - 1:
+    draw_range(sol_last[j] + 1, sol_first[j + 1] - 1)
+    j = j + 1
+    if last <= sol_last[j]:
+      absorbed = true
+      break
+  if absorbed:
+    sol_last[i] = sol_last[j]
+  else:
+    draw_range(sol_last[j] + 1, last)
+    sol_last[i] = last
+  while j > i:
+    sol_first.pop(j)
+    sol_last.pop(j)
+    j = j - 1
+
+# R_ClipPassWallSegment: draw the exposed parts, leave the intervals alone
+proc clip_pass(first:int, last:int):
+  var i = 0
+  while sol_last[i] < first - 1:
+    i = i + 1
+  if first < sol_first[i]:
+    if last < sol_first[i] - 1:
+      draw_range(first, last)
+      return
+    draw_range(first, sol_first[i] - 1)
+  if last <= sol_last[i]:
+    return
+  while last >= sol_first[i + 1] - 1:
+    draw_range(sol_last[i] + 1, sol_first[i + 1] - 1)
+    i = i + 1
+    if last <= sol_last[i]:
+      return
+  draw_range(sol_last[i] + 1, last)
+
+# texture object or nil for a sidedef texture name
+func tex_or_nil(name:string):
+  if name == '-' or name == '':
+    return nil
+  if not (name in tl.defs):
+    return nil
+  return tl.compose(name)
+
+# render one seg (r_segs.c equivalent)
+proc add_seg(si:int):
+  stat_segs = stat_segs + 1
+  var line = lines[seg_line[si]]
+  var sd0 = line.side0
+  var sd1 = line.side1
+  if seg_dir[si] == 1:
+    sd0 = line.side1
+    sd1 = line.side0
+  if sd0 < 0:
+    return
+  var side = sides[sd0]
+  var fs = sectors[side.sector]
+  var bsi = -1
+  if sd1 >= 0:
+    bsi = sides[sd1].sector
+  var bs = nil
+  if bsi >= 0:
+    bs = sectors[bsi]
+
+  # endpoints relative to the view, in view space
+  var wx1 = vx[seg_v1[si]]
+  var wy1 = vy[seg_v1[si]]
+  var wx2 = vx[seg_v2[si]]
+  var wy2 = vy[seg_v2[si]]
+  var rx1 = wx1 - view_x
+  var ry1 = wy1 - view_y
+  var rx2 = wx2 - view_x
+  var ry2 = wy2 - view_y
+  var d1 = rx1 * view_cos + ry1 * view_sin        # depth
+  var l1 = rx1 * view_sin - ry1 * view_cos        # lateral (screen right +)
+  var d2 = rx2 * view_cos + ry2 * view_sin
+  var l2 = rx2 * view_sin - ry2 * view_cos
+
+  # near-plane clip (track parametric positions; seglen computed only if kept)
+  var tc1 = 0.0
+  var tc2 = 1.0
+  if d1 < NEAR and d2 < NEAR:
+    return
+  if d1 < NEAR:
+    var t = (NEAR - d1) / (d2 - d1)
+    d1 = NEAR
+    l1 = l1 + (l2 - l1) * t
+    tc1 = t
+  if d2 < NEAR:
+    var t = (NEAR - d2) / (d1 - d2)
+    d2 = NEAR
+    l2 = l2 + (l1 - l2) * t
+    tc2 = 1.0 - t
+
+  # project; backface/degenerate culled by ordering
+  var sx1 = 160.0 + FOCAL * l1 / d1
+  var sx2 = 160.0 + FOCAL * l2 / d2
+  if sx2 <= sx1:
+    return
+  var cx1 = int(floor(sx1 + 0.5))
+  var cx2 = int(floor(sx2 + 0.5))
+  if cx2 <= 0 or cx1 >= W:
+    return
+  if cx1 < 0:
+    cx1 = 0
+  if cx2 > W:
+    cx2 = W
+  if cx2 <= cx1:
+    return
+
+  var seglen = sqrt((wx2 - wx1) * (wx2 - wx1) + (wy2 - wy1) * (wy2 - wy1))
+  var u1 = tc1 * seglen
+  var u2 = tc2 * seglen
+
+  # solid or portal? (r_bsp.c R_AddLine classification)
+  var solid = false
+  if bs == nil:
+    solid = true
+  else:
+    if bs.ceilh <= fs.floorh or bs.floorh >= fs.ceilh:
+      solid = true
+    if bs.ceilh <= bs.floorh:
+      solid = true
+
+  # world heights relative to the eye
+  var worldtop = fs.ceilh - view_z
+  var worldbot = fs.floorh - view_z
+  var backtop = 0.0
+  var backbot = 0.0
+  var has_upper = false
+  var has_lower = false
+  if bs != nil:
+    backtop = bs.ceilh - view_z
+    backbot = bs.floorh - view_z
+    has_upper = bs.ceilh < fs.ceilh
+    has_lower = bs.floorh > fs.floorh
+
+  # textures + pegging (r_segs.c texturemid computations)
+  var midtex = nil
+  var uptex = nil
+  var lotex = nil
+  var midmid = 0.0
+  var upmid = 0.0
+  var lomid = 0.0
+  if bs == nil:
+    midtex = sd_mid[sd0]
+    if midtex != nil:
+      if (line.flags & ML_DONTPEGBOTTOM) != 0:
+        midmid = worldbot + midtex.h
+      else:
+        midmid = worldtop
+      midmid = midmid + side.yoff
+  else:
+    if has_upper:
+      uptex = sd_up[sd0]
+      if uptex != nil:
+        if (line.flags & ML_DONTPEGTOP) != 0:
+          upmid = worldtop
+        else:
+          upmid = backtop + uptex.h
+        upmid = upmid + side.yoff
+    if has_lower:
+      lotex = sd_lo[sd0]
+      if lotex != nil:
+        if (line.flags & ML_DONTPEGBOTTOM) != 0:
+          lomid = worldtop
+        else:
+          lomid = backbot
+        lomid = lomid + side.yoff
+
+  # lighting: sector light + Doom's fake contrast for axis-aligned walls
+  var light = fs.light
+  if wx1 == wx2:
+    light = light + 16
+  if wy1 == wy2:
+    light = light - 16
+  if light > 255:
+    light = 255
+  if light < 0:
+    light = 0
+
+  # visplane marking (r_bsp.c): which of the front sector's planes does this
+  # seg expose? Sky-to-sky portals never mark (the sky hack).
+  var fsky = sec_ceilsky[side.sector]
+  var markc = false
+  var markf = false
+  if bs == nil:
+    markc = true
+    markf = true
+  else:
+    if solid:
+      markc = true
+      markf = true
+    else:
+      if bs.ceilh != fs.ceilh or bs.light != fs.light or bs.ceilpic != fs.ceilpic:
+        markc = true
+      if bs.floorh != fs.floorh or bs.light != fs.light or bs.floorpic != fs.floorpic:
+        markf = true
+    if fsky and sec_ceilsky[sides[sd1].sector]:
+      markc = false
+  if not fsky and worldtop <= 0.0:
+    markc = false
+  if worldbot >= 0.0:
+    markf = false
+  cur_cplane = nil
+  cur_fplane = nil
+  if markc:
+    if fsky:
+      cur_cplane = get_plane(fs.ceilh, '', nil, fs.light, cx1, cx2 - 1)
+    else:
+      cur_cplane = get_plane(fs.ceilh, fs.ceilpic, sec_ceilflat[side.sector], fs.light, cx1, cx2 - 1)
+  if markf:
+    cur_fplane = get_plane(fs.floorh, fs.floorpic, sec_floorflat[side.sector], fs.light, cx1, cx2 - 1)
+
+  # masked mid texture (grates/fences on two-sided lines): drawn in the
+  # masked pass, but the drawseg must capture the opening now
+  cur_masktex = nil
+  if bs != nil:
+    cur_masktex = sd_mid[sd0]
+    if cur_masktex != nil:
+      var opentop = fs.ceilh
+      if bs.ceilh < opentop:
+        opentop = bs.ceilh
+      var openbot = fs.floorh
+      if bs.floorh > openbot:
+        openbot = bs.floorh
+      if (line.flags & ML_DONTPEGBOTTOM) != 0:
+        cur_maskmid = openbot + cur_masktex.h - view_z
+      else:
+        cur_maskmid = opentop - view_z
+      cur_maskmid = cur_maskmid + side.yoff
+  cur_recsil = false
+  if bs != nil:
+    if solid or cur_masktex != nil or bs.ceilh != fs.ceilh or bs.floorh != fs.floorh:
+      cur_recsil = true
+
+  # stash the seg constants for draw_range (Doom's rw_* globals) and clip
+  # the column range against the solid-column intervals
+  cur_two = (bs != nil)
+  cur_solid = solid
+  cur_midtex = midtex
+  cur_uptex = uptex
+  cur_lotex = lotex
+  cur_midmid = midmid
+  cur_upmid = upmid
+  cur_lomid = lomid
+  cur_hasup = has_upper
+  cur_haslo = has_lower
+  cur_worldtop = worldtop
+  cur_worldbot = worldbot
+  cur_backtop = backtop
+  cur_backbot = backbot
+  cur_lightbase = 31 - int(light / 8)
+  cur_uoff = seg_off[si] + side.xoff
+  cur_sx1 = sx1
+  cur_span = sx2 - sx1
+  cur_invd1 = 1.0 / d1
+  cur_invd2 = 1.0 / d2
+  cur_uz1 = u1 * cur_invd1
+  cur_uz2 = u2 * cur_invd2
+
+  if solid:
+    clip_solid(cx1, cx2 - 1)
+  else:
+    clip_pass(cx1, cx2 - 1)
+
+proc render_subsector(ss:int):
+  ss_stamp[ss] = frame_id
+  var first = ss_first2[ss]
+  for i in range(first ..< first + ss_count2[ss]):
+    add_seg(i)
+
+# R_CheckBBox: can any part of this subtree's bounding box still be visible?
+# Conservative frustum half-space tests, then per-column occlusion against the
+# clip arrays (the FOV-90 frustum planes are l = +-d in view space).
+func bbox_visible(top:int, bot:int, left:int, right:int) -> bool:
+  if view_x >= left and view_x <= right and view_y >= bot and view_y <= top:
+    return true
+  var d0 = (left - view_x) * view_cos + (bot - view_y) * view_sin
+  var l0 = (left - view_x) * view_sin - (bot - view_y) * view_cos
+  var d1 = (left - view_x) * view_cos + (top - view_y) * view_sin
+  var l1 = (left - view_x) * view_sin - (top - view_y) * view_cos
+  var d2 = (right - view_x) * view_cos + (bot - view_y) * view_sin
+  var l2 = (right - view_x) * view_sin - (bot - view_y) * view_cos
+  var d3 = (right - view_x) * view_cos + (top - view_y) * view_sin
+  var l3 = (right - view_x) * view_sin - (top - view_y) * view_cos
+  if d0 < NEAR and d1 < NEAR and d2 < NEAR and d3 < NEAR:
+    return false
+  if l0 > d0 and l1 > d1 and l2 > d2 and l3 > d3:
+    return false
+  if l0 < -d0 and l1 < -d1 and l2 < -d2 and l3 < -d3:
+    return false
+  if d0 < NEAR or d1 < NEAR or d2 < NEAR or d3 < NEAR:
+    return true      # straddles the near plane: give up on occlusion test
+  var sxmin = 160.0 + FOCAL * l0 / d0
+  var sxmax = sxmin
+  var s = 160.0 + FOCAL * l1 / d1
+  if s < sxmin:
+    sxmin = s
+  if s > sxmax:
+    sxmax = s
+  s = 160.0 + FOCAL * l2 / d2
+  if s < sxmin:
+    sxmin = s
+  if s > sxmax:
+    sxmax = s
+  s = 160.0 + FOCAL * l3 / d3
+  if s < sxmin:
+    sxmin = s
+  if s > sxmax:
+    sxmax = s
+  var cx1 = int(floor(sxmin + 0.5))
+  var cx2 = int(floor(sxmax + 0.5))
+  if cx1 < 0:
+    cx1 = 0
+  if cx2 > W:
+    cx2 = W
+  if cx2 <= cx1:
+    return false
+  for x in range(cx1 ..< cx2):
+    if ceilclip[x] + 1 < floorclip[x]:
+      return true
+  return false
+
+proc render_bsp(node:int):
+  if len(sol_first) == 1:
+    return   # sentinels merged: screen fully covered
+  if node >= 32768:
+    render_subsector(node - 32768)
+    return
+  # near child unconditionally, far child only if its bbox can be visible
+  # (r_bsp.c R_RenderBSPNode)
+  if point_on_side(view_x, view_y, node) == 0:
+    render_bsp(nd_right[node])
+    if bbox_visible(nd_ltop[node], nd_lbot[node], nd_lleft[node], nd_lright[node]):
+      render_bsp(nd_left[node])
+  else:
+    render_bsp(nd_left[node])
+    if bbox_visible(nd_rtop[node], nd_rbot[node], nd_rleft[node], nd_rright[node]):
+      render_bsp(nd_right[node])
+
+# --- masked pass: sprites and see-through mid textures (r_things.c) ---
+type VisSprite object:
+  var invd:real = 0.0     # 1/depth (bigger = closer)
+  var depth:real = 0.0
+  var x1:int = 0
+  var x2:int = 0          # inclusive
+  var sxl:real = 0.0      # projected left edge (float)
+  var scale:real = 0.0
+  var texmid:real = 0.0   # sprite top relative to eye
+  var patch = nil
+  var flip:bool = false
+  var light:int = 0
+
+var vis = []
+var PI = 3.14159265358979
+
+func spr_patch(lump:int):
+  if lump in spr_patches:
+    return spr_patches[lump]
+  var p = patch(wadref.lump(lump))
+  spr_patches[lump] = p
+  return p
+
+# entities to render: [x, y, angle, sprkey('POSSA'), bright, z] — supplied by
+# the game each frame. nil (never set) falls back to the static map things;
+# an explicitly-empty list means "draw no sprites" (not the fallback).
+var ents = nil
+
+proc set_entities(e):
+  ents = e
+
+func default_entities() -> list:
+  var out = []
+  for t in md.things:
+    if (t.flags & 16) != 0:
+      continue
+    var pref = sprite_prefix(t.kind)
+    if pref == '':
+      continue
+    var fz = sectors[sector_at(t.x, t.y)].floorh
+    out.append([t.x * 1.0, t.y * 1.0, t.angle * PI / 180.0, pref + 'A', 0, fz * 1.0])
+  return out
+
+# project entities to vissprites, insertion-sorted far -> near
+proc project_things():
+  vis = []
+  if ents == nil:
+    ents = default_entities()
+  for e in ents:
+    var key = e[3]
+    if not (key in sprites):
+      continue
+    var ex = e[0]
+    var ey = e[1]
+    # occlusion cull: skip entities whose subsector the BSP walk didn't reach
+    # (behind solid walls / outside the view) — the big sprite-count reducer
+    if ss_stamp[point_in_subsector(ex, ey)] != frame_id:
+      continue
+    var rx = ex - view_x
+    var ry = ey - view_y
+    var d = rx * view_cos + ry * view_sin
+    if d < NEAR:
+      continue
+    var l = rx * view_sin - ry * view_cos
+    # horizontal frustum cull: the 90-degree view edges are |l| = d (screen x
+    # = 160 + FOCAL*l/d). Sprites are at most ~half a screen wide, so anything
+    # past |l| = 1.8*d is fully off-screen — skip before the patch decode,
+    # rotation pick and O(n^2) depth insert.
+    if l > d * 1.8 or l < d * -1.8:
+      continue
+    var rots = sprites[key]
+    var entry = nil
+    if 0 in rots:
+      entry = rots[0]
+    else:
+      var ang = atan2(ey - view_y, ex - view_x)
+      var rel = ang - e[2] + 9.0 * PI / 8.0
+      while rel < 0.0:
+        rel = rel + 2.0 * PI
+      var ridx = (int(rel / (PI / 4.0)) rem 8) + 1
+      if ridx in rots:
+        entry = rots[ridx]
+      else:
+        continue
+    var p = spr_patch(entry[0])
+    var s = VisSprite()
+    s.depth = d
+    s.invd = 1.0 / d
+    s.scale = FOCAL / d
+    s.patch = p
+    s.flip = entry[1]
+    s.sxl = 160.0 + l * s.scale - p.left * s.scale
+    s.x1 = int(floor(s.sxl + 0.5))
+    s.x2 = int(floor(s.sxl + p.w * s.scale + 0.5)) - 1
+    if s.x2 < 0 or s.x1 >= W:
+      continue
+    if s.x1 < 0:
+      s.x1 = 0
+    if s.x2 >= W:
+      s.x2 = W - 1
+    s.texmid = e[5] + p.top - view_z
+    if e[4] != 0:
+      s.light = 255
+    else:
+      s.light = sectors[sector_at(ex, ey)].light
+    # insertion sort by depth descending (farthest first)
+    var k = 0
+    while k < len(vis) and vis[k].depth >= s.depth:
+      k = k + 1
+    vis.insert(k, s)
+
+# draw the masked mid texture of drawseg di over columns r1..r2 (inclusive),
+# skipping columns already drawn
+proc render_masked_range(di:int, r1:int, r2:int):
+  var mtex = ds_mtex[di]
+  var drawn = ds_mdrawn[di]
+  var dx1 = ds_x1[di]
+  var rt = ds_top[di]
+  var rb = ds_bot[di]
+  var sx1 = ds_sx1[di]
+  var span = ds_span[di]
+  var invd1 = ds_invd1[di]
+  var invd2 = ds_invd2[di]
+  var uz1 = ds_uz1[di]
+  var uz2 = ds_uz2[di]
+  var uoff = ds_uoff[di]
+  var lightbase = ds_light[di]
+  var mmid = ds_mmid[di]
+  var th = mtex.h
+  for x in range(r1 ..< r2 + 1):
+    if drawn[x - dx1]:
+      continue
+    drawn[x - dx1] = true
+    var ct = rt[x - dx1]
+    var cb = rb[x - dx1]
+    if ct + 1 >= cb:
+      continue
+    var t = (x + 0.5 - sx1) / span
+    var invd = invd1 + (invd2 - invd1) * t
+    var depth = 1.0 / invd
+    var scale = FOCAL * invd
+    var invscale = depth / FOCAL
+    var li = lightbase + int(depth / 128.0)
+    if li < 0:
+      li = 0
+    if li > 31:
+      li = 31
+    # masked textures draw once (no vertical tiling): clamp to texture extent
+    var y0 = int(floor(100.0 - mmid * scale + 0.5))
+    var y1 = int(floor(100.0 - (mmid - th) * scale + 0.5))
+    if y0 < ct + 1:
+      y0 = ct + 1
+    if y1 > cb:
+      y1 = cb
+    if y1 <= y0:
+      continue
+    var u = (uz1 + (uz2 - uz1) * t) * depth
+    var texx = (int(u + uoff) + mtex.w * 1024) rem mtex.w
+    frame.sample_col(x, y0, y1, mtex.pix[0:th, texx], (y0 - 99.5) * invscale + mmid, invscale, lut=cm_rows[li], mask=mtex.mask[0:th, texx])
+
+# draw one vissprite, clipped by nearer drawsegs (R_DrawSprite)
+proc draw_vissprite(s):
+  var n = s.x2 - s.x1 + 1
+  if n <= 0:
+    return
+  var ctop = []
+  var cbot = []
+  for i in range(..<n):
+    ctop.append(-1)
+    cbot.append(H)
+  if ds_count > 0:
+    for di in range(ds_count - 1 .. 0 : -1):
+      if ds_x2[di] < s.x1 or ds_x1[di] > s.x2:
+        continue
+      var r1 = ds_x1[di]
+      if r1 < s.x1:
+        r1 = s.x1
+      var r2 = ds_x2[di]
+      if r2 > s.x2:
+        r2 = s.x2
+      # seg closeness over the overlap (invd is linear in x)
+      var ta = (r1 + 0.5 - ds_sx1[di]) / ds_span[di]
+      var tb = (r2 + 0.5 - ds_sx1[di]) / ds_span[di]
+      var ia = ds_invd1[di] + (ds_invd2[di] - ds_invd1[di]) * ta
+      var ib = ds_invd1[di] + (ds_invd2[di] - ds_invd1[di]) * tb
+      var inear = ia
+      if ib > inear:
+        inear = ib
+      if inear <= s.invd:
+        # seg entirely behind the sprite: draw its masked part first
+        if ds_mtex[di] != nil:
+          render_masked_range(di, r1, r2)
+        continue
+      # seg in front: apply its silhouette
+      if ds_solid[di]:
+        for x in range(r1 ..< r2 + 1):
+          ctop[x - s.x1] = H
+          cbot[x - s.x1] = 0
+      else:
+        var rt = ds_top[di]
+        var rb = ds_bot[di]
+        var dx1 = ds_x1[di]
+        for x in range(r1 ..< r2 + 1):
+          var tv2 = rt[x - dx1]
+          var bv2 = rb[x - dx1]
+          if tv2 > ctop[x - s.x1]:
+            ctop[x - s.x1] = tv2
+          if bv2 < cbot[x - s.x1]:
+            cbot[x - s.x1] = bv2
+  # draw the sprite columns
+  var p = s.patch
+  var li = 31 - int(s.light / 8) + int(s.depth / 128.0)
+  if li < 0:
+    li = 0
+  if li > 31:
+    li = 31
+  var cmrow = cm_rows[li]
+  var invscale = 1.0 / s.scale
+  var ytopf = 100.0 - s.texmid * s.scale
+  var y0r = int(floor(ytopf + 0.5))
+  var y1r = int(floor(ytopf + p.h * s.scale + 0.5))
+  for x in range(s.x1 ..< s.x2 + 1):
+    var ct = ctop[x - s.x1]
+    var cb = cbot[x - s.x1]
+    var y0 = y0r
+    var y1 = y1r
+    if y0 < ct + 1:
+      y0 = ct + 1
+    if y0 < 0:
+      y0 = 0
+    if y1 > cb:
+      y1 = cb
+    if y1 > H:
+      y1 = H
+    if y1 <= y0:
+      continue
+    var texx = int((x + 0.5 - s.sxl) * invscale)
+    if texx < 0:
+      texx = 0
+    if texx >= p.w:
+      texx = p.w - 1
+    if s.flip:
+      texx = p.w - 1 - texx
+    frame.sample_col(x, y0, y1, p.pix[0:p.h, texx], (y0 + 0.5 - ytopf) * invscale, invscale, lut=cmrow, mask=p.mask[0:p.h, texx])
+
+# sprites far -> near, interleaved with masked seg ranges (R_DrawMasked)
+proc draw_masked():
+  project_things()
+  for s in vis:
+    draw_vissprite(s)
+  if ds_count > 0:
+    for di in range(ds_count - 1 .. 0 : -1):
+      if ds_mtex[di] != nil:
+        render_masked_range(di, ds_x1[di], ds_x2[di])
+
+# --- HUD: status bar, big digits, first-person weapon sprite ---
+var hud_bar = nil
+var hud_digits = []
+
+proc load_hud():
+  if wadref.find('STBAR') >= 0:
+    hud_bar = patch(wadref.lump_named('STBAR'))
+  hud_digits = []
+  for i in range(..<10):
+    var nm = 'STTNUM' + string(i)
+    if wadref.find(nm) >= 0:
+      hud_digits.append(patch(wadref.lump_named(nm)))
+    else:
+      hud_digits.append(nil)
+
+# masked patch blit at (dx, dy), clipped to the screen, no lighting
+proc blit_patch(p, dx:int, dy:int):
+  var x0 = dx
+  var y0 = dy
+  var sx0 = 0
+  var sy0 = 0
+  if x0 < 0:
+    sx0 = -x0
+    x0 = 0
+  if y0 < 0:
+    sy0 = -y0
+    y0 = 0
+  var x1 = dx + p.w
+  var y1 = dy + p.h
+  if x1 > W:
+    x1 = W
+  if y1 > H:
+    y1 = H
+  if x1 <= x0 or y1 <= y0:
+    return
+  var sub = p.pix[sy0:sy0 + (y1 - y0), sx0:sx0 + (x1 - x0)]
+  var msk = p.mask[sy0:sy0 + (y1 - y0), sx0:sx0 + (x1 - x0)]
+  var cur = frame[y0:y1, x0:x1]
+  frame[y0:y1, x0:x1] = cur - cur * msk + sub * msk
+
+# right-aligned number using the big red status digits
+proc draw_number(n:int, xright:int, y:int):
+  var v = n
+  if v < 0:
+    v = 0
+  var digits = []
+  if v == 0:
+    digits.append(0)
+  while v > 0:
+    digits.append(v rem 10)
+    v = int(v / 10)
+  var xpos = xright
+  for d in digits:
+    var p = hud_digits[d]
+    if p != nil:
+      xpos = xpos - p.w - 1
+      blit_patch(p, xpos, y)
+
+proc draw_hud(health:int, ammo:int, flash:bool):
+  # weapon sprite (pistol; muzzle flash overlays)
+  var wkey = 'PISGA'
+  if flash:
+    wkey = 'PISFA'
+  if wkey in sprites and 0 in sprites[wkey]:
+    var wp = spr_patch(sprites[wkey][0][0])
+    var wy = H - wp.h
+    if hud_bar != nil:
+      wy = H - 32 - wp.h + 14
+    blit_patch(wp, 160 - int(wp.w / 2), wy)
+  if hud_bar != nil:
+    blit_patch(hud_bar, 0, H - 32)
+    draw_number(ammo, 44, H - 32 + 3)
+    draw_number(health, 102, H - 32 + 3)
+
+# render one view into `frame` (palette indices)
+proc render_view(x:real, y:real, angle:real, z:real):
+  view_x = x
+  view_y = y
+  view_z = z
+  view_ang = angle
+  view_cos = cos(angle)
+  view_sin = sin(angle)
+  frame_id = frame_id + 1
+
+  frame[0:CENTERY, 0:W] = C_CEIL
+  frame[CENTERY:H, 0:W] = C_FLOOR
+  for i in range(..<W):
+    ceilclip[i] = -1
+    floorclip[i] = H
+  sol_first = [-100000, W]
+  sol_last = [-1, 100000]
+  stat_segs = 0
+  stat_cols = 0
+  stat_draws = 0
+  stat_spans = 0
+  planes_used = 0
+  planes_by_key = {}
+  ds_x1 = []
+  ds_x2 = []
+  ds_solid = []
+  ds_top = []
+  ds_bot = []
+  ds_sx1 = []
+  ds_span = []
+  ds_invd1 = []
+  ds_invd2 = []
+  ds_uz1 = []
+  ds_uz2 = []
+  ds_uoff = []
+  ds_light = []
+  ds_mtex = []
+  ds_mmid = []
+  ds_mdrawn = []
+  ds_count = 0
+
+  if len(nd_x) == 0:
+    render_subsector(0)
+  else:
+    render_bsp(len(nd_x) - 1)
+
+  draw_planes()
+  draw_masked()
+
+func frame_rgb():
+  return pal.take(frame)
+
+# accessors: importers see module vars as bound at import time, so state
+# rebound inside setup() must be reached through functions
+func map():
+  return md
+
+func palette():
+  return pal
+
+func ceil_color() -> int:
+  return C_CEIL
+
+func floor_color() -> int:
+  return C_FLOOR
+
+func open_columns() -> int:
+  var n = 0
+  for x in range(..<W):
+    if ceilclip[x] + 1 < floorclip[x]:
+      n = n + 1
+  return n
+
+proc set_debug_flat(v:int):
+  DEBUG_FLAT = v
+
+func stats() -> list:
+  return [stat_segs, stat_cols, stat_draws, planes_used, ds_count, len(vis), stat_spans]
+
+func plane_info(i:int) -> list:
+  var p = pool_planes[i]
+  return [p.minx, p.maxx, int(p.top[160]), int(p.bottom[160]), p.light, p.flatname]

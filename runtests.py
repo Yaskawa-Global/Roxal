@@ -16,6 +16,7 @@ from typing import Set
 TEST_TIMEOUT_SECS = 5
 GC_STRESS_TIMEOUT_SECS = 20
 NN_LFS_TIMEOUT_SECS = 60
+DOOM_TIMEOUT_SECS = 60
 # Width of the test name column when printing results
 TEST_NAME_WIDTH = 32
 GRPC_TEST_ADDR = "127.0.0.1:50051"
@@ -389,6 +390,9 @@ long_running_tests = [
     'const_mvcc_stress',
 ]
 
+# doom example tests (examples/doom in-development port; only run with --all)
+doom_tests = ['doom_wad', 'doom_gfx', 'doom_render', 'doom_game']
+
 # implementation doesn't yet allow these tests to pass (do not add to this list without human consent)
 failing_tests = ['signal_network1']
 assert(set(failing_tests).issubset(set(tests) | set(long_running_tests)))
@@ -407,6 +411,7 @@ if include_convs:
 if args.all:
     tests += long_running_tests
     tests += nn_lfs_tests
+    tests += doom_tests
 
 # Filter tests by pattern if --test is specified
 if args.test:
@@ -837,6 +842,9 @@ try:
             # module path; #include resolution needs the share root.
             share = os.path.join('..', 'tests', 'ros_share')
             cmd = [cmd[0], '-p', share, '-p', os.path.join(share, 'sensor_msgs', 'msg'), *cmd[1:]]
+        if test.startswith('doom_'):
+            # doom example modules (wad parsing etc.) live in examples/doom
+            cmd = [cmd[0], '-p', os.path.join(project_root, 'examples', 'doom'), *cmd[1:]]
 
         if args.opcode_prof and '--opcode-prof' not in cmd:
             cmd = [cmd[0], '--opcode-prof', *cmd[1:]]
@@ -851,6 +859,9 @@ try:
             timeout_secs = GC_STRESS_TIMEOUT_SECS
         elif test in nn_lfs_tests:
             timeout_secs = NN_LFS_TIMEOUT_SECS
+        elif test in doom_tests:
+            # WAD/texture setup + software renders; slow on Debug builds
+            timeout_secs = DOOM_TIMEOUT_SECS
         else:
             timeout_secs = TEST_TIMEOUT_SECS
 

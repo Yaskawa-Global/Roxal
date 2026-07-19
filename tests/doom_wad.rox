@@ -1,0 +1,31 @@
+# Doom WAD parsing: directory, lump lookup, and MAP01 geometry decode of the
+# checked-in miniwad. Expected values verified against an independent Python
+# parse of the same file. Needs -p examples/doom (runtests adds it for doom_*).
+
+import wad.*
+import mapdata.*
+
+var w = Wad('../examples/doom/miniwad.wad')
+print('lumps: ' + string(w.num_lumps))
+print('maps: ' + string(len(w.map_names())))
+print('first map: ' + w.map_names()[0])
+print('playpal: ' + string(len(w.lump_named('PLAYPAL'))))
+print('colormap: ' + string(len(w.lump_named('COLORMAP'))))
+print('missing: ' + string(w.find('NOSUCHLMP')))
+
+var m = load_map(w, 'MAP01')
+print('verts: ' + string(len(m.vx)))
+print('v0: ' + string(m.vx[0]) + ' ' + string(m.vy[0]))
+print('vlast: ' + string(m.vx[24]) + ' ' + string(m.vy[24]))
+print('lines: ' + string(len(m.lines)))
+var l = m.lines[0]
+print('line0: ' + string(l.v1) + ' ' + string(l.v2) + ' ' + string(l.flags) + ' ' + string(l.side0) + ' ' + string(l.side1))
+print('sides: ' + string(len(m.sides)))
+var sd = m.sides[0]
+print('side0: ' + string(sd.xoff) + ' ' + string(sd.yoff) + ' [' + sd.upper + '] [' + sd.lower + '] [' + sd.mid + '] ' + string(sd.sector))
+print('sectors: ' + string(len(m.sectors)))
+var sec = m.sectors[0]
+print('sec0: ' + string(sec.floorh) + ' ' + string(sec.ceilh) + ' ' + sec.floorpic + ' ' + sec.ceilpic + ' ' + string(sec.light))
+print('things: ' + string(len(m.things)))
+var t = m.things[0]
+print('thing0: ' + string(t.x) + ' ' + string(t.y) + ' ' + string(t.angle) + ' ' + string(t.kind) + ' ' + string(t.flags))

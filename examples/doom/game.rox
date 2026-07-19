@@ -1,0 +1,548 @@
+# Doom gameplay core (p_mobj/p_enemy/p_doors-lite): mobjs driven by the
+# generated state tables, monster AI, hitscan/missile combat, DR/D1 doors,
+# and the deterministic P_Random. Runs at 35 tics/second.
+#
+# Simplifications vs vanilla (documented per PLAN.md): sight checks are
+# distance-based (no LOS raycast), monsters step directly toward their target
+# instead of the 8-direction dance, hitscan autoaim is nearest-in-cone, no
+# sounds, no lifts/crushers/teleports yet, keys not required for locked doors.
+
+import math.*
+import mapdata.*
+import tables.*
+
+var GPI = 3.14159265358979
+
+# --- deterministic random (m_random.c) ---
+var rndindex = 0
+
+func p_random() -> int:
+  rndindex = (rndindex + 1) rem 256
+  return RNDTABLE[rndindex]
+
+# --- world refs (ginit) ---
+var gm = nil          # MapData
+var ed_to_mi = {}     # doomednum -> mobjinfo index
+var mt_troopshot = 0  # missile mobjinfo indices (resolved in ginit)
+var mt_headshot = 0
+
+type Mobj object:
+  var x:real = 0.0
+  var y:real = 0.0
+  var z:real = 0.0
+  var angle:real = 0.0
+  var mtype:int = 0
+  var state:int = 0
+  var tics:int = 0
+  var health:int = 0
+  var flags:int = 0
+  var radius:real = 20.0
+  var speed:int = 0
+  var momx:real = 0.0
+  var momy:real = 0.0
+  var movecount:int = 0
+  var target = nil     # nil, or the player sentinel true, or another mobj
+  var chase_player:bool = false
+  var removed:bool = false
+
+var mobjs = []
+var solid_mobjs = []   # rebuilt each tic: the subset collision cares about
+
+# --- player ---
+var pl_x = 0.0
+var pl_y = 0.0
+var pl_health = 100
+var pl_ammo = 50
+var pl_dead = false
+var flash_tics = 0    # pistol muzzle flash frames left
+
+func player_health() -> int:
+  return pl_health
+
+func player_ammo() -> int:
+  return pl_ammo
+
+func player_dead() -> bool:
+  return pl_dead
+
+func muzzle_flash() -> bool:
+  return flash_tics > 0
+
+# --- doors (p_doors-lite) ---
+var door_sector = []
+var door_dir = []      # 1 opening, 0 waiting, -1 closing
+var door_top = []
+var door_wait = []
+var door_stay = []     # D1: stays open
+
+proc ginit(m):
+  gm = m
+  ed_to_mi = {}
+  for i in range(..<len(MI_ED)):
+    if MI_ED[i] > 0 and not (MI_ED[i] in ed_to_mi):
+      ed_to_mi[MI_ED[i]] = i
+  for i in range(..<len(MI_NAMES)):
+    if MI_NAMES[i] == 'MT_TROOPSHOT':
+      mt_troopshot = i
+    if MI_NAMES[i] == 'MT_HEADSHOT':
+      mt_headshot = i
+  mobjs = []
+  door_sector = []
+  door_dir = []
+  door_top = []
+  door_wait = []
+  door_stay = []
+  pl_health = 100
+  pl_ammo = 50
+  pl_dead = false
+  rndindex = 0
+
+# spawn map things as mobjs; floorz supplied by the caller per position
+proc spawn_things(floorz_of):
+  for t in gm.things:
+    if (t.flags & 16) != 0:
+      continue
+    if not (t.kind in ed_to_mi):
+      continue
+    var mi = ed_to_mi[t.kind]
+    var mo = Mobj()
+    mo.x = t.x
+    mo.y = t.y
+    mo.mtype = mi
+    mo.angle = t.angle * GPI / 180.0
+    mo.health = MI_HEALTH[mi]
+    mo.flags = MI_FLAGS[mi]
+    mo.radius = MI_RADIUS[mi]
+    mo.speed = MI_SPEED[mi]
+    mo.state = MI_SPAWN[mi]
+    mo.tics = ST_TICS[mo.state]
+    var fz = floorz_of(t.x, t.y)
+    if (mo.flags & MF_SPAWNCEILING) != 0:
+      mo.z = fz + MI_HEIGHT[mi] + 40.0
+    else:
+      mo.z = fz
+    mobjs.append(mo)
+
+# --- state machine ---
+proc set_state(mo, st:int):
+  if st == 0:
+    mo.removed = true
+    mo.state = 0
+    mo.tics = -1
+    return
+  mo.state = st
+  mo.tics = ST_TICS[st]
+  run_action(mo, ST_ACT[st])
+
+proc mobj_tic(mo):
+  # missiles fly every tic
+  if (mo.flags & MF_MISSILE) != 0:
+    missile_move(mo)
+  if mo.tics < 0:
+    return
+  mo.tics = mo.tics - 1
+  if mo.tics <= 0:
+    set_state(mo, ST_NEXT[mo.state])
+
+func dist_to_player(mo) -> real:
+  var dx = pl_x - mo.x
+  var dy = pl_y - mo.y
+  return sqrt(dx * dx + dy * dy)
+
+# --- movement helpers (shared with the shell for player-vs-mobj blocking) ---
+func mobj_blocked(mo, nx:real, ny:real) -> bool:
+  # vs lines (reuse the same rules as the player)
+  if line_blocked(nx, ny, mo.radius):
+    return true
+  # vs other solid mobjs
+  for o in solid_mobjs:
+    if o == mo:
+      continue
+    var dx = o.x - nx
+    var dy = o.y - ny
+    var rr = o.radius + mo.radius
+    if dx * dx + dy * dy < rr * rr:
+      return true
+  # vs the player
+  var dxp = pl_x - nx
+  var dyp = pl_y - ny
+  var rp = 16.0 + mo.radius
+  if dxp * dxp + dyp * dyp < rp * rp:
+    return true
+  return false
+
+# solid mobj blocking for the PLAYER at (x, y)
+func blocked_by_mobj(x:real, y:real) -> bool:
+  for o in solid_mobjs:
+    var dx = o.x - x
+    var dy = o.y - y
+    var rr = o.radius + 16.0
+    if dx * dx + dy * dy < rr * rr:
+      return true
+  return false
+
+var line_blocked_fn = nil   # set by the shell: (x, y, radius) -> bool
+
+func line_blocked(x:real, y:real, radius:real) -> bool:
+  return line_blocked_fn(x, y, radius)
+
+proc set_line_blocked(f):
+  line_blocked_fn = f
+
+# --- actions ---
+proc run_action(mo, act:string):
+  if act == '':
+    return
+  if act == 'A_Look':
+    a_look(mo)
+  if act == 'A_Chase':
+    a_chase(mo)
+  if act == 'A_FaceTarget':
+    a_facetarget(mo)
+  if act == 'A_PosAttack':
+    a_posattack(mo)
+  if act == 'A_SPosAttack':
+    a_sposattack(mo)
+  if act == 'A_TroopAttack':
+    a_troopattack(mo)
+  if act == 'A_SargAttack':
+    a_sargattack(mo)
+  if act == 'A_HeadAttack':
+    a_headattack(mo)
+  if act == 'A_Fall':
+    mo.flags = mo.flags & (0 - 1 - MF_SOLID)
+  if act == 'A_Explode':
+    a_explode(mo)
+
+proc a_look(mo):
+  if pl_dead:
+    return
+  # wake only with a real line of sight (vanilla P_CheckSight), not merely
+  # proximity — otherwise a whole room activates through walls and shoots
+  # you from off-screen. clear_shot() is the same wall raycast the hitscan
+  # attacks use; the distance filter keeps the scan off far idle monsters.
+  if dist_to_player(mo) < 1400.0 and clear_shot(mo):
+    mo.chase_player = true
+    set_state(mo, MI_SEE[mo.mtype])
+
+proc a_facetarget(mo):
+  if mo.chase_player:
+    mo.angle = atan2(pl_y - mo.y, pl_x - mo.x)
+
+proc a_chase(mo):
+  if pl_dead or not mo.chase_player:
+    set_state(mo, MI_SPAWN[mo.mtype])
+    return
+  var d = dist_to_player(mo)
+  a_facetarget(mo)
+  # melee?
+  if MI_MELEE[mo.mtype] != 0 and d < mo.radius + 44.0:
+    set_state(mo, MI_MELEE[mo.mtype])
+    return
+  # missile/hitscan attack: rarer, and only within usable range
+  if MI_MISSILE[mo.mtype] != 0 and d < 1024.0:
+    var chance = int(d / 16.0)
+    if chance < 1:
+      chance = 1
+    if p_random() > chance and p_random() < 32:
+      set_state(mo, MI_MISSILE[mo.mtype])
+      return
+  # walk toward the player, sliding along blockages
+  var sp = mo.speed * 1.0
+  var ca = cos(mo.angle)
+  var sa = sin(mo.angle)
+  if not mobj_blocked(mo, mo.x + ca * sp, mo.y + sa * sp):
+    mo.x = mo.x + ca * sp
+    mo.y = mo.y + sa * sp
+  else:
+    if not mobj_blocked(mo, mo.x + ca * sp, mo.y):
+      mo.x = mo.x + ca * sp
+    else:
+      if not mobj_blocked(mo, mo.x, mo.y + sa * sp):
+        mo.y = mo.y + sa * sp
+
+# hitscan attacks are blocked by walls (cheap LOS: only checked when firing)
+func clear_shot(mo) -> bool:
+  var d = dist_to_player(mo)
+  return wall_dist_fn(mo.x, mo.y, atan2(pl_y - mo.y, pl_x - mo.x)) > d - 4.0
+
+proc a_posattack(mo):
+  a_facetarget(mo)
+  if not clear_shot(mo):
+    return
+  if p_random() < 160:
+    damage_player(((p_random() rem 5) + 1) * 3)
+
+proc a_sposattack(mo):
+  a_facetarget(mo)
+  if not clear_shot(mo):
+    return
+  for i in range(..<3):
+    if p_random() < 140:
+      damage_player(((p_random() rem 5) + 1) * 3)
+
+proc a_sargattack(mo):
+  a_facetarget(mo)
+  if dist_to_player(mo) < mo.radius + 60.0:
+    damage_player(((p_random() rem 10) + 1) * 4)
+
+proc a_troopattack(mo):
+  a_facetarget(mo)
+  if dist_to_player(mo) < mo.radius + 60.0:
+    damage_player(((p_random() rem 8) + 1) * 3)
+    return
+  spawn_missile(mo, mt_troopshot)
+
+proc a_headattack(mo):
+  a_facetarget(mo)
+  if dist_to_player(mo) < mo.radius + 60.0:
+    damage_player(((p_random() rem 6) + 1) * 10)
+    return
+  spawn_missile(mo, mt_headshot)
+
+# spawn a missile mobj flying from mo toward the player
+proc spawn_missile(mo, mt:int):
+  var mi = mt
+  var ms = Mobj()
+  ms.x = mo.x
+  ms.y = mo.y
+  ms.z = mo.z + 32.0
+  ms.mtype = mi
+  ms.health = MI_HEALTH[mi]
+  ms.flags = MI_FLAGS[mi]
+  ms.radius = MI_RADIUS[mi]
+  ms.state = MI_SPAWN[mi]
+  ms.tics = ST_TICS[ms.state]
+  ms.angle = atan2(pl_y - mo.y, pl_x - mo.x)
+  var sp = MI_SPEED[mi] * 1.0
+  ms.momx = cos(ms.angle) * sp
+  ms.momy = sin(ms.angle) * sp
+  mobjs.append(ms)
+
+proc missile_move(mo):
+  var nx = mo.x + mo.momx
+  var ny = mo.y + mo.momy
+  # hit the player?
+  var dx = pl_x - nx
+  var dy = pl_y - ny
+  var rr = mo.radius + 20.0
+  if dx * dx + dy * dy < rr * rr and not pl_dead:
+    damage_player(((p_random() rem 8) + 1) * MI_DAMAGE[mo.mtype])
+    explode_missile(mo)
+    return
+  # hit a wall?
+  if line_blocked(nx, ny, mo.radius):
+    explode_missile(mo)
+    return
+  mo.x = nx
+  mo.y = ny
+
+proc explode_missile(mo):
+  mo.momx = 0.0
+  mo.momy = 0.0
+  mo.flags = mo.flags & (0 - 1 - MF_MISSILE)
+  set_state(mo, MI_DEATH[mo.mtype])
+
+proc a_explode(mo):
+  # barrel/rocket radius damage
+  for o in mobjs:
+    if o.removed or (o.flags & MF_SHOOTABLE) == 0 or o == mo:
+      continue
+    var dx = o.x - mo.x
+    var dy = o.y - mo.y
+    var d = sqrt(dx * dx + dy * dy)
+    if d < 128.0:
+      damage_mobj(o, int(128.0 - d))
+  var dxp = pl_x - mo.x
+  var dyp = pl_y - mo.y
+  var dp = sqrt(dxp * dxp + dyp * dyp)
+  if dp < 128.0:
+    damage_player(int(128.0 - dp))
+
+proc damage_mobj(mo, dmg:int):
+  if (mo.flags & MF_SHOOTABLE) == 0 or mo.removed:
+    return
+  mo.health = mo.health - dmg
+  if mo.health <= 0:
+    mo.flags = mo.flags & (0 - 1 - MF_SHOOTABLE)
+    if mo.health < 0 - MI_HEALTH[mo.mtype] and MI_XDEATH[mo.mtype] != 0:
+      set_state(mo, MI_XDEATH[mo.mtype])
+    else:
+      set_state(mo, MI_DEATH[mo.mtype])
+    return
+  mo.chase_player = true
+  if p_random() < MI_PAINCH[mo.mtype]:
+    set_state(mo, MI_PAIN[mo.mtype])
+
+proc damage_player(dmg:int):
+  if pl_dead:
+    return
+  pl_health = pl_health - dmg
+  if pl_health <= 0:
+    pl_health = 0
+    pl_dead = true
+    print('You died.')
+
+# --- player fire: pistol hitscan with nearest-in-cone autoaim ---
+proc player_fire(ang:real):
+  if pl_ammo <= 0 or pl_dead:
+    return
+  pl_ammo = pl_ammo - 1
+  flash_tics = 4
+  var ca = cos(ang)
+  var sa = sin(ang)
+  # nearest wall along the shot (against blocking lines)
+  var walld = wall_dist_fn(pl_x, pl_y, ang)
+  var best = nil
+  var bestd = walld
+  for mo in mobjs:
+    if mo.removed or (mo.flags & MF_SHOOTABLE) == 0:
+      continue
+    var rx = mo.x - pl_x
+    var ry = mo.y - pl_y
+    var d = rx * ca + ry * sa
+    if d < 8.0 or d > 2048.0 or d >= bestd:
+      continue
+    var l = rx * sa - ry * ca
+    if l < 0.0:
+      l = 0.0 - l
+    if l <= mo.radius + 8.0:
+      best = mo
+      bestd = d
+  if best != nil:
+    damage_mobj(best, 5 * ((p_random() rem 3) + 1))
+
+var wall_dist_fn = nil    # set by the shell: (x, y, angle) -> distance
+
+proc set_wall_dist(f):
+  wall_dist_fn = f
+
+# --- doors ---
+func lowest_neighbor_ceiling(seci:int) -> int:
+  var best = 100000
+  for l in gm.lines:
+    if l.side0 < 0 or l.side1 < 0:
+      continue
+    var s0 = gm.sides[l.side0].sector
+    var s1 = gm.sides[l.side1].sector
+    var other = -1
+    if s0 == seci:
+      other = s1
+    if s1 == seci:
+      other = s0
+    if other >= 0 and gm.sectors[other].ceilh < best:
+      best = gm.sectors[other].ceilh
+  if best == 100000:
+    best = gm.sectors[seci].ceilh
+  return best
+
+# try to use a door line within reach in front of the player
+proc player_use(ang:real):
+  var ca = cos(ang)
+  var sa = sin(ang)
+  var ux = pl_x + ca * 48.0
+  var uy = pl_y + sa * 48.0
+  for l in gm.lines:
+    if l.special != 1 and l.special != 26 and l.special != 27 and l.special != 28 and l.special != 31 and l.special != 117 and l.special != 11:
+      continue
+    # close enough to either the probe point or the player?
+    var x1 = gm.vx[l.v1]
+    var y1 = gm.vy[l.v1]
+    var x2 = gm.vx[l.v2]
+    var y2 = gm.vy[l.v2]
+    var dx = x2 - x1
+    var dy = y2 - y1
+    var lensq = dx * dx + dy * dy
+    if lensq == 0.0:
+      continue
+    var t = ((ux - x1) * dx + (uy - y1) * dy) / lensq
+    if t < 0.0:
+      t = 0.0
+    if t > 1.0:
+      t = 1.0
+    var cx = x1 + dx * t
+    var cy = y1 + dy * t
+    var ddx = ux - cx
+    var ddy = uy - cy
+    if ddx * ddx + ddy * ddy > 40.0 * 40.0:
+      continue
+    if l.special == 11:
+      print('LEVEL EXIT!')
+      return
+    if l.side1 < 0:
+      continue
+    var seci = gm.sides[l.side1].sector
+    var active = false
+    for i in range(..<len(door_sector)):
+      if door_sector[i] == seci and door_dir[i] != -99:
+        active = true
+    if active:
+      continue
+    door_sector.append(seci)
+    door_dir.append(1)
+    door_top.append(lowest_neighbor_ceiling(seci) - 4)
+    door_wait.append(0)
+    door_stay.append(l.special == 31)
+    return
+
+proc doors_tic():
+  for i in range(..<len(door_sector)):
+    var dir = door_dir[i]
+    if dir == -99:
+      continue
+    var sec = gm.sectors[door_sector[i]]
+    if dir == 1:
+      sec.ceilh = sec.ceilh + 4
+      if sec.ceilh >= door_top[i]:
+        sec.ceilh = door_top[i]
+        if door_stay[i]:
+          door_dir[i] = -99
+        else:
+          door_dir[i] = 0
+          door_wait[i] = 150
+    if dir == 0:
+      door_wait[i] = door_wait[i] - 1
+      if door_wait[i] <= 0:
+        door_dir[i] = -1
+    if dir == -1:
+      sec.ceilh = sec.ceilh - 4
+      if sec.ceilh <= sec.floorh:
+        sec.ceilh = sec.floorh
+        door_dir[i] = -99
+
+# --- per-tic driver ---
+proc game_tic(px:real, py:real):
+  pl_x = px
+  pl_y = py
+  if flash_tics > 0:
+    flash_tics = flash_tics - 1
+  doors_tic()
+  solid_mobjs = []
+  for mo in mobjs:
+    if not mo.removed and (mo.flags & MF_SOLID) != 0:
+      solid_mobjs.append(mo)
+  for mo in mobjs:
+    if not mo.removed:
+      mobj_tic(mo)
+
+# count of solid mobjs after the last tic (module-var reads from importers are
+# import-time snapshots; expose live state through a function)
+func solid_count() -> int:
+  return len(solid_mobjs)
+
+# --- renderables for the masked pass: [x, y, angle, sprkey, bright, z] ---
+var FRAMECH = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+
+func renderables() -> list:
+  var out = []
+  for mo in mobjs:
+    if mo.removed or mo.state == 0:
+      continue
+    var frm = ST_FRM[mo.state]
+    var bright = 0
+    if frm >= 32768:
+      frm = frm - 32768
+      bright = 1
+    var key = SPRNAMES[ST_SPR[mo.state]] + FRAMECH[frm]
+    out.append([mo.x, mo.y, mo.angle, key, bright, mo.z])
+  return out

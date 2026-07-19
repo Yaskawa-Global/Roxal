@@ -1,0 +1,196 @@
+# Decoded Doom map geometry (vanilla binary format).
+#
+# Layout choice (per PLAN.md): logic-bearing records (linedefs, sidedefs,
+# sectors, things) become objects; plain coordinate arrays (vertexes) stay as
+# parallel lists. Renderer-only lumps (SEGS/SSECTORS/NODES) are added in M3.
+
+import wad.*
+
+type Linedef object:
+  var v1:int = 0
+  var v2:int = 0
+  var flags:int = 0
+  var special:int = 0
+  var tag:int = 0
+  var side0:int = -1    # sidedef index, -1 = none
+  var side1:int = -1
+
+type Sidedef object:
+  var xoff:int = 0
+  var yoff:int = 0
+  var upper:string = ''
+  var lower:string = ''
+  var mid:string = ''
+  var sector:int = 0
+
+type Sector object:
+  var floorh:int = 0
+  var ceilh:int = 0
+  var floorpic:string = ''
+  var ceilpic:string = ''
+  var light:int = 0
+  var special:int = 0
+  var tag:int = 0
+
+type Thing object:
+  var x:int = 0
+  var y:int = 0
+  var angle:int = 0
+  var kind:int = 0
+  var flags:int = 0
+
+type MapData object:
+  var name:string = ''
+  var vx = []       # vertex x, map units (parallel lists)
+  var vy = []
+  var lines = []    # Linedef
+  var sides = []    # Sidedef
+  var sectors = []  # Sector
+  var things = []   # Thing
+
+  # renderer lumps as parallel lists (walked per frame — no per-record objects)
+  var seg_v1 = []      # SEGS: start/end vertex, linedef, direction, texture offset
+  var seg_v2 = []
+  var seg_line = []
+  var seg_dir = []     # 0 = same direction as linedef, 1 = opposite
+  var seg_off = []
+  var ss_count = []    # SSECTORS: seg count + first seg
+  var ss_first = []
+  var nd_x = []        # NODES: partition line, child refs (bit 0x8000 = subsector)
+  var nd_y = []
+  var nd_dx = []
+  var nd_dy = []
+  var nd_right = []
+  var nd_left = []
+  var nd_rtop = []     # child bounding boxes (for BSP subtree culling)
+  var nd_rbot = []
+  var nd_rleft = []
+  var nd_rright = []
+  var nd_ltop = []
+  var nd_lbot = []
+  var nd_lleft = []
+  var nd_lright = []
+
+  # BLOCKMAP: 128-unit collision grid — line indices per cell
+  var bm_orgx:int = 0
+  var bm_orgy:int = 0
+  var bm_cols:int = 0
+  var bm_rows:int = 0
+  var bm_cells = []    # per cell: list of line indices
+
+var NO_SIDE = 65535   # 0xFFFF in a linedef sidenum means "no sidedef"
+
+func load_map(w, mapname:string):
+  var mi = w.find_map(mapname)
+  if mi < 0:
+    raise RuntimeException('map not found: ' + mapname)
+  var m = MapData()
+  m.name = mapname
+
+  var b = w.map_lump(mi, 'VERTEXES')
+  for o in range(0 ..< len(b) : 4):
+    m.vx.append(i16(b, o))
+    m.vy.append(i16(b, o + 2))
+
+  b = w.map_lump(mi, 'LINEDEFS')
+  for o in range(0 ..< len(b) : 14):
+    var l = Linedef()
+    l.v1 = u16(b, o)
+    l.v2 = u16(b, o + 2)
+    l.flags = u16(b, o + 4)
+    l.special = u16(b, o + 6)
+    l.tag = u16(b, o + 8)
+    l.side0 = u16(b, o + 10)
+    l.side1 = u16(b, o + 12)
+    if l.side0 == NO_SIDE:
+      l.side0 = -1
+    if l.side1 == NO_SIDE:
+      l.side1 = -1
+    m.lines.append(l)
+
+  b = w.map_lump(mi, 'SIDEDEFS')
+  for o in range(0 ..< len(b) : 30):
+    var s = Sidedef()
+    s.xoff = i16(b, o)
+    s.yoff = i16(b, o + 2)
+    s.upper = name8(b, o + 4)
+    s.lower = name8(b, o + 12)
+    s.mid = name8(b, o + 20)
+    s.sector = u16(b, o + 28)
+    m.sides.append(s)
+
+  b = w.map_lump(mi, 'SECTORS')
+  for o in range(0 ..< len(b) : 26):
+    var sec = Sector()
+    sec.floorh = i16(b, o)
+    sec.ceilh = i16(b, o + 2)
+    sec.floorpic = name8(b, o + 4)
+    sec.ceilpic = name8(b, o + 12)
+    sec.light = i16(b, o + 20)
+    sec.special = u16(b, o + 22)
+    sec.tag = u16(b, o + 24)
+    m.sectors.append(sec)
+
+  b = w.map_lump(mi, 'THINGS')
+  for o in range(0 ..< len(b) : 10):
+    var t = Thing()
+    t.x = i16(b, o)
+    t.y = i16(b, o + 2)
+    t.angle = i16(b, o + 4)
+    t.kind = i16(b, o + 6)
+    t.flags = i16(b, o + 8)
+    m.things.append(t)
+
+  b = w.map_lump(mi, 'SEGS')
+  for o in range(0 ..< len(b) : 12):
+    m.seg_v1.append(u16(b, o))
+    m.seg_v2.append(u16(b, o + 2))
+    m.seg_line.append(u16(b, o + 6))
+    m.seg_dir.append(u16(b, o + 8))
+    m.seg_off.append(i16(b, o + 10))
+
+  b = w.map_lump(mi, 'SSECTORS')
+  for o in range(0 ..< len(b) : 4):
+    m.ss_count.append(u16(b, o))
+    m.ss_first.append(u16(b, o + 2))
+
+  # BLOCKMAP: i16 origin x/y, u16 cols/rows, then cols*rows u16 offsets (in
+  # 16-bit words from lump start); each blocklist: 0x0000 marker, line
+  # indices, 0xFFFF terminator. Missing/empty lump leaves bm_cols == 0 and
+  # collision falls back to full line scans.
+  b = w.map_lump(mi, 'BLOCKMAP')
+  if len(b) >= 8:
+    m.bm_orgx = i16(b, 0)
+    m.bm_orgy = i16(b, 2)
+    m.bm_cols = u16(b, 4)
+    m.bm_rows = u16(b, 6)
+    for ci in range(..<m.bm_cols * m.bm_rows):
+      var off = u16(b, 8 + 2 * ci) * 2
+      var cell = []
+      off = off + 2   # skip the 0x0000 start marker
+      while off + 1 < len(b):
+        var li = u16(b, off)
+        if li == 65535:
+          break
+        cell.append(li)
+        off = off + 2
+      m.bm_cells.append(cell)
+
+  b = w.map_lump(mi, 'NODES')
+  for o in range(0 ..< len(b) : 28):
+    m.nd_x.append(i16(b, o))
+    m.nd_y.append(i16(b, o + 2))
+    m.nd_dx.append(i16(b, o + 4))
+    m.nd_dy.append(i16(b, o + 6))
+    m.nd_rtop.append(i16(b, o + 8))
+    m.nd_rbot.append(i16(b, o + 10))
+    m.nd_rleft.append(i16(b, o + 12))
+    m.nd_rright.append(i16(b, o + 14))
+    m.nd_ltop.append(i16(b, o + 16))
+    m.nd_lbot.append(i16(b, o + 18))
+    m.nd_lleft.append(i16(b, o + 20))
+    m.nd_lright.append(i16(b, o + 22))
+    m.nd_right.append(u16(b, o + 24))
+    m.nd_left.append(u16(b, o + 26))
+
+  return m

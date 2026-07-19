@@ -1,0 +1,229 @@
+# WAD asset viewer: browse the palette, flats, composed wall textures and map
+# automaps of a Doom IWAD through the FrameView framebuffer.
+#
+# Run from the repo root:
+#   ./build-rel/roxal examples/doom/viewer.rox
+#
+# Keys: 1 palette   2 flats   3 textures   4 automap
+#       n/p next/previous (flats page, texture, map)   Esc quit
+# The current selection is printed to stdout.
+
+import qt
+import fileio
+import wad.*
+import gfx.*
+import mapdata.*
+
+# prefer the full Freedoom assets when downloaded (see get_freedoom.sh)
+var WADPATH = 'examples/doom/miniwad.wad'
+if fileio.file_exists('examples/doom/freedoom1.wad'):
+  WADPATH = 'examples/doom/freedoom1.wad'
+
+var W = 320
+var H = 200
+
+var w = Wad(WADPATH)
+var pal = playpal(w)
+var flats = flat_names(w)
+var tl = TexLib(w)
+var maps = w.map_names()
+print(WADPATH + ': ' + string(w.num_lumps) + ' lumps, ' + string(len(flats)) + ' flats, ' + string(len(tl.names)) + ' textures, ' + string(len(maps)) + ' maps')
+
+var frame = tensor(shape=[H, W], dtype="uint8")
+
+# pick useful drawing colors from whatever palette this WAD has
+func brightest() -> int:
+  var best = 0
+  var bestv = -1
+  for i in range(..<256):
+    var v = int(pal[i, 0]) + int(pal[i, 1]) + int(pal[i, 2])
+    if v > bestv:
+      bestv = v
+      best = i
+  return best
+
+func reddest() -> int:
+  var best = 0
+  var bestv = -10000
+  for i in range(..<256):
+    var v = 2 * int(pal[i, 0]) - int(pal[i, 1]) - int(pal[i, 2])
+    if v > bestv:
+      bestv = v
+      best = i
+  return best
+
+var C_LINE = brightest()
+var C_THING = reddest()
+
+# clipped Bresenham into the index frame
+proc draw_line(x0:int, y0:int, x1:int, y1:int, c:int):
+  var dx = x1 - x0
+  if dx < 0:
+    dx = -dx
+  var dy = y1 - y0
+  if dy < 0:
+    dy = -dy
+  var sx = -1
+  if x0 < x1:
+    sx = 1
+  var sy = -1
+  if y0 < y1:
+    sy = 1
+  var err = dx - dy
+  var x = x0
+  var y = y0
+  while true:
+    if x >= 0 and x < W and y >= 0 and y < H:
+      frame[y, x] = c
+    if x == x1 and y == y1:
+      break
+    var e2 = 2 * err
+    if e2 > -dy:
+      err = err - dy
+      x = x + sx
+    if e2 < dx:
+      err = err + dx
+      y = y + sy
+
+# --- browse state ---
+var mode = 1        # 1 palette, 2 flats, 3 textures, 4 automap
+var flat_page = 0
+var tex_i = 0
+var map_i = 0
+
+proc draw_palette():
+  print('palette (16x16 grid, row-major indices)')
+  for r in range(..<16):
+    for c in range(..<16):
+      frame[r*12:(r+1)*12, c*20:(c+1)*20] = r * 16 + c
+
+proc draw_flats():
+  var per = 12
+  var pages = int((len(flats) + per - 1) / per)
+  flat_page = (flat_page + pages) rem pages
+  var names = ''
+  for k in range(..<per):
+    var i = flat_page * per + k
+    if i >= len(flats):
+      break
+    var fx = (k rem 4) * 80 + 8
+    var fy = int(k / 4) * 66 + 2
+    frame[fy:fy+64, fx:fx+64] = flat(w, flats[i])
+    names = names + flats[i] + ' '
+  print('flats page ' + string(flat_page + 1) + '/' + string(pages) + ': ' + names)
+
+proc draw_texture():
+  tex_i = (tex_i + len(tl.names)) rem len(tl.names)
+  var name = tl.names[tex_i]
+  var t = tl.compose(name)
+  print('texture ' + string(tex_i + 1) + '/' + string(len(tl.names)) + ': ' + name + ' ' + string(t.w) + 'x' + string(t.h))
+  var bw = t.w
+  if bw > W:
+    bw = W
+  var bh = t.h
+  if bh > H:
+    bh = H
+  var x0 = int((W - bw) / 2)
+  var y0 = int((H - bh) / 2)
+  frame[y0:y0+bh, x0:x0+bw] = t.pix[0:bh, 0:bw]
+
+# automap view transform (set by draw_automap)
+var am_minx = 0
+var am_miny = 0
+var am_scale = 1.0
+
+func mapx(v) -> int:
+  return 10 + int((v - am_minx) * am_scale)
+
+func mapy(v) -> int:
+  return H - 10 - int((v - am_miny) * am_scale)
+
+proc draw_automap():
+  map_i = (map_i + len(maps)) rem len(maps)
+  var m = load_map(w, maps[map_i])
+  print('map ' + string(map_i + 1) + '/' + string(len(maps)) + ': ' + maps[map_i] + ' (' + string(len(m.lines)) + ' lines, ' + string(len(m.things)) + ' things)')
+  # fit map bbox into the screen (y flipped: map north is up)
+  var minx = m.vx[0]
+  var maxx = m.vx[0]
+  var miny = m.vy[0]
+  var maxy = m.vy[0]
+  for i in range(..<len(m.vx)):
+    if m.vx[i] < minx:
+      minx = m.vx[i]
+    if m.vx[i] > maxx:
+      maxx = m.vx[i]
+    if m.vy[i] < miny:
+      miny = m.vy[i]
+    if m.vy[i] > maxy:
+      maxy = m.vy[i]
+  var sx = 300.0 / (maxx - minx + 1)
+  var sy = 180.0 / (maxy - miny + 1)
+  am_scale = sx
+  if sy < am_scale:
+    am_scale = sy
+  am_minx = minx
+  am_miny = miny
+  for l in m.lines:
+    draw_line(mapx(m.vx[l.v1]), mapy(m.vy[l.v1]), mapx(m.vx[l.v2]), mapy(m.vy[l.v2]), C_LINE)
+  for t in m.things:
+    var tx = mapx(t.x)
+    var ty = mapy(t.y)
+    if tx >= 0 and tx < W - 1 and ty >= 0 and ty < H - 1:
+      frame[ty:ty+2, tx:tx+2] = C_THING
+
+# --- qt shell ---
+qt.set_render_backend("software")
+var engine = qt.Engine()
+engine.load('viewer.qml')
+var win = engine.find("win")
+var fb = engine.find("fb")
+
+proc redraw():
+  frame.fill(0)
+  match mode:
+    case 1:
+      draw_palette()
+    case 2:
+      draw_flats()
+    case 3:
+      draw_texture()
+    default:
+      draw_automap()
+  fb.present(pal.take(frame))
+
+qt.connect(win, "key", proc(code, down, repeat):
+  if not down or repeat:
+    return
+  var step = 0
+  match code:
+    case 16777216:   # Esc
+      engine.quit()
+      return
+    case 49:         # 1..4
+      mode = 1
+    case 50:
+      mode = 2
+    case 51:
+      mode = 3
+    case 52:
+      mode = 4
+    case 78:         # n
+      step = 1
+    case 80:         # p
+      step = -1
+    default:
+      return
+  if step != 0:
+    match mode:
+      case 2:
+        flat_page = flat_page + step
+      case 3:
+        tex_i = tex_i + step
+      case 4:
+        map_i = map_i + step
+  redraw()
+)
+
+redraw()
+engine.run()
+print('viewer closed')

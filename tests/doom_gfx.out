@@ -1,0 +1,14 @@
+pal[1]: 31 23 11
+cmap row0 sum: 31483
+cmap row33 sum: 0
+flats: 147
+first flat: BLOOD1
+flat sum: 770048
+patch: 64x128 off 32,123
+patch opaque: 8192
+patch pixsum: 1531904
+textures: 638
+tex0: AASHITTY
+tex0 size: 64x64
+tex0 opaque: 4096
+tex0 pixsum: 765952

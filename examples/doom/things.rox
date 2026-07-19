@@ -1,0 +1,33 @@
+# Thing type (DoomEd number) -> sprite name prefix, for rendering map things
+# as static decorations. Curated subset covering Doom 1 / Freedoom phase 1
+# content; unknown types simply don't render. The full monster/state tables
+# arrive with M5 gameplay (generated offline from info.c per PLAN.md).
+
+# type -> 4-char sprite prefix (frame A assumed)
+var SPRITE_OF = {
+  # monsters (standing frame)
+  3004: 'POSS', 9: 'SPOS', 3001: 'TROO', 3002: 'SARG', 3005: 'HEAD',
+  3006: 'SKUL', 3003: 'BOSS', 58: 'SARG',
+  # weapons
+  2001: 'SHOT', 2002: 'MGUN', 2003: 'LAUN', 2004: 'PLAS', 2005: 'CSAW', 2006: 'BFUG',
+  # ammo
+  2007: 'CLIP', 2008: 'SHEL', 2010: 'ROCK', 2047: 'CELL', 2048: 'AMMO',
+  2049: 'SBOX', 2046: 'BROK', 17: 'CELP',
+  # health, armor, powerups
+  2011: 'STIM', 2012: 'MEDI', 2013: 'SOUL', 2014: 'BON1', 2015: 'BON2',
+  2018: 'ARM1', 2019: 'ARM2', 2022: 'PINV', 2023: 'PSTR', 2024: 'PINS',
+  2025: 'SUIT', 2026: 'PMAP', 2045: 'PVIS', 83: 'MEGA',
+  # keys
+  5: 'BKEY', 6: 'YKEY', 13: 'RKEY', 38: 'RSKU', 39: 'YSKU', 40: 'BSKU',
+  # decorations
+  2035: 'BAR1', 2028: 'COLU', 48: 'ELEC', 34: 'CAND', 35: 'CBRA',
+  44: 'TBLU', 45: 'TGRN', 46: 'TRED', 55: 'SMBT', 56: 'SMGT', 57: 'SMRT',
+  47: 'SMIT', 54: 'TRE2', 43: 'TRE1', 41: 'CEYE', 42: 'FSKU',
+  25: 'POL1', 26: 'POL6', 27: 'POL4', 28: 'POL2', 29: 'POL3', 30: 'COL1',
+  31: 'COL2', 32: 'COL3', 33: 'COL4', 36: 'COL5', 37: 'COL6',
+}
+
+func sprite_prefix(kind:int) -> string:
+  if kind in SPRITE_OF:
+    return SPRITE_OF[kind]
+  return ''

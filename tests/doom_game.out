@@ -1,0 +1,7 @@
+mobjs: 0
+rnd: 8 109 220
+alive after 3s: true
+ammo spent: 1
+health: true
+blockmap loaded: true
+blockmap cells ok: true

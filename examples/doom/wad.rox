@@ -1,0 +1,92 @@
+# Doom WAD container: reads an IWAD/PWAD, indexes the lump directory, and
+# provides byte-level decode helpers for the little-endian on-disk structures.
+#
+# The whole file is kept as a byte list; lumps are carved with list slicing
+# and turned into tensors where bulk pixel data is needed (see gfx.rox).
+# Lump offsets are used exactly as stored — wadptr-compressed WADs share and
+# overlap lump storage, so no monotonicity is assumed.
+
+import fileio
+
+# --- little-endian field decoding (from_bytes sign-extends for us) ---
+func i16(b, o:int) -> int:
+  return from_bytes(b[o:o+2], int)
+
+func u16(b, o:int) -> int:
+  return from_bytes(b[o:o+2], int, signed=false)
+
+func i32(b, o:int) -> int:
+  return from_bytes(b[o:o+4], int)
+
+# 8-byte NUL-padded lump/texture name at offset o
+func name8(b, o:int) -> string:
+  var n = 0
+  while n < 8 and b[o + n] != 0:
+    n = n + 1
+  if n == 0:
+    return ''
+  return from_bytes(b[o:o+n], string)
+
+type Wad object:
+  var bytes             # entire file as a byte list
+  var num_lumps:int = 0
+  var names = []        # lump name per index (padding stripped)
+  var offs = []
+  var sizes = []
+  var index = {}        # name -> first lump index with that name
+
+  proc init(path:string):
+    bytes = fileio.read_file(path, format='binary')
+    var magic = from_bytes(bytes[0:4], string)
+    if magic != 'IWAD' and magic != 'PWAD':
+      raise RuntimeException('not a WAD file: ' + path)
+    num_lumps = i32(bytes, 4)
+    var e = i32(bytes, 8)
+    for i in range(..<num_lumps):
+      offs.append(i32(bytes, e))
+      sizes.append(i32(bytes, e + 4))
+      var nm = name8(bytes, e + 8)
+      names.append(nm)
+      if not (nm in index):
+        index[nm] = i
+      e = e + 16
+
+  # index of the first lump called name, or -1
+  func find(name:string) -> int:
+    if name in index:
+      return index[name]
+    return -1
+
+  # lump bytes by index
+  func lump(i:int):
+    return bytes[offs[i]:offs[i] + sizes[i]]
+
+  # bytes of the first lump called name (raises if absent)
+  func lump_named(name:string):
+    if not (name in index):
+      raise RuntimeException('no lump named ' + name)
+    return lump(index[name])
+
+  # Map lumps are located positionally: a zero-size marker (MAP01 / E1M1)
+  # followed by THINGS..BLOCKMAP. Name lookup must start from the marker —
+  # every map has a THINGS, so the global index would always find the first.
+  func find_map(mapname:string) -> int:
+    return find(mapname)
+
+  # bytes of `which` (e.g. 'VERTEXES') for the map whose marker is at index mi
+  func map_lump(mi:int, which:string):
+    var last = mi + 11
+    if last > num_lumps:
+      last = num_lumps
+    for i in range(mi+1 ..< last):
+      if names[i] == which:
+        return lump(i)
+    raise RuntimeException('map at ' + string(mi) + ' has no ' + which + ' lump')
+
+  # names of all map markers, in directory order
+  func map_names() -> list:
+    var out = []
+    for i in range(..<num_lumps - 1):
+      if sizes[i] == 0 and names[i+1] == 'THINGS':
+        out.append(names[i])
+    return out

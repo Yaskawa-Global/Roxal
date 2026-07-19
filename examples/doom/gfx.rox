@@ -1,0 +1,144 @@
+# Doom graphics lumps: palette, colormap, flats, picture-format patches, and
+# composed wall textures (TEXTURE1/2 + PNAMES).
+#
+# Everything pixel-shaped becomes a uint8 tensor of palette indices; patch
+# posts and texture patches are blitted with tensor slice-assign, so decode
+# cost is per-post/per-rect, not per-pixel.
+
+import wad.*
+
+# first of the 14 PLAYPAL palettes -> [256, 3] uint8 RGB
+func playpal(w):
+  return tensor(shape=[256, 3], dtype="uint8", data=w.lump_named('PLAYPAL')[0:768])
+
+# light-diminishing tables -> [34, 256] uint8 (row = light level, 32/33 special)
+func colormap(w):
+  return tensor(shape=[34, 256], dtype="uint8", data=w.lump_named('COLORMAP'))
+
+# 64x64 floor/ceiling flat -> [64, 64] uint8 palette indices
+func flat(w, name:string):
+  return tensor(shape=[64, 64], dtype="uint8", data=w.lump_named(name))
+
+# names of all flats: size-4096 lumps between F_START and F_END, skipping
+# nested F1_START/F1_END-style section markers
+func flat_names(w) -> list:
+  var out = []
+  var inside = false
+  for i in range(..<w.num_lumps):
+    var nm = w.names[i]
+    if nm == 'F_START':
+      inside = true
+    if nm == 'F_END':
+      inside = false
+    if inside and w.sizes[i] == 4096:
+      out.append(nm)
+  return out
+
+# a decoded picture-format image (patches, sprites, UI graphics)
+type Patch object:
+  var w:int = 0
+  var h:int = 0
+  var left:int = 0     # draw offsets (sprites/HUD)
+  var top:int = 0
+  var pix              # [h, w] uint8 palette indices (0 where transparent)
+  var mask             # [h, w] uint8 1 = opaque
+
+# decode picture-format bytes (column posts) into a Patch
+func patch(b):
+  var p = Patch()
+  p.w = u16(b, 0)
+  p.h = u16(b, 2)
+  p.left = i16(b, 4)
+  p.top = i16(b, 6)
+  p.pix = tensor(shape=[p.h, p.w], dtype="uint8")
+  p.mask = tensor(shape=[p.h, p.w], dtype="uint8")
+  for c in range(..<p.w):
+    var co = i32(b, 8 + 4 * c)
+    while b[co] != 255:
+      var td = int(b[co])
+      var ln = int(b[co + 1])
+      if ln > 0:
+        p.pix[td:td+ln, c] = tensor(shape=[ln], dtype="uint8", data=b[co+3:co+3+ln])
+        p.mask[td:td+ln, c] = 1
+      co = co + 4 + ln
+  return p
+
+# wall-texture library: parses PNAMES + TEXTURE1/2, composes lazily on demand
+type TexLib object:
+  var wadref
+  var pnames = []      # patch names by PNAMES index
+  var names = []       # texture names, definition order
+  var defs = {}        # name -> [width, height, [[ox, oy, patchidx], ...]]
+  var cache = {}       # name -> composed Patch
+  var pcache = {}      # patch lump name -> decoded Patch
+
+  proc init(w):
+    wadref = w
+    var b = w.lump_named('PNAMES')
+    var cnt = i32(b, 0)
+    for i in range(..<cnt):
+      pnames.append(name8(b, 4 + 8 * i))
+    parse_texture_lump('TEXTURE1')
+    if w.find('TEXTURE2') >= 0:
+      parse_texture_lump('TEXTURE2')
+
+  proc parse_texture_lump(lumpname:string):
+    var b = wadref.lump_named(lumpname)
+    var ntex = i32(b, 0)
+    for i in range(..<ntex):
+      var to = i32(b, 4 + 4 * i)
+      var nm = name8(b, to)
+      var refs = []
+      var npat = u16(b, to + 20)
+      for j in range(..<npat):
+        var ro = to + 22 + 10 * j
+        refs.append([i16(b, ro), i16(b, ro + 2), u16(b, ro + 4)])
+      names.append(nm)
+      defs[nm] = [u16(b, to + 12), u16(b, to + 14), refs]
+
+  # composed texture as a Patch (cached); unknown patches are skipped
+  func compose(name:string):
+    if name in cache:
+      return cache[name]
+    var d = defs[name]
+    var t = Patch()
+    t.w = d[0]
+    t.h = d[1]
+    t.pix = tensor(shape=[t.h, t.w], dtype="uint8")
+    t.mask = tensor(shape=[t.h, t.w], dtype="uint8")
+    for ref in d[2]:
+      var pname = pnames[ref[2]]
+      if pname == '' or wadref.find(pname) < 0:
+        continue
+      if not (pname in pcache):
+        pcache[pname] = patch(wadref.lump_named(pname))
+      var p = pcache[pname]
+      # clipped masked blit of p at (ref[0], ref[1])
+      var dx0 = ref[0]
+      var dy0 = ref[1]
+      var sx0 = 0
+      var sy0 = 0
+      if dx0 < 0:
+        sx0 = -dx0
+        dx0 = 0
+      if dy0 < 0:
+        sy0 = -dy0
+        dy0 = 0
+      var dx1 = ref[0] + p.w
+      var dy1 = ref[1] + p.h
+      if dx1 > t.w:
+        dx1 = t.w
+      if dy1 > t.h:
+        dy1 = t.h
+      if dx1 <= dx0 or dy1 <= dy0:
+        continue
+      var sx1 = sx0 + (dx1 - dx0)
+      var sy1 = sy0 + (dy1 - dy0)
+      var sub = p.pix[sy0:sy1, sx0:sx1]
+      var msk = p.mask[sy0:sy1, sx0:sx1]
+      var cur = t.pix[dy0:dy1, dx0:dx1]
+      var curm = t.mask[dy0:dy1, dx0:dx1]
+      t.pix[dy0:dy1, dx0:dx1] = cur - cur * msk + sub * msk
+      t.mask[dy0:dy1, dx0:dx1] = curm - curm * msk + msk
+    cache[name] = t
+    return t

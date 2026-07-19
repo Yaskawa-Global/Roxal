@@ -1,0 +1,33 @@
+# Doom graphics decode: palette, colormap, flats, picture-format patches and
+# texture composition, against the checked-in miniwad. Expected values verified
+# with an independent Python decode of the same file.
+
+import wad.*
+import gfx.*
+
+var w = Wad('../examples/doom/miniwad.wad')
+
+var pal = playpal(w)
+print('pal[1]: ' + string(int(pal[1, 0])) + ' ' + string(int(pal[1, 1])) + ' ' + string(int(pal[1, 2])))
+
+var cm = colormap(w)
+print('cmap row0 sum: ' + string(int(cm[0, 0:256].sum())))
+print('cmap row33 sum: ' + string(int(cm[33, 0:256].sum())))
+
+var fn = flat_names(w)
+print('flats: ' + string(len(fn)))
+print('first flat: ' + fn[0])
+print('flat sum: ' + string(int(flat(w, fn[0]).sum())))
+
+var p = patch(w.lump_named('BODIES'))
+print('patch: ' + string(p.w) + 'x' + string(p.h) + ' off ' + string(p.left) + ',' + string(p.top))
+print('patch opaque: ' + string(int(p.mask.sum())))
+print('patch pixsum: ' + string(int(p.pix.sum())))
+
+var tl = TexLib(w)
+print('textures: ' + string(len(tl.names)))
+print('tex0: ' + tl.names[0])
+var t0 = tl.compose('AASHITTY')   # 64x64 texture from a 64x128 patch: clips
+print('tex0 size: ' + string(t0.w) + 'x' + string(t0.h))
+print('tex0 opaque: ' + string(int(t0.mask.sum())))
+print('tex0 pixsum: ' + string(int(t0.pix.sum())))

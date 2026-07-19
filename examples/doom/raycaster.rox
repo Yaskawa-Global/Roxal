@@ -1,0 +1,87 @@
+# M1: Wolfenstein-style textured raycaster — the Doom-port performance gate.
+#
+# Run from the repo root with the RELEASE build (build/ is Debug, 12-15x slower):
+#   ./build-rel/roxal examples/doom/raycaster.rox
+#
+# Controls: W/S or Up/Down move, A/D strafe, Left/Right turn, Esc quits.
+# Prints the average render+present time every 60 frames.
+
+import qt
+import raycast_core.*
+
+qt.set_render_backend("software")   # comment out to use the GPU when available
+
+var engine = qt.Engine()
+engine.load('raycaster.qml')
+var win = engine.find("win")
+var fb = engine.find("fb")
+
+# Qt key codes
+var K_W = 87
+var K_A = 65
+var K_S = 83
+var K_D = 68
+var K_LEFT = 16777234
+var K_UP = 16777235
+var K_RIGHT = 16777236
+var K_DOWN = 16777237
+var K_ESC = 16777216
+
+var held = {}
+qt.connect(win, "key", proc(code, down, repeat):
+  if not repeat:
+    held[code] = down
+  if code == K_ESC and down:
+    engine.quit()
+)
+
+func is_held(code:int) -> bool:
+  return code in held and held[code]
+
+var MOVE_SPEED = 3.0    # cells/second
+var TURN_SPEED = 2.2    # radians/second
+
+var last = Time.steady_now()
+var acc_ms = 0.0
+var acc_n = 0
+var win_start = Time.steady_now()
+
+qt.every(16, proc():
+  var now = Time.steady_now()
+  var dt = now.since(last).total_millis() / 1000.0
+  last = now
+  if dt > 0.1:
+    dt = 0.1
+
+  var fwd = 0.0
+  var strafe = 0.0
+  var rot = 0.0
+  if is_held(K_W) or is_held(K_UP):
+    fwd = fwd + 1.0
+  if is_held(K_S) or is_held(K_DOWN):
+    fwd = fwd - 1.0
+  if is_held(K_D):
+    strafe = strafe + 1.0
+  if is_held(K_A):
+    strafe = strafe - 1.0
+  if is_held(K_RIGHT):
+    rot = rot + 1.0
+  if is_held(K_LEFT):
+    rot = rot - 1.0
+  move_player(fwd * MOVE_SPEED * dt, strafe * MOVE_SPEED * dt, rot * TURN_SPEED * dt)
+
+  var t0 = Time.steady_now()
+  render()
+  fb.present(frame_rgb())
+  acc_ms = acc_ms + Time.steady_now().since(t0).total_millis()
+  acc_n = acc_n + 1
+  if acc_n == 60:
+    var wall = Time.steady_now().since(win_start).total_millis()
+    print('render+present: ' + string(acc_ms / 60.0) + ' ms/frame (' + string(int(60000.0 / wall + 0.5)) + ' fps)')
+    win_start = Time.steady_now()
+    acc_ms = 0.0
+    acc_n = 0
+)
+
+engine.run()
+print('window closed — bye')

@@ -1,0 +1,277 @@
+# Doom in Roxal — M5: it's a game. Doors open, the pistol fires, monsters
+# fight back, barrels explode, the status bar keeps score.
+#
+# Run from the repo root with the RELEASE build:
+#   ./build-rel/roxal examples/doom/doom.rox
+# Uses freedoom1.wad if downloaded (see get_freedoom.sh), else miniwad.wad.
+#
+# Controls: W/S or Up/Down move, A/D strafe, Left/Right turn,
+#           Ctrl or F fire, Space or E use (doors/switches), Esc quit.
+
+import qt
+import fileio
+import math.*
+import wad.*
+import mapdata.*
+import render.*
+import game.*
+
+var WADPATH = 'examples/doom/miniwad.wad'
+var MAPNAME = 'MAP01'
+if fileio.file_exists('examples/doom/freedoom1.wad'):
+  WADPATH = 'examples/doom/freedoom1.wad'
+  MAPNAME = 'E1M1'
+
+var w = Wad(WADPATH)
+setup(w, MAPNAME)
+var m = map()
+print(WADPATH + ' ' + MAPNAME + ': ' + string(len(m.seg_v1)) + ' segs, ' + string(len(m.sectors)) + ' sectors, ' + string(len(m.things)) + ' things')
+
+# player state from the spawn thing (type 1); angle is degrees
+var px = 0.0
+var py = 0.0
+var pang = 0.0
+for t in m.things:
+  if t.kind == 1:
+    px = t.x
+    py = t.y
+    pang = t.angle * 3.14159265358979 / 180.0
+    break
+var EYE = 41.0
+
+# --- line collision (shared with the game core for monsters/missiles) ---
+func line_blocks(l, x:real, y:real, radius:real, curfloor:int) -> bool:
+  var x1 = m.vx[l.v1]
+  var y1 = m.vy[l.v1]
+  var x2 = m.vx[l.v2]
+  var y2 = m.vy[l.v2]
+  var lo = x1
+  var hi = x2
+  if x2 < x1:
+    lo = x2
+    hi = x1
+  if x < lo - radius or x > hi + radius:
+    return false
+  lo = y1
+  hi = y2
+  if y2 < y1:
+    lo = y2
+    hi = y1
+  if y < lo - radius or y > hi + radius:
+    return false
+  var dx = x2 - x1
+  var dy = y2 - y1
+  var lensq = dx * dx + dy * dy
+  var t = 0.0
+  if lensq > 0.0:
+    t = ((x - x1) * dx + (y - y1) * dy) / lensq
+    if t < 0.0:
+      t = 0.0
+    if t > 1.0:
+      t = 1.0
+  var cx = x1 + dx * t
+  var cy = y1 + dy * t
+  var distsq = (x - cx) * (x - cx) + (y - cy) * (y - cy)
+  if distsq > radius * radius:
+    return false
+  if l.side1 < 0 or (l.flags & 1) != 0:
+    return true
+  var fs = m.sectors[m.sides[l.side0].sector]
+  var bs = m.sectors[m.sides[l.side1].sector]
+  var opentop = fs.ceilh
+  if bs.ceilh < opentop:
+    opentop = bs.ceilh
+  var openbot = fs.floorh
+  if bs.floorh > openbot:
+    openbot = bs.floorh
+  if opentop - openbot < 56:
+    return true
+  if openbot - curfloor > 24:
+    return true
+  return false
+
+# blockmap-accelerated: only test lines in the 128-unit cells the circle
+# overlaps (falls back to a full scan when the WAD has no BLOCKMAP)
+func hits_wall(x:real, y:real, radius:real) -> bool:
+  var curfloor = m.sectors[sector_at(x, y)].floorh
+  if m.bm_cols > 0:
+    var c0 = int((x - radius - m.bm_orgx) / 128.0)
+    var c1 = int((x + radius - m.bm_orgx) / 128.0)
+    var r0 = int((y - radius - m.bm_orgy) / 128.0)
+    var r1 = int((y + radius - m.bm_orgy) / 128.0)
+    if c0 < 0:
+      c0 = 0
+    if r0 < 0:
+      r0 = 0
+    if c1 >= m.bm_cols:
+      c1 = m.bm_cols - 1
+    if r1 >= m.bm_rows:
+      r1 = m.bm_rows - 1
+    for cy in range(r0 ..< r1 + 1):
+      for cx in range(c0 ..< c1 + 1):
+        for li in m.bm_cells[cy * m.bm_cols + cx]:
+          if line_blocks(m.lines[li], x, y, radius, curfloor):
+            return true
+    return false
+  for l in m.lines:
+    if line_blocks(l, x, y, radius, curfloor):
+      return true
+  return false
+
+# nearest blocking-wall distance along a ray (for hitscan shots)
+func wall_dist(x:real, y:real, ang:real) -> real:
+  var ca = cos(ang)
+  var sa = sin(ang)
+  var best = 2048.0
+  for l in m.lines:
+    var blocking = false
+    if l.side1 < 0 or (l.flags & 1) != 0:
+      blocking = true
+    else:
+      var fs = m.sectors[m.sides[l.side0].sector]
+      var bs = m.sectors[m.sides[l.side1].sector]
+      var opentop = fs.ceilh
+      if bs.ceilh < opentop:
+        opentop = bs.ceilh
+      var openbot = fs.floorh
+      if bs.floorh > openbot:
+        openbot = bs.floorh
+      if opentop - openbot < 16:
+        blocking = true
+    if not blocking:
+      continue
+    var x1 = m.vx[l.v1]
+    var y1 = m.vy[l.v1]
+    var ldx = m.vx[l.v2] - x1
+    var ldy = m.vy[l.v2] - y1
+    var denom = ca * ldy - sa * ldx
+    if denom < 0.0001 and denom > -0.0001:
+      continue
+    var t = ((x1 - x) * ldy - (y1 - y) * ldx) / denom
+    var u = 0.0
+    if ldx > 0.5 or ldx < -0.5:
+      u = (x + ca * t - x1) / ldx
+    else:
+      if ldy > 0.5 or ldy < -0.5:
+        u = (y + sa * t - y1) / ldy
+      else:
+        continue
+    if t > 0.0 and t < best and u >= 0.0 and u <= 1.0:
+      best = t
+  return best
+
+func can_stand(x:real, y:real) -> bool:
+  if hits_wall(x, y, 16.0):
+    return false
+  if blocked_by_mobj(x, y):
+    return false
+  return true
+
+proc move_player(fwd:real, strafe:real, rot:real):
+  pang = pang + rot
+  var ca = cos(pang)
+  var sa = sin(pang)
+  var nx = px + ca * fwd + sa * strafe
+  var ny = py + sa * fwd - ca * strafe
+  if can_stand(nx, py):
+    px = nx
+  if can_stand(px, ny):
+    py = ny
+
+# --- game init ---
+ginit(m)
+set_line_blocked(hits_wall)
+set_wall_dist(wall_dist)
+
+func floorz_at(x, y) -> real:
+  return m.sectors[sector_at(x, y)].floorh * 1.0
+
+spawn_things(floorz_at)
+print('spawned mobjs: ' + string(len(renderables())))
+
+# --- qt shell ---
+qt.set_render_backend("software")
+var engine = qt.Engine()
+engine.load('doom.qml')
+var win = engine.find("win")
+var fb = engine.find("fb")
+
+var held = {}
+qt.connect(win, "key", proc(code, down, repeat):
+  if repeat:
+    return
+  held[code] = down
+  if not down:
+    return
+  if code == 16777216:   # Esc
+    engine.quit()
+  if code == 32 or code == 69:   # Space / E: use
+    player_use(pang)
+  if code == 16777249 or code == 70:   # Ctrl / F: fire
+    player_fire(pang)
+)
+
+func is_held(code:int) -> bool:
+  return code in held and held[code]
+
+var MOVE_SPEED = 250.0
+var TURN_SPEED = 2.5
+
+var last = Time.steady_now()
+var tic_acc = 0.0
+var acc_ms = 0.0
+var acc_n = 0
+var win_start = Time.steady_now()
+
+qt.every(16, proc():
+  var now = Time.steady_now()
+  var dt = now.since(last).total_millis() / 1000.0
+  last = now
+  if dt > 0.25:
+    dt = 0.25
+
+  if not player_dead():
+    var fwd = 0.0
+    var strafe = 0.0
+    var rot = 0.0
+    if is_held(87) or is_held(16777235):
+      fwd = fwd + 1.0
+    if is_held(83) or is_held(16777237):
+      fwd = fwd - 1.0
+    if is_held(68):
+      strafe = strafe + 1.0
+    if is_held(65):
+      strafe = strafe - 1.0
+    if is_held(16777236):
+      rot = rot - 1.0
+    if is_held(16777234):
+      rot = rot + 1.0
+    move_player(fwd * MOVE_SPEED * dt, strafe * MOVE_SPEED * dt, rot * TURN_SPEED * dt)
+
+  # fixed 35 Hz game tics, capped: under render load we dilate time instead
+  # of spiraling (each extra tic makes the next frame slower)
+  tic_acc = tic_acc + dt * 35.0
+  if tic_acc > 4.0:
+    tic_acc = 4.0
+  while tic_acc >= 1.0:
+    game_tic(px, py)
+    tic_acc = tic_acc - 1.0
+
+  var t0 = Time.steady_now()
+  var vz = m.sectors[sector_at(px, py)].floorh + EYE
+  set_entities(renderables())
+  render_view(px, py, pang, vz)
+  draw_hud(player_health(), player_ammo(), muzzle_flash())
+  fb.present(frame_rgb())
+  acc_ms = acc_ms + Time.steady_now().since(t0).total_millis()
+  acc_n = acc_n + 1
+  if acc_n == 30:
+    var wall = Time.steady_now().since(win_start).total_millis()
+    print('render+present: ' + string(acc_ms / 30.0) + ' ms/frame (' + string(int(30000.0 / wall + 0.5)) + ' fps), health ' + string(player_health()) + ' ammo ' + string(player_ammo()))
+    win_start = Time.steady_now()
+    acc_ms = 0.0
+    acc_n = 0
+)
+
+engine.run()
+print('doom closed — bye')

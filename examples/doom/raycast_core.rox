@@ -1,0 +1,236 @@
+# Raycaster core: map, textures, palette, player state and the column renderer.
+# Pure Roxal, no qt dependency — imported by raycaster.rox (interactive shell)
+# and raycaster_smoke.rox (headless checks).
+#
+# Rendering recipe (per PLAN.md): the frame holds palette indices (uint8).
+# Per screen column, an interpreted DDA finds the wall, then the pixel work is
+# four bulk tensor ops:
+#   tex_y = ((ramp[0:h] * step + off).astype("int32")) rem 64   # sampling ramp
+#   frame[y0:y1, x] = texcol.take(tex_y)                        # gather + blit
+# Present converts once at the end: palette.take(frame) -> [H, W, 3] RGB.
+
+import math.*
+
+var W = 320
+var H = 200
+var HALF = 100
+
+# --- palette: 4 texture bands of 24 shades (0..95), ceiling 96, floor 97;
+# --- 128..255 is the same palette darkened (side walls / simple shading)
+var pal_data = []
+var bases = [[170, 60, 45], [60, 150, 70], [95, 110, 175], [200, 170, 90]]
+for t in range(..<4):
+  for s in range(..<24):
+    var f = 0.35 + 0.65 * s / 23.0
+    pal_data.append(int(bases[t][0] * f))
+    pal_data.append(int(bases[t][1] * f))
+    pal_data.append(int(bases[t][2] * f))
+# 96: ceiling, 97: floor, 98..127 spare (black)
+pal_data.append(58)
+pal_data.append(66)
+pal_data.append(88)
+pal_data.append(72)
+pal_data.append(66)
+pal_data.append(56)
+for i in range(..<30):
+  pal_data.append(0)
+  pal_data.append(0)
+  pal_data.append(0)
+var full_len = len(pal_data)   # 128*3; dark bank mirrors it at 55%
+for i in range(..<full_len):
+  pal_data.append(int(pal_data[i] * 0.55))
+var palette = tensor(shape=[256, 3], dtype="uint8", data=pal_data)
+
+var CEIL = 96
+var FLOOR = 97
+
+# --- textures: 4 procedural 64x64 textures of palette indices, stored as
+# --- columns: texcols[tex*64 + tex_x, tex_y] so one row-slice is a wall column
+var tex_data = []
+for t in range(..<4):
+  for x in range(..<64):
+    for y in range(..<64):
+      var s = 0
+      match t:
+        case 0:       # brick: offset courses with dark mortar
+          var bx = x + (int(y / 16) rem 2) * 8
+          if (y rem 16) == 15 or (bx rem 16) == 15:
+            s = 4
+          else:
+            s = 15 + ((x * 3 + y) rem 5)
+        case 1:       # checkerboard
+          if ((int(x / 8) + int(y / 8)) rem 2) == 0:
+            s = 20
+          else:
+            s = 8
+        case 2:       # horizontal banding
+          s = 6 + (int(y / 8) rem 2) * 12 + (x rem 2)
+        default:      # diagonal ramp
+          s = 4 + ((x + y) rem 16)
+      tex_data.append(t * 24 + s)
+var texcols = tensor(shape=[256, 64], dtype="uint8", data=tex_data)
+
+# --- map: 20x20 grid, 0 = empty, 1..4 = wall texture id + 1 ---
+var map_rows = [
+  '11111111111111111111',
+  '10000000000000000001',
+  '10000222000000000001',
+  '10000000000000033001',
+  '10000000000000033001',
+  '10004000000000000001',
+  '10004000111100000001',
+  '10004000100000000001',
+  '10000000100000000001',
+  '10000000000000000001',
+  '10000000100000004001',
+  '10000000000000000001',
+  '10002000000330000001',
+  '10002000000330000001',
+  '10000000000000000001',
+  '10000030000000000001',
+  '10000030000002200001',
+  '10000000000000000001',
+  '10000000000000000001',
+  '11111111111111111111']
+var DIG = {'0': 0, '1': 1, '2': 2, '3': 3, '4': 4}
+var grid = []
+for row in map_rows:
+  var r = []
+  for i in range(..<len(row)):
+    r.append(DIG[row[i]])
+  grid.append(r)
+
+# --- player state ---
+var px = 3.5
+var py = 10.5
+var dirx = 1.0
+var diry = 0.0
+var planex = 0.0
+var planey = 0.66
+
+# --- render targets ---
+var frame = tensor(shape=[H, W], dtype="uint8")
+var ramp_data = []
+for i in range(..<H):
+  ramp_data.append(i)
+var ramp = tensor(shape=[H], dtype="float64", data=ramp_data)
+
+proc render():
+  frame[0:HALF, 0:W] = CEIL
+  frame[HALF:H, 0:W] = FLOOR
+
+  for x in range(..<W):
+    # cast one ray (Lodev DDA, float math)
+    var camx = 2.0 * x / W - 1.0
+    var rdx = dirx + planex * camx
+    var rdy = diry + planey * camx
+
+    var mx = int(px)
+    var my = int(py)
+    var deltax = 1000000000.0
+    if rdx != 0.0:
+      deltax = fabs(1.0 / rdx)
+    var deltay = 1000000000.0
+    if rdy != 0.0:
+      deltay = fabs(1.0 / rdy)
+
+    var stepx = 1
+    var sidedistx = (mx + 1.0 - px) * deltax
+    if rdx < 0.0:
+      stepx = -1
+      sidedistx = (px - mx) * deltax
+    var stepy = 1
+    var sidedisty = (my + 1.0 - py) * deltay
+    if rdy < 0.0:
+      stepy = -1
+      sidedisty = (py - my) * deltay
+
+    var side = 0
+    var hit = 0
+    while hit == 0:
+      if sidedistx < sidedisty:
+        sidedistx = sidedistx + deltax
+        mx = mx + stepx
+        side = 0
+      else:
+        sidedisty = sidedisty + deltay
+        my = my + stepy
+        side = 1
+      hit = grid[my][mx]
+
+    var perp = sidedisty - deltay
+    if side == 0:
+      perp = sidedistx - deltax
+    if perp < 0.0001:
+      perp = 0.0001
+
+    # project to a screen column
+    var lineh = int(H / perp)
+    var y0raw = HALF - int(lineh / 2)
+    var y0 = y0raw
+    if y0 < 0:
+      y0 = 0
+    var y1 = y0raw + lineh
+    if y1 > H:
+      y1 = H
+    if y1 <= y0:
+      continue
+
+    # texture column and sampling ramp
+    var wallx = px + perp * rdx
+    if side == 0:
+      wallx = py + perp * rdy
+    wallx = wallx - floor(wallx)
+    var texx = int(wallx * 64.0)
+    if texx > 63:
+      texx = 63
+    if side == 0 and rdx > 0.0:
+      texx = 63 - texx
+    if side == 1 and rdy < 0.0:
+      texx = 63 - texx
+
+    var tstep = 64.0 / lineh
+    var toff = (y0 - y0raw) * tstep
+    var texy = ((ramp[0:y1 - y0] * tstep + toff).astype("int32")) rem 64
+    var col = texcols[(hit - 1) * 64 + texx, 0:64].take(texy)
+    if side == 1:
+      col = col + 128   # darkened palette bank
+    frame[y0:y1, x] = col
+
+# rotate by rot radians, then move with axis-separated wall collision
+proc move_player(fwd:real, strafe:real, rot:real):
+  if rot != 0.0:
+    var c = cos(rot)
+    var s = sin(rot)
+    var odx = dirx
+    dirx = dirx * c - diry * s
+    diry = odx * s + diry * c
+    var opx = planex
+    planex = planex * c - planey * s
+    planey = opx * s + planey * c
+
+  var nx = px + dirx * fwd - diry * strafe
+  var ny = py + diry * fwd + dirx * strafe
+  var mrg = 0.15
+  var probex = nx + mrg
+  if nx < px:
+    probex = nx - mrg
+  if grid[int(py)][int(probex)] == 0:
+    px = nx
+  var probey = ny + mrg
+  if ny < py:
+    probey = ny - mrg
+  if grid[int(probey)][int(px)] == 0:
+    py = ny
+
+func frame_rgb():
+  return palette.take(frame)
+
+# test helper: number of wall (non ceiling/floor) rows in screen column x
+func wall_rows(x:int) -> int:
+  var n = 0
+  for y in range(..<H):
+    var v = int(frame[y, x])
+    if v != CEIL and v != FLOOR:
+      n = n + 1
+  return n

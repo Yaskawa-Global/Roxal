@@ -1,0 +1,9 @@
+spawn: -200 -128
+sector floor: 0
+has planes: true
+has spans: true
+has drawsegs: true
+wall at center: true
+fully covered: true
+reverse has spans: true
+reverse fully covered: true

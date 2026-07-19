@@ -1,0 +1,41 @@
+# Doom renderer smoke: render miniwad MAP01 from the player spawn and check
+# stable invariants. As of M4 the ceiling/floor backgrounds are covered by
+# visplane flats, so probes assert structure, not exact pixels.
+
+import wad.*
+import mapdata.*
+import render.*
+import math.*
+
+var w = Wad('../examples/doom/miniwad.wad')
+setup(w, 'MAP01')
+var m = map()
+
+var px = 0.0
+var py = 0.0
+var pang = 0.0
+for t in m.things:
+  if t.kind == 1:
+    px = t.x
+    py = t.y
+    pang = t.angle * 3.14159265358979 / 180.0
+    break
+print('spawn: ' + string(px) + ' ' + string(py))
+
+var sec = sector_at(px, py)
+print('sector floor: ' + string(m.sectors[sec].floorh))
+
+render_view(px, py, pang, m.sectors[sec].floorh + 41.0)
+var st = stats()
+print('has planes: ' + string(st[3] > 0))
+print('has spans: ' + string(st[6] > 0))
+print('has drawsegs: ' + string(st[4] > 0))
+var v = int(frame[100, 160])
+print('wall at center: ' + string(v != ceil_color() and v != floor_color()))
+print('fully covered: ' + string(open_columns() == 0))
+
+# turning 180 degrees still yields a fully-covered view with planes
+render_view(px, py, pang + 3.14159265358979, m.sectors[sec].floorh + 41.0)
+st = stats()
+print('reverse has spans: ' + string(st[6] > 0))
+print('reverse fully covered: ' + string(open_columns() == 0))

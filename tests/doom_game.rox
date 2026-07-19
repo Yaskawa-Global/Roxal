@@ -1,0 +1,56 @@
+# Doom gameplay core smoke: deterministic spawn + tic simulation on miniwad
+# (P_Random is the vanilla deterministic table, so counts are stable).
+
+import wad.*
+import mapdata.*
+import render.*
+import game.*
+import math.*
+
+var w = Wad('../examples/doom/miniwad.wad')
+setup(w, 'MAP01')
+var m = map()
+
+func no_walls(x:real, y:real, r:real) -> bool:
+  return false
+
+func far_walls(x, y, a) -> real:
+  return 2048.0
+
+func fz(x, y) -> real:
+  return m.sectors[sector_at(x, y)].floorh * 1.0
+
+ginit(m)
+set_line_blocked(no_walls)
+set_wall_dist(far_walls)
+spawn_things(fz)
+var r0 = renderables()
+print('mobjs: ' + string(len(r0)))
+
+# deterministic random stream
+print('rnd: ' + string(p_random()) + ' ' + string(p_random()) + ' ' + string(p_random()))
+
+# simulate 105 tics (3 seconds) with the player at the spawn point
+var px = 0.0
+var py = 0.0
+for t in m.things:
+  if t.kind == 1:
+    px = t.x
+    py = t.y
+    break
+for i in range(..<105):
+  game_tic(px, py)
+print('alive after 3s: ' + string(not player_dead()))
+
+# pistol: ammo decrements even into empty air
+var a0 = player_ammo()
+player_fire(0.0)
+print('ammo spent: ' + string(a0 - player_ammo()))
+
+# doors machinery ticks without incident even with none active
+doors_tic()
+print('health: ' + string(player_health() > 0))
+
+# blockmap parsed (128-unit collision grid); cell count == cols*rows
+print('blockmap loaded: ' + string(m.bm_cols > 0 and m.bm_rows > 0))
+print('blockmap cells ok: ' + string(len(m.bm_cells) == m.bm_cols * m.bm_rows))

@@ -1,0 +1,17 @@
+lumps: 2437
+maps: 32
+first map: MAP01
+playpal: 10752
+colormap: 8704
+missing: -1
+verts: 25
+v0: -280 -288
+vlast: 84 -192
+lines: 23
+line0: 2 13 1 10 -1
+sides: 13
+side0: 0 0 [-] [-] [-] 3
+sectors: 4
+sec0: 0 128 FLAT19 FLAT19 144
+things: 12
+thing0: -200 -128 0 1 7

@@ -1,0 +1,17 @@
+# Frame-time benchmark for the raycaster core (no display, no qt).
+# Run from the repo root with the RELEASE build — build/ (Debug) is 12-15x
+# slower and meaningless for the M1 perf gate:
+#   ./build-rel/roxal examples/doom/raycaster_bench.rox
+
+import raycast_core.*
+
+var frames = 100
+render()   # warm-up
+
+var start = Time.steady_now()
+for f in range(..<frames):
+  move_player(0.0, 0.0, 0.05)   # sweep the view so column workloads vary
+  render()
+  var rgb = frame_rgb()
+var ms = Time.steady_now().since(start).total_millis()
+print('render + palette map: ' + string(ms / frames) + ' ms/frame')

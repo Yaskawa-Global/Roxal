@@ -1,0 +1,36 @@
+# Headless smoke test: raycaster core invariants + the FrameView present/grab
+# pipeline. Run from the repo root:
+#   QT_QPA_PLATFORM=offscreen ./build-rel/roxal examples/doom/raycaster_smoke.rox
+# Expected output: five "... true" lines.
+
+import qt
+import raycast_core.*
+
+# --- core render invariants (no window needed) ---
+render()
+var mid = 160
+print('ceiling at top: ' + string(int(frame[0, mid]) == CEIL))
+print('floor at bottom: ' + string(int(frame[H - 1, mid]) == FLOOR))
+var v = int(frame[HALF, mid])
+print('wall at center: ' + string(v != CEIL and v != FLOOR))
+
+# walking forward makes the facing wall taller
+var before = wall_rows(mid)
+move_player(1.0, 0.0, 0.0)
+render()
+print('wall grows when approaching: ' + string(wall_rows(mid) > before))
+
+# --- present + grab through the qt pipeline ---
+qt.set_render_backend("software")
+var engine = qt.Engine()
+engine.load('raycaster.qml')
+var fb = engine.find("fb")
+fb.present(frame_rgb())
+engine.run_for(100)
+var shot = engine.grab_window()
+# window is 640x400 = 2x scale: window (320, 200) shows frame texel (160, 100)
+var pidx = int(frame[HALF, mid])
+var ok = int(shot[200, 320, 0]) == int(palette[pidx, 0])
+ok = ok and int(shot[200, 320, 1]) == int(palette[pidx, 1])
+ok = ok and int(shot[200, 320, 2]) == int(palette[pidx, 2])
+print('grab matches frame: ' + string(ok))
