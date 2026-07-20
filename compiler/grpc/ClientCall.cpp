@@ -4,6 +4,7 @@
 #include "SimpleMarkSweepGC.h"
 #include <stdexcept>
 #include <chrono>
+#include <iostream>
 
 namespace {
 void* tag(intptr_t t)
@@ -216,7 +217,20 @@ void ClientCall::ServerReadLoop(std::shared_ptr<StreamHandle> handle)
             roxal::SimpleMarkSweepGC::ExternalParticipant participant(
                 roxal::SimpleMarkSweepGC::instance());
             participant.pollSafepointIfRequested();  // park up-front if a barrier is forming
-            handle->onServerMessage(message);
+            // Never let an exception escape this background reader thread: an
+            // uncaught throw here would std::terminate the whole process.
+            // Message conversion can throw -- e.g. a streamed response arriving
+            // mid-shutdown, after the VM's proto declarations have been torn
+            // down (generateRoxalResponse -> "No declaration for message type").
+            // Log, stop this stream, and let the loop finish cleanly.
+            try {
+                handle->onServerMessage(message);
+            } catch (const std::exception& e) {
+                std::cerr << "gRPC stream reader: stopping after message callback "
+                             "threw: " << e.what() << std::endl;
+                handle->serverDone = true;
+                break;
+            }
         }
 
         readBuffer.Clear();

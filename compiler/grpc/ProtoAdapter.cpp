@@ -546,8 +546,15 @@ Value ProtoAdapter::generateRoxalResponse(const std::string& methodName, const s
     }
 
     Value declVal = declForFullName(desc->full_name());
-    if (declVal.isNil())
-        throw std::runtime_error("No declaration for message type " + desc->full_name());
+    if (declVal.isNil()) {
+        // No Roxal declaration for this message type.  Happens when a streamed
+        // response arrives during shutdown, after clearDecls() has torn down the
+        // declaration maps.  Log and drop rather than throw: this runs on a
+        // background stream-reader thread where an uncaught exception would
+        // std::terminate the process.
+        logError("No declaration for message type " + desc->full_name());
+        return Value::nilVal();
+    }
 
     Value instanceVal = Value::objectInstanceVal(declVal);
     ObjectInstance* instance = asObjectInstance(instanceVal);
