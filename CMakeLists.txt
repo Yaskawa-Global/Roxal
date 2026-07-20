@@ -625,6 +625,17 @@ endif()
 # Export enabled features so embedding projects (e.g. FC) can conditionally
 # link the transitive dependencies that libroxal.a requires.
 file(WRITE "${CMAKE_BINARY_DIR}/roxal_features.cmake"
+    # Build configuration, not a feature: hosts link libroxal.a as a prebuilt
+    # artifact, so they must compile the roxal headers with a compatible
+    # configuration.  CMAKE_BUILD_TYPE controls NDEBUG, which can change struct
+    # layout across the host<->libroxal boundary just as the feature flags below
+    # can -- and the host's sizeof(VM) guard only catches the feature-flag case.
+    # Exported so hosts can inherit it, or warn when it disagrees.
+    "set(ROXAL_BUILD_TYPE \"${CMAKE_BUILD_TYPE}\")\n"
+    # LTO leaves GIMPLE bytecode in libroxal.a, so the host's link runs
+    # lto-wrapper (serially, unless it passes -flto=auto).  Exported so hosts
+    # can explain the resulting link times, or opt out.
+    "set(ROXAL_HAS_LTO ${ROXAL_ENABLE_LTO})\n"
     "set(ROXAL_HAS_GRPC ${ROXAL_ENABLE_GRPC})\n"
     "set(ROXAL_HAS_DDS ${ROXAL_ENABLE_DDS})\n"
     "set(ROXAL_HAS_ONNX ${ROXAL_ENABLE_ONNX})\n"
