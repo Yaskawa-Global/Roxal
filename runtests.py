@@ -185,6 +185,7 @@ tests = [
     'import_return_stack',
     'import_folder_init', 'import_folder_single', 'import_comment_before',
     'import_clash', 'import_asset_sibling',
+    'cachereload_builtin',
     'method_named_param',
     'annot1', 'annot_import', 'annot_file_level', 'annot_ros_nonidl', 'generic', 'objscopes',
     'threads1', 'fork_upvalue_error', 'fork_no_upvalues',
@@ -897,6 +898,15 @@ try:
             # implicitly everywhere else.
             test_env = dict(test_env)
             test_env['ROXAL_RT_LINT'] = '0'
+
+        if test.startswith('cachereload_'):
+            # Warm the .roc cache with a fresh compile, then the real run below
+            # (no --recompile) loads modules FROM cache -- exercising
+            # reconcileModuleReferences, where builtin-module refs must resolve
+            # to the live builtin rather than an empty placeholder.
+            warm_cmd = [cmd[0], '--recompile', *cmd[1:]]
+            subprocess.run(warm_cmd, capture_output=True, shell=False,
+                           timeout=timeout_secs, env=test_env)
 
         try:
             compProc = subprocess.run(

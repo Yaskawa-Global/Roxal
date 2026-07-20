@@ -459,6 +459,21 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
         return module->fullName;
     };
 
+    // Resolve a builtin module by its qualified name, falling back to the leaf
+    // component (e.g. "ai.nn" -> "nn"); nil if no such builtin is registered.
+    // A deserialized module that names a builtin must resolve to the live,
+    // populated instance -- its native @builtin members cannot be rebuilt from
+    // a cache, so any fabricated duplicate would be an empty stub.
+    auto resolveBuiltinModule = [&](const icu::UnicodeString& qualifiedName) -> Value {
+        Value builtin = resolverVM->getBuiltinModuleType(qualifiedName);
+        if (builtin.isNil()) {
+            int32_t dot = qualifiedName.lastIndexOf('.');
+            if (dot >= 0)
+                builtin = resolverVM->getBuiltinModuleType(qualifiedName.tempSubString(dot + 1));
+        }
+        return isModuleType(builtin) ? builtin : Value::nilVal();
+    };
+
     auto canonicalizeModuleValue = [&](const Value& moduleValue) -> Value {
         Value strong = moduleValue.strongRef();
         if (!isModuleType(strong))
@@ -490,9 +505,7 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
         };
 
         icu::UnicodeString qualified = moduleQualifiedName(module);
-        Value builtin = resolverVM->getBuiltinModuleType(qualified);
-        if (builtin.isNil())
-            builtin = resolverVM->getBuiltinModuleType(module->name);
+        Value builtin = resolveBuiltinModule(qualified);
         if (builtin.isNonNil()) {
             mergeModuleTypes(asModuleType(builtin), module);
             return record(builtin);
@@ -724,8 +737,13 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
                         gExisting = resolverVM->loadGlobal(local);
                     }
                 }
+                // A builtin module must resolve to its live, populated instance
+                // rather than a fabricated empty placeholder (see resolveBuiltinModule).
+                Value builtin = resolveBuiltinModule(fullName);
                 if (gExisting.has_value() && isModuleType(gExisting.value())) {
                     moduleValue = gExisting.value().strongRef();
+                } else if (builtin.isNonNil()) {
+                    moduleValue = builtin.strongRef();
                 } else {
                     // Lazily create placeholder modules for missing entries so we
                     // can rebuild a consistent hierarchy (e.g. when a cached

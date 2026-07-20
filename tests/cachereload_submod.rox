@@ -1,0 +1,6 @@
+import fileio
+
+type Reader object:
+  var fn = nil
+  proc init():
+    fn = fileio.read_file
