@@ -98,12 +98,15 @@ public:
         icu::UnicodeString name;    // name of the module
         bool isPackage;
         std::string filename;       // filename of the module (e.g. with .rox extension)
-        bool invalidFolder{false};  // folder existed but didn't contain init.rox or a single .rox file
+        bool invalidFolder{false};  // folder existed but didn't contain init.rox
         std::filesystem::path resolvedPath; // canonical path to resolved .rox file
         std::filesystem::path cachePath;    // path to compiled cache (.roc)
         bool cacheValid{false};             // true if cache exists and is newer than source
         bool isProto{false};                // true if import refers to a .proto file
         bool isIdl{false};                  // true if import refers to a .idl file
+        bool moduleClash{false};            // a module file and module folder share a name in one directory
+        std::string clashFilePath;          // path of the clashing module .rox file
+        std::string clashFolderPath;        // path of the clashing module folder
 
         // FIXME: make members protected, cache hashCode
 

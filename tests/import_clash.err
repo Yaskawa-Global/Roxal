@@ -1,0 +1,1 @@
+import 'clash_pkg\.mod' is ambiguous: a module file and a module folder share this name in the same directory

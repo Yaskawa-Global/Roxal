@@ -962,6 +962,19 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
     // search the module paths (as package component roots)
     //  for the specified module
     ModuleInfo module = findImport(ast->packages);
+
+    // A module file and a module folder share the same name in one directory:
+    // genuine ambiguity that the filesystem enumeration order would otherwise
+    // resolve non-deterministically. Refuse to guess.
+    if (module.moduleClash) {
+        error("import '"+toUTF8StdString(join(ast->packages,"."))+"' is ambiguous: "
+              "a module file and a module folder share this name in the same directory:\n"
+              "  file:   "+module.clashFilePath+"\n"
+              "  folder: "+module.clashFolderPath+"\n"
+              "Rename or remove one of them.");
+        return {};
+    }
+
     bool builtinModule = false;
     icu::UnicodeString builtinRegistryKey;  // dotted name for lazy registry lookup
     if (module.isProto || module.isIdl)
@@ -1001,7 +1014,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
 
     if (!builtinModule && module.name.isEmpty()) {
         if (module.invalidFolder) {
-            error("import '"+toUTF8StdString(join(ast->packages,"."))+"' not found: folder lacks init.rox or a single .rox file");
+            error("import '"+toUTF8StdString(join(ast->packages,"."))+"' not found: folder lacks init.rox");
         } else {
             error("import '"+toUTF8StdString(join(ast->packages,"."))+"' not found.");
         }
@@ -5275,6 +5288,20 @@ std::any RoxalCompiler::visit(ptr<ast::Dict> ast)
 
 
 
+// A directory is a *module* folder (as opposed to a plain asset/resource folder
+// that merely shares a module file's base name, or an intermediate package
+// namespace) exactly when it contains init.rox (see roxal-for-devs.md). Checking
+// this during candidate selection lets a co-located asset folder sit next to
+// <name>.rox without shadowing it, and pins down what constitutes a name clash.
+static bool isModuleFolder(const std::filesystem::path& dir)
+{
+    try {
+        return std::filesystem::exists(dir / "init.rox");
+    } catch (...) {
+        return false;
+    }
+}
+
 RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<icu::UnicodeString>& components) const
 {
     bool endsWithProtoExt = components.size() >= 2 && (components.back() == toUnicodeString("proto"));
@@ -5311,52 +5338,89 @@ RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<icu::Unico
                         newCandidatePaths.push_back(modulePath);
                     continue;
                 }
-                std::filesystem::path protoCandidate;
-                bool hasProtoCandidate = false;
-                std::filesystem::path idlCandidate;
-                bool hasIdlCandidate = false;
-                bool matchedFile = false;
-                // list of folders and files in modulePath
+                const auto& comp = components.at(importComponentIndex);
+                // The final plain component (not a .proto/.idl-suffixed import) is the
+                // only place a module *file* and a module *folder* can both name the
+                // same module; that is where we resolve precedence and detect clashes.
+                bool lastPlain = isLastComponent && !endsWithProtoExt && !endsWithIdlExt;
+
+                std::filesystem::path roxCandidate;    bool hasRox = false;
+                std::filesystem::path moduleFolder;    bool hasModuleFolder = false;
+                std::filesystem::path assetFolder;     bool hasAssetFolder = false;
+                std::filesystem::path protoCandidate;  bool hasProtoCandidate = false;
+                std::filesystem::path idlCandidate;    bool hasIdlCandidate = false;
+                // list of folders and files in modulePath — gather all matches first so
+                // the result never depends on directory enumeration order.
                 for (const auto& entry : std::filesystem::directory_iterator(modulePath)) {
                     auto entryName = toUnicodeString(entry.path().filename().string());
                     if (entry.is_directory()) {
-                        if (entryName == components.at(importComponentIndex))
+                        if (entryName != comp)
+                            continue;
+                        if (lastPlain) {
+                            // Distinguish a real module folder from a plain asset folder
+                            // that happens to share <name> with a sibling <name>.rox.
+                            if (isModuleFolder(entry.path())) {
+                                moduleFolder = entry.path();
+                                hasModuleFolder = true;
+                            } else {
+                                assetFolder = entry.path();
+                                hasAssetFolder = true;
+                            }
+                        } else {
+                            // intermediate package segment (or the basename dir of a
+                            // .proto/.idl import): keep traversing it
                             newCandidatePaths.push_back(entry.path());
+                        }
                     } else {
-                        bool matchRox = isLastComponent && (entryName == components.at(importComponentIndex)+".rox");
+                        bool matchRox = lastPlain && (entryName == comp+".rox");
                         bool matchProto = false;
                         bool matchIdl = false;
                         if (isFinalProtoComponent && components.size() >= 2) {
                             // match <basename>.proto where basename is penultimate component
-                            matchProto = (entryName == components.at(importComponentIndex)+".proto");
+                            matchProto = (entryName == comp+".proto");
                         } else if (isFinalIdlComponent && components.size() >= 2) {
                             // match <basename>.idl where basename is penultimate component
-                            matchIdl = (entryName == components.at(importComponentIndex)+".idl");
-                        } else if (isLastComponent && !endsWithProtoExt && !endsWithIdlExt) {
-                            matchProto = (entryName == components.at(importComponentIndex)+".proto");
-                            matchIdl = (entryName == components.at(importComponentIndex)+".idl");
+                            matchIdl = (entryName == comp+".idl");
+                        } else if (lastPlain) {
+                            matchProto = (entryName == comp+".proto");
+                            matchIdl = (entryName == comp+".idl");
                         }
-                        if (matchRox) {
-                            newCandidatePaths.push_back(entry.path());
-                            matchedFile = true;
-                            break; // prefer .rox if present
-                        }
-                        if (matchProto) {
-                            protoCandidate = entry.path();
-                            hasProtoCandidate = true;
-                        }
-                        if (matchIdl) {
-                            idlCandidate = entry.path();
-                            hasIdlCandidate = true;
-                        }
+                        if (matchRox) { roxCandidate = entry.path(); hasRox = true; }
+                        else if (matchProto) { protoCandidate = entry.path(); hasProtoCandidate = true; }
+                        else if (matchIdl) { idlCandidate = entry.path(); hasIdlCandidate = true; }
                     }
                 }
-                if (!matchedFile) {
+
+                if (!lastPlain) {
+                    // package traversal streamed above; carry any .proto/.idl match forward
                     if (hasIdlCandidate)
                         newCandidatePaths.push_back(idlCandidate);
                     else if (hasProtoCandidate)
                         newCandidatePaths.push_back(protoCandidate);
+                    continue;
                 }
+
+                // Genuine ambiguity: a module file and a module folder of the same name
+                // live side-by-side in this directory. Refuse to guess which was meant.
+                if (hasRox && hasModuleFolder) {
+                    ModuleInfo clash {};
+                    clash.moduleClash = true;
+                    clash.clashFilePath = roxCandidate.string();
+                    clash.clashFolderPath = moduleFolder.string();
+                    return clash;
+                }
+
+                // Deterministic precedence within this directory:
+                //   module file > module folder > idl > proto > asset-only folder.
+                // (An asset-only folder is carried forward only so the final resolver
+                //  can emit the "folder lacks init.rox" diagnostic when nothing else won.)
+                // The first search-path root that resolves the module wins; a clash in a
+                // later, shadowed root is irrelevant, so stop once this root has decided.
+                if (hasRox)                 { newCandidatePaths.push_back(roxCandidate);   break; }
+                else if (hasModuleFolder)   { newCandidatePaths.push_back(moduleFolder);   break; }
+                else if (hasIdlCandidate)   { newCandidatePaths.push_back(idlCandidate);   break; }
+                else if (hasProtoCandidate) { newCandidatePaths.push_back(protoCandidate); break; }
+                else if (hasAssetFolder)    { newCandidatePaths.push_back(assetFolder);    break; }
             } catch (...) {
                 // ignore invalid paths
             }
@@ -5385,24 +5449,15 @@ RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<icu::Unico
 
     module.filename = path.filename().string();
     if (module.isPackage) {
+        // A module folder is one that contains init.rox (see roxal-for-devs.md).
         std::filesystem::path initPath = path / "init.rox";
         if (std::filesystem::exists(initPath)) {
             path = initPath;
             module.filename += "/init.rox";
         } else {
-            std::vector<std::filesystem::path> roxFiles;
-            for (const auto& entry : std::filesystem::directory_iterator(path)) {
-                if (!entry.is_directory() && entry.path().extension() == ".rox")
-                    roxFiles.push_back(entry.path());
-            }
-            if (roxFiles.size() == 1) {
-                path = roxFiles[0];
-                module.filename += "/" + roxFiles[0].filename().string();
-            } else {
-                module.invalidFolder = true;
-                module.name = icu::UnicodeString();
-                return module;
-            }
+            module.invalidFolder = true;
+            module.name = icu::UnicodeString();
+            return module;
         }
     }
 

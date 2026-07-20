@@ -184,6 +184,7 @@ tests = [
     'importmodule1', 'importstar', 'importsyms', 'importdiamond', 'pkg1/main',
     'import_return_stack',
     'import_folder_init', 'import_folder_single', 'import_comment_before',
+    'import_clash', 'import_asset_sibling',
     'method_named_param',
     'annot1', 'annot_import', 'annot_file_level', 'annot_ros_nonidl', 'generic', 'objscopes',
     'threads1', 'fork_upvalue_error', 'fork_no_upvalues',
