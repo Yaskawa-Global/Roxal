@@ -308,7 +308,7 @@ tests = [
     'stmt_action_basic', 'stmt_action_chain', 'stmt_action_until',
     'stmt_action_ignore', 'stmt_action_cycle_err',
     'if_suffix_stmt_action',
-    'stack_depth_check',
+    'stack_depth_check', 'dispatch_rare_interleave',
     'forward_decl_field', 'forward_decl_chain', 'forward_decl_module_var'
 ]
 

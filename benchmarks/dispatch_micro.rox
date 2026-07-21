@@ -1,0 +1,21 @@
+# Dispatch microbenchmark — allocation-free tight integer loop.
+# Isolates per-instruction VM dispatch cost from GC / native-call / tensor noise,
+# so small dispatch-loop wins are visible without macro-bench noise.
+# Perf build (LTO):  ./build-lto/roxal benchmarks/dispatch_micro.rox
+# NB: the Debug build/ is 12-15x slower and meaningless for this measurement.
+#
+# IMPORTANT: Roxal ints are NaN-boxed with inline 32-bit storage (Value.h) — values
+# exceeding int32 get heap-boxed, which would make this allocation-bound instead of
+# dispatch-bound. The `rem 1048576` keeps the accumulator in int32 while preserving a
+# full data-dependency chain (so a dispatch miscompile still corrupts the checksum).
+
+var iters = 5000000
+var s = 0
+var i = 0
+var start = Time.steady_now()
+while i < iters:
+  s = (s + i * 2 - 1) rem 1048576
+  i = i + 1
+var micros = Time.steady_now().since(start).total_micros()
+var nsPer = micros * 1000.0 / iters
+print('dispatch_micro: ' + string(nsPer) + ' ns/iter  (checksum ' + string(s) + ')')

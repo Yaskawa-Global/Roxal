@@ -1,0 +1,51 @@
+// Dispatch rare-path stack-balance guard for the VM dispatch-loop
+// optimization. Asserts _stackdepth() returns to baseline after the suspension
+// paths that the consolidated preamble guards touch: future/await, wait(for=...),
+// and wait(ms=...) sleep -- interleaved with object construction in a loop.
+// Complements stack_depth_check.rox (conversion / continuation / exception paths).
+// _stackdepth() is called standalone (not inside an expression) so it does not
+// measure expression temporaries.
+
+type Worker actor:
+  func slow(v: int) -> int:
+    wait(ms=5)
+    return v
+
+proc fail(label, d, d0):
+  print("FAIL " + label + ": depth " + string(d) + " vs expected " + string(d0))
+  exit(1)
+
+var w = Worker()
+var d0 = _stackdepth()
+
+// await a future (int(fut) forces resolution through the awaitedFuture path)
+var fut = w.slow(3)
+var r = int(fut)
+var d = _stackdepth()
+if d != d0:
+  fail('await future', d, d0)
+
+// wait(for = actor call) -- the pendingWaitFor / waitSuspension path
+wait(for=w.slow(4))
+d = _stackdepth()
+if d != d0:
+  fail('wait(for=)', d, d0)
+
+// sleep -- the threadSleep path
+wait(ms=5)
+d = _stackdepth()
+if d != d0:
+  fail('wait(ms=)', d, d0)
+
+// interleave await + sleep in a loop
+var i = 0
+while i < 5:
+  var f = w.slow(i)
+  var v = int(f)
+  wait(ms=1)
+  i = i + 1
+d = _stackdepth()
+if d != d0:
+  fail('interleave loop', d, d0)
+
+print("dispatch rare-path stack balance: PASS")

@@ -1,0 +1,18 @@
+# Call microbenchmark — hot user-function call/return in a tight loop.
+# Surfaces the frame push/pop + frameStart path costs, which the pure
+# arithmetic dispatch_micro loop does not exercise.
+# Perf build (LTO):  ./build-lto/roxal benchmarks/call_micro.rox
+
+func add1(n):
+  return n + 1
+
+var iters = 2000000
+var s = 0
+var i = 0
+var start = Time.steady_now()
+while i < iters:
+  s = add1(s) rem 1048576
+  i = i + 1
+var micros = Time.steady_now().since(start).total_micros()
+var nsPer = micros * 1000.0 / iters
+print('call_micro: ' + string(nsPer) + ' ns/call  (checksum ' + string(s) + ')')

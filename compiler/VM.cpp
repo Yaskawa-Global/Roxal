@@ -5860,6 +5860,51 @@ void VM::writeOpcodeProfile()
 }
 
 
+// ---------------------------------------------------------------------------
+// Threaded dispatch (labels-as-values / computed goto), hybrid form.
+//
+// The switch remains the dispatcher for the loop-top entry, for cold opcodes,
+// and for non-GNU compilers.  What threading adds is a fast RE-dispatch
+// trampoline at the point where a handler's `break` lands: when no
+// inter-instruction work is pending, fetch/decode the next opcode and jump
+// straight to its handler through a 128-entry label table -- skipping the
+// entire post-switch epilogue and loop-top preamble (~15 rarely-taken branches
+// plus the frameStart store and frame refresh).  Handler bodies need no
+// threading awareness: `break` is correct everywhere and takes the full path.
+// Hot opcodes carry a ROX_LBL(name) label on their case line; every other
+// table slot routes to dispatch_via_switch, which re-dispatches through the
+// switch (one extra jump on <3% of dispatches).
+//
+// Disabled automatically for non-GNU compilers, under DEBUG_TRACE_EXECUTION
+// (which needs the per-instruction loop-top trace), or explicitly with
+// -DROXAL_NO_THREADED_DISPATCH; all macros then compile to nothing, leaving
+// plain switch dispatch.
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(ROXAL_NO_THREADED_DISPATCH) && !defined(DEBUG_TRACE_EXECUTION)
+  #define ROXAL_THREADED_DISPATCH 1
+  #define ROX_LBL(name) op_##name:
+#else
+  #define ROXAL_THREADED_DISPATCH 0
+  #define ROX_LBL(name)
+#endif
+
+#if ROXAL_THREADED_DISPATCH
+namespace {
+// 128 entries: the opcode byte is masked with ~DoubleByteArg (0x7f) before
+// indexing, and OpCode::_Last < 128 (static_assert in Chunk.h), so any value
+// (including invalid bytecode) lands in-table; unlisted slots fall back to the
+// switch, whose `default:` reports invalid opcodes exactly as before.
+struct DispatchTable { const void* e[128]; };
+DispatchTable makeDispatchTable(const void* fallback,
+        std::initializer_list<std::pair<int, const void*>> direct)
+{
+    DispatchTable t;
+    for (auto& p : t.e) p = fallback;
+    for (const auto& d : direct) t.e[d.first] = d.second;
+    return t;
+}
+} // namespace
+#endif
+
 std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 {
     if (thread->frames.empty() ||
@@ -6033,6 +6078,73 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
     };
 
 
+#if ROXAL_THREADED_DISPATCH
+    // Completeness contract for the fast re-dispatch trampoline: this ORs
+    // EVERY condition the loop-top preamble and the post-switch epilogue act
+    // on.  If any is set, the trampoline yields to the full path, which
+    // handles it exactly as before.  Adding new inter-instruction work to the
+    // loop requires adding its trigger here.  Atomic loads use the same
+    // memory orderings as the sites they mirror.
+    auto interInstrWorkPending = [&]() -> unsigned {
+        return (unsigned)runtimeErrorFlag.load()                       // loop top: error return
+             | (unsigned)exitRequested.load()                          // suspension guard + event dispatch
+             | (unsigned)valueGC.isCollectionRequested()               // epilogue: GC safepoint
+             | (unsigned)thread->threadSleep.load()                    // suspension guard + epilogue park
+             | (unsigned)thread->awaitedFuture.isNonNil()              // suspension guard + epilogue await
+             | (unsigned)thread->pendingWaitFor.isNonNil()             // suspension guard + epilogue resolve
+             | (unsigned)thread->waitSuspension.active                 // suspension guard + epilogue finalize
+             | (unsigned)(thread->pendingSetterCount > 0)              // frame-boundary guard
+             | (unsigned)!thread->pendingConversions.empty()           // frame-boundary guard
+             | (unsigned)!thread->conversionInProgress.empty()         // frame-boundary guard
+             | (unsigned)thread->frameStart                            // loop top: frame-entry setup
+             | (unsigned)thread->eventHandlerJustReturned              // epilogue: event dispatch
+             | (unsigned)(thread->pendingEventCount.load(std::memory_order_acquire) != 0)
+             | (unsigned)thread->continuationCallbackReturned          // epilogue: continuation dispatch
+             | (unsigned)(hostEventLoop_ != nullptr)                   // epilogue: host UI pump
+             | (unsigned)hasDeadline;                                  // epilogue: deadline check
+    };
+
+    // Hot-opcode table (>=97% of dynamic dispatches per opcode_profile.json on
+    // dispatch_micro + call_micro + raycaster_bench); everything else re-enters
+    // the switch.  Thread-safe one-time init (magic static); label addresses
+    // are constant across calls and threads.
+    static const DispatchTable dispatchTable = makeDispatchTable(
+        &&dispatch_via_switch, {
+        {int(OpCode::Nop),          &&op_Nop},
+        {int(OpCode::Constant),     &&op_Constant},
+        {int(OpCode::ConstNil),     &&op_ConstNil},
+        {int(OpCode::ConstTrue),    &&op_ConstTrue},
+        {int(OpCode::ConstFalse),   &&op_ConstFalse},
+        {int(OpCode::ConstInt0),    &&op_ConstInt0},
+        {int(OpCode::ConstInt1),    &&op_ConstInt1},
+        {int(OpCode::Pop),          &&op_Pop},
+        {int(OpCode::Dup),          &&op_Dup},
+        {int(OpCode::GetLocal),     &&op_GetLocal},
+        {int(OpCode::SetLocal),     &&op_SetLocal},
+        {int(OpCode::MoveLocal),    &&op_MoveLocal},
+        {int(OpCode::GetModuleVar), &&op_GetModuleVar},
+        {int(OpCode::SetModuleVar), &&op_SetModuleVar},
+        {int(OpCode::Add),          &&op_Add},
+        {int(OpCode::Subtract),     &&op_Subtract},
+        {int(OpCode::Multiply),     &&op_Multiply},
+        {int(OpCode::Divide),       &&op_Divide},
+        {int(OpCode::Modulo),       &&op_Modulo},
+        {int(OpCode::Equal),        &&op_Equal},
+        {int(OpCode::NotEqual),     &&op_NotEqual},
+        {int(OpCode::Less),         &&op_Less},
+        {int(OpCode::LessEqual),    &&op_LessEqual},
+        {int(OpCode::Greater),      &&op_Greater},
+        {int(OpCode::GreaterEqual), &&op_GreaterEqual},
+        {int(OpCode::Jump),         &&op_Jump},
+        {int(OpCode::JumpIfFalse),  &&op_JumpIfFalse},
+        {int(OpCode::JumpIfTrue),   &&op_JumpIfTrue},
+        {int(OpCode::Loop),         &&op_Loop},
+        {int(OpCode::Index),        &&op_Index},
+        {int(OpCode::Call),         &&op_Call},
+        {int(OpCode::Return),       &&op_Return},
+    });
+#endif // ROXAL_THREADED_DISPATCH
+
     //
     //  main dispatch loop
 
@@ -6045,82 +6157,111 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
         if (runtimeErrorFlag.load())
             return errorReturn;
 
-        // Constructor setter cleanup: after setter frames execute and return,
-        // clean up their results and push the saved instance.
-        // Only one nil survives after the cascading setter opReturns: each
-        // returning setter's popCount loop sweeps everything between its slots
-        // pointer and stackTop, which folds in the prior setter's leftover nil.
-        // So we pop exactly one regardless of how many setters ran.
-        if (thread->pendingSetterCount > 0 && thread->frames.size() == frame_depth_on_entry) {
-            pop();
-            push(thread->pendingConstructorInstance);
-            thread->pendingSetterCount = 0;
-            thread->pendingConstructorInstance = Value::nilVal();
-        }
+        // Frame-boundary cleanup guard: the three cleanups below each fire only
+        // after a frame POP (setter frames returning, a conversion method
+        // returning, or a guard's owning frame unwinding).  Same direct-field-read
+        // pattern as the suspension guard below: the bitwise `|` folds their
+        // triggers into one predicted-not-taken branch on the common
+        // no-frame-change instruction.  The guard's OR covers the necessary
+        // prefix of each block's full condition -- if the guard is false, all
+        // three inner conditions are provably false -- and each block re-checks
+        // its own precise condition (incl. the frames.size() depth tests) inside.
+        if ((unsigned)(thread->pendingSetterCount > 0)
+            | (unsigned)!thread->pendingConversions.empty()
+            | (unsigned)!thread->conversionInProgress.empty()) [[unlikely]] {
 
-        // Pending conversion operator cleanup: after conversion method returns,
-        // complete the deferred operation (e.g. string concatenation)
-        if (!thread->pendingConversions.empty()
-            && thread->frames.size() == thread->pendingConversions.back().frameDepth) {
-            auto pending = thread->pendingConversions.back();
-            thread->pendingConversions.pop_back();
-            Value converted = pop();
-            // Remove receiver from recursion guard
-            auto& inProgress = thread->conversionInProgress;
-            for (auto it = inProgress.begin(); it != inProgress.end(); ++it) {
-                if (it->receiver.is(pending.convReceiver, false)) {
-                    inProgress.erase(it);
-                    break;
+            // Constructor setter cleanup: after setter frames execute and return,
+            // clean up their results and push the saved instance.
+            // Only one nil survives after the cascading setter opReturns: each
+            // returning setter's popCount loop sweeps everything between its slots
+            // pointer and stackTop, which folds in the prior setter's leftover nil.
+            // So we pop exactly one regardless of how many setters ran.
+            if (thread->pendingSetterCount > 0 && thread->frames.size() == frame_depth_on_entry) {
+                pop();
+                push(thread->pendingConstructorInstance);
+                thread->pendingSetterCount = 0;
+                thread->pendingConstructorInstance = Value::nilVal();
+            }
+
+            // Pending conversion operator cleanup: after conversion method returns,
+            // complete the deferred operation (e.g. string concatenation)
+            if (!thread->pendingConversions.empty()
+                && thread->frames.size() == thread->pendingConversions.back().frameDepth) {
+                auto pending = thread->pendingConversions.back();
+                thread->pendingConversions.pop_back();
+                Value converted = pop();
+                // Remove receiver from recursion guard
+                auto& inProgress = thread->conversionInProgress;
+                for (auto it = inProgress.begin(); it != inProgress.end(); ++it) {
+                    if (it->receiver.is(pending.convReceiver, false)) {
+                        inProgress.erase(it);
+                        break;
+                    }
+                }
+                if (pending.kind == Thread::PendingConversion::Kind::Concat) {
+                    UnicodeString lhs = asUString(pending.savedLHS);
+                    UnicodeString rhs = isString(converted)
+                        ? asUString(converted)
+                        : toUnicodeString(toString(converted));
+                    push(Value::stringVal(lhs + rhs));
+                }
+                else if (pending.kind == Thread::PendingConversion::Kind::TypeConversion) {
+                    // Conversion method returned the converted value — push it
+                    push(converted);
                 }
             }
-            if (pending.kind == Thread::PendingConversion::Kind::Concat) {
-                UnicodeString lhs = asUString(pending.savedLHS);
-                UnicodeString rhs = isString(converted)
-                    ? asUString(converted)
-                    : toUnicodeString(toString(converted));
-                push(Value::stringVal(lhs + rhs));
+
+            // Clean up stale conversion recursion guards (for explicit TargetType(obj) calls
+            // where there is no PendingConversion to trigger cleanup)
+            if (!thread->conversionInProgress.empty()) {
+                auto& guards = thread->conversionInProgress;
+                guards.erase(
+                    std::remove_if(guards.begin(), guards.end(),
+                        [&](const Thread::ConversionGuard& g) {
+                            return thread->frames.size() <= g.frameDepth;
+                        }),
+                    guards.end());
             }
-            else if (pending.kind == Thread::PendingConversion::Kind::TypeConversion) {
-                // Conversion method returned the converted value — push it
-                push(converted);
+        }
+
+        // Suspension / exit guard: one consolidated test for the conditions that
+        // park or terminate execution (exit, sleep, awaited future, pending
+        // wait(for=), wait-suspension finalize).  The bitwise `|` (not `||`)
+        // evaluates all operands with no short-circuit, so the common
+        // nothing-pending path costs a single predicted-not-taken branch.  Fields
+        // are read directly (no derived/cached state), so there is no
+        // missed-trigger maintenance surface.  The rare cases are disambiguated
+        // in priority order inside.
+        if ((unsigned)exitRequested.load()
+            | (unsigned)thread->threadSleep.load()
+            | (unsigned)thread->awaitedFuture.isNonNil()
+            | (unsigned)thread->pendingWaitFor.isNonNil()
+            | (unsigned)thread->waitSuspension.active) [[unlikely]] {
+
+            if (exitRequested.load())
+                return std::make_pair(ExecutionStatus::OK,Value::nilVal());
+
+            // if we're 'sleeping' don't execute any instructions
+            //  (we may have been woken up by an event or a spurious wakeup, in which case we'll re-block below)
+            if (thread->threadSleep)
+               goto postInstructionDispatch;
+
+            // if awaiting a future, check if it resolved; otherwise keep sleeping
+            if (thread->awaitedFuture.isNonNil()) {
+                ObjFuture* fut = asFuture(thread->awaitedFuture);
+                if (fut->future.wait_for(std::chrono::microseconds(0)) != std::future_status::ready)
+                    goto postInstructionDispatch; // still pending
+                thread->awaitedFuture = Value::nilVal(); // resolved, clear and proceed
             }
+
+            // A suspended wait(for=...) is not complete until pendingWaitFor has
+            // been revisited and cleared. Do not execute another opcode while that
+            // handoff is still in flight, even if awaitedFuture just became ready.
+            if (thread->pendingWaitFor.isNonNil())
+                goto postInstructionDispatch;
+
+            finalizeWaitSuspension();
         }
-
-        // Clean up stale conversion recursion guards (for explicit TargetType(obj) calls
-        // where there is no PendingConversion to trigger cleanup)
-        if (!thread->conversionInProgress.empty()) {
-            auto& guards = thread->conversionInProgress;
-            guards.erase(
-                std::remove_if(guards.begin(), guards.end(),
-                    [&](const Thread::ConversionGuard& g) {
-                        return thread->frames.size() <= g.frameDepth;
-                    }),
-                guards.end());
-        }
-
-        if (exitRequested.load())
-            return std::make_pair(ExecutionStatus::OK,Value::nilVal());
-
-        // if we're 'sleeping' don't execute any instructions
-        //  (we may have been woken up by an event or a spurious wakeup, in which case we'll re-block below)
-        if (thread->threadSleep)
-           goto postInstructionDispatch;
-
-        // if awaiting a future, check if it resolved; otherwise keep sleeping
-        if (thread->awaitedFuture.isNonNil()) {
-            ObjFuture* fut = asFuture(thread->awaitedFuture);
-            if (fut->future.wait_for(std::chrono::microseconds(0)) != std::future_status::ready)
-                goto postInstructionDispatch; // still pending
-            thread->awaitedFuture = Value::nilVal(); // resolved, clear and proceed
-        }
-
-        // A suspended wait(for=...) is not complete until pendingWaitFor has
-        // been revisited and cleared. Do not execute another opcode while that
-        // handoff is still in flight, even if awaitedFuture just became ready.
-        if (thread->pendingWaitFor.isNonNil())
-            goto postInstructionDispatch;
-
-        finalizeWaitSuspension();
 
 
         #if defined(DEBUG_TRACE_EXECUTION)
@@ -6307,27 +6448,31 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 
         thread->frameStart = false;
 
-        // TODO: consider if using gcc/clang extension will help performance:
-        //   https://stackoverflow.com/questions/8019849/labels-as-values-vs-switch-statement
+#if ROXAL_THREADED_DISPATCH
+        // Cold opcodes dispatched from the trampoline land here and re-enter
+        // the switch (`instruction` is already decoded).  On the normal
+        // loop-top path this label is a fall-through no-op.
+        dispatch_via_switch:
+#endif
         switch(instruction) {
-            case OpCode::Constant: {
+            case OpCode::Constant: ROX_LBL(Constant) {
                 Value constant = readConstant();
                 push(constant);
                 break;
             }
-            case OpCode::ConstTrue: {
+            case OpCode::ConstTrue: ROX_LBL(ConstTrue) {
                 push(Value::trueVal());
                 break;
             }
-            case OpCode::ConstFalse: {
+            case OpCode::ConstFalse: ROX_LBL(ConstFalse) {
                 push(Value::falseVal());
                 break;
             }
-            case OpCode::ConstInt0: {
+            case OpCode::ConstInt0: ROX_LBL(ConstInt0) {
                 push(Value::intVal(0));
                 break;
             }
-            case OpCode::ConstInt1: {
+            case OpCode::ConstInt1: ROX_LBL(ConstInt1) {
                 push(Value::intVal(1));
                 break;
             }
@@ -7623,7 +7768,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 
                 break;
             }
-            case OpCode::Equal: {
+            case OpCode::Equal: ROX_LBL(Equal) {
                 // fast path: plain int/real comparison
                 {
                     Value& fa = peek(1);
@@ -7743,7 +7888,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 push(Value::boolVal(result));
                 break;
             }
-            case OpCode::Greater: {
+            case OpCode::Greater: ROX_LBL(Greater) {
                 // fast path: plain int/real comparison
                 {
                     Value& fa = peek(1);
@@ -7777,7 +7922,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 }
                 break;
             }
-            case OpCode::Less: {
+            case OpCode::Less: ROX_LBL(Less) {
                 // fast path: plain int/real comparison
                 {
                     Value& fa = peek(1);
@@ -7811,7 +7956,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 }
                 break;
             }
-            case OpCode::GreaterEqual: {
+            case OpCode::GreaterEqual: ROX_LBL(GreaterEqual) {
                 // fast path: plain int/real comparison
                 {
                     Value& fa = peek(1);
@@ -7845,7 +7990,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 }
                 break;
             }
-            case OpCode::LessEqual: {
+            case OpCode::LessEqual: ROX_LBL(LessEqual) {
                 // fast path: plain int/real comparison
                 {
                     Value& fa = peek(1);
@@ -7879,7 +8024,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 }
                 break;
             }
-            case OpCode::NotEqual: {
+            case OpCode::NotEqual: ROX_LBL(NotEqual) {
                 // fast path: plain int/real comparison
                 {
                     Value& fa = peek(1);
@@ -7913,7 +8058,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 }
                 break;
             }
-            case OpCode::Add: {
+            case OpCode::Add: ROX_LBL(Add) {
                 // fast path: plain int/real arithmetic — skips the future check,
                 // operator-hash dispatch and generic binaryOp Value churn
                 {
@@ -7978,7 +8123,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 }
                 break;
             }
-            case OpCode::Subtract: {
+            case OpCode::Subtract: ROX_LBL(Subtract) {
                 // fast path: plain int/real arithmetic — skips the future check,
                 // operator-hash dispatch and generic binaryOp Value churn
                 {
@@ -8017,7 +8162,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 }
                 break;
             }
-            case OpCode::Multiply: {
+            case OpCode::Multiply: ROX_LBL(Multiply) {
                 // fast path: plain int/real arithmetic — skips the future check,
                 // operator-hash dispatch and generic binaryOp Value churn
                 {
@@ -8056,7 +8201,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 }
                 break;
             }
-            case OpCode::Divide: {
+            case OpCode::Divide: ROX_LBL(Divide) {
                 {
                     Value& fa = peek(1);
                     const Value& fb = peek(0);
@@ -8099,7 +8244,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 }
                 break;
             }
-            case OpCode::Modulo: {
+            case OpCode::Modulo: ROX_LBL(Modulo) {
                 {
                     Value& fa = peek(1);
                     const Value& fb = peek(0);
@@ -8208,7 +8353,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 }
                 break;
             }
-            case OpCode::Pop: {
+            case OpCode::Pop: ROX_LBL(Pop) {
                 pop();
                 break;
             }
@@ -8355,7 +8500,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     popN(size_t(toPop));
                 break;
             }
-            case OpCode::Dup: {
+            case OpCode::Dup: ROX_LBL(Dup) {
                 auto value = peek(0);
                 push(value);
                 break;
@@ -8390,7 +8535,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 push(lhs);
                 break;
             }
-            case OpCode::JumpIfFalse: {
+            case OpCode::JumpIfFalse: ROX_LBL(JumpIfFalse) {
                 uint16_t jumpDist = readShort();
                 {
                     auto s = tryAwaitValue(peek(0));
@@ -8401,7 +8546,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     frame->ip += jumpDist;
                 break;
             }
-            case OpCode::JumpIfTrue: {
+            case OpCode::JumpIfTrue: ROX_LBL(JumpIfTrue) {
                 uint16_t jumpDist = readShort();
                 {
                     auto s = tryAwaitValue(peek(0));
@@ -8412,17 +8557,17 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     frame->ip += jumpDist;
                 break;
             }
-            case OpCode::Jump: {
+            case OpCode::Jump: ROX_LBL(Jump) {
                 uint16_t jumpDist = readShort();
                 frame->ip += jumpDist;
                 break;
             }
-            case OpCode::Loop: {
+            case OpCode::Loop: ROX_LBL(Loop) {
                 uint16_t jumpDist = readShort();
                 frame->ip -= jumpDist;
                 break;
             }
-            case OpCode::Call: {
+            case OpCode::Call: ROX_LBL(Call) {
                 CallSpec callSpec{frame->ip};
                 Value& callee { peek(callSpec.argCount) };
                 {
@@ -8530,7 +8675,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 break;
 #endif
             }
-            case OpCode::Index: {
+            case OpCode::Index: ROX_LBL(Index) {
                 uint8_t argCount = readByte();
                 // fast path: range[int] with non-negative int bounds — the
                 // desugared for-in loop's element fetch. Skips the generic
@@ -8644,7 +8789,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 pop();
                 break;
             }
-            case OpCode::Return: {
+            case OpCode::Return: ROX_LBL(Return) {
 
                 try {
                     Value result = opReturn();
@@ -8725,11 +8870,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 
                 break;
             }
-            case OpCode::ConstNil: {
+            case OpCode::ConstNil: ROX_LBL(ConstNil) {
                 push(Value::nilVal());
                 break;
             }
-            case OpCode::GetLocal: {
+            case OpCode::GetLocal: ROX_LBL(GetLocal) {
                 uint16_t slot = singleByteArg ? readByte() : readShort();
                 #ifdef DEBUG_BUILD
                 auto stackIndex = (frame->slots - &thread->stack[0]) + slot;
@@ -8739,7 +8884,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 push(frame->slots[slot]);
                 break;
             }
-            case OpCode::MoveLocal: {
+            case OpCode::MoveLocal: ROX_LBL(MoveLocal) {
                 uint16_t slot = singleByteArg ? readByte() : readShort();
                 #ifdef DEBUG_BUILD
                 auto stackIndex = (frame->slots - &thread->stack[0]) + slot;
@@ -8750,7 +8895,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 frame->slots[slot] = Value::nilVal();
                 break;
             }
-            case OpCode::SetLocal: {
+            case OpCode::SetLocal: ROX_LBL(SetLocal) {
                 uint16_t slot = singleByteArg ? readByte() : readShort();
                 #ifdef DEBUG_BUILD
                 auto stackIndex = (frame->slots - &thread->stack[0]) + slot;
@@ -8897,7 +9042,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 push(set->closures[overloadIndex]);
                 break;
             }
-            case OpCode::GetModuleVar: {
+            case OpCode::GetModuleVar: ROX_LBL(GetModuleVar) {
                 ObjString* name = readString();
                 auto& vars { moduleVars() };
                 auto optValue { vars.load(name->hash) };
@@ -8964,7 +9109,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 push(signal);
                 break;
             }
-            case OpCode::SetModuleVar: {
+            case OpCode::SetModuleVar: ROX_LBL(SetModuleVar) {
                 ObjString* name = readString();
                 if (onDataflowThread_) {
                     runtimeError("Cannot modify module variable '" + name->toStdString() + "' from dataflow function");
@@ -9766,7 +9911,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 popN(3);
                 break;
             }
-            case OpCode::Nop: {
+            case OpCode::Nop: ROX_LBL(Nop) {
                 break;
             }
             default:
@@ -9776,6 +9921,35 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 return std::make_pair(ExecutionStatus::RuntimeError,Value::nilVal());
                 break;
         }
+
+#if ROXAL_THREADED_DISPATCH
+        // Fast re-dispatch trampoline: every handler `break` lands
+        // here.  When nothing inter-instruction is pending (the guarded
+        // conditions above are the COMPLETE set the epilogue + loop top act
+        // on), fetch/decode the next opcode and jump straight to its handler,
+        // skipping the epilogue and preamble entirely.  The decode below is
+        // an exact copy of the loop-top decode; `thread->frameStart = false`
+        // is deliberately omitted (the guard guarantees it is already false).
+        if (!interInstrWorkPending()) [[likely]] {
+            instructionStart = frame->ip;
+            singleByteArg = true;
+            instructionByte = readByte();
+            if ((instructionByte & DoubleByteArg) == 0)
+                instruction = OpCode(instructionByte);
+            else {
+                instruction = OpCode(instructionByte & ~DoubleByteArg);
+                singleByteArg = false;
+            }
+            #ifdef DEBUG_BUILD
+            if (opcodeProfilingEnabled.load(std::memory_order_relaxed)) {
+                size_t opcodeIndex = static_cast<size_t>(instruction);
+                if (opcodeIndex < opcodeProfileCounts.size())
+                    opcodeProfileCounts[opcodeIndex].fetch_add(1, std::memory_order_relaxed);
+            }
+            #endif
+            goto *dispatchTable.e[uint8_t(instruction)];
+        }
+#endif // ROXAL_THREADED_DISPATCH
 
         // Deadline check - after every instruction
         if (hasDeadline && TimePoint::currentTime() >= deadline) {
