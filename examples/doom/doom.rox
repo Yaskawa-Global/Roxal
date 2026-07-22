@@ -1,5 +1,6 @@
 # Doom in Roxal — M5: it's a game. Doors open, the pistol fires, monsters
-# fight back, barrels explode, the status bar keeps score.
+# fight back, barrels explode, the status bar keeps score — with sound
+# effects (sound.rox via the media module; silent when no audio device).
 #
 # Run from the repo root with the RELEASE build:
 #   ./build-rel/roxal examples/doom/doom.rox
@@ -15,6 +16,7 @@ import wad.*
 import mapdata.*
 import render.*
 import game.*
+import sound.*
 
 var WADPATH = 'examples/doom/miniwad.wad'
 var MAPNAME = 'MAP01'
@@ -24,6 +26,7 @@ if fileio.file_exists('examples/doom/freedoom1.wad'):
 
 var w = Wad(WADPATH)
 setup(w, MAPNAME)
+sound_init(w)     # DS* lumps -> media.Audio clips (silent if no audio device)
 var m = map()
 print(WADPATH + ' ' + MAPNAME + ': ' + string(len(m.seg_v1)) + ' segs, ' + string(len(m.sectors)) + ' sectors, ' + string(len(m.things)) + ' things')
 
@@ -433,6 +436,8 @@ qt.every(16, proc():
     if is_held(16777234):
       rot = rot + 1.0
     move_player(fwd * MOVE_SPEED * dt, strafe * MOVE_SPEED * dt, rot * TURN_SPEED * dt)
+
+  set_listener(px, py, pang)
 
   # fixed 35 Hz game tics, capped: under render load we dilate time instead
   # of spiraling (each extra tic makes the next frame slower)

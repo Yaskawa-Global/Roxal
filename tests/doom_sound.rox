@@ -1,0 +1,36 @@
+# Doom sound pipeline smoke: DMX lump decode -> media.Audio bank, positional
+# play with attenuation/pan, per-tic dedupe. Runs on the null audio backend
+# (runtests sets ROXAL_AUDIO_BACKEND=null), so no hardware is involved.
+
+import wad.*
+import sound.*
+import media
+
+var w = Wad('../examples/doom/miniwad.wad')
+
+# direct decode of one known lump: DMX header 8 bytes + 2x16 pad around PCM
+var clip = decode_dmx(w.lump_named('DSPISTOL'))
+print(clip.frames())      # 1608-byte lump - 8 header - 32 pad = 1568
+print(clip.channels())
+print(clip.rate)
+# PCM values against the raw lump bytes (offsets independently verified):
+# a wrong pad/header offset would shift these
+print(clip.data[0] == 113)
+print(clip.data[100] == 149)
+print(clip.data[1567] == 128)
+
+# bank load (prints the count), then exercise the positional paths
+sound_init(w)
+set_listener(0.0, 0.0, 0.0)
+sound_tic()
+snd('DSPISTOL')                    # on-listener
+snd_at('DSDOROPN', 300.0, 100.0)   # positional: attenuated + panned
+snd_at('DSDOROPN', 300.0, 100.0)   # deduped within the same tic (no error)
+snd_at('DSDORCLS', 5000.0, 0.0)    # beyond CLIP_DIST: culled
+sound_tic()
+snd_at('DSDOROPN', -300.0, 100.0)  # new tic: plays again, panned the other way
+print(snd_variant('DSPOSIT1'))     # cycling variants stay in range
+print(snd_variant('DSPOSIT1'))
+print(snd_variant('DSBGSIT1'))
+print(snd_variant('DSXYZ'))        # non-randomized names pass through
+print('ok')

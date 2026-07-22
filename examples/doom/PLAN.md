@@ -225,7 +225,16 @@ per-tic solid_mobjs list — live E1M1 combat 3fps→14fps (the FPS readout expo
 
 Still open for later polish: lifts/crushers/teleports, key-locked doors, switch texture
 animation, level exit transitions, more weapons + weapon state machine, flat/wall
-animations, sound (needs a qt audio path), savegames. Documented simplifications:
+animations, savegames. Sound effects DONE 2026-07-22 (`sound.rox`): DS* DMX lumps
+decode to `media.Audio` clips; positional volume/pan vs the listener
+(S_AdjustSoundParams-style), per-tic dedupe, mobjinfo sound names generated into
+`tables.rox` (MI_SND_*). Monster idle grunts (activesound) are skipped — vanilla rolls
+P_Random for them, which would shift the deterministic RNG stream. Music (MUS lumps)
+stays out of scope: it needs a MUS->MIDI decoder plus a synthesizer, not just playback.
+Item pickups DONE 2026-07-22 (P_TouchSpecialThing-lite in `pickups_tic`): health
+(stimpack/medikit/bonus/soulsphere with vanilla caps) and bullet ammo, with DSITEMUP;
+at-cap items stay in the world; armor/keys/weapons/shells remain decorative until
+their mechanics exist. Documented simplifications:
 distance-based sight (LOS only gates hitscan attacks), direct-step chase instead of the
 8-direction dance.
 
@@ -321,8 +330,8 @@ release builds (build-lto/ has it; ~2× build time, ~10% runtime). Doom gameplay
 
 ### Non-goals (initially)
 
-Demo playback, netplay, savegames, menus, music/SFX (qt has no audio path today — adding
-QSoundEffect to the qt module later is platform work, not game work), Boom extensions.
+Demo playback, netplay, savegames, menus, music (MUS->MIDI + synth; SFX landed 2026-07-22
+via the media module's audio support — see `sound.rox`), Boom extensions.
 
 ## Assets
 

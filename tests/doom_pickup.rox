@@ -1,0 +1,66 @@
+# Pickup pass (P_TouchSpecialThing-lite): MF_SPECIAL things at the player's
+# position are consumed on the next tic — but only when they do something
+# (at-cap health leaves the stimpack in the world, vanilla-style). miniwad
+# MAP01 ships no items, so synthetic things are injected at the spawn.
+
+import wad.*
+import mapdata.*
+import render.*
+import game.*
+import math.*
+
+var w = Wad('../examples/doom/miniwad.wad')
+setup(w, 'MAP01')
+var m = map()
+
+func no_walls(x:real, y:real, r:real) -> bool:
+  return false
+
+func far_walls(x, y, a) -> real:
+  return 2048.0
+
+func fz(x, y) -> real:
+  return m.sectors[sector_at(x, y)].floorh * 1.0
+
+# player spawn position
+var sx = 0.0
+var sy = 0.0
+for t in m.things:
+  if t.kind == 1:
+    sx = t.x * 1.0
+    sy = t.y * 1.0
+    break
+
+# inject a stimpack and an ammo clip right at the spawn
+var stim = Thing()
+stim.kind = 2011
+stim.x = int(sx)
+stim.y = int(sy)
+m.things.append(stim)
+var clip = Thing()
+clip.kind = 2007
+clip.x = int(sx)
+clip.y = int(sy)
+m.things.append(clip)
+
+ginit(m)
+set_line_blocked(no_walls)
+set_wall_dist(far_walls)
+spawn_things(fz)
+
+var n0 = len(renderables())
+game_tic(sx, sy)                 # full health: clip taken, stimpack stays
+print(player_ammo())             # 60
+print(player_health())           # 100
+print(n0 - len(renderables()))   # 1
+
+damage_player(70)
+print(player_health())           # 30
+game_tic(sx, sy)                 # now the stimpack heals
+print(player_health())           # 40
+print(n0 - len(renderables()))   # 2
+
+game_tic(sx, sy)                 # nothing left to collect
+print(player_health())           # 40
+print(player_ammo())             # 60
+print('ok')

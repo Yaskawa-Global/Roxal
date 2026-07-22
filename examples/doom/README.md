@@ -15,6 +15,7 @@ implementation plan and milestone status live in `PLAN.md`.
 | `wad.rox` | M2: WAD container — directory parsing, lump lookup, field decoding |
 | `mapdata.rox` | map geometry decode (vertexes, linedefs, sidedefs, sectors, things) |
 | `gfx.rox` | palette, colormap, flats, picture-format patches, texture composition |
+| `sound.rox` | DS* DMX sound lumps → media.Audio clips; positional volume/pan, per-tic dedupe |
 | `viewer.rox` | WAD asset viewer: palette / flats / textures / automap (keys 1-4, n/p) |
 | `miniwad.wad` | tiny BSD-licensed IWAD used for development and tests |
 | `get_freedoom.sh` | downloads the full Freedoom IWADs (viewer prefers freedoom1.wad) |

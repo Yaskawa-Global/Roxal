@@ -4,12 +4,16 @@
 #
 # Simplifications vs vanilla (documented per PLAN.md): sight checks are
 # distance-based (no LOS raycast), monsters step directly toward their target
-# instead of the 8-direction dance, hitscan autoaim is nearest-in-cone, no
-# sounds, no lifts/crushers/teleports yet, keys not required for locked doors.
+# instead of the 8-direction dance, hitscan autoaim is nearest-in-cone,
+# no lifts/crushers/teleports yet, keys not required for locked doors.
+# Sounds play through sound.rox (media module); monster idle grunts
+# (activesound) are skipped — vanilla rolls P_Random for them, which would
+# shift the deterministic RNG stream vs the silent build.
 
 import math.*
 import mapdata.*
 import tables.*
+import sound.*
 
 var GPI = 3.14159265358979
 
@@ -68,12 +72,22 @@ func player_dead() -> bool:
 func muzzle_flash() -> bool:
   return flash_tics > 0
 
+# --- pickups (P_TouchSpecialThing-lite) ---
+# Touching an MF_SPECIAL thing consumes it if it does something for the
+# player right now; at-cap health/ammo leaves the item in the world (vanilla
+# behaviour). Types with no entry (armor, keys, weapons, shells) stay
+# decorative until their mechanics exist.
+var pickup_health = {}   # mobjinfo index -> [heal, cap]
+var pickup_ammo = {}     # mobjinfo index -> bullets (cap 200)
+
 # --- doors (p_doors-lite) ---
 var door_sector = []
 var door_dir = []      # 1 opening, 0 waiting, -1 closing
 var door_top = []
 var door_wait = []
 var door_stay = []     # D1: stays open
+var door_x = []        # where the door was used (positional open/close sounds)
+var door_y = []
 
 proc ginit(m):
   gm = m
@@ -86,12 +100,29 @@ proc ginit(m):
       mt_troopshot = i
     if MI_NAMES[i] == 'MT_HEADSHOT':
       mt_headshot = i
+  pickup_health = {}
+  pickup_ammo = {}
+  for i in range(..<len(MI_NAMES)):
+    if MI_NAMES[i] == 'MT_MISC10':    # stimpack (2011)
+      pickup_health[i] = [10, 100]
+    if MI_NAMES[i] == 'MT_MISC11':    # medikit (2012)
+      pickup_health[i] = [25, 100]
+    if MI_NAMES[i] == 'MT_MISC2':     # health bonus (2014)
+      pickup_health[i] = [1, 200]
+    if MI_NAMES[i] == 'MT_MISC12':    # soulsphere (2013)
+      pickup_health[i] = [100, 200]
+    if MI_NAMES[i] == 'MT_CLIP':      # ammo clip (2007)
+      pickup_ammo[i] = 10
+    if MI_NAMES[i] == 'MT_MISC17':    # box of bullets (2048)
+      pickup_ammo[i] = 50
   mobjs = []
   door_sector = []
   door_dir = []
   door_top = []
   door_wait = []
   door_stay = []
+  door_x = []
+  door_y = []
   pl_health = 100
   pl_ammo = 50
   pl_dead = false
@@ -236,6 +267,7 @@ proc a_look(mo):
       return
   if clear_shot(mo):
     mo.chase_player = true
+    snd_at(snd_variant(MI_SND_SEE[mo.mtype]), mo.x, mo.y)
     set_state(mo, MI_SEE[mo.mtype])
 
 proc a_facetarget(mo):
@@ -299,6 +331,7 @@ func hit_chance(mo, base:int) -> int:
 
 proc a_posattack(mo):
   a_facetarget(mo)
+  snd_at(MI_SND_ATK[mo.mtype], mo.x, mo.y)
   if not clear_shot(mo):
     return
   if p_random() < hit_chance(mo, 160):
@@ -306,6 +339,7 @@ proc a_posattack(mo):
 
 proc a_sposattack(mo):
   a_facetarget(mo)
+  snd_at(MI_SND_ATK[mo.mtype], mo.x, mo.y)
   if not clear_shot(mo):
     return
   for i in range(..<3):
@@ -314,12 +348,14 @@ proc a_sposattack(mo):
 
 proc a_sargattack(mo):
   a_facetarget(mo)
+  snd_at(MI_SND_ATK[mo.mtype], mo.x, mo.y)
   if dist_to_player(mo) < mo.radius + 60.0:
     damage_player(((p_random() rem 10) + 1) * 4, attacker=mo)
 
 proc a_troopattack(mo):
   a_facetarget(mo)
   if dist_to_player(mo) < mo.radius + 60.0:
+    snd_at('DSCLAW', mo.x, mo.y)
     damage_player(((p_random() rem 8) + 1) * 3, attacker=mo)
     return
   spawn_missile(mo, mt_troopshot)
@@ -349,6 +385,7 @@ proc spawn_missile(mo, mt:int):
   ms.momx = cos(ms.angle) * sp
   ms.momy = sin(ms.angle) * sp
   mobjs.append(ms)
+  snd_at(MI_SND_SEE[mi], mo.x, mo.y)    # launch woosh (missile's seesound)
 
 proc missile_move(mo):
   var nx = mo.x + mo.momx
@@ -372,6 +409,7 @@ proc explode_missile(mo):
   mo.momx = 0.0
   mo.momy = 0.0
   mo.flags = mo.flags & (0 - 1 - MF_MISSILE)
+  snd_at(MI_SND_DTH[mo.mtype], mo.x, mo.y)
   set_state(mo, MI_DEATH[mo.mtype])
 
 proc a_explode(mo):
@@ -397,12 +435,15 @@ proc damage_mobj(mo, dmg:int):
   if mo.health <= 0:
     mo.flags = mo.flags & (0 - 1 - MF_SHOOTABLE)
     if mo.health < 0 - MI_HEALTH[mo.mtype] and MI_XDEATH[mo.mtype] != 0:
+      snd_at('DSSLOP', mo.x, mo.y)     # gibbed (A_XScream)
       set_state(mo, MI_XDEATH[mo.mtype])
     else:
+      snd_at(snd_variant(MI_SND_DTH[mo.mtype]), mo.x, mo.y)
       set_state(mo, MI_DEATH[mo.mtype])
     return
   mo.chase_player = true
   if p_random() < MI_PAINCH[mo.mtype]:
+    snd_at(MI_SND_PAIN[mo.mtype], mo.x, mo.y)
     set_state(mo, MI_PAIN[mo.mtype])
 
 var dmg_log = []   # [x, y, mtype, dmg] per damage event (diagnostics)
@@ -420,7 +461,10 @@ proc damage_player(dmg:int, attacker=nil):
   if pl_health <= 0:
     pl_health = 0
     pl_dead = true
+    snd('DSPLDETH')
     print('You died.')
+  else:
+    snd('DSPLPAIN')
 
 # PLAYPAL index for this tic's screen tint (ST_doPaletteStuff)
 func flash_palette() -> int:
@@ -444,6 +488,7 @@ proc player_fire(ang:real):
     return
   pl_ammo = pl_ammo - 1
   flash_tics = 4
+  snd('DSPISTOL')
   var ca = cos(ang)
   var sa = sin(ang)
   # nearest wall along the shot (against blocking lines)
@@ -522,6 +567,7 @@ proc player_use(ang:real):
     if ddx * ddx + ddy * ddy > 40.0 * 40.0:
       continue
     if l.special == 11:
+      snd('DSSWTCHN')
       print('LEVEL EXIT!')
       return
     if l.side1 < 0:
@@ -538,7 +584,36 @@ proc player_use(ang:real):
     door_top.append(lowest_neighbor_ceiling(seci) - 4)
     door_wait.append(0)
     door_stay.append(l.special == 31)
+    door_x.append(cx)
+    door_y.append(cy)
+    snd_at('DSDOROPN', cx, cy)
     return
+
+proc pickups_tic():
+  if pl_dead:
+    return
+  for mo in mobjs:
+    if mo.removed or (mo.flags & MF_SPECIAL) == 0:
+      continue
+    var dx = mo.x - pl_x
+    var dy = mo.y - pl_y
+    var rr = mo.radius + 16.0
+    if dx * dx + dy * dy >= rr * rr:
+      continue
+    var got = false
+    if mo.mtype in pickup_health and pl_health < pickup_health[mo.mtype][1]:
+      pl_health = pl_health + pickup_health[mo.mtype][0]
+      if pl_health > pickup_health[mo.mtype][1]:
+        pl_health = pickup_health[mo.mtype][1]
+      got = true
+    if mo.mtype in pickup_ammo and pl_ammo < 200:
+      pl_ammo = pl_ammo + pickup_ammo[mo.mtype]
+      if pl_ammo > 200:
+        pl_ammo = 200
+      got = true
+    if got:
+      mo.removed = true
+      snd('DSITEMUP')
 
 proc doors_tic():
   for i in range(..<len(door_sector)):
@@ -559,6 +634,7 @@ proc doors_tic():
       door_wait[i] = door_wait[i] - 1
       if door_wait[i] <= 0:
         door_dir[i] = -1
+        snd_at('DSDORCLS', door_x[i], door_y[i])
     if dir == -1:
       sec.ceilh = sec.ceilh - 4
       if sec.ceilh <= sec.floorh:
@@ -569,11 +645,13 @@ proc doors_tic():
 proc game_tic(px:real, py:real):
   pl_x = px
   pl_y = py
+  sound_tic()
   if flash_tics > 0:
     flash_tics = flash_tics - 1
   if dmg_count > 0:
     dmg_count = dmg_count - 1
   doors_tic()
+  pickups_tic()
   solid_mobjs = []
   for mo in mobjs:
     if not mo.removed and (mo.flags & MF_SOLID) != 0:

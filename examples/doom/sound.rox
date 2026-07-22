@@ -1,0 +1,120 @@
+# Doom SFX through the media module (s_sound-lite). DS* lumps hold DMX-format
+# sound effects: an 8-byte header (u16 format=3, u16 sample rate, u32 sample
+# count) then unsigned 8-bit PCM with 16 bytes of padding at each end. Each
+# lump becomes a media.Audio clip (uint8 tensor + rate); play() mixes freely,
+# so overlapping shots/roars need no channel bookkeeping.
+#
+# Positional model follows vanilla S_AdjustSoundParams: volume falls linearly
+# from full inside CLOSE_DIST to zero at CLIP_DIST, and stereo pan comes from
+# the angle between the listener's facing and the source. A per-tic dedupe
+# keeps a room of monsters waking on the same tic from stacking one sound
+# into a blast.
+#
+# Everything no-ops when no audio device is available (headless runs, CI),
+# or until sound_init() is called. Set ROXAL_AUDIO_BACKEND=null to exercise
+# the sound path without hardware.
+
+import media
+import math.*
+import wad.*
+
+var enabled = false
+var bank = {}            # DS lump name -> media.Audio
+var master = 0.7
+
+var lis_x = 0.0
+var lis_y = 0.0
+var lis_ang = 0.0
+
+var played_this_tic = {}
+var variant_roll = 0     # cycles randomized variants (posit1-3, podth1-3, ...)
+                         # without consuming P_Random (keeps gameplay demos
+                         # deterministic and unchanged vs the silent build)
+
+var CLIP_DIST = 1200.0
+var CLOSE_DIST = 200.0
+
+# decode one DMX lump into a clip, or nil if it isn't a valid sound
+func decode_dmx(b):
+  if len(b) < 48:
+    return nil
+  if u16(b, 0) != 3:
+    return nil
+  var rate = u16(b, 2)
+  if rate < 1000:
+    return nil
+  var n = i32(b, 4)          # sample count (includes the 2x16 pad bytes)
+  if n > len(b) - 8:
+    n = len(b) - 8
+  if n <= 48:
+    return nil
+  var pcm = b[24 : 8 + n - 16]     # skip header + leading pad, drop tail pad
+  var t = tensor(shape=[len(pcm)], dtype='uint8', data=pcm)
+  return media.Audio(source=t, rate=rate)
+
+# load every DS* lump in the wad (freedoom1: 69, miniwad: 107; ~1 MB of PCM)
+proc sound_init(w):
+  enabled = media.audio_available()
+  if not enabled:
+    print('sound: no audio output device — running silent')
+    return
+  var count = 0
+  for i in range(..<w.num_lumps):
+    var nm = w.names[i]
+    if len(nm) > 2 and nm[0:2] == 'DS' and not (nm in bank):
+      var clip = decode_dmx(w.lump(i))
+      if clip != nil:
+        bank[nm] = clip
+        count = count + 1
+  print('sound: ' + string(count) + ' effects loaded')
+
+proc set_listener(x:real, y:real, ang:real):
+  lis_x = x
+  lis_y = y
+  lis_ang = ang
+
+# start of each game tic: allow each effect to start at most once per tic
+proc sound_tic():
+  played_this_tic = {}
+
+# play `name` from world position (x, y), attenuated and panned vs the listener
+proc snd_at(name:string, x:real, y:real):
+  if not enabled or name == '' or not (name in bank):
+    return
+  if name in played_this_tic:
+    return
+  var dx = x - lis_x
+  var dy = y - lis_y
+  var d = sqrt(dx * dx + dy * dy)
+  if d >= CLIP_DIST:
+    return
+  played_this_tic[name] = true
+  var vol = master
+  if d > CLOSE_DIST:
+    vol = master * (CLIP_DIST - d) / (CLIP_DIST - CLOSE_DIST)
+  var rel = atan2(dy, dx) - lis_ang
+  bank[name].play(volume=vol, pan=0.0 - sin(rel) * 0.75)
+
+# play `name` on the listener itself (own gun, pain, UI) — full volume, centered
+proc snd(name:string):
+  if not enabled or name == '' or not (name in bank):
+    return
+  if name in played_this_tic:
+    return
+  played_this_tic[name] = true
+  bank[name].play(volume=master)
+
+# vanilla randomizes some sounds across numbered variants (S_StartSound on
+# sfx_posit1 + rnd). Cycle instead of rolling P_Random so the gameplay RNG
+# stream is identical with and without sound.
+func snd_variant(name:string) -> string:
+  variant_roll = variant_roll + 1
+  if name == 'DSPOSIT1':
+    return 'DSPOSIT' + string((variant_roll rem 3) + 1)
+  if name == 'DSPODTH1':
+    return 'DSPODTH' + string((variant_roll rem 3) + 1)
+  if name == 'DSBGSIT1':
+    return 'DSBGSIT' + string((variant_roll rem 2) + 1)
+  if name == 'DSBGDTH1':
+    return 'DSBGDTH' + string((variant_roll rem 2) + 1)
+  return name

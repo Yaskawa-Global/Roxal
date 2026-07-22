@@ -64,6 +64,17 @@ FIELDS = ['doomednum', 'spawnstate', 'spawnhealth', 'seestate', 'reactiontime',
           'painstate', 'painchance', 'meleestate', 'missilestate', 'deathstate',
           'xdeathstate', 'speed', 'radius', 'height', 'mass', 'damage',
           'flags', 'raisestate']
+# sfx_* fields become DS lump names ('' for sfx_None); the short sfx enum
+# suffix IS the lump name in sounds.c (sfx_pistol -> "pistol" -> DSPISTOL)
+SOUND_FIELDS = ['seesound', 'attacksound', 'painsound', 'deathsound', 'activesound']
+
+
+def snd_of(expr):
+    expr = expr.strip()
+    if expr in ('sfx_None', '0'):
+        return ''
+    assert expr.startswith('sfx_'), expr
+    return 'DS' + expr[4:].upper()
 
 
 def val_of(expr):
@@ -86,6 +97,7 @@ def val_of(expr):
 
 
 mi = {f: [] for f in FIELDS}
+mi_snd = {f: [] for f in SOUND_FIELDS}
 mi_names = []
 for name, body in blocks:
     mi_names.append(name)
@@ -94,6 +106,8 @@ for name, body in blocks:
         fields[vm.group(2)] = vm.group(1)
     for f in FIELDS:
         mi[f].append(val_of(fields[f]) if f in fields else 0)
+    for f in SOUND_FIELDS:
+        mi_snd[f].append(snd_of(fields[f]) if f in fields else '')
 
 
 def fmt_list(name, vals, quote=False):
@@ -142,6 +156,11 @@ out.append(fmt_list('MI_HEIGHT', mi['height']))
 out.append(fmt_list('MI_MASS', mi['mass']))
 out.append(fmt_list('MI_DAMAGE', mi['damage']))
 out.append(fmt_list('MI_FLAGS', mi['flags']))
+out.append(fmt_list('MI_SND_SEE', mi_snd['seesound'], quote=True))
+out.append(fmt_list('MI_SND_ATK', mi_snd['attacksound'], quote=True))
+out.append(fmt_list('MI_SND_PAIN', mi_snd['painsound'], quote=True))
+out.append(fmt_list('MI_SND_DTH', mi_snd['deathsound'], quote=True))
+out.append(fmt_list('MI_SND_ACT', mi_snd['activesound'], quote=True))
 
 # the deterministic P_Random table (m_random.c)
 mr = open(os.path.join(src, 'm_random.c')).read()

@@ -398,7 +398,7 @@ long_running_tests = [
 ]
 
 # doom example tests (examples/doom in-development port; only run with --all)
-doom_tests = ['doom_wad', 'doom_gfx', 'doom_render', 'doom_game']
+doom_tests = ['doom_wad', 'doom_gfx', 'doom_render', 'doom_game', 'doom_sound', 'doom_pickup']
 
 # implementation doesn't yet allow these tests to pass (do not add to this list without human consent)
 failing_tests = ['signal_network1']
@@ -877,7 +877,7 @@ try:
             # Qt GUI tests run headless via the offscreen platform plugin.
             test_env = dict(env_base)
             test_env['QT_QPA_PLATFORM'] = 'offscreen'
-        if test.startswith('media_audio'):
+        if test.startswith('media_audio') or test == 'doom_sound':
             # Audio tests run on miniaudio's hardware-free null backend.
             test_env = dict(test_env)
             test_env['ROXAL_AUDIO_BACKEND'] = 'null'
