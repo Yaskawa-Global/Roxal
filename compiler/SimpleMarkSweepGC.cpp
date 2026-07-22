@@ -1,5 +1,6 @@
 #include "SimpleMarkSweepGC.h"
 
+#include "AsyncIOManager.h"
 #include "GCRoots.h"
 #include "ThreadManager.h"
 #include "Object.h"
@@ -1618,6 +1619,14 @@ void SimpleMarkSweepGC::visitRoots(ValueVisitor& visitor) {
         // double-free when the signal is eventually destroyed.
         dfEngine->traceAllSignals(visitor);
     }
+
+    // Async file-IO ops queued or executing hold their file handle as a
+    // Value (plus possibly an already-resolved result) that may have no
+    // other reachable reference — a fire-and-forget fileio.write whose
+    // future was discarded must not have its ObjFile swept out from under
+    // the worker thread.
+    if (AsyncIOManager* aio = AsyncIOManager::instanceIfCreated())
+        aio->tracePending(visitor);
 
     visitStrongValue(visitor, vm.conditionalInterruptClosure);
     visitStrongValue(visitor, vm.combinatorRelayFunction);

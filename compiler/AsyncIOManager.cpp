@@ -4,18 +4,95 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <cstdlib>
+#include <iostream>
 
 using namespace roxal;
+
+namespace {
+
+std::atomic<AsyncIOManager*> s_instance{nullptr};
+
+const char* opTypeName(PendingIOOp::Type t)
+{
+    switch (t) {
+        case PendingIOOp::Type::FileRead:      return "read";
+        case PendingIOOp::Type::FileReadLine:  return "read_line";
+        case PendingIOOp::Type::FileReadAll:   return "read_file";
+        case PendingIOOp::Type::FileWrite:     return "write";
+        case PendingIOOp::Type::FileFlush:     return "flush";
+        case PendingIOOp::Type::FileClose:     return "close";
+        case PendingIOOp::Type::FileSyncFlush: return "flush";
+    }
+    return "op";
+}
+
+// Script-observable failure result: false for the bool-returning mutation
+// ops, nil for reads (matching their "no data" convention).
+Value opFailureValue(PendingIOOp::Type t)
+{
+    switch (t) {
+        case PendingIOOp::Type::FileWrite:
+        case PendingIOOp::Type::FileFlush:
+        case PendingIOOp::Type::FileClose:
+        case PendingIOOp::Type::FileSyncFlush:
+            return Value::falseVal();
+        default:
+            return Value::nilVal();
+    }
+}
+
+}  // namespace
 
 AsyncIOManager& AsyncIOManager::instance()
 {
     static AsyncIOManager inst;
+    s_instance.store(&inst, std::memory_order_release);
     return inst;
+}
+
+AsyncIOManager* AsyncIOManager::instanceIfCreated()
+{
+    return s_instance.load(std::memory_order_acquire);
 }
 
 AsyncIOManager::~AsyncIOManager()
 {
+    s_instance.store(nullptr, std::memory_order_release);
     stop();
+}
+
+void AsyncIOManager::tracePending(ValueVisitor& visitor)
+{
+    auto visitStrong = [&visitor](const Value& v) {
+        if (v.isObj() && !v.isWeak())
+            visitor.visit(v);
+    };
+    auto visitOps = [&](const std::list<PendingIOOp>& ops) {
+        for (const PendingIOOp& op : ops) {
+            visitStrong(op.fileValue);
+            // An op resolved but not yet discarded still holds its result in
+            // the shared state (e.g. a read's byte list) — root it too.
+            if (op.future.valid() &&
+                op.future.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+                visitStrong(op.future.get());
+        }
+    };
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        visitOps(pendingOps);
+        visitOps(processingOps);
+    }
+    {
+        std::lock_guard<std::mutex> lock(fileFuturesMutex);
+        for (auto& entry : fileFutures) {
+            for (auto& fut : entry.second) {
+                if (fut.valid() &&
+                    fut.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+                    visitStrong(fut.get());
+            }
+        }
+    }
 }
 
 void AsyncIOManager::start()
@@ -29,6 +106,17 @@ void AsyncIOManager::start()
 void AsyncIOManager::stop()
 {
     if (running.load()) {
+        auto grace = std::chrono::milliseconds(500);
+        if (const char* env = std::getenv("ROXAL_FILEIO_SHUTDOWN_GRACE_MS")) {
+            char* end = nullptr;
+            long ms = std::strtol(env, &end, 10);
+            if (end != env && ms >= 0)
+                grace = std::chrono::milliseconds(ms);
+        }
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            shutdownDeadline = std::chrono::steady_clock::now() + grace;
+        }
         running = false;
         queueCV.notify_all();
         if (workerThread.joinable()) {
@@ -140,8 +228,6 @@ void AsyncIOManager::waitForFile(Value fileValue)
 void AsyncIOManager::workerLoop()
 {
     while (running.load()) {
-        std::list<PendingIOOp> toProcess;
-
         {
             std::unique_lock<std::mutex> lock(queueMutex);
             // Wait for work or shutdown
@@ -153,20 +239,63 @@ void AsyncIOManager::workerLoop()
                 break;
             }
 
-            toProcess = std::move(pendingOps);
-            pendingOps.clear();
+            // Move the batch into the member list (not a local) so the GC
+            // root tracer can still reach these ops while they execute.
+            processingOps.splice(processingOps.end(), pendingOps);
         }
 
         // Process all pending operations
-        for (auto& op : toProcess) {
+        size_t abandoned = 0;
+        size_t abandonedBytes = 0;
+        for (auto& op : processingOps) {
+            // Shutdown drain is bounded: past the grace deadline, abandon
+            // the remainder loudly rather than stall process exit behind a
+            // slow device. Scripts that need durability must consume the
+            // close()/flush() future.
+            if (!running.load() &&
+                std::chrono::steady_clock::now() > shutdownDeadline) {
+                op.promise->set_value(opFailureValue(op.type));
+                ++abandoned;
+                abandonedBytes += op.writeData.size();
+                continue;
+            }
             try {
                 Value result = executeOp(op);
                 op.promise->set_value(result);
             } catch (const std::exception& e) {
-                // Set error as nil for now - could create exception value
-                op.promise->set_value(Value::nilVal());
+                // A failed async op must not be silent: report it, and
+                // resolve the future to a script-observable failure value.
+                std::cerr << "fileio: async " << opTypeName(op.type)
+                          << (op.path.empty() ? std::string() : " '" + op.path + "'")
+                          << " failed: " << e.what() << std::endl;
+                op.promise->set_value(opFailureValue(op.type));
+            } catch (...) {
+                std::cerr << "fileio: async " << opTypeName(op.type)
+                          << " failed with unknown error" << std::endl;
+                op.promise->set_value(opFailureValue(op.type));
             }
         }
+        if (abandoned) {
+            std::cerr << "fileio: " << abandoned << " pending op(s) abandoned at shutdown, "
+                      << abandonedBytes << " bytes unwritten (wait on close()'s"
+                      << " future to guarantee completion)" << std::endl;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            processingOps.clear();
+        }
+    }
+
+    // Shutdown: resolve anything queued after the final batch was taken so
+    // no future is left holding a broken promise.
+    std::lock_guard<std::mutex> lock(queueMutex);
+    if (!pendingOps.empty()) {
+        std::cerr << "fileio: " << pendingOps.size()
+                  << " op(s) abandoned at shutdown" << std::endl;
+        for (auto& op : pendingOps)
+            op.promise->set_value(opFailureValue(op.type));
+        pendingOps.clear();
     }
 }
 
@@ -264,21 +393,24 @@ Value AsyncIOManager::executeFileReadAll(PendingIOOp& op)
 
 Value AsyncIOManager::executeFileWrite(PendingIOOp& op)
 {
-    if (!op.file) return Value::nilVal();
+    if (!op.file) return Value::falseVal();
 
     std::lock_guard<std::mutex> lock(op.file->mutex);
-    if (!op.file->file || !op.file->file->is_open())
-        return Value::nilVal();
-
-    if (op.binary) {
-        for (char c : op.writeData) {
-            op.file->file->put(c);
-        }
-    } else {
-        (*op.file->file) << op.writeData;
+    if (!op.file->file || !op.file->file->is_open()) {
+        std::cerr << "fileio: async write dropped -- file already closed ("
+                  << op.writeData.size() << " bytes)" << std::endl;
+        return Value::falseVal();
     }
 
-    return Value::nilVal();
+    op.file->file->write(op.writeData.data(),
+                         static_cast<std::streamsize>(op.writeData.size()));
+    if (!op.file->file->good()) {
+        std::cerr << "fileio: async write failed ("
+                  << op.writeData.size() << " bytes)" << std::endl;
+        return Value::falseVal();
+    }
+
+    return Value::trueVal();
 }
 
 Value AsyncIOManager::executeFileFlush(PendingIOOp& op)

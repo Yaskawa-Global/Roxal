@@ -131,6 +131,7 @@ Value ModuleFileIO::fileio_close_builtin(ArgsView args)
         PendingIOOp op;
         op.type = PendingIOOp::Type::FileClose;
         op.file = f;
+        op.fileValue = fileValue;
         // The pending future will be waited on by the async worker
         op.pendingFutures.push_back(asFuture(pendingFuture)->future);
         return AsyncIOManager::instance().submit(std::move(op));
@@ -175,6 +176,7 @@ Value ModuleFileIO::fileio_read_builtin(ArgsView args)
     PendingIOOp op;
     op.type = PendingIOOp::Type::FileRead;
     op.file = f;
+    op.fileValue = args[0];
     op.maxBytes = 4096;
     op.binary = f->binary;
 
@@ -200,6 +202,7 @@ Value ModuleFileIO::fileio_read_line_builtin(ArgsView args)
     PendingIOOp op;
     op.type = PendingIOOp::Type::FileReadLine;
     op.file = f;
+    op.fileValue = args[0];
     op.binary = false;
 
     return AsyncIOManager::instance().submit(std::move(op));
@@ -270,6 +273,7 @@ Value ModuleFileIO::fileio_write_builtin(ArgsView args)
     PendingIOOp op;
     op.type = PendingIOOp::Type::FileWrite;
     op.file = f;
+    op.fileValue = args[0];
     op.writeData = std::move(writeData);
     op.binary = f->binary;
 
@@ -292,6 +296,7 @@ Value ModuleFileIO::fileio_flush_builtin(ArgsView args)
         PendingIOOp op;
         op.type = PendingIOOp::Type::FileSyncFlush;
         op.file = f;
+        op.fileValue = fileValue;
         // The pending future will be waited on by the async worker
         op.pendingFutures.push_back(asFuture(pendingFuture)->future);
         return AsyncIOManager::instance().submit(std::move(op));
