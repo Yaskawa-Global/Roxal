@@ -2284,6 +2284,27 @@ thread_local ptr<Thread> VM::thread;
 
 bool VM::call(ObjClosure* closure, const CallSpec& callSpec)
 {
+    // A function declared @builtin only reaches here when its native
+    // implementation was never linked (module disabled in this build, or a
+    // stale compiled module cache) — running the empty stub body would
+    // silently return nil, so fail loudly instead.
+    ObjFunction* stubCheckFn = asFunction(closure->function);
+    if (!stubCheckFn->annotations.empty() && !stubCheckFn->builtinInfo) [[unlikely]] {
+        for (const auto& annot : stubCheckFn->annotations) {
+            if (annot && annot->name == "builtin") {
+                std::string modName;
+                if (stubCheckFn->moduleType.isNonNil())
+                    modName = toUTF8StdString(asModuleType(stubCheckFn->moduleType)->name);
+                runtimeError("'" + toUTF8StdString(stubCheckFn->name) +
+                             "' is declared @builtin but has no native implementation" +
+                             (modName.empty() ? std::string{}
+                                              : " — the '" + modName + "' module is disabled in this build, "
+                                                "or its compiled module cache is stale (delete modules/." +
+                                                modName + ".roc or run with --recompile)"));
+                return false;
+            }
+        }
+    }
 
     // closure,frame pair for any param default value 'func' calls
     std::vector<std::pair<Value,CallFrame>> defValFrames {};
