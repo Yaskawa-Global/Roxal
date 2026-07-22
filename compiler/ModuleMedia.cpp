@@ -379,6 +379,8 @@ void ModuleMedia::registerBuiltins(VM& vm)
     linkMethod("Image", "to_uint8",        [this](VM&, ArgsView a) { return image_to_uint8_builtin(a); });
     linkMethod("Image", "normalize",       [this](VM&, ArgsView a) { return image_normalize_builtin(a); });
     linkMethod("Image", "to_tensor",       [this](VM&, ArgsView a) { return image_to_tensor_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
+
+    registerAudioBuiltins();
 }
 
 // Helper: replace the receiver's data tensor in-place

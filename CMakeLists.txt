@@ -289,7 +289,9 @@ if(ROXAL_ENABLE_ONNX)
     include_directories(${ONNXRUNTIME_INCLUDE_DIR})
 endif()
 
-# PNG / JPEG for media module
+# PNG / JPEG for media module. Audio (miniaudio) needs no packages: it is a
+# vendored single header (compiler/miniaudio.h, like linenoise) whose device
+# backend libraries are dlopen'd at runtime.
 if(ROXAL_ENABLE_MEDIA)
     find_package(PNG REQUIRED)
     find_package(JPEG REQUIRED)
@@ -380,6 +382,8 @@ if(ROXAL_ENABLE_AI_NN)
 endif()
 if(ROXAL_ENABLE_MEDIA)
     list(APPEND COMPILER_SOURCES compiler/ModuleMedia.cpp)
+    list(APPEND COMPILER_SOURCES compiler/ModuleMediaAudio.cpp)
+    list(APPEND COMPILER_SOURCES compiler/miniaudio_impl.cpp)
 endif()
 # NOTE: the qt module is NOT compiled into roxalcore — it builds as a separate
 # dlopen'd plugin (libroxalqt.so, defined below) so the roxal binary carries no Qt

@@ -1,0 +1,3 @@
+import media
+
+var a = media.Audio(source=tensor(shape=[4], data=[1, 2, 3, 4], dtype='float64'), rate=8000)

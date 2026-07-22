@@ -1144,6 +1144,14 @@ ObjObjectType* roxal::sysQuantityType()
     return gSysQuantityType;
 }
 
+std::optional<double> roxal::sysTimeQuantitySeconds(const Value& v, const char* context)
+{
+    if (!isObjectInstance(v) || gSysQuantityType == nullptr ||
+        !instanceOf(asObjectInstance(v), gSysQuantityType))
+        return std::nullopt;
+    return static_cast<double>(quantityTimeMicros(v, context)) / 1e6;
+}
+
 std::string roxal::sysQuantityDefaultString(ObjectInstance* inst)
 {
     double v = readNumberProperty(Value::objRef(inst), "_v");

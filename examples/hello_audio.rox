@@ -1,0 +1,42 @@
+// Hello-world for Roxal audio (media module).
+//
+// Plays a spoken greeting (decoded from MP3), then a little chime synthesized
+// from raw samples in a tensor. Run it from the repo root:
+//
+//   ./build/roxal examples/hello_audio.rox
+//
+// Needs a build with -DROXAL_ENABLE_MEDIA=ON (or ROXAL_ENABLE_ALL). No audio
+// libraries are needed to build or start: the output device is opened (and its
+// backend library loaded) at the first play(). On a machine with no audio,
+// run with ROXAL_AUDIO_BACKEND=null to exercise everything silently.
+
+import media
+import math
+
+if not media.audio_available():
+  print("No audio output device available.")
+  print("(hint: ROXAL_AUDIO_BACKEND=null roxal examples/hello_audio.rox runs it silently)")
+else:
+  // 1. Speech: decode an MP3 file and play it.
+  var hello = media.Audio("examples/hello_from_roxal.mp3")
+  print("Greeting: " + hello.duration() + "s at " + hello.rate + " Hz")
+  var h = hello.play()
+  while h.playing():
+    wait(ms=50)
+
+  // 2. Synthesis: build a three-note chime (C5, E5, G5) as float32 samples.
+  var rate = 22050
+  var n = 3600                                  // ~0.16 s per note
+  var samples = []
+  for freq in [523.25, 659.25, 784.0]:
+    for i in range(0:n):
+      var t = (i * 1.0) / rate
+      var amp = 0.35 * (1.0 - (i * 1.0) / n)    // linear decay envelope
+      samples.append(amp * math.sin(2.0 * math.pi * freq * t))
+
+  var chime = media.Audio(source=tensor(shape=[3 * n], data=samples, dtype='float32'), rate=rate)
+  var c = chime.play()
+  while c.playing():
+    wait(ms=50)
+
+  print("Done.")

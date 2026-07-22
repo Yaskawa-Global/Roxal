@@ -1,0 +1,3 @@
+import builtin_stub_mod
+
+builtin_stub_mod.phantom()

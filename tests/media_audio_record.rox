@@ -1,0 +1,15 @@
+import media
+
+// Null-backend capture: correct shape/rate, silence content
+var clip = media.record(0.2, rate=8000)
+print(clip.frames())
+print(clip.channels())
+print(clip.rate)
+print(clip.duration())
+print(clip.data[0, 0] == 0.0)
+print(clip.data[1599, 0] == 0.0)
+
+// duration as a time quantity (sys.wait's contract)
+var q = media.record(100ms, rate=8000)
+print(q.frames())
+print("done")

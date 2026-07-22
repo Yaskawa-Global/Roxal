@@ -5,6 +5,7 @@
 #include "Object.h"
 #include <string>
 #include <cstdint>
+#include <optional>
 
 namespace roxal {
 
@@ -126,6 +127,11 @@ private:
 ObjObjectType* sysTimeType();
 ObjObjectType* sysTimeSpanType();
 ObjObjectType* sysQuantityType();
+
+/// If `v` is a time-dimensioned sys.quantity instance (e.g. `3s`, `200ms`),
+/// return its value in seconds. Returns nullopt when `v` is not a quantity
+/// instance at all; throws when it is a quantity with non-time dimensions.
+std::optional<double> sysTimeQuantitySeconds(const Value& v, const char* context);
 std::string sysTimeDefaultString(ObjectInstance* inst);
 std::string sysTimeSpanDefaultString(ObjectInstance* inst);
 std::string sysQuantityDefaultString(ObjectInstance* inst);

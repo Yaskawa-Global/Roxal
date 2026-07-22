@@ -1864,6 +1864,107 @@ var output = model.predict(input)
 | `to_tensor(mean=nil, std=nil)` | Return `[1, C, H, W]` float32 tensor for neural network input. Optional `mean`/`std` lists apply per-channel normalization. |
 
 
+## Advanced: Audio (media)
+
+The `media` module also provides audio: decoding files to tensors, mixed low-latency playback, WAV encoding, and microphone capture.
+
+At the first use of `play()` (or `record()`) the platform backend library (ALSA/PulseAudio/...) is loaded dynamically. A machine with no audio support runs everything except actual playback/capture.
+
+### Loading and Playing Clips
+
+```roxal
+import media
+
+var clip = media.Audio("alert.wav")   // .wav, .mp3 or .flac
+print(clip.frames())      // number of sample frames
+print(clip.channels())    // 1 = mono, 2 = stereo
+print(clip.rate)          // sample rate in Hz (from the file)
+print(clip.duration())    // seconds
+
+clip.play()               // fire-and-forget: mixes with anything already playing
+
+var h = clip.play(volume=0.8, pan=-0.3)  // returns a Playback handle
+h.set_volume(0.5)         // live adjustment of this instance
+print(h.playing())        // true while audible
+h.stop()
+
+var music = media.Audio("theme.mp3")
+var m = music.play(loop=true)            // repeats until stopped
+```
+
+Decoding always produces a float32 tensor of shape `[frames, channels]` in `clip.data`. Each `play()` starts an *independent* mixed instance — overlapping plays of the same clip just work, and losing the handle is fine (the instance plays to completion on its own). Playback raises if no output device is available; guard optional sound with `media.audio_available()`, which probes without raising:
+
+```roxal
+if media.audio_available():
+  media.Audio("beep.wav").play()
+```
+
+### Creating Clips from Tensors
+
+A clip can be built from raw PCM samples in a tensor — uint8 (unsigned 8-bit, 128 = silence), int16, or float32 (-1.0 to 1.0), shaped `[frames, channels]` or just `[frames]` for mono. `rate=` is required:
+
+```roxal
+import media
+import math
+
+// Synthesize a 440 Hz tone, one second at 22050 Hz
+var rate = 22050
+var samples = []
+for i in range(0:rate):
+  samples.append(0.3 * math.sin(2.0 * math.pi * 440.0 * (i * 1.0) / rate))
+
+var tone = media.Audio(source=tensor(shape=[rate], data=samples, dtype='float32'), rate=rate)
+tone.play()
+```
+
+This is also the path for game-style sound banks (e.g. PCM lumps from a WAD file: `media.Audio(source=lump_tensor, rate=11025)`).
+
+### Writing and Recording
+
+```roxal
+clip.write("out.wav")     // WAV only; sample format follows the tensor dtype
+
+// Record 3 seconds from the default microphone. Blocks the calling thread
+// while recording (call it from an actor method to record in the background).
+var rec = media.record(3s, rate=16000, channels=1)   // duration: time quantity or seconds
+print(rec.duration())     // 3.0 — float32 [frames, channels] tensor, e.g. for speech models
+```
+
+Because clips are tensors, recorded or decoded audio feeds directly into `ai.nn` model pipelines and general tensor processing.
+
+### API Reference
+
+#### Audio Type
+
+| Method | Description |
+|--------|-------------|
+| `Audio(path='', source=nil, rate=0)` | Create from a file (`.wav`/`.mp3`/`.flac` — decodes to float32 `[frames, channels]`, rate read from the file) or from a PCM tensor (`source` uint8/int16/float32 with `rate` in Hz required). |
+| `data` | The sample tensor, shape `[frames, channels]`. |
+| `rate` | Sample rate in Hz. |
+| `frames()` | Number of sample frames. |
+| `channels()` | Number of channels (1=mono, 2=stereo). |
+| `duration()` | Clip length in seconds. |
+| `write(path)` | Encode to WAV; sample format matches the tensor dtype (uint8/int16/float32). |
+| `play(volume=1.0, pan=0.0, loop=false)` | Start an independent mixed instance and return a `Playback` handle. `pan` is -1 (left) to 1 (right). Opens the audio device on first use; raises if none. |
+
+#### Playback Type
+
+| Method | Description |
+|--------|-------------|
+| `stop()` | Stop this instance immediately (no-op if already finished). |
+| `playing()` | True while this instance is still audibly playing. |
+| `set_volume(volume)` | Adjust this instance's volume live (1.0 = as started). |
+
+#### Module Functions
+
+| Function | Description |
+|--------|-------------|
+| `audio_available()` | True if an audio output device can be opened. Never raises. |
+| `record(duration, rate=16000, channels=1)` | Record from the default capture device; `duration` is a time quantity (`3s`, `500ms`) or a number of seconds. Blocks the calling thread (not other actors); returns a float32 `Audio` clip. Raises if no capture device. |
+
+See `examples/hello_audio.rox` for a runnable example (speech playback plus tensor-synthesized chime).
+
+
 ## Advanced: Neural Network Inference (ai.nn)
 
 When Roxal is built with `ROXAL_ENABLE_AI_NN=ON` (which implies `ROXAL_ENABLE_ONNX=ON`), the `ai.nn` module provides neural network inference via ONNX Runtime. Models are loaded from `.onnx` files and can run on CPU or GPU (CUDA). Inference is asynchronous — `predict()` returns a future that auto-resolves when results are accessed. Model outputs are tensors that integrate directly with Roxal's signal/dataflow engine, enabling reactive model pipelines.

@@ -87,3 +87,91 @@ type Image object:
   func to_tensor(mean=nil, std=nil):
     """Return float32 tensor [1, C, H, W] for neural network input.
        Converts uint8 to float32 (0.0-1.0). Optional mean/std lists apply per-channel ImageNet-style normalization."""
+
+
+// ============================================================
+// Audio
+//
+// Audio mirrors Image: one value-like type carrying the sample data (a tensor)
+// and its operations. Decoding and write() need no audio hardware or libraries;
+// playback opens the output device lazily on the first play() — the backend
+// libraries (ALSA/PulseAudio/...) are loaded dynamically at that moment, so a
+// machine with no audio support runs everything except actual playback/capture.
+// Set ROXAL_AUDIO_BACKEND=null to force a hardware-free backend (tests, CI).
+// ============================================================
+
+@builtin
+type Playback object:
+  """A handle to one playing instance started by Audio.play(). Losing the handle
+  is fine — the instance plays to completion on its own (fire-and-forget)."""
+
+  var _id:int   // engine instance id (0 = detached)
+
+  @builtin
+  proc stop():
+    """Stop this instance immediately. A no-op if it already finished."""
+
+  @builtin
+  func playing() -> bool:
+    """True while this instance is still audibly playing (false once finished,
+    stopped, or after VM shutdown)."""
+
+  @builtin
+  proc set_volume(volume:real):
+    """Adjust this instance's volume live (1.0 = as started, 0.0 = silent)."""
+
+
+@builtin
+type Audio object:
+  """An audio clip: sample data as a tensor plus its sample rate. Decoded from a
+  file (WAV/MP3/FLAC) or built from a PCM tensor. Each play() call starts an
+  independent mixed instance, so overlapping plays of the same clip just work."""
+
+  var data        // tensor [frames, channels]; float32 from decode, or as supplied
+  var rate:int    // sample rate in Hz
+
+  @builtin
+  proc init(path:string='', source=nil, rate:int=0):
+    """Create from a file (`path`: .wav/.mp3/.flac — decodes to float32
+    [frames, channels], rate read from the file) or from a PCM tensor (`source`:
+    uint8, int16 or float32, shape [frames, channels] or [frames] for mono, with
+    `rate` in Hz required). Provide either path or source, not both."""
+
+  @builtin
+  func frames() -> int:
+    """Number of sample frames."""
+
+  @builtin
+  func channels() -> int:
+    """Number of channels (1 = mono, 2 = stereo)."""
+
+  @builtin
+  func duration() -> real:
+    """Clip length in seconds (frames / rate)."""
+
+  @builtin
+  proc write(path:string):
+    """Encode to a WAV file, in the sample format matching the tensor dtype
+    (uint8/int16/float32). Needs no audio hardware."""
+
+  @builtin
+  func play(volume=1.0, pan=0.0, loop=false):
+    """Start playing this clip and return a Playback handle for the new instance.
+    Mixes with anything already playing; returns immediately. `volume` 0..1 (or
+    above to amplify), `pan` -1 (left) .. 0 .. 1 (right), `loop` to repeat until
+    stopped. Opens the audio device on first use — raises if none is available
+    (see media.audio_available)."""
+
+
+@builtin
+func audio_available() -> bool:
+  """True if an audio output device can be (or already was) opened. Never raises —
+  use it to guard optional sound on machines without audio support."""
+
+@builtin
+func record(duration, rate:int=16000, channels:int=1):
+  """Record from the default capture device (microphone) for `duration` — a time
+  quantity (e.g. 3s, 500ms) or a number of seconds — and return the result as a
+  float32 Audio clip. Blocks the calling thread while recording (other actors
+  keep running; call it from an actor to record in the background). Raises if no
+  capture device is available."""

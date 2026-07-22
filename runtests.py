@@ -171,6 +171,7 @@ tests = [
     'break_simple', 'continue_simple', 'break_while', 'continue_for_advance',
     'break_nested', 'break_with_locals', 'break_in_match',
     'break_outside_loop', 'continue_outside_loop',
+    'builtin_stub_func', 'builtin_stub_method',  # unlinked @builtin raises, never silently no-ops
     'jump_backward_retry', 'jump_nested_loop_exit', 'jump_forward_out_of_if',
     'jump_if_clause', 'jump_locals_cleanup', 'typededucer_jump_label',
     'jump_undefined', 'jump_into_block', 'jump_skips_var', 'jump_cross_try',
@@ -333,7 +334,11 @@ xml_tests = [
 socket_tests = ['socket_basic']
 nn_tests = ['nn_mnist', 'nn_signal', 'nn_chain', 'nn_signal_chain', 'nn_dynamic', 'nn_multi_io', 'nn_async', 'nn_tokenizer']
 nn_lfs_tests = ['nn_dfine']  # require LFS model files (only run with --all)
-media_tests = ['media_read_write', 'media_manipulate', 'media_convert']
+media_tests = ['media_read_write', 'media_manipulate', 'media_convert',
+               # audio: run with ROXAL_AUDIO_BACKEND=null (no hardware needed)
+               'media_audio_basic', 'media_audio_play', 'media_audio_record',
+               'media_audio_err_none', 'media_audio_err_rate',
+               'media_audio_err_dtype', 'media_audio_err_format']
 qt_tests = ['qt_lifecycle', 'qt_load_file',           # P0: lifecycle
             'qt_properties', 'qt_property_error', 'qt_convert',  # P1: handles/props/methods/convert
             'qt_signal_callback', 'qt_signal_event', 'qt_signal_args',  # P2: signals -> callbacks/events
@@ -872,6 +877,10 @@ try:
             # Qt GUI tests run headless via the offscreen platform plugin.
             test_env = dict(env_base)
             test_env['QT_QPA_PLATFORM'] = 'offscreen'
+        if test.startswith('media_audio'):
+            # Audio tests run on miniaudio's hardware-free null backend.
+            test_env = dict(test_env)
+            test_env['ROXAL_AUDIO_BACKEND'] = 'null'
         if test in ('event_actor_ref4',):
             # Forces gc() while an actor worker is mid-handler: correctness
             # of the worker's C++-stack-held references depends on

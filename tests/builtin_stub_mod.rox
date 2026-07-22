@@ -1,0 +1,11 @@
+// Support module for the builtin_stub_* tests: builtins declared with no
+// native implementation anywhere — calling them must raise, not no-op.
+@builtin
+func phantom():
+  """Unlinked module-level builtin."""
+
+@builtin
+type Phantom object:
+  @builtin
+  func poke():
+    """Unlinked builtin method."""

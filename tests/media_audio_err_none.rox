@@ -1,0 +1,3 @@
+import media
+
+var a = media.Audio()

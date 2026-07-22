@@ -929,6 +929,69 @@ mis-encoded.  Not yet supported -- candidates for later enhancement:
   currently assume sequential ids (matches the previous behaviour).
 - **`@external`** (pointer-stored members) -- `DDS_OP_FLAG_EXT` storage.
 
+## Media Module Audio (ModuleMediaAudio)
+
+`media.Audio` / `Playback` / `audio_available()` / `record()` are implemented in
+`compiler/ModuleMediaAudio.cpp` (methods declared on `ModuleMedia`, registered
+from its `registerBuiltins`).  The backend is a vendored copy of miniaudio
+(0.11.21) at `compiler/miniaudio.h` -- flat in `compiler/` like linenoise, NOT
+in `deps/` (which is reserved for install-deps.sh-provisioned packages) -- with
+the ~90k-line implementation compiled once in `compiler/miniaudio_impl.cpp`
+(`MINIAUDIO_IMPLEMENTATION`).
+
+**No link-time audio dependency.**  miniaudio's decoders (WAV/MP3/FLAC) and WAV
+encoder are pure in-header code; platform device backends (libasound, libpulse,
+JACK, ...) are `dlopen`'d only at device init, which is deferred to the first
+`play()` / `record()` / `audio_available()`.  Do not define
+`MA_NO_RUNTIME_LINKING` -- the runtime dlopen is the point.  The build adds only
+the two source files (dl/pthread were already linked); `ldd` on the binary shows
+no audio libraries.
+
+**Engine lifecycle.**  One lazy `AudioEngine` singleton (mutex-guarded) holds
+the `ma_engine`.  Init failure is cached for the process (`audio_available()`
+reports it without raising; `play()`/`record()` raise).
+`ROXAL_AUDIO_BACKEND=null` selects miniaudio's null backend via a private
+`ma_context` -- a real device loop that consumes samples in real time with no
+hardware, used by the `media_audio_*` tests (runtests.py injects the env var)
+and usable for headless soak runs.  Teardown runs in
+`ModuleMedia::onModuleUnloading` (VM shutdown): stop + uninit all instances,
+`ma_engine_uninit`; idempotent, with the singleton's destructor as an atexit
+backstop.  A live looping sound therefore cannot hang exit.
+
+**Playback and the GC.**  `play()` converts the clip tensor to interleaved f32
+on the VM thread and **copies it into an engine-owned buffer**
+(`ma_audio_buffer` + `ma_sound`, `MA_SOUND_FLAG_NO_SPATIALIZATION`).  The audio
+thread consequently never reads GC-managed tensor memory, so playback needs no
+GC rooting and is immune to scripts mutating/reallocating the tensor
+mid-playback; the copy is ~KBs for SFX and a one-time cost for music.  (If
+zero-copy is ever wanted: a `TracedMember` registry pinning tensors, or
+file-streaming for music -- deliberately not done.)  Instances live in a
+mutex-guarded id map; `Playback` holds only the id (stale id = no-op), so a
+dropped handle is fire-and-forget.  Finished instances are reaped
+opportunistically (any audio builtin call, plus shutdown) by polling
+`ma_sound_is_playing` -- a non-playing sound is no longer read by the mixer, and
+`ma_sound_uninit` synchronizes detachment, so freeing its PCM is safe.
+`stop`/`set_volume`/`playing` use miniaudio's thread-safe sound controls.
+
+**record().**  Opens a `ma_device_type_capture` device (sharing the engine's
+context so the null backend applies).  The audio-thread callback writes only
+into a preallocated float vector through an atomic cursor -- no locks, no GC
+state -- and the calling thread's wait is bracketed in
+`SimpleMarkSweepGC::GCSafeBlockScope`, so a stop-the-world collection proceeds
+while the thread is blocked.  Blocking is per-thread, not per-VM: other actor
+threads keep running, so a script records in the background by calling
+`media.record` inside an actor method (the caller gets a future).  The
+`duration` argument accepts a number of seconds or a time-dimensioned
+`sys.quantity` (`3s`, `200ms`), converted via `sysTimeQuantitySeconds()`
+exported from ModuleSys (same contract as `sys.wait`'s `duration`).
+
+**Unlinked @builtin stubs raise.**  Related module-general fix in `VM::call`:
+a function carrying the `@builtin` annotation whose `builtinInfo` was never
+linked raises (naming the module, suggesting `--recompile`) instead of silently
+running its empty stub body.  This covers both a module compiled out of the
+build and a stale cached module `.roc`, and costs the hot path only an
+`annotations.empty()` check.  Tests: `builtin_stub_func` / `builtin_stub_method`.
+
 ## Serialization
 
 Values are persisted using the `Value::write` and `Value::read` helpers, which

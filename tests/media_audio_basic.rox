@@ -1,0 +1,42 @@
+import media
+
+// Decode a mono s16 WAV fixture (sample[i] = i*64 -> float32 i/512)
+var clip = media.Audio('../tests/test_audio.wav')
+print(clip.frames())
+print(clip.channels())
+print(clip.rate)
+print(clip.duration())
+print(clip.data[0, 0] == 0.0)
+print(clip.data[64, 0] == 0.125)
+
+// Decode a stereo fixture (L = i*100, R = -i*100)
+var st = media.Audio('../tests/test_audio_stereo.wav')
+print(st.frames())
+print(st.channels())
+print(st.data[10, 0] > 0.0)
+print(st.data[10, 1] < 0.0)
+
+// Tensor source: 1-D tensor is accepted as mono
+var mono = media.Audio(source=tensor(shape=[100], dtype='uint8'), rate=4000)
+print(mono.frames())
+print(mono.channels())
+print(mono.duration())
+
+// int16 write -> read roundtrip (s16 samples survive exactly)
+var s16 = media.Audio(source=tensor(shape=[4, 1], data=[0, 8192, -16384, 32767], dtype='int16'), rate=8000)
+s16.write('media_audio_s16.wav')
+var s16back = media.Audio('media_audio_s16.wav')
+print(s16back.frames())
+print(s16back.rate)
+print(s16back.data[1, 0] == 0.25)
+print(s16back.data[2, 0] == -0.5)
+
+// float32 write -> read roundtrip (f32 -> f32 is lossless)
+var f32 = media.Audio(source=tensor(shape=[3, 1], data=[0.5, -0.25, 0.125], dtype='float32'), rate=16000)
+f32.write('media_audio_f32.wav')
+var f32back = media.Audio('media_audio_f32.wav')
+print(f32back.frames())
+print(f32back.rate)
+print(f32back.data[0, 0] == 0.5)
+print(f32back.data[1, 0] == -0.25)
+print(f32back.data[2, 0] == 0.125)

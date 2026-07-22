@@ -1,0 +1,34 @@
+import media
+
+print(media.audio_available())
+
+// 0.1s int16 mono square-ish wave at 8000 Hz
+var samples = []
+for i in range(0..799):
+  if (i / 9) rem 2 == 0:
+    samples.append(8000)
+  else:
+    samples.append(-8000)
+var clip = media.Audio(source=tensor(shape=[800], data=samples, dtype='int16'), rate=8000)
+
+// fire-and-forget instance + handle with overlapping second instance
+var h = clip.play()
+print(h.playing())
+var h2 = clip.play(volume=0.5, pan=-0.5)
+h2.set_volume(0.25)
+wait(ms=300)
+print(h.playing())
+print(h2.playing())
+
+// looping instance keeps playing until stopped; stop is idempotent
+var h3 = clip.play(loop=true)
+wait(ms=50)
+print(h3.playing())
+h3.stop()
+print(h3.playing())
+h3.stop()
+
+// exiting with a live looping instance must shut down cleanly (no hang)
+var h4 = clip.play(loop=true)
+print(h4.playing())
+print("done")

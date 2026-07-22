@@ -1,0 +1,4 @@
+import builtin_stub_mod
+
+var p = builtin_stub_mod.Phantom()
+p.poke()
