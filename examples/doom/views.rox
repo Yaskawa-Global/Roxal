@@ -1,0 +1,56 @@
+# Render a fixed list of viewpoints to raw RGB dumps (leak triage).
+#   ./build-lto/roxal --recompile examples/doom/views.rox
+
+import fileio
+import math.*
+import wad.*
+import mapdata.*
+import render.*
+
+var w = Wad('examples/doom/freedoom1.wad')
+setup(w, 'E1M1')
+var m = map()
+set_entities([])
+
+var A = nearest_color(255, 0, 255)
+var B = nearest_color(0, 255, 0)
+var PI2 = 3.14159265358979
+var outdir = '/tmp/claude-1000/-home-jungd-dev-roxal-github/f2df13e1-e7ea-42b5-b5f7-995a1dc2da7a/scratchpad/leaks/'
+
+proc save_raw(path:string):
+  var b = frame_rgb().to_bytes()
+  if len(b) != 192000:
+    print('BUG: to_bytes returned ' + string(len(b)) + ' bytes')
+  for attempt in range(..<5):
+    var f = fileio.open(path, write=true, format='binary')
+    fileio.write(f, b)
+    fileio.close(f)
+    var back = fileio.read_file(path, format='binary')
+    if len(back) == len(b):
+      return
+    print('WRITE RACE: attempt ' + string(attempt) + ' wrote ' + string(len(back)) + ' of ' + string(len(b)) + ' bytes, retrying')
+
+# [x, y, angdeg, tag]
+var views = [
+  [-576.0, 256.0, 540.0, 'full1'],
+  [-640.0, 272.0, 270.0, 'big270'],
+  [736.0, 1056.0, 360.0, 'mid736'],
+  [608.0, 992.0, 360.0, 'mid608'],
+  [832.0, 640.0, 450.0, 'mid832'],
+  [2680.0, 980.0, 540.0, 'mid2680'],
+  [1344.0, 1344.0, 360.0, 'mid1344'],
+  [1696.0, 1344.0, 540.0, 'mid1696'],
+  [704.0, 288.0, 225.0, 'mid704'],
+]
+
+for v in views:
+  var vz = m.sectors[sector_at(v[0], v[1])].floorh + 41.0
+  set_clear(A, B)
+  render_view(v[0], v[1], v[2] * PI2 / 180.0, vz)
+  save_raw(outdir + v[3] + '_mark.raw')
+  set_clear(nearest_color(44, 44, 52), nearest_color(72, 62, 52))
+  render_view(v[0], v[1], v[2] * PI2 / 180.0, vz)
+  save_raw(outdir + v[3] + '_norm.raw')
+  print(v[3] + ' done, viewz ' + string(vz))
+
+print('done')

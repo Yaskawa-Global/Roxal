@@ -1,0 +1,32 @@
+# Render benchmark over a few representative E1M1 views (static things as
+# sprites, like the game's masked pass).
+#   ./build-lto/roxal --recompile examples/doom/rbench.rox
+
+import math.*
+import wad.*
+import mapdata.*
+import render.*
+
+var w = Wad('examples/doom/freedoom1.wad')
+setup(w, 'E1M1')
+var m = map()
+
+var PI2 = 3.14159265358979
+var views = [
+  ['spawn', -416.0, 256.0, 0.0],
+  ['courtyard', 736.0, 1056.0, 0.0],
+  ['canyon', 1344.0, 1344.0, 0.0],
+  ['zigzag', -640.0, 272.0, 270.0],
+]
+
+var N = 15
+for v in views:
+  var vz = m.sectors[sector_at(v[1], v[2])].floorh + 41.0
+  var ang = v[3] * PI2 / 180.0
+  render_view(v[1], v[2], ang, vz)   # warm caches
+  var t0 = Time.steady_now()
+  for i in range(..<N):
+    render_view(v[1], v[2], ang, vz)
+  var ms = Time.steady_now().since(t0).total_millis() / N
+  var s = stats()
+  print(v[0] + ': ' + string(int(ms * 10.0) / 10.0) + ' ms/frame (segs ' + string(s[0]) + ', cols ' + string(s[1]) + ', spans ' + string(s[6]) + ', planes ' + string(s[3]) + ', sprites ' + string(s[5]) + ')')

@@ -1,0 +1,224 @@
+# Reproduce the "walk forward from spawn" death: simulate the player walking
+# W for ~2.5s then standing, logging every damage event with attacker info.
+#   ./build-lto/roxal --recompile examples/doom/walksim.rox
+
+import fileio
+import math.*
+import wad.*
+import mapdata.*
+import render.*
+import game.*
+
+var w = Wad('examples/doom/freedoom1.wad')
+setup(w, 'E1M1')
+var m = map()
+
+var px = 0.0
+var py = 0.0
+var pang = 0.0
+for t in m.things:
+  if t.kind == 1:
+    px = t.x
+    py = t.y
+    pang = t.angle * 3.14159265358979 / 180.0
+    break
+
+func line_blocks(l, x:real, y:real, radius:real, curfloor:int) -> bool:
+  var x1 = m.vx[l.v1]
+  var y1 = m.vy[l.v1]
+  var x2 = m.vx[l.v2]
+  var y2 = m.vy[l.v2]
+  var lo = x1
+  var hi = x2
+  if x2 < x1:
+    lo = x2
+    hi = x1
+  if x < lo - radius or x > hi + radius:
+    return false
+  lo = y1
+  hi = y2
+  if y2 < y1:
+    lo = y2
+    hi = y1
+  if y < lo - radius or y > hi + radius:
+    return false
+  var dx = x2 - x1
+  var dy = y2 - y1
+  var lensq = dx * dx + dy * dy
+  var t = 0.0
+  if lensq > 0.0:
+    t = ((x - x1) * dx + (y - y1) * dy) / lensq
+    if t < 0.0:
+      t = 0.0
+    if t > 1.0:
+      t = 1.0
+  var cx = x1 + dx * t
+  var cy = y1 + dy * t
+  var distsq = (x - cx) * (x - cx) + (y - cy) * (y - cy)
+  if distsq > radius * radius:
+    return false
+  if l.side1 < 0 or (l.flags & 1) != 0:
+    return true
+  var fs = m.sectors[m.sides[l.side0].sector]
+  var bs = m.sectors[m.sides[l.side1].sector]
+  var opentop = fs.ceilh
+  if bs.ceilh < opentop:
+    opentop = bs.ceilh
+  var openbot = fs.floorh
+  if bs.floorh > openbot:
+    openbot = bs.floorh
+  if opentop - openbot < 56:
+    return true
+  if openbot - curfloor > 24:
+    return true
+  return false
+
+func hits_wall(x:real, y:real, radius:real) -> bool:
+  var curfloor = m.sectors[sector_at(x, y)].floorh
+  for l in m.lines:
+    if line_blocks(l, x, y, radius, curfloor):
+      return true
+  return false
+
+func wall_dist(x:real, y:real, ang:real) -> real:
+  var ca = cos(ang)
+  var sa = sin(ang)
+  var best = 2048.0
+  for l in m.lines:
+    var blocking = false
+    if l.side1 < 0 or (l.flags & 1) != 0:
+      blocking = true
+    else:
+      var fs = m.sectors[m.sides[l.side0].sector]
+      var bs = m.sectors[m.sides[l.side1].sector]
+      var opentop = fs.ceilh
+      if bs.ceilh < opentop:
+        opentop = bs.ceilh
+      var openbot = fs.floorh
+      if bs.floorh > openbot:
+        openbot = bs.floorh
+      if opentop - openbot < 16:
+        blocking = true
+    if not blocking:
+      continue
+    var x1 = m.vx[l.v1]
+    var y1 = m.vy[l.v1]
+    var ldx = m.vx[l.v2] - x1
+    var ldy = m.vy[l.v2] - y1
+    var denom = ca * ldy - sa * ldx
+    if denom < 0.0001 and denom > -0.0001:
+      continue
+    var t = ((x1 - x) * ldy - (y1 - y) * ldx) / denom
+    var u = 0.0
+    if ldx > 0.5 or ldx < -0.5:
+      u = (x + ca * t - x1) / ldx
+    else:
+      if ldy > 0.5 or ldy < -0.5:
+        u = (y + sa * t - y1) / ldy
+      else:
+        continue
+    if t > 0.0 and t < best and u >= 0.0 and u <= 1.0:
+      best = t
+  return best
+
+# 3D P_CheckSight-lite (full scan; see doom.rox for the blockmap version)
+func sight_clear(x:real, y:real, eyez:real) -> bool:
+  var dx = px - x
+  var dy = py - y
+  var d = sqrt(dx * dx + dy * dy)
+  if d < 1.0:
+    return true
+  var ca = dx / d
+  var sa = dy / d
+  var pz = m.sectors[sector_at(px, py)].floorh * 1.0
+  var slo = (pz - eyez) / d
+  var shi = (pz + 56.0 - eyez) / d
+  for l in m.lines:
+    var x1 = m.vx[l.v1]
+    var y1 = m.vy[l.v1]
+    var ldx = m.vx[l.v2] - x1
+    var ldy = m.vy[l.v2] - y1
+    var denom = ca * ldy - sa * ldx
+    if denom < 0.0001 and denom > -0.0001:
+      continue
+    var t = ((x1 - x) * ldy - (y1 - y) * ldx) / denom
+    if t <= 0.0 or t >= d - 1.0:
+      continue
+    var u = 0.0
+    if ldx > 0.5 or ldx < -0.5:
+      u = (x + ca * t - x1) / ldx
+    else:
+      if ldy > 0.5 or ldy < -0.5:
+        u = (y + sa * t - y1) / ldy
+      else:
+        continue
+    if u < 0.0 or u > 1.0:
+      continue
+    if l.side1 < 0:
+      return false
+    var fs = m.sectors[m.sides[l.side0].sector]
+    var bs = m.sectors[m.sides[l.side1].sector]
+    var opentop = fs.ceilh * 1.0
+    if bs.ceilh < opentop:
+      opentop = bs.ceilh * 1.0
+    var openbot = fs.floorh * 1.0
+    if bs.floorh > openbot:
+      openbot = bs.floorh * 1.0
+    var lo = (openbot - eyez) / t
+    var hi = (opentop - eyez) / t
+    if lo > slo:
+      slo = lo
+    if hi < shi:
+      shi = hi
+    if slo >= shi:
+      return false
+  return true
+
+func blocked_at(x:real, y:real) -> bool:
+  if hits_wall(x, y, 16.0):
+    return true
+  if blocked_by_mobj(x, y):
+    return true
+  return false
+
+func floorz_at(x, y) -> real:
+  return m.sectors[sector_at(x, y)].floorh * 1.0
+
+ginit(m)
+set_line_blocked(hits_wall)
+set_wall_dist(wall_dist)
+set_sight(sight_clear)
+spawn_things(floorz_at)
+
+var PI2 = 3.14159265358979
+var STEP = 250.0 / 35.0
+var ca = cos(pang)
+var sa = sin(pang)
+
+var hp_before = 100
+for i in range(..<300):
+  # walk forward for the first 87 tics (2.5 s), like holding W
+  if i < 87 and not player_dead():
+    var nx = px + ca * STEP
+    var ny = py + sa * STEP
+    if not blocked_at(nx, py):
+      px = nx
+    if not blocked_at(px, ny):
+      py = ny
+  game_tic(px, py)
+  var evs = take_dmg_log()
+  for e in evs:
+    var dx = e[0] - px
+    var dy = e[1] - py
+    var d = sqrt(dx * dx + dy * dy)
+    var bear = (atan2(dy, dx) - pang) * 180.0 / PI2
+    while bear > 180.0:
+      bear = bear - 360.0
+    while bear < -180.0:
+      bear = bear + 360.0
+    print('tic ' + string(i) + ' pos (' + string(int(px)) + ',' + string(int(py)) + ') ' + string(e[3]) + ' dmg from ' + MI_NAMES[e[2]] + ' dist ' + string(int(d)) + ' bearing ' + string(int(bear)) + ' -> health ' + string(player_health()))
+  if player_dead():
+    print('died at tic ' + string(i) + ' pos (' + string(int(px)) + ',' + string(int(py)) + ')')
+    break
+
+print('end health ' + string(player_health()) + ' pos (' + string(int(px)) + ',' + string(int(py)) + ')')

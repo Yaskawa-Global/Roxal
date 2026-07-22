@@ -11,6 +11,16 @@ import wad.*
 func playpal(w):
   return tensor(shape=[256, 3], dtype="uint8", data=w.lump_named('PLAYPAL')[0:768])
 
+# all PLAYPAL palettes -> list of [256, 3] uint8 RGB (0 normal, 1-8 damage
+# reds, 9-12 pickup golds, 13 radiation green)
+func playpals(w) -> list:
+  var b = w.lump_named('PLAYPAL')
+  var n = int(len(b) / 768)
+  var out = []
+  for i in range(..<n):
+    out.append(tensor(shape=[256, 3], dtype="uint8", data=b[i*768:(i+1)*768]))
+  return out
+
 # light-diminishing tables -> [34, 256] uint8 (row = light level, 32/33 special)
 func colormap(w):
   return tensor(shape=[34, 256], dtype="uint8", data=w.lump_named('COLORMAP'))

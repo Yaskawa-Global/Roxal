@@ -221,7 +221,20 @@ proc a_look(mo):
   # proximity — otherwise a whole room activates through walls and shoots
   # you from off-screen. clear_shot() is the same wall raycast the hitscan
   # attacks use; the distance filter keeps the scan off far idle monsters.
-  if dist_to_player(mo) < 1400.0 and clear_shot(mo):
+  var d = dist_to_player(mo)
+  if d >= 1400.0:
+    return
+  # vanilla P_LookForPlayers: targets behind the monster's back are only
+  # noticed at melee range
+  if d > 64.0:
+    var rel = atan2(pl_y - mo.y, pl_x - mo.x) - mo.angle
+    while rel > GPI:
+      rel = rel - 2.0 * GPI
+    while rel < 0.0 - GPI:
+      rel = rel + 2.0 * GPI
+    if rel > GPI / 2.0 or rel < 0.0 - GPI / 2.0:
+      return
+  if clear_shot(mo):
     mo.chase_player = true
     set_state(mo, MI_SEE[mo.mtype])
 
@@ -261,42 +274,60 @@ proc a_chase(mo):
       if not mobj_blocked(mo, mo.x, mo.y + sa * sp):
         mo.y = mo.y + sa * sp
 
-# hitscan attacks are blocked by walls (cheap LOS: only checked when firing)
+var sight_fn = nil   # set by the shell: (x, y, eyez) -> bool (3D P_CheckSight)
+
+proc set_sight(f):
+  sight_fn = f
+
+# monster line of sight, used for waking and for gating hitscan attacks.
+# 3D when the shell provides it (window sills and height steps block, like
+# vanilla P_CheckSight); falls back to the 2D wall raycast otherwise.
 func clear_shot(mo) -> bool:
+  if sight_fn != nil:
+    return sight_fn(mo.x, mo.y, mo.z + MI_HEIGHT[mo.mtype] * 0.75)
   var d = dist_to_player(mo)
   return wall_dist_fn(mo.x, mo.y, atan2(pl_y - mo.y, pl_x - mo.x)) > d - 4.0
+
+# hitscan hit chance (out of 256) falls off with range, approximating
+# vanilla's fixed bullet spread (~±5.6 deg) against the player's 16-unit
+# radius: certain-ish up close, mostly misses past ~600 units
+func hit_chance(mo, base:int) -> int:
+  var d = dist_to_player(mo)
+  if d <= 250.0:
+    return base
+  return int(base * 250.0 / d)
 
 proc a_posattack(mo):
   a_facetarget(mo)
   if not clear_shot(mo):
     return
-  if p_random() < 160:
-    damage_player(((p_random() rem 5) + 1) * 3)
+  if p_random() < hit_chance(mo, 160):
+    damage_player(((p_random() rem 5) + 1) * 3, attacker=mo)
 
 proc a_sposattack(mo):
   a_facetarget(mo)
   if not clear_shot(mo):
     return
   for i in range(..<3):
-    if p_random() < 140:
-      damage_player(((p_random() rem 5) + 1) * 3)
+    if p_random() < hit_chance(mo, 140):
+      damage_player(((p_random() rem 5) + 1) * 3, attacker=mo)
 
 proc a_sargattack(mo):
   a_facetarget(mo)
   if dist_to_player(mo) < mo.radius + 60.0:
-    damage_player(((p_random() rem 10) + 1) * 4)
+    damage_player(((p_random() rem 10) + 1) * 4, attacker=mo)
 
 proc a_troopattack(mo):
   a_facetarget(mo)
   if dist_to_player(mo) < mo.radius + 60.0:
-    damage_player(((p_random() rem 8) + 1) * 3)
+    damage_player(((p_random() rem 8) + 1) * 3, attacker=mo)
     return
   spawn_missile(mo, mt_troopshot)
 
 proc a_headattack(mo):
   a_facetarget(mo)
   if dist_to_player(mo) < mo.radius + 60.0:
-    damage_player(((p_random() rem 6) + 1) * 10)
+    damage_player(((p_random() rem 6) + 1) * 10, attacker=mo)
     return
   spawn_missile(mo, mt_headshot)
 
@@ -327,7 +358,7 @@ proc missile_move(mo):
   var dy = pl_y - ny
   var rr = mo.radius + 20.0
   if dx * dx + dy * dy < rr * rr and not pl_dead:
-    damage_player(((p_random() rem 8) + 1) * MI_DAMAGE[mo.mtype])
+    damage_player(((p_random() rem 8) + 1) * MI_DAMAGE[mo.mtype], attacker=mo)
     explode_missile(mo)
     return
   # hit a wall?
@@ -357,7 +388,7 @@ proc a_explode(mo):
   var dyp = pl_y - mo.y
   var dp = sqrt(dxp * dxp + dyp * dyp)
   if dp < 128.0:
-    damage_player(int(128.0 - dp))
+    damage_player(int(128.0 - dp), attacker=mo)
 
 proc damage_mobj(mo, dmg:int):
   if (mo.flags & MF_SHOOTABLE) == 0 or mo.removed:
@@ -374,14 +405,38 @@ proc damage_mobj(mo, dmg:int):
   if p_random() < MI_PAINCH[mo.mtype]:
     set_state(mo, MI_PAIN[mo.mtype])
 
-proc damage_player(dmg:int):
+var dmg_log = []   # [x, y, mtype, dmg] per damage event (diagnostics)
+var dmg_count = 0  # red-flash intensity (st_stuff damagecount)
+
+proc damage_player(dmg:int, attacker=nil):
   if pl_dead:
     return
   pl_health = pl_health - dmg
+  dmg_count = dmg_count + dmg
+  if dmg_count > 100:
+    dmg_count = 100
+  if attacker != nil:
+    dmg_log.append([attacker.x, attacker.y, attacker.mtype, dmg])
   if pl_health <= 0:
     pl_health = 0
     pl_dead = true
     print('You died.')
+
+# PLAYPAL index for this tic's screen tint (ST_doPaletteStuff)
+func flash_palette() -> int:
+  if dmg_count == 0:
+    return 0
+  var p = int((dmg_count + 7) / 8)
+  if p > 8:
+    p = 8
+  return p
+
+# drain the damage-event log (diagnostics; importers see module vars as
+# import-time snapshots, so this must be a function)
+func take_dmg_log() -> list:
+  var out = dmg_log
+  dmg_log = []
+  return out
 
 # --- player fire: pistol hitscan with nearest-in-cone autoaim ---
 proc player_fire(ang:real):
@@ -516,6 +571,8 @@ proc game_tic(px:real, py:real):
   pl_y = py
   if flash_tics > 0:
     flash_tics = flash_tics - 1
+  if dmg_count > 0:
+    dmg_count = dmg_count - 1
   doors_tic()
   solid_mobjs = []
   for mo in mobjs:

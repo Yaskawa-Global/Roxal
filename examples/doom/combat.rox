@@ -1,0 +1,192 @@
+# Headless combat-visibility diagnostic: simulate the game with a stationary
+# player and log, for every damage event, where the attacker was relative to
+# the view — distance, bearing, and whether the renderer would draw it.
+#
+#   ./build-lto/roxal --recompile examples/doom/combat.rox
+
+import fileio
+import math.*
+import wad.*
+import mapdata.*
+import render.*
+import game.*
+
+var w = Wad('examples/doom/freedoom1.wad')
+setup(w, 'E1M1')
+var m = map()
+
+# player spawn (thing type 1)
+var px = 0.0
+var py = 0.0
+var pang = 0.0
+for t in m.things:
+  if t.kind == 1:
+    px = t.x
+    py = t.y
+    pang = t.angle * 3.14159265358979 / 180.0
+    break
+
+# --- collision callbacks (copied from doom.rox shell) ---
+func line_blocks(l, x:real, y:real, radius:real, curfloor:int) -> bool:
+  var x1 = m.vx[l.v1]
+  var y1 = m.vy[l.v1]
+  var x2 = m.vx[l.v2]
+  var y2 = m.vy[l.v2]
+  var lo = x1
+  var hi = x2
+  if x2 < x1:
+    lo = x2
+    hi = x1
+  if x < lo - radius or x > hi + radius:
+    return false
+  lo = y1
+  hi = y2
+  if y2 < y1:
+    lo = y2
+    hi = y1
+  if y < lo - radius or y > hi + radius:
+    return false
+  var dx = x2 - x1
+  var dy = y2 - y1
+  var lensq = dx * dx + dy * dy
+  var t = 0.0
+  if lensq > 0.0:
+    t = ((x - x1) * dx + (y - y1) * dy) / lensq
+    if t < 0.0:
+      t = 0.0
+    if t > 1.0:
+      t = 1.0
+  var cx = x1 + dx * t
+  var cy = y1 + dy * t
+  var distsq = (x - cx) * (x - cx) + (y - cy) * (y - cy)
+  if distsq > radius * radius:
+    return false
+  if l.side1 < 0 or (l.flags & 1) != 0:
+    return true
+  var fs = m.sectors[m.sides[l.side0].sector]
+  var bs = m.sectors[m.sides[l.side1].sector]
+  var opentop = fs.ceilh
+  if bs.ceilh < opentop:
+    opentop = bs.ceilh
+  var openbot = fs.floorh
+  if bs.floorh > openbot:
+    openbot = bs.floorh
+  if opentop - openbot < 56:
+    return true
+  if openbot - curfloor > 24:
+    return true
+  return false
+
+func hits_wall(x:real, y:real, radius:real) -> bool:
+  var curfloor = m.sectors[sector_at(x, y)].floorh
+  for l in m.lines:
+    if line_blocks(l, x, y, radius, curfloor):
+      return true
+  return false
+
+func wall_dist(x:real, y:real, ang:real) -> real:
+  var ca = cos(ang)
+  var sa = sin(ang)
+  var best = 2048.0
+  for l in m.lines:
+    var blocking = false
+    if l.side1 < 0 or (l.flags & 1) != 0:
+      blocking = true
+    else:
+      var fs = m.sectors[m.sides[l.side0].sector]
+      var bs = m.sectors[m.sides[l.side1].sector]
+      var opentop = fs.ceilh
+      if bs.ceilh < opentop:
+        opentop = bs.ceilh
+      var openbot = fs.floorh
+      if bs.floorh > openbot:
+        openbot = bs.floorh
+      if opentop - openbot < 16:
+        blocking = true
+    if not blocking:
+      continue
+    var x1 = m.vx[l.v1]
+    var y1 = m.vy[l.v1]
+    var ldx = m.vx[l.v2] - x1
+    var ldy = m.vy[l.v2] - y1
+    var denom = ca * ldy - sa * ldx
+    if denom < 0.0001 and denom > -0.0001:
+      continue
+    var t = ((x1 - x) * ldy - (y1 - y) * ldx) / denom
+    var u = 0.0
+    if ldx > 0.5 or ldx < -0.5:
+      u = (x + ca * t - x1) / ldx
+    else:
+      if ldy > 0.5 or ldy < -0.5:
+        u = (y + sa * t - y1) / ldy
+      else:
+        continue
+    if t > 0.0 and t < best and u >= 0.0 and u <= 1.0:
+      best = t
+  return best
+
+func floorz_at(x, y) -> real:
+  return m.sectors[sector_at(x, y)].floorh * 1.0
+
+ginit(m)
+set_line_blocked(hits_wall)
+set_wall_dist(wall_dist)
+spawn_things(floorz_at)
+
+var PI2 = 3.14159265358979
+var outdir = '/tmp/claude-1000/-home-jungd-dev-roxal-github/f2df13e1-e7ea-42b5-b5f7-995a1dc2da7a/scratchpad/combat/'
+
+proc save_raw(path:string):
+  var f = fileio.open(path, write=true, format='binary')
+  fileio.write(f, frame_rgb().to_bytes())
+  fileio.close(f)
+  fileio.read_file(path, format='binary')   # force flush before continuing
+
+var MTN = MI_NAMES
+
+var saved = 0
+var ev_total = 0
+var ev_oncone = 0        # attacker inside the 90-degree view cone
+var ev_cone_unrendered = 0
+
+proc run_at(label:string, x:real, y:real, ang:real, tics:int):
+  print('=== ' + label + ' at (' + string(x) + ', ' + string(y) + ') facing ' + string(int(ang * 180.0 / PI2)) + ' deg ===')
+  var vz = m.sectors[sector_at(x, y)].floorh + 41.0
+  for i in range(..<tics):
+    game_tic(x, y)
+    var evs = take_dmg_log()
+    if len(evs) == 0:
+      continue
+    # render the frame the player would see this instant
+    set_entities(renderables())
+    render_view(x, y, ang, vz)
+    for e in evs:
+      ev_total = ev_total + 1
+      var dx = e[0] - x
+      var dy = e[1] - y
+      var d = sqrt(dx * dx + dy * dy)
+      var bear = (atan2(dy, dx) - ang) * 180.0 / PI2
+      while bear > 180.0:
+        bear = bear - 360.0
+      while bear < -180.0:
+        bear = bear + 360.0
+      var incone = bear > -50.0 and bear < 50.0
+      var rend = thing_rendered(e[0], e[1])
+      if incone:
+        ev_oncone = ev_oncone + 1
+        if not rend:
+          ev_cone_unrendered = ev_cone_unrendered + 1
+      print('tic ' + string(i) + ': ' + string(e[3]) + ' dmg from ' + MTN[e[2]] + ' at dist ' + string(int(d)) + ' bearing ' + string(int(bear)) + ' in-cone ' + string(incone) + ' rendered ' + string(rend))
+      if incone and saved < 6:
+        save_raw(outdir + label + '_tic' + string(i) + '_b' + string(int(bear)) + '.raw')
+        saved = saved + 1
+    if player_dead():
+      print('(died after ' + string(i) + ' tics)')
+      break
+
+# 60 seconds standing at spawn facing the spawn angle
+run_at('spawn', px, py, pang, 2100)
+
+print('---')
+print('events ' + string(ev_total) + ', in view cone ' + string(ev_oncone) + ', in-cone-but-unrendered ' + string(ev_cone_unrendered))
+print('final health ' + string(player_health()))

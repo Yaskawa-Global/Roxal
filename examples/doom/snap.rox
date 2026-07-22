@@ -1,0 +1,113 @@
+# Headless render-coverage scan + viewpoint snapshots (no window needed).
+#
+#   ./build-lto/roxal --recompile examples/doom/snap.rox
+#
+# Renders every THINGS position at 4 angles, twice with different background
+# clear colors; a pixel that flips between the two renders was never painted
+# by walls/planes/sky — i.e. a coverage hole that shows as a flat-shaded
+# patch in the game. Prints per-viewpoint leak counts and saves PNGs of the
+# worst offenders with the holes highlighted in magenta/green.
+
+import fileio
+import math.*
+import wad.*
+import mapdata.*
+import render.*
+
+var w = Wad('examples/doom/freedoom1.wad')
+setup(w, 'E1M1')
+var m = map()
+set_entities([])
+
+var A = nearest_color(255, 0, 255)
+var B = nearest_color(0, 255, 0)
+print('clear indices: A=' + string(A) + ' B=' + string(B))
+
+var la_data = []
+var lb_data = []
+for i in range(..<256):
+  if i == A:
+    la_data.append(1)
+  else:
+    la_data.append(0)
+  if i == B:
+    lb_data.append(1)
+  else:
+    lb_data.append(0)
+var lutA = tensor(shape=[256], dtype="int32", data=la_data)
+var lutB = tensor(shape=[256], dtype="int32", data=lb_data)
+
+var PI2 = 3.14159265358979
+
+# visible rows in-game: HUD covers the bottom 32
+var VTOP = 168
+
+func leak_at(x:real, y:real, ang:real) -> int:
+  var vz = m.sectors[sector_at(x, y)].floorh + 41.0
+  set_clear(A, A)
+  render_view(x, y, ang, vz)
+  var m1 = lutA.take(frame[0:VTOP, 0:320])
+  set_clear(B, B)
+  render_view(x, y, ang, vz)
+  var m2 = lutB.take(frame[0:VTOP, 0:320])
+  return int((m1 * m2).sum())
+
+# scan: all things, 4 angles each
+var pts = []
+for t in m.things:
+  pts.append([t.x * 1.0, t.y * 1.0, t.angle * 1.0])
+
+var worst = []    # [leak, x, y, angdeg]
+var n = 0
+var total_leaked_views = 0
+for p in pts:
+  for k in range(..<4):
+    var adeg = p[2] + k * 90.0
+    var lk = leak_at(p[0], p[1], adeg * PI2 / 180.0)
+    if lk > 0:
+      total_leaked_views = total_leaked_views + 1
+      worst.append([lk, p[0], p[1], adeg])
+      if lk > 200:
+        print('leak ' + string(lk) + ' px at (' + string(p[0]) + ', ' + string(p[1]) + ') ang ' + string(adeg))
+  n = n + 1
+  if n rem 50 == 0:
+    print('scanned ' + string(n) + '/' + string(len(pts)) + ' positions, leaked views so far: ' + string(total_leaked_views))
+
+print('scan done: ' + string(total_leaked_views) + ' of ' + string(len(pts) * 4) + ' views leaked')
+
+# top 8 by leak count
+var top = []
+var used = []
+for i in range(..<len(worst)):
+  used.append(false)
+for k in range(..<8):
+  if k >= len(worst):
+    break
+  var bi = -1
+  var bv = -1
+  for i in range(..<len(worst)):
+    if not used[i] and worst[i][0] > bv:
+      bv = worst[i][0]
+      bi = i
+  if bi < 0:
+    break
+  used[bi] = true
+  top.append(worst[bi])
+
+var outdir = '/tmp/claude-1000/-home-jungd-dev-roxal-github/f2df13e1-e7ea-42b5-b5f7-995a1dc2da7a/scratchpad/leaks/'
+
+proc save_raw(path:string):
+  var f = fileio.open(path, write=true, format='binary')
+  fileio.write(f, frame_rgb().to_bytes())
+  fileio.close(f)
+
+var idx = 0
+for e in top:
+  set_clear(A, B)   # ceiling holes magenta, floor holes green
+  var vz = m.sectors[sector_at(e[1], e[2])].floorh + 41.0
+  render_view(e[1], e[2], e[3] * PI2 / 180.0, vz)
+  save_raw(outdir + 'leak' + string(idx) + '_' + string(e[0]) + 'px_x' + string(int(e[1])) + '_y' + string(int(e[2])) + '_a' + string(int(e[3])) + '.raw')
+  print('saved leak' + string(idx) + ': ' + string(e[0]) + ' px at (' + string(e[1]) + ', ' + string(e[2]) + ') ang ' + string(e[3]))
+  idx = idx + 1
+
+print('done')

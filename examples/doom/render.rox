@@ -31,6 +31,8 @@ var wadref = nil
 var md = nil          # MapData
 var tl = nil          # TexLib
 var pal = nil         # [256,3]
+var pals = []         # all 14 PLAYPAL palettes (damage reds, pickup golds)
+var cur_pal = 0       # palette for the final present (st_stuff palette FX)
 var cm_rows = []      # 34 x [256] colormap row tensors
 var C_CEIL = 0
 var C_FLOOR = 0
@@ -136,6 +138,8 @@ proc setup(w_, mapname:string):
   md = load_map(wadref, mapname)
   tl = TexLib(wadref)
   pal = playpal(wadref)
+  pals = playpals(wadref)
+  cur_pal = 0
   var cm = colormap(wadref)
   cm_rows = []
   for i in range(..<34):
@@ -589,43 +593,48 @@ proc draw_range(x1:int, x2:int):
       floorclip[x] = 0
     else:
       var u = (cur_uz1 + (cur_uz2 - cur_uz1) * t) * depth
-      if cur_hasup:
+      if cur_hasup and cur_uptex != nil:
+        # top wall (vanilla: only when the texture exists)
         var ybc = 100.0 - cur_backtop * scale
         var ybci = int(floor(ybc + 0.5))
-        if cur_uptex != nil:
-          var y0 = yti
-          var y1 = ybci
-          if y0 < cc + 1:
-            y0 = cc + 1
-          if y1 > fc:
-            y1 = fc
-          if y1 > y0 and DEBUG_FLAT == 0:
-            var th = cur_uptex.h
-            var texx = (int(u + cur_uoff) + cur_uptex.w * 1024) rem cur_uptex.w
-            frame.sample_col(x, y0, y1, cur_uptex.pix[0:th, texx], (y0 - 99.5) * invscale + cur_upmid, invscale, lut=cmrow)
+        var y0 = yti
+        var y1 = ybci
+        if y0 < cc + 1:
+          y0 = cc + 1
+        if y1 > fc:
+          y1 = fc
+        if y1 > y0 and DEBUG_FLAT == 0:
+          var th = cur_uptex.h
+          var texx = (int(u + cur_uoff) + cur_uptex.w * 1024) rem cur_uptex.w
+          frame.sample_col(x, y0, y1, cur_uptex.pix[0:th, texx], (y0 - 99.5) * invscale + cur_upmid, invscale, lut=cmrow)
         if ybci - 1 > cc:
           ceilclip[x] = ybci - 1
       else:
-        if yti - 1 > cc:
+        # no top wall: close the ceiling only where this seg marked it
+        # (r_segs.c: `else if (markceiling) ceilingclip[rw_x] = yl-1;` —
+        # closing it unconditionally walls off planes seen through
+        # same-height portals and cascades into whole missing subtrees)
+        if cur_cplane != nil and yti - 1 > cc:
           ceilclip[x] = yti - 1
-      if cur_haslo:
+      if cur_haslo and cur_lotex != nil:
+        # bottom wall (vanilla: only when the texture exists)
         var ybf = 100.0 - cur_backbot * scale
         var ybfi = int(floor(ybf + 0.5))
-        if cur_lotex != nil:
-          var y0 = ybfi
-          var y1 = ybi
-          if y0 < cc + 1:
-            y0 = cc + 1
-          if y1 > fc:
-            y1 = fc
-          if y1 > y0 and DEBUG_FLAT == 0:
-            var th = cur_lotex.h
-            var texx = (int(u + cur_uoff) + cur_lotex.w * 1024) rem cur_lotex.w
-            frame.sample_col(x, y0, y1, cur_lotex.pix[0:th, texx], (y0 - 99.5) * invscale + cur_lomid, invscale, lut=cmrow)
+        var y0 = ybfi
+        var y1 = ybi
+        if y0 < cc + 1:
+          y0 = cc + 1
+        if y1 > fc:
+          y1 = fc
+        if y1 > y0 and DEBUG_FLAT == 0:
+          var th = cur_lotex.h
+          var texx = (int(u + cur_uoff) + cur_lotex.w * 1024) rem cur_lotex.w
+          frame.sample_col(x, y0, y1, cur_lotex.pix[0:th, texx], (y0 - 99.5) * invscale + cur_lomid, invscale, lut=cmrow)
         if ybfi < fc:
           floorclip[x] = ybfi
       else:
-        if ybi < fc:
+        # no bottom wall: close the floor only where this seg marked it
+        if cur_fplane != nil and ybi < fc:
           floorclip[x] = ybi
       if cur_solid:
         ceilclip[x] = H
@@ -782,11 +791,16 @@ proc add_seg(si:int):
   var backbot = 0.0
   var has_upper = false
   var has_lower = false
+  var fsky = sec_ceilsky[side.sector]
   if bs != nil:
     backtop = bs.ceilh - view_z
     backbot = bs.floorh - view_z
-    has_upper = bs.ceilh < fs.ceilh
-    has_lower = bs.floorh > fs.floorh
+    # sky hack (r_segs.c): both ceilings sky -> the top follows the back
+    # sector, so no upper step is drawn but the sky plane IS still marked
+    if fsky and sec_ceilsky[sides[sd1].sector]:
+      worldtop = backtop
+    has_upper = backtop < worldtop
+    has_lower = backbot > worldbot
 
   # textures + pegging (r_segs.c texturemid computations)
   var midtex = nil
@@ -833,8 +847,7 @@ proc add_seg(si:int):
     light = 0
 
   # visplane marking (r_bsp.c): which of the front sector's planes does this
-  # seg expose? Sky-to-sky portals never mark (the sky hack).
-  var fsky = sec_ceilsky[side.sector]
+  # seg expose? (compare post-sky-hack heights, like vanilla's worldhigh/worldtop)
   var markc = false
   var markf = false
   if bs == nil:
@@ -845,12 +858,10 @@ proc add_seg(si:int):
       markc = true
       markf = true
     else:
-      if bs.ceilh != fs.ceilh or bs.light != fs.light or bs.ceilpic != fs.ceilpic:
+      if backtop != worldtop or bs.light != fs.light or bs.ceilpic != fs.ceilpic:
         markc = true
       if bs.floorh != fs.floorh or bs.light != fs.light or bs.floorpic != fs.floorpic:
         markf = true
-    if fsky and sec_ceilsky[sides[sd1].sector]:
-      markc = false
   if not fsky and worldtop <= 0.0:
     markc = false
   if worldbot >= 0.0:
@@ -1371,7 +1382,15 @@ proc render_view(x:real, y:real, angle:real, z:real):
   draw_masked()
 
 func frame_rgb():
-  return pal.take(frame)
+  return pals[cur_pal].take(frame)
+
+# select the present palette (0 normal, 1-8 damage, 9-12 bonus, 13 radsuit)
+proc set_palette(i:int):
+  cur_pal = i
+  if cur_pal < 0:
+    cur_pal = 0
+  if cur_pal >= len(pals):
+    cur_pal = len(pals) - 1
 
 # accessors: importers see module vars as bound at import time, so state
 # rebound inside setup() must be reached through functions
@@ -1397,8 +1416,19 @@ func open_columns() -> int:
 proc set_debug_flat(v:int):
   DEBUG_FLAT = v
 
+# debug: override the frame clear colors (leak detection — any pixel left at
+# the clear color after render_view is a wall/plane coverage hole)
+proc set_clear(ci:int, fi:int):
+  C_CEIL = ci
+  C_FLOOR = fi
+
 func stats() -> list:
   return [stat_segs, stat_cols, stat_draws, planes_used, ds_count, len(vis), stat_spans]
+
+# was (x, y)'s subsector reached by the last frame's BSP walk? (this is the
+# sprite occlusion-cull criterion — diagnostics)
+func thing_rendered(x:real, y:real) -> bool:
+  return ss_stamp[point_in_subsector(x, y)] == frame_id
 
 func plane_info(i:int) -> list:
   var p = pool_planes[i]

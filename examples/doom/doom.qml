@@ -5,9 +5,10 @@ import Roxal
 Window {
     objectName: "win"
     visible: true
-    width: 640
-    height: 400
-    title: "Roxal Doom — M3"
+    width: 1280
+    height: 960    // 320x200 at 4:3 like the original; Qt scales the
+                   // framebuffer, so window size doesn't affect frame cost
+    title: "Roxal Doom"
     color: "black"
 
     signal key(int code, bool down, bool repeat)

@@ -118,47 +118,232 @@ func hits_wall(x:real, y:real, radius:real) -> bool:
       return true
   return false
 
-# nearest blocking-wall distance along a ray (for hitscan shots)
+# ray-vs-line: distance along (ca, sa) to a blocking hit on line l, or -1
+func line_ray_dist(l, x:real, y:real, ca:real, sa:real) -> real:
+  var blocking = false
+  if l.side1 < 0 or (l.flags & 1) != 0:
+    blocking = true
+  else:
+    var fs = m.sectors[m.sides[l.side0].sector]
+    var bs = m.sectors[m.sides[l.side1].sector]
+    var opentop = fs.ceilh
+    if bs.ceilh < opentop:
+      opentop = bs.ceilh
+    var openbot = fs.floorh
+    if bs.floorh > openbot:
+      openbot = bs.floorh
+    if opentop - openbot < 16:
+      blocking = true
+  if not blocking:
+    return -1.0
+  var x1 = m.vx[l.v1]
+  var y1 = m.vy[l.v1]
+  var ldx = m.vx[l.v2] - x1
+  var ldy = m.vy[l.v2] - y1
+  var denom = ca * ldy - sa * ldx
+  if denom < 0.0001 and denom > -0.0001:
+    return -1.0
+  var t = ((x1 - x) * ldy - (y1 - y) * ldx) / denom
+  if t <= 0.0:
+    return -1.0
+  var u = 0.0
+  if ldx > 0.5 or ldx < -0.5:
+    u = (x + ca * t - x1) / ldx
+  else:
+    if ldy > 0.5 or ldy < -0.5:
+      u = (y + sa * t - y1) / ldy
+    else:
+      return -1.0
+  if u < 0.0 or u > 1.0:
+    return -1.0
+  return t
+
+# nearest blocking-wall distance along a ray (hitscan shots and sight
+# checks). Marches the BLOCKMAP cells the ray crosses (P_PathTraverse
+# style) instead of scanning every line — the sight/attack raycast is the
+# per-tic gameplay hotspot once many monsters are awake.
 func wall_dist(x:real, y:real, ang:real) -> real:
   var ca = cos(ang)
   var sa = sin(ang)
   var best = 2048.0
-  for l in m.lines:
-    var blocking = false
-    if l.side1 < 0 or (l.flags & 1) != 0:
-      blocking = true
+  if m.bm_cols == 0:
+    for l in m.lines:
+      var t = line_ray_dist(l, x, y, ca, sa)
+      if t > 0.0 and t < best:
+        best = t
+    return best
+  var cx = int(floor((x - m.bm_orgx) / 128.0))
+  var cy = int(floor((y - m.bm_orgy) / 128.0))
+  # per-axis cell stepping (Amanatides-Woo): tmx/tmy = ray distance to the
+  # next vertical/horizontal cell boundary, tdx/tdy = distance per cell
+  var stepx = 0
+  var tdx = 1000000000.0
+  var tmx = 1000000000.0
+  if ca > 0.0000001:
+    stepx = 1
+    tdx = 128.0 / ca
+    tmx = ((cx + 1) * 128.0 + m.bm_orgx - x) / ca
+  else:
+    if ca < -0.0000001:
+      stepx = -1
+      tdx = -128.0 / ca
+      tmx = (cx * 128.0 + m.bm_orgx - x) / ca
+  var stepy = 0
+  var tdy = 1000000000.0
+  var tmy = 1000000000.0
+  if sa > 0.0000001:
+    stepy = 1
+    tdy = 128.0 / sa
+    tmy = ((cy + 1) * 128.0 + m.bm_orgy - y) / sa
+  else:
+    if sa < -0.0000001:
+      stepy = -1
+      tdy = -128.0 / sa
+      tmy = (cy * 128.0 + m.bm_orgy - y) / sa
+  var enter = 0.0
+  while enter < best:
+    if cx >= 0 and cx < m.bm_cols and cy >= 0 and cy < m.bm_rows:
+      for li in m.bm_cells[cy * m.bm_cols + cx]:
+        var t = line_ray_dist(m.lines[li], x, y, ca, sa)
+        if t > 0.0 and t < best:
+          best = t
+    if tmx < tmy:
+      enter = tmx
+      tmx = tmx + tdx
+      cx = cx + stepx
     else:
+      enter = tmy
+      tmy = tmy + tdy
+      cy = cy + stepy
+  return best
+
+# ray-vs-line intersection: distance along (ca, sa) to line l, or -1
+# (pure geometry — no blocking classification)
+func ray_line_t(l, x:real, y:real, ca:real, sa:real) -> real:
+  var x1 = m.vx[l.v1]
+  var y1 = m.vy[l.v1]
+  var ldx = m.vx[l.v2] - x1
+  var ldy = m.vy[l.v2] - y1
+  var denom = ca * ldy - sa * ldx
+  if denom < 0.0001 and denom > -0.0001:
+    return -1.0
+  var t = ((x1 - x) * ldy - (y1 - y) * ldx) / denom
+  if t <= 0.0:
+    return -1.0
+  var u = 0.0
+  if ldx > 0.5 or ldx < -0.5:
+    u = (x + ca * t - x1) / ldx
+  else:
+    if ldy > 0.5 or ldy < -0.5:
+      u = (y + sa * t - y1) / ldy
+    else:
+      return -1.0
+  if u < 0.0 or u > 1.0:
+    return -1.0
+  return t
+
+# 3D line of sight (P_CheckSight-lite): can an eye at (x, y, eyez) see any
+# part of the player's body column? Every two-sided line crossed narrows the
+# passable slope window by its vertical opening (so window sills, ledges and
+# closed doors block sight); one-sided lines block outright. The passable
+# window is an intersection of per-crossing intervals, so crossing order —
+# and duplicate lines from adjacent blockmap cells — don't matter.
+func sight_clear(x:real, y:real, eyez:real) -> bool:
+  var dx = px - x
+  var dy = py - y
+  var d = sqrt(dx * dx + dy * dy)
+  if d < 1.0:
+    return true
+  var ca = dx / d
+  var sa = dy / d
+  var pz = m.sectors[sector_at(px, py)].floorh * 1.0
+  var slo = (pz - eyez) / d           # slope to player feet
+  var shi = (pz + 56.0 - eyez) / d    # slope to player head
+  if m.bm_cols == 0:
+    for l in m.lines:
+      var t = ray_line_t(l, x, y, ca, sa)
+      if t <= 0.0 or t >= d - 1.0:
+        continue
+      if l.side1 < 0:
+        return false
       var fs = m.sectors[m.sides[l.side0].sector]
       var bs = m.sectors[m.sides[l.side1].sector]
-      var opentop = fs.ceilh
+      var opentop = fs.ceilh * 1.0
       if bs.ceilh < opentop:
-        opentop = bs.ceilh
-      var openbot = fs.floorh
+        opentop = bs.ceilh * 1.0
+      var openbot = fs.floorh * 1.0
       if bs.floorh > openbot:
-        openbot = bs.floorh
-      if opentop - openbot < 16:
-        blocking = true
-    if not blocking:
-      continue
-    var x1 = m.vx[l.v1]
-    var y1 = m.vy[l.v1]
-    var ldx = m.vx[l.v2] - x1
-    var ldy = m.vy[l.v2] - y1
-    var denom = ca * ldy - sa * ldx
-    if denom < 0.0001 and denom > -0.0001:
-      continue
-    var t = ((x1 - x) * ldy - (y1 - y) * ldx) / denom
-    var u = 0.0
-    if ldx > 0.5 or ldx < -0.5:
-      u = (x + ca * t - x1) / ldx
+        openbot = bs.floorh * 1.0
+      var lo = (openbot - eyez) / t
+      var hi = (opentop - eyez) / t
+      if lo > slo:
+        slo = lo
+      if hi < shi:
+        shi = hi
+      if slo >= shi:
+        return false
+    return true
+  var cx = int(floor((x - m.bm_orgx) / 128.0))
+  var cy = int(floor((y - m.bm_orgy) / 128.0))
+  var stepx = 0
+  var tdx = 1000000000.0
+  var tmx = 1000000000.0
+  if ca > 0.0000001:
+    stepx = 1
+    tdx = 128.0 / ca
+    tmx = ((cx + 1) * 128.0 + m.bm_orgx - x) / ca
+  else:
+    if ca < -0.0000001:
+      stepx = -1
+      tdx = -128.0 / ca
+      tmx = (cx * 128.0 + m.bm_orgx - x) / ca
+  var stepy = 0
+  var tdy = 1000000000.0
+  var tmy = 1000000000.0
+  if sa > 0.0000001:
+    stepy = 1
+    tdy = 128.0 / sa
+    tmy = ((cy + 1) * 128.0 + m.bm_orgy - y) / sa
+  else:
+    if sa < -0.0000001:
+      stepy = -1
+      tdy = -128.0 / sa
+      tmy = (cy * 128.0 + m.bm_orgy - y) / sa
+  var enter = 0.0
+  while enter < d:
+    if cx >= 0 and cx < m.bm_cols and cy >= 0 and cy < m.bm_rows:
+      for li in m.bm_cells[cy * m.bm_cols + cx]:
+        var l = m.lines[li]
+        var t = ray_line_t(l, x, y, ca, sa)
+        if t <= 0.0 or t >= d - 1.0:
+          continue
+        if l.side1 < 0:
+          return false
+        var fs = m.sectors[m.sides[l.side0].sector]
+        var bs = m.sectors[m.sides[l.side1].sector]
+        var opentop = fs.ceilh * 1.0
+        if bs.ceilh < opentop:
+          opentop = bs.ceilh * 1.0
+        var openbot = fs.floorh * 1.0
+        if bs.floorh > openbot:
+          openbot = bs.floorh * 1.0
+        var lo = (openbot - eyez) / t
+        var hi = (opentop - eyez) / t
+        if lo > slo:
+          slo = lo
+        if hi < shi:
+          shi = hi
+        if slo >= shi:
+          return false
+    if tmx < tmy:
+      enter = tmx
+      tmx = tmx + tdx
+      cx = cx + stepx
     else:
-      if ldy > 0.5 or ldy < -0.5:
-        u = (y + sa * t - y1) / ldy
-      else:
-        continue
-    if t > 0.0 and t < best and u >= 0.0 and u <= 1.0:
-      best = t
-  return best
+      enter = tmy
+      tmy = tmy + tdy
+      cy = cy + stepy
+  return true
 
 func can_stand(x:real, y:real) -> bool:
   if hits_wall(x, y, 16.0):
@@ -182,6 +367,7 @@ proc move_player(fwd:real, strafe:real, rot:real):
 ginit(m)
 set_line_blocked(hits_wall)
 set_wall_dist(wall_dist)
+set_sight(sight_clear)
 
 func floorz_at(x, y) -> real:
   return m.sectors[sector_at(x, y)].floorh * 1.0
@@ -262,6 +448,7 @@ qt.every(16, proc():
   set_entities(renderables())
   render_view(px, py, pang, vz)
   draw_hud(player_health(), player_ammo(), muzzle_flash())
+  set_palette(flash_palette())   # red damage tint (vanilla palette FX)
   fb.present(frame_rgb())
   acc_ms = acc_ms + Time.steady_now().since(t0).total_millis()
   acc_n = acc_n + 1
