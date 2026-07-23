@@ -44,3 +44,28 @@ void inc_intbox(IntBox* b) { if(b && b->p) (*b->p)++; }
 
 typedef struct { uint8_t* p; } ByteBox;
 void inc_bytebox(ByteBox* b) { if(b && b->p) (*b->p)++; }
+
+#include <stdlib.h>
+
+/* 64-bit scalars */
+int64_t add_int64(int64_t a, int64_t b) { return a + b; }
+uint64_t mul_uint64(uint64_t a, uint64_t b) { return a * b; }
+size_t cstrlen_sz(const char* s) { return strlen(s); }
+
+/* pointer returns, opaque handles, finalizers */
+const char* greet(void) { return "hello from C"; }
+
+typedef struct { int value; } Counter;
+static int counters_freed = 0;
+void* counter_new(int start) { Counter* c = (Counter*)malloc(sizeof(Counter)); c->value = start; return c; }
+int counter_next(void* c) { return ((Counter*)c)->value++; }
+void counter_free(void* c) { free(c); counters_freed++; }
+int counters_freed_count(void) { return counters_freed; }
+int is_null(const void* p) { return p == NULL; }
+
+/* tensor/buffer passing */
+void fill_ramp_u8(uint8_t* buf, int n) { for (int i = 0; i < n; i++) buf[i] = (uint8_t)(i * 10); }
+float sum_f32(const float* buf, int n) { float s = 0; for (int i = 0; i < n; i++) s += buf[i]; return s; }
+void scale_f64(double* buf, int n, double k) { for (int i = 0; i < n; i++) buf[i] *= k; }
+
+int sum_or_neg(const int32_t* p, int n) { if (!p) return -1; int s = 0; for (int i = 0; i < n; i++) s += p[i]; return s; }

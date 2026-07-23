@@ -1,0 +1,10 @@
+import sys
+mylib = sys.loadlib('../tests/testlib.so')
+
+@cfunc(lib=mylib, cname='sum_or_neg', args='const int32_t* p, int n', ret='int')
+func sum_or_neg(p, n: int) -> int:
+  _
+
+var t = tensor([3], [1, 2, 3], dtype='int32')
+print(sum_or_neg(t, 3))
+print(sum_or_neg(nil, 0))

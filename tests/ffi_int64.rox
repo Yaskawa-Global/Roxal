@@ -1,0 +1,19 @@
+import sys
+mylib = sys.loadlib('../tests/testlib.so')
+
+@cfunc(lib=mylib, cname='add_int64', args='int64_t a, int64_t b', ret='int64_t')
+func add64(a: int, b: int) -> int:
+  _
+
+@cfunc(lib=mylib, cname='mul_uint64', args='uint64_t a, uint64_t b', ret='uint64_t')
+func mulu64(a: int, b: int) -> int:
+  _
+
+@cfunc(lib=mylib, cname='cstrlen_sz', args='const char* s', ret='size_t')
+func slen(s: str) -> int:
+  _
+
+print(add64(4000000000, 4000000000))
+print(add64(-5000000000, 1))
+print(mulu64(3000000000, 3))
+print(slen('hello roxal'))

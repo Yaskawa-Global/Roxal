@@ -1541,6 +1541,8 @@ void ModuleSys::registerBuiltins(VM& vm)
         addSys("_dataflow_tick", [this](VM& vm, ArgsView a){ return df_tick_native(vm,a); });
         addSys("_df_graphdot", [this](VM& vm, ArgsView a){ return df_graphdot_native(vm,a); });
         addSys("loadlib", [this](VM& vm, ArgsView a){ return loadlib_native(vm,a); }, nullptr, {}, 0x1);
+        addSys("source_dir", [this](VM& vm, ArgsView a){ return source_dir_native(vm,a); });
+        addSys("module_paths", [this](VM& vm, ArgsView a){ return module_paths_native(vm,a); });
 
     }
 
@@ -4866,6 +4868,21 @@ Value ModuleSys::df_graphdot_native(VM& vm, ArgsView args)
 Value ModuleSys::loadlib_native(VM& vm, ArgsView args)
 {
     return roxal::loadlib_native(args);
+}
+
+Value ModuleSys::source_dir_native(VM& vm, ArgsView args)
+{
+    return roxal::source_dir_native(args);
+}
+
+Value ModuleSys::module_paths_native(VM& vm, ArgsView args)
+{
+    if (args.size() != 0)
+        throw std::invalid_argument("module_paths expects no arguments");
+    std::vector<Value> paths;
+    for (const auto& p : vm.getModulePaths())
+        paths.push_back(Value::stringVal(toUnicodeString(p)));
+    return Value::listVal(paths);
 }
 
 Value ModuleSys::list_filter_builtin(VM& vm, ArgsView args)

@@ -1,0 +1,11 @@
+import math.*
+
+print(abs(-3))
+print(typeof(abs(-3)))
+print(abs(3))
+print(abs(-2.5))
+print(typeof(abs(-2.5)))
+print(abs(0))
+print(abs(complex(3.0, -4.0)))
+print(fabs(-3))
+print(typeof(fabs(-3)))

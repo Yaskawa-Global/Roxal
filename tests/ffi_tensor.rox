@@ -1,0 +1,36 @@
+import sys
+mylib = sys.loadlib('../tests/testlib.so')
+
+@cfunc(lib=mylib, cname='fill_ramp_u8', args='uint8_t* buf, int n')
+proc fill_ramp(t, n: int):
+  _
+
+@cfunc(lib=mylib, cname='sum_f32', args='const float* buf, int n', ret='float')
+func sum_f32(t, n: int) -> real:
+  _
+
+@cfunc(lib=mylib, cname='scale_f64', args='double* buf, int n, double k')
+proc scale_f64(t, n: int, k: real):
+  _
+
+var t = tensor([8], dtype='uint8')
+fill_ramp(t, 8)
+print(t[0])
+print(t[3])
+print(t[7])
+
+var f = tensor([4], [1.5, 2.5, 3.0, 3.0], dtype='float32')
+print(sum_f32(f, 4))
+
+var d = tensor([3], [1.0, 2.0, 3.0])
+scale_f64(d, 3, 2.5)
+print(d[1])
+print(d[2])
+
+# in-place C mutation must honor COW exactly like native t[i]=x mutation:
+# a copy taken before the call keeps the old values
+var d2 = tensor([3], [1.0, 2.0, 3.0])
+var shared = d2
+scale_f64(d2, 3, 10.0)
+print(d2[0])
+print(shared[0])

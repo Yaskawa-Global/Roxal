@@ -2165,6 +2165,79 @@ When models run on GPU, intermediate tensors stay on GPU throughout the signal c
 | `close()` | Release model session and free resources. |
 
 
+## Advanced: Calling C Libraries (FFI)
+
+Roxal can call functions in native shared libraries directly, without writing a
+native module. Load a library with `sys.loadlib()` (relative paths resolve
+against the script's directory), then declare each C function as a stub
+`func`/`proc` carrying a `@cfunc` annotation. The body is the placeholder `_`.
+
+```roxal
+import sys
+mylib = sys.loadlib('./mylib.so')
+
+@cfunc(lib=mylib, cname='cstrlen', args='const char* s', ret='int')
+func mystrlen(s: string) -> int:
+  _
+
+print(mystrlen('hello'))    # 5
+```
+
+`@cfunc` arguments:
+
+* `lib` — the library handle from `loadlib` (required)
+* `cname` — the C symbol name (defaults to the Roxal function name)
+* `args` — comma-separated C parameter list; parameter names are optional
+* `ret` — C return type (defaults to `void`)
+* `free` — name of a C function in the same library to call when a returned
+  pointer handle is garbage collected (a finalizer, e.g. `free='mat_release'`)
+
+**Argument types.** Scalars: `float`, `double`/`real`, `bool`, and signed and
+unsigned integers of all widths (`int8_t` … `int64_t`, plus `int`, `long`,
+`size_t`, `intptr_t`, …). Strings: `const char*` (passed by copy) and `char*`
+(mutable; changes are written back to the Roxal string). Structs: a `@cstruct`
+type name, by value or by pointer (`MyStruct*`, with out-param write-back).
+Pointers to primitives (`int32_t*`, `double*`, …) pass a single scalar by
+reference. A `const` qualifier on any pointer marks it read-only.
+
+**Opaque handles.** An argument declared `void*` (or any unrecognized pointer
+type) accepts a `foreignptr` handle, `nil` (passed as NULL), or a tensor (see
+below). A return type of `void*`/`SomeType*` produces a `foreignptr` (or `nil`
+for NULL). With `free=`, the handle's C destructor runs automatically when the
+handle is collected — this is how bindings avoid manual memory management.
+
+**Tensors as C buffers.** Passing a tensor where a primitive pointer is
+declared hands the C function the tensor's raw data buffer, zero-copy. The
+tensor dtype must match the C element type (`uint8_t*` ↔ `'uint8'`,
+`float*` ↔ `'float32'`, `double*` ↔ `'float64'`, …); a mismatch is a runtime
+error. Mutable pointers trigger copy-on-write first, so in-place C mutation has
+exactly the same visibility semantics as `t[i] = x`; `const T*` buffers are
+passed without copying. A `void*` argument accepts any tensor regardless of
+dtype.
+
+```roxal
+@cfunc(lib=mylib, cname='scale_f64', args='double* buf, int n, double k')
+proc scale(t, n: int, k: real):
+  _
+
+var d = tensor([3], [1.0, 2.0, 3.0])
+scale(d, 3, 2.5)          # d is now [2.5, 5.0, 7.5], in place
+```
+
+**Return values.** `char*`/`const char*` returns become Roxal strings (copied;
+NULL → `nil`). A `@cstruct` type name returns a struct by value as a new object
+instance. 64-bit integers round-trip exactly.
+
+**C structs.** Declare with `@cstruct` on an object type; use `@ctype` to pin a
+field's C type, including fixed arrays (`'double[4]'`), nested structs, struct
+pointers, and `void*` fields (which surface as `foreignptr`). An optional
+`arch=32|64` selects pointer size/layout for cross-compilation scenarios.
+
+Limitations: no callbacks (C calling back into Roxal), no varargs, POSIX
+(`dlopen`) platforms only. FFI marshalling errors are runtime errors. Loaded
+libraries stay mapped until process exit (finalizers registered with `free=`
+may run at any GC point, including shutdown).
+
 ## Builtin Modules & Functions Reference
 
 The functions in the sys module are always globally available (- as if `import sys.*` were used).  See `sys.rox`.
@@ -2218,6 +2291,8 @@ The functions in the sys module are always globally available (- as if `import s
 * `typeof(value)` - return the type of `value`
 * `loadlib(path)` - load a native library from `path`
   * relative paths are resolved against the directory of the executing script
+* `source_dir()` - absolute directory of the calling function's source file (for locating data files shipped with a module)
+* `module_paths()` - the module search paths used by `import`, in order (ROXALPATH entries, `--module-paths` entries, then the built-in defaults)
 
 #### quantity
 

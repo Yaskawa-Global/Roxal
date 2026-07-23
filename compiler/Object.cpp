@@ -5516,8 +5516,11 @@ std::string roxal::objEventInstanceToString(const ObjEventInstance* ev)
 
 ObjLibrary::~ObjLibrary()
 {
-    if (handle)
-        dlclose(handle);
+    // Intentionally no dlclose: destruction order within a GC batch (and at
+    // VM shutdown) is unspecified, and ObjForeignPtr finalizers registered by
+    // @cfunc free= run code from this library — unmapping it first would make
+    // those cleanups jump into unmapped pages. The OS reclaims the mapping at
+    // process exit.
 }
 
 unique_ptr<ObjLibrary, UnreleasedObj> roxal::newLibraryObj(void* handle)

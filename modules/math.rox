@@ -98,6 +98,15 @@ func trunc(x:real) -> real:
 func fabs(x:real) -> real:
   """absolute value"""
 
+func abs(x):
+  """absolute value, preserving the argument's type (int stays int,
+  real stays real; complex gives its magnitude)"""
+  if x is complex:
+    return x.abs()
+  if x < 0:
+    return -x
+  return x
+
 @builtin
 func hypot(x:real, y:real) -> real:
   """sqrt(x*x + y*y)"""

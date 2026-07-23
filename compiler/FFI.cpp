@@ -21,6 +21,7 @@ void* roxal::createFFIWrapper(void* fn, ffi_type* retType,
     spec->argIsCharPtr.assign(argTypes.size(), false);
     spec->argIsConstCharPtr.assign(argTypes.size(), false);
     spec->argIsBool.assign(argTypes.size(), false);
+    spec->argIsConstPtr.assign(argTypes.size(), false);
     spec->argObjTypes.assign(argTypes.size(), nullptr);
     spec->argStructElems.resize(argTypes.size());
     spec->argStructTypes.resize(argTypes.size());
@@ -82,6 +83,37 @@ Value roxal::loadlib_native(ArgsView args)
         throw std::runtime_error(std::string("dlopen failed: ") + dlerror());
 
     return Value::libraryVal(h);
+}
+
+// Directory of the calling function's source file (same resolution loadlib
+// uses for relative library paths) — lets modules locate data files they ship
+// with (e.g. ONNX models) independently of the process working directory.
+Value roxal::source_dir_native(ArgsView args)
+{
+    if (args.size() != 0)
+        throw std::invalid_argument("source_dir expects no arguments");
+
+    std::filesystem::path base;
+    if (VM::thread && !VM::thread->frames.empty()) {
+        const CallFrame& frame = VM::thread->frames.back();
+        ObjFunction* fn = asFunction(asClosure(frame.closure)->function);
+        Value moduleValue = fn->moduleType.strongRef();
+        ObjModuleType* moduleType = moduleValue.isObj() ? asModuleType(moduleValue) : nullptr;
+        if (moduleType && !moduleType->sourcePath.isEmpty())
+            base = std::filesystem::path(toUTF8StdString(moduleType->sourcePath)).parent_path();
+        if (base.empty()) {
+            std::string src = toUTF8StdString(fn->chunk->sourceName);
+            if (!src.empty())
+                base = std::filesystem::path(src).parent_path();
+        }
+    }
+    if (base.empty())
+        base = ".";
+    std::error_code ec;
+    std::filesystem::path absolute = std::filesystem::absolute(base, ec);
+    if (!ec)
+        base = absolute.lexically_normal();
+    return Value::stringVal(toUnicodeString(base.string()));
 }
 
 Value roxal::ffi_native(ArgsView args)
@@ -273,12 +305,19 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
         std::vector<std::vector<ffi_type*>> argStructElems;
         std::vector<ffi_type> argStructTypes;
         std::vector<PrimitivePtrType> argPrimPtrTypes;
+        std::vector<bool> argIsConstPtr;
         if (argsExpr) {
             std::string argsStr = toUTF8StdString(asUString(evalExpr(argsExpr)));
             std::stringstream ss(argsStr);
             std::string token;
             while(std::getline(ss, token, ',')) {
                 token.erase(0, token.find_first_not_of(" \t"));
+                bool isConstType = false;
+                if (token.rfind("const ", 0) == 0) {
+                    isConstType = true;
+                    token = token.substr(6);
+                    token.erase(0, token.find_first_not_of(" \t"));
+                }
                 size_t space = token.rfind(' ');
                 std::string type = token;
                 if (space != std::string::npos)
@@ -292,6 +331,10 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                     argTypes.push_back(&ffi_type_sint32);
                 else if (type=="uint32_t")
                     argTypes.push_back(&ffi_type_uint32);
+                else if (type=="int64_t" || type=="long long" || type=="long" || type=="ssize_t" || type=="intptr_t")
+                    argTypes.push_back(&ffi_type_sint64);
+                else if (type=="uint64_t" || type=="unsigned long long" || type=="unsigned long" || type=="size_t" || type=="uintptr_t")
+                    argTypes.push_back(&ffi_type_uint64);
                 else if (type=="int16_t")
                     argTypes.push_back(&ffi_type_sint16);
                 else if (type=="uint16_t")
@@ -307,12 +350,7 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                 else if (type=="char*") {
                     argTypes.push_back(&ffi_type_pointer);
                     argIsCharPtr.push_back(true);
-                    argIsConstCharPtr.push_back(false);
-                }
-                else if (type=="const char*") {
-                    argTypes.push_back(&ffi_type_pointer);
-                    argIsCharPtr.push_back(true);
-                    argIsConstCharPtr.push_back(true);
+                    argIsConstCharPtr.push_back(isConstType);
                 }
                 else if (!type.empty() && (type.back()=='*' || type.back()=='&')) {
                     std::string base = type.substr(0, type.size()-1);
@@ -324,6 +362,10 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                     else if (base=="int16_t") ppt = PrimitivePtrType::Int16;
                     else if (base=="uint32_t") ppt = PrimitivePtrType::UInt32;
                     else if (base=="int32_t" || base=="int") ppt = PrimitivePtrType::Int32;
+                    else if (base=="uint64_t" || base=="unsigned long long" || base=="size_t") ppt = PrimitivePtrType::UInt64;
+                    else if (base=="int64_t" || base=="long long") ppt = PrimitivePtrType::Int64;
+                    else if (base=="float") ppt = PrimitivePtrType::Float32;
+                    else if (base=="double" || base=="real") ppt = PrimitivePtrType::Float64;
                     if (ppt != PrimitivePtrType::None) {
                         argTypes.push_back(&ffi_type_pointer);
                         argPrimPtrTypes.push_back(ppt);
@@ -426,6 +468,8 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                     argStructTypes.emplace_back();
                 if (argPrimPtrTypes.size() < argTypes.size())
                     argPrimPtrTypes.push_back(PrimitivePtrType::None);
+                if (argIsConstPtr.size() < argTypes.size())
+                    argIsConstPtr.push_back(isConstType);
             }
         }
 
@@ -437,6 +481,10 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
         ffi_type retStruct;
         if (retExpr) {
             std::string r = toUTF8StdString(asUString(evalExpr(retExpr)));
+            if (r.rfind("const ", 0) == 0) {
+                r = r.substr(6);
+                r.erase(0, r.find_first_not_of(" \t"));
+            }
             if (r=="float")
                 retType = &ffi_type_float;
             else if (r=="double" || r=="real")
@@ -445,6 +493,10 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                 retType = &ffi_type_sint32;
             else if (r=="uint32_t")
                 retType = &ffi_type_uint32;
+            else if (r=="int64_t" || r=="long long" || r=="long" || r=="ssize_t" || r=="intptr_t")
+                retType = &ffi_type_sint64;
+            else if (r=="uint64_t" || r=="unsigned long long" || r=="unsigned long" || r=="size_t" || r=="uintptr_t")
+                retType = &ffi_type_uint64;
             else if (r=="int16_t")
                 retType = &ffi_type_sint16;
             else if (r=="uint16_t")
@@ -462,6 +514,10 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
             else if (r=="char*") {
                 retType = &ffi_type_pointer;
                 retIsCharPtr = true;
+            }
+            else if (!r.empty() && r.back()=='*') {
+                // any other pointer type: returned as an opaque foreignptr handle
+                retType = &ffi_type_pointer;
             }
             else {
                 auto opt = mod->vars.load(toUnicodeString(r));
@@ -547,6 +603,15 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
         if (!fnPtr)
             throw std::runtime_error(std::string("dlsym failed: ")+dlerror());
 
+        void (*freeFn)(void*) = nullptr;
+        if (auto freeExpr = getArg("free")) {
+            std::string freeName = toUTF8StdString(asUString(evalExpr(freeExpr)));
+            void* f = dlsym(handle, freeName.c_str());
+            if (!f)
+                throw std::runtime_error(std::string("dlsym failed for free function '")+freeName+"': "+dlerror());
+            freeFn = reinterpret_cast<void(*)(void*)>(f);
+        }
+
         spec = new FFIWrapper;
         spec->fn = fnPtr;
         spec->argTypes = argTypes;
@@ -557,6 +622,8 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
         spec->argStructElems = argStructElems;
         spec->argStructTypes = argStructTypes;
         spec->argPrimPtrTypes = argPrimPtrTypes;
+        spec->argIsConstPtr = argIsConstPtr;
+        spec->freeFn = freeFn;
         for (size_t i=0;i<spec->argStructTypes.size();i++)
             if (spec->argObjTypes[i])
                 spec->argStructTypes[i].elements = spec->argStructElems[i].data();
@@ -616,7 +683,10 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
     std::vector<uint16_t> uint16PtrVals(callSpec.argCount);
     std::vector<int8_t> sint8PtrVals(callSpec.argCount);
     std::vector<uint8_t> uint8PtrVals(callSpec.argCount);
+    std::vector<float> floatPtrVals(callSpec.argCount);
+    std::vector<double> doublePtrVals(callSpec.argCount);
     std::vector<void*> primPtrPtrs(callSpec.argCount);
+    std::vector<bool> noWriteBack(callSpec.argCount, false); // tensor buffers and nil (NULL) pointers skip scalar write-back
 
     auto funcNameAndArg = [&](int i) {
         return toUTF8StdString(function->name)+" arg"+std::to_string(i);
@@ -682,6 +752,38 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
             }
         } else if (spec->argPrimPtrTypes.size()>i && spec->argPrimPtrTypes[i] != PrimitivePtrType::None) {
             PrimitivePtrType pt = spec->argPrimPtrTypes[i];
+            if (argVector[i].isNil()) {
+                // optional buffer: nil passes NULL
+                primPtrPtrs[i] = nullptr;
+                argValues[i] = &primPtrPtrs[i];
+                noWriteBack[i] = true;
+                continue;
+            }
+            if (isTensor(argVector[i])) {
+                // pass the tensor's raw data buffer directly (in-place, no write-back)
+                ObjTensor* t = asTensor(argVector[i]);
+                TensorDType want;
+                switch(pt) {
+                    case PrimitivePtrType::UInt8:   want = TensorDType::UInt8;   break;
+                    case PrimitivePtrType::Int8:    want = TensorDType::Int8;    break;
+                    case PrimitivePtrType::UInt16:  want = TensorDType::UInt16;  break;
+                    case PrimitivePtrType::Int16:   want = TensorDType::Int16;   break;
+                    case PrimitivePtrType::Int32:   want = TensorDType::Int32;   break;
+                    case PrimitivePtrType::Int64:   want = TensorDType::Int64;   break;
+                    case PrimitivePtrType::Float32: want = TensorDType::Float32; break;
+                    case PrimitivePtrType::Float64: want = TensorDType::Float64; break;
+                    default:
+                        throw std::invalid_argument(funcNameAndArg(i)+": no tensor dtype matches this C pointer type");
+                }
+                if (t->dtype() != want)
+                    throw std::invalid_argument(funcNameAndArg(i)+": tensor dtype "+to_string(t->dtype())+
+                                                " does not match C pointer element type (expected "+to_string(want)+")");
+                bool isConst = spec->argIsConstPtr.size()>i && spec->argIsConstPtr[i];
+                primPtrPtrs[i] = isConst ? const_cast<void*>(t->rawData()) : t->rawDataMut();
+                argValues[i] = &primPtrPtrs[i];
+                noWriteBack[i] = true;
+                continue;
+            }
             switch(pt) {
                 case PrimitivePtrType::Int64:
                     intPtrVals[i] = argVector[i].asInt();
@@ -717,6 +819,14 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                     uint8PtrVals[i] = uint8_t(argVector[i].asInt());
                     primPtrPtrs[i] = &uint8PtrVals[i];
                     break;
+                case PrimitivePtrType::Float32:
+                    floatPtrVals[i] = float(argVector[i].asReal());
+                    primPtrPtrs[i] = &floatPtrVals[i];
+                    break;
+                case PrimitivePtrType::Float64:
+                    doublePtrVals[i] = argVector[i].asReal();
+                    primPtrPtrs[i] = &doublePtrVals[i];
+                    break;
                 default:
                     break;
             }
@@ -745,17 +855,28 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                     mutableStringObjs[i] = asStringObj(argVector[i]);
                 }
             } else {
-                if (!isObjectInstance(argVector[i])) {
-                    if (argVector[i].isNil())
-                        throw std::invalid_argument(funcNameAndArg(i)+" not object instance for C pointer (nil)");
-                    else
-                        throw std::invalid_argument(funcNameAndArg(i)+" not object instance for C pointer");
+                if (argVector[i].isNil()) {
+                    structPtrs[i] = nullptr;                     // NULL pointer
+                    argValues[i] = &structPtrs[i];
+                } else if (isForeignPtr(argVector[i])) {
+                    structPtrs[i] = asForeignPtr(argVector[i])->ptr;  // opaque handle
+                    argValues[i] = &structPtrs[i];
+                } else if (isTensor(argVector[i])) {
+                    // untyped (void*) pointer: pass the tensor's raw data buffer
+                    ObjTensor* t = asTensor(argVector[i]);
+                    bool isConst = spec->argIsConstPtr.size()>i && spec->argIsConstPtr[i];
+                    structPtrs[i] = isConst ? const_cast<void*>(t->rawData()) : t->rawDataMut();
+                    argValues[i] = &structPtrs[i];
+                    noWriteBack[i] = true;
+                } else if (isObjectInstance(argVector[i])) {
+                    ObjectInstance* inst = asObjectInstance(argVector[i]);
+                    structArgInstances[i] = inst;
+                    structBuffers[i] = objectToCStruct(inst, &structStrings[i], &structContexts[i]);
+                    structPtrs[i] = structBuffers[i].data();
+                    argValues[i] = &structPtrs[i];
+                } else {
+                    throw std::invalid_argument(funcNameAndArg(i)+" not object instance, foreignptr, tensor or nil for C pointer");
                 }
-                ObjectInstance* inst = asObjectInstance(argVector[i]);
-                structArgInstances[i] = inst;
-                structBuffers[i] = objectToCStruct(inst, &structStrings[i], &structContexts[i]);
-                structPtrs[i] = structBuffers[i].data();
-                argValues[i] = &structPtrs[i];
             }
         } else {
             throw std::runtime_error("unsupported ffi arg type");
@@ -781,7 +902,7 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
             if (newStr != toUTF8StdString(mutableStringObjs[i]->s))
                 updateInternedString(mutableStringObjs[i], toUnicodeString(newStr));
         }
-        if (spec->argPrimPtrTypes.size()>i && spec->argPrimPtrTypes[i] != PrimitivePtrType::None) {
+        if (spec->argPrimPtrTypes.size()>i && spec->argPrimPtrTypes[i] != PrimitivePtrType::None && !noWriteBack[i]) {
             PrimitivePtrType pt = spec->argPrimPtrTypes[i];
             switch(pt) {
                 case PrimitivePtrType::Int64:
@@ -808,6 +929,12 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                 case PrimitivePtrType::UInt8:
                     argVector[i] = Value::byteVal(uint8PtrVals[i]);
                     break;
+                case PrimitivePtrType::Float32:
+                    argVector[i] = Value::realVal(double(floatPtrVals[i]));
+                    break;
+                case PrimitivePtrType::Float64:
+                    argVector[i] = Value::realVal(doublePtrVals[i]);
+                    break;
                 default: break;
             }
             args[i] = argVector[i];
@@ -828,10 +955,24 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
         return Value::intVal(int32_t(ret.s16));
     else if (spec->retType == &ffi_type_uint16)
         return Value::intVal(int32_t(ret.u16));
+    else if (spec->retType == &ffi_type_sint64)
+        return Value::intVal(ret.i64);
+    else if (spec->retType == &ffi_type_uint64)
+        return Value::intVal(int64_t(ret.ui64));
     else if (spec->retType == &ffi_type_sint8)
         return Value::byteVal(uint8_t(ret.s8));
     else if (spec->retType == &ffi_type_uint8)
         return spec->retIsBool ? Value::boolVal(ret.u8 != 0) : Value::byteVal(ret.u8);
+    else if (spec->retType == &ffi_type_pointer) {
+        if (spec->retIsCharPtr)
+            return ret.p ? Value::stringVal(toUnicodeString(static_cast<const char*>(ret.p))) : Value::nilVal();
+        if (!ret.p)
+            return Value::nilVal();
+        Value fp = Value::foreignPtrVal(ret.p);
+        if (spec->freeFn)
+            asForeignPtr(fp)->registerCleanup([fn = spec->freeFn](void* p) { fn(p); });
+        return fp;
+    }
     else
         return Value::nilVal();
 }

@@ -589,28 +589,34 @@ Value ModuleNN::nn_model_init_builtin(ArgsView args)
     // Auto-warmup: run one inference with zero tensors to initialize the CUDA
     // context and trigger ORT graph optimization.  This makes the first real
     // predict() call fast and consistent.
+    //
+    // Only attempted when every non-batch dimension is static: a dynamic
+    // spatial/sequence dim would force a guessed size, which can violate
+    // model-internal constraints (e.g. a detector's TopK over anchors) — the
+    // failed kernel is harmless but ONNX Runtime logs a scary error for it.
     if (doWarmup && !wrapper->inputShapes.empty()) {
-        std::vector<Value> warmupTensors;
-        std::vector<std::pair<std::string, ObjTensor*>> warmupInputs;
-        warmupTensors.reserve(wrapper->inputShapes.size());
-        warmupInputs.reserve(wrapper->inputShapes.size());
-        for (size_t i = 0; i < wrapper->inputShapes.size(); ++i) {
-            auto shape = wrapper->inputShapes[i];
-            // Replace dynamic dimensions (-1) with reasonable defaults:
-            //   batch dimension (first): 1
-            //   spatial/sequence dimensions: 64 (minimum safe size for most models)
-            for (size_t di = 0; di < shape.size(); ++di)
-                if (shape[di] < 0) shape[di] = (di == 0) ? 1 : 64;
-            warmupTensors.push_back(
-                Value::tensorVal(shape, tensorDTypeFromString(wrapper->inputDtypes[i])));
-            warmupInputs.emplace_back(wrapper->inputNames[i], asTensor(warmupTensors.back()));
-        }
-        try {
-            runInferenceMulti(wrapper.get(), warmupInputs);
-        } catch (const std::exception& e) {
-            // Warmup failure is non-fatal — the model is still usable.
-            // This can happen when synthetic input dimensions are incompatible
-            // with model constraints.
+        bool dynamicNonBatch = false;
+        for (const auto& shape : wrapper->inputShapes)
+            for (size_t di = 1; di < shape.size(); ++di)
+                if (shape[di] < 0) dynamicNonBatch = true;
+        if (!dynamicNonBatch) {
+            std::vector<Value> warmupTensors;
+            std::vector<std::pair<std::string, ObjTensor*>> warmupInputs;
+            warmupTensors.reserve(wrapper->inputShapes.size());
+            warmupInputs.reserve(wrapper->inputShapes.size());
+            for (size_t i = 0; i < wrapper->inputShapes.size(); ++i) {
+                auto shape = wrapper->inputShapes[i];
+                if (!shape.empty() && shape[0] < 0)
+                    shape[0] = 1;   // batch dimension
+                warmupTensors.push_back(
+                    Value::tensorVal(shape, tensorDTypeFromString(wrapper->inputDtypes[i])));
+                warmupInputs.emplace_back(wrapper->inputNames[i], asTensor(warmupTensors.back()));
+            }
+            try {
+                runInferenceMulti(wrapper.get(), warmupInputs);
+            } catch (const std::exception& e) {
+                // Warmup failure is non-fatal — the model is still usable.
+            }
         }
     }
 

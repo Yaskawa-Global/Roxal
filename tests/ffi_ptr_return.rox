@@ -1,0 +1,31 @@
+import sys
+mylib = sys.loadlib('../tests/testlib.so')
+
+@cfunc(lib=mylib, cname='greet', ret='const char*')
+func greet() -> str:
+  _
+
+@cfunc(lib=mylib, cname='counter_new', args='int start', ret='void*')
+func counter_new(start: int):
+  _
+
+@cfunc(lib=mylib, cname='counter_next', args='void* c', ret='int')
+func counter_next(c) -> int:
+  _
+
+@cfunc(lib=mylib, cname='counter_free', args='void* c')
+proc counter_free(c):
+  _
+
+@cfunc(lib=mylib, cname='is_null', args='const void* p', ret='int')
+func is_null(p) -> int:
+  _
+
+print(greet())
+var c = counter_new(10)
+print(counter_next(c))
+print(counter_next(c))
+print(counter_next(c))
+print(is_null(nil))
+print(is_null(c))
+counter_free(c)

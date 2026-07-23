@@ -22,7 +22,9 @@ enum class PrimitivePtrType {
     UInt32,
     Int32,
     UInt64,
-    Int64
+    Int64,
+    Float32,
+    Float64
 };
 
 struct FFIWrapper {
@@ -36,9 +38,11 @@ struct FFIWrapper {
     std::vector<std::vector<ffi_type*>> argStructElems;
     std::vector<ffi_type> argStructTypes;
     std::vector<PrimitivePtrType> argPrimPtrTypes; // primitive pointer arg types
+    std::vector<bool> argIsConstPtr; // pointer arg declared const (no write-back/COW needed)
     ffi_type* retType;
     bool retIsCharPtr{false};
     bool retIsBool{false};
+    void (*freeFn)(void*){nullptr}; // finalizer for returned opaque pointers (free= annotation arg)
     Value retObjType{}; // ObjObjectType
     std::vector<ffi_type*> retStructElems;
     ffi_type retStructType;
@@ -54,6 +58,7 @@ void* createFFIWrapper(void* fn, ffi_type* retType,
                        const std::vector<ffi_type*>& argTypes);
 
 Value loadlib_native(ArgsView args);
+Value source_dir_native(ArgsView args);
 Value ffi_native(ArgsView args);
 
 Value callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* args);

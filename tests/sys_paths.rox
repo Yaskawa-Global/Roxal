@@ -1,0 +1,12 @@
+import sys
+
+var d = sys.source_dir()
+print(d[0:1])
+print(d[len(d)-6:len(d)])
+var mp = sys.module_paths()
+print(len(mp) > 0)
+var found = false
+for p in mp:
+  if p[len(p)-7:len(p)] == 'modules':
+    found = true
+print(found)

@@ -1,0 +1,25 @@
+import sys
+mylib = sys.loadlib('../tests/testlib.so')
+
+@cfunc(lib=mylib, cname='counter_new', args='int start', ret='void*', free='counter_free')
+func counter_new(start: int):
+  _
+
+@cfunc(lib=mylib, cname='counter_next', args='void* c', ret='int')
+func counter_next(c) -> int:
+  _
+
+@cfunc(lib=mylib, cname='counters_freed_count', ret='int')
+func freed_count() -> int:
+  _
+
+var a = counter_new(5)
+var b = counter_new(7)
+print(counter_next(a))
+print(counter_next(b))
+a = nil
+gc()
+print(freed_count())
+b = nil
+gc()
+print(freed_count())

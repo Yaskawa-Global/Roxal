@@ -1,0 +1,9 @@
+import sys
+mylib = sys.loadlib('../tests/testlib.so')
+
+@cfunc(lib=mylib, cname='sum_f32', args='const float* buf, int n', ret='float')
+func sum_f32(t, n: int) -> real:
+  _
+
+var d = tensor([3], [1.0, 2.0, 3.0])
+print(sum_f32(d, 3))

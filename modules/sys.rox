@@ -409,6 +409,16 @@ func _df_graphdot(title:string='') -> string:
 func loadlib(path:string):
   """load a native library at path"""
 
+@builtin
+func source_dir() -> string:
+  """absolute directory of the calling function's source file (lets modules
+  locate data files they ship with, independent of the working directory)"""
+
+@builtin
+func module_paths() -> list:
+  """the module search paths used by import, in order (ROXALPATH entries,
+  --module-paths entries, then the built-in defaults)"""
+
 func filter(items: const list, predicate) -> list:
   """return a new list containing elements for which predicate(element) returns true; predicate can optionally take (element, index)"""
   var result = []

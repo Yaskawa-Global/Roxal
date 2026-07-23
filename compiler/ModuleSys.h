@@ -110,6 +110,8 @@ public:
     Value df_islands_native(VM& vm, ArgsView args);
     Value df_graphdot_native(VM& vm, ArgsView args);
     Value loadlib_native(VM& vm, ArgsView args);
+    Value source_dir_native(VM& vm, ArgsView args);
+    Value module_paths_native(VM& vm, ArgsView args);
 
 
 private:
