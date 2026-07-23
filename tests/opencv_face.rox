@@ -1,0 +1,6 @@
+import opencv.*
+
+# model loads and runs; a blank image has no faces
+var fd = FaceDetector()
+var faces = fd.detect(tensor([160, 160, 3], dtype='uint8'))
+print(len(faces))

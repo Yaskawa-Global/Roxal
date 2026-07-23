@@ -1,0 +1,19 @@
+import opencv.*
+
+var w = VideoWriter('../tests/tmp_opencv_writer.mp4', 10.0, 64, 48)
+for i in range(0 ..< 8):
+  var frame = tensor([48, 64, 3], dtype='uint8')
+  frame[0:48, 0:64, 0] = i * 20
+  w.write(frame)
+w.close()
+
+var cap = open_video('../tests/tmp_opencv_writer.mp4')
+print(cap.width)
+print(cap.height)
+var n = 0
+var frame = cap.read()
+while frame != nil:
+  n = n + 1
+  frame = cap.read()
+print(n)
+cap.close()

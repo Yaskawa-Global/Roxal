@@ -1,0 +1,26 @@
+import opencv.*
+import math.*
+
+var marker = generate_marker(ArucoDict.Dict4x4_50, 7, 80)
+print(marker.shape())
+
+var canvas = tensor([160, 160, 1], dtype='uint8')
+canvas[0:160, 0:160, 0] = 255
+canvas[40:120, 40:120, 0:1] = marker
+var found = detect_markers(canvas, ArucoDict.Dict4x4_50)
+print(len(found))
+print(found[0].id)
+var c = found[0].corners
+print(c.shape())
+print(fabs(c[0, 0] - 40.0) < 3.0 and fabs(c[0, 1] - 40.0) < 3.0)
+print(fabs(c[2, 0] - 119.0) < 3.0 and fabs(c[2, 1] - 119.0) < 3.0)
+
+# draw the detection on an RGB view of the canvas
+var rgb = cvt_color(canvas, ColorCode.Gray2Rgb)
+draw_marker(rgb, found[0])
+print(rgb[40, 79, 1] > 200)
+
+# pose: fx=500, 80 px for a 0.05 marker => z ~ 500*0.05/80 = 0.3125
+var cam = tensor([3, 3], [500.0, 0.0, 80.0,  0.0, 500.0, 80.0,  0.0, 0.0, 1.0])
+var pose = marker_pose(found[0], 0.05, cam)
+print(fabs(pose.tvec[2] - 0.3125) < 0.05)

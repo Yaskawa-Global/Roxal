@@ -1,0 +1,37 @@
+# OpenCV demo: synthesize a scene, find the bright blobs, annotate them.
+#
+# Run from the repo root:  ./build/roxal examples/opencv-blobs.rox
+# (needs modules/opencv/libcvxshim.so — see modules/opencv/README.md)
+
+import opencv.*
+
+print('OpenCV ' + version())
+
+# --- build a synthetic scene: three bright shapes on a dark noisy-ish background
+var scene = tensor([240, 320, 3], dtype='uint8')
+scene[0:240, 0:320, 0:3] = 30
+circle(scene, 80, 70, 30, [220, 220, 90], -1)
+rectangle(scene, 180, 40, 70, 50, [90, 220, 220], -1)
+circle(scene, 230, 170, 25, [220, 120, 220], -1)
+var blurred = gaussian_blur(scene, 7, 2.0)
+
+# --- segment: grayscale -> automatic threshold -> clean up with morphology
+var mask = threshold_otsu(grayscale(blurred))
+mask = morphology(mask, MorphOp.Open, 5)
+
+# --- find and annotate each blob
+var blobs = find_contours(mask)
+print('found ' + string(len(blobs)) + ' blobs')
+for pts in blobs:
+  var r = bounding_rect(pts)
+  rectangle(scene, r[0], r[1], r[2], r[3], [255, 60, 60], 2)
+  put_text(scene, string(int(contour_area(pts))) + ' px', r[0], r[1] - 6,
+           [255, 255, 255], 0.4)
+
+# --- also demo a geometric transform: rotate the annotated scene 15 degrees
+var m = rotation_matrix(160.0, 120.0, 15.0)
+var rotated = warp_affine(scene, m, 320, 240)
+
+imwrite('opencv-blobs-out.png', scene)
+imwrite('opencv-blobs-rotated.png', rotated)
+print('wrote opencv-blobs-out.png and opencv-blobs-rotated.png')

@@ -1,0 +1,3 @@
+import opencv.*
+
+var img = imread('../tests/no_such_image.png')

@@ -340,6 +340,18 @@ media_tests = ['media_read_write', 'media_manipulate', 'media_convert',
                'media_audio_basic', 'media_audio_play', 'media_audio_record',
                'media_audio_err_none', 'media_audio_err_rate',
                'media_audio_err_dtype', 'media_audio_err_format']
+# pure-Roxal FFI binding over the cvx shim; needs modules/opencv/libcvxshim.so built
+opencv_tests = ['opencv_basic', 'opencv_imgproc', 'opencv_imgproc2', 'opencv_draw',
+                'opencv_video', 'opencv_writer', 'opencv_imread_err',
+                'opencv_codec', 'opencv_aruco', 'opencv_calib', 'opencv_handeye',
+                'opencv_features', 'opencv_charuco', 'opencv_stereo_calib',
+                'opencv_homography', 'opencv_blob',
+                'opencv_segment', 'opencv_contour_kit', 'opencv_template_qr',
+                'opencv_flow', 'opencv_reproject', 'opencv_fisheye']
+# DNN task wrappers additionally need the downloaded models
+# (modules/opencv/models/download-models.sh)
+opencv_dnn_tests = ['opencv_face', 'opencv_aliked', 'opencv_track']
+opencv_tests += opencv_dnn_tests
 qt_tests = ['qt_lifecycle', 'qt_load_file',           # P0: lifecycle
             'qt_properties', 'qt_property_error', 'qt_convert',  # P1: handles/props/methods/convert
             'qt_signal_callback', 'qt_signal_event', 'qt_signal_args',  # P2: signals -> callbacks/events
@@ -390,6 +402,7 @@ tests += xml_tests
 tests += socket_tests
 tests += nn_tests
 tests += media_tests
+tests += opencv_tests
 tests += qt_tests
 tests += compute_server_tests
 
@@ -547,6 +560,19 @@ if not has_media:
     if any(test in tests for test in media_tests):
         print("Skipping media tests (feature not enabled).")
         tests = [t for t in tests if t not in media_tests]
+opencv_shim = os.path.join(project_root, 'modules', 'opencv', 'libcvxshim.so')
+if not os.path.exists(opencv_shim):
+    if any(test in tests for test in opencv_tests):
+        print("Skipping opencv tests (modules/opencv/libcvxshim.so not built).")
+        tests = [t for t in tests if t not in opencv_tests]
+else:
+    opencv_models_dir = os.path.join(project_root, 'modules', 'opencv', 'models')
+    opencv_models = ['face_detection_yunet_2023mar.onnx', 'aliked-n16rot-top1k-640.onnx',
+                     'lightglue_for_aliked.onnx', 'object_tracking_vittrack_2023sep.onnx']
+    if not all(os.path.exists(os.path.join(opencv_models_dir, m)) for m in opencv_models):
+        if any(test in tests for test in opencv_dnn_tests):
+            print("Skipping opencv DNN tests (run modules/opencv/models/download-models.sh).")
+            tests = [t for t in tests if t not in opencv_dnn_tests]
 if has_nn and any(test in tests for test in nn_lfs_tests):
     # Check that all LFS-tracked model files are available (not pointers or missing).
     # This covers any .onnx files tracked via .gitattributes LFS patterns.

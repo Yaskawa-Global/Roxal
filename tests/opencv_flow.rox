@@ -1,0 +1,27 @@
+import opencv.*
+import math.*
+
+var f0 = tensor([80, 100, 3], dtype='uint8')
+circle(f0, 30, 30, 8, [255, 255, 255], -1)
+rectangle(f0, 60, 50, 14, 10, [200, 120, 60], -1)
+line(f0, 10, 60, 90, 20, [120, 200, 240], 2)
+var f1 = tensor([80, 100, 3], dtype='uint8')
+f1[0:80, 5:100, 0:3] = f0[0:80, 0:95, 0:3]
+var g0 = grayscale(f0)
+var g1 = grayscale(f1)
+
+var corners = good_features(g0, 30, 0.01, 5.0)
+print(corners.shape()[0] > 3)
+var fr = flow_points(g0, g1, corners)
+var moved = 0.0
+var tracked = 0
+for i in range(0 ..< corners.shape()[0]):
+  if int(fr.status[i]) == 1:
+    tracked = tracked + 1
+    moved = moved + (fr.points[i, 0] - corners[i, 0])
+print(tracked > 3)
+print(fabs(moved / tracked - 5.0) < 1.0)
+
+var dense = flow_dense(g0, g1)
+print(dense.shape())
+print(fabs(dense[30, 32, 0] - 5.0) < 2.0)

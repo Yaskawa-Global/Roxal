@@ -1,0 +1,38 @@
+import opencv.*
+import math.*
+
+var cam = tensor([3, 3], [500.0, 0.0, 160.0,  0.0, 500.0, 120.0,  0.0, 0.0, 1.0])
+var zero_dist = tensor([5])
+var calibL = Calibration(cam, zero_dist, 0.0)
+var calibR = Calibration(cam, zero_dist, 0.0)
+var grid = tensor([20, 3], dtype='float32')
+for gy in range(0 ..< 4):
+  for gx in range(0 ..< 5):
+    grid[gy * 5 + gx, 0] = real(gx)
+    grid[gy * 5 + gx, 1] = real(gy)
+var poses = [Pose(tensor([3], [0.0, 0.0, 0.0]), tensor([3], [-2.0, -1.5, 10.0])),
+             Pose(tensor([3], [0.3, 0.1, 0.0]), tensor([3], [-1.0, -2.0, 12.0])),
+             Pose(tensor([3], [-0.2, 0.3, 0.1]), tensor([3], [-2.5, -1.0, 9.0]))]
+var objs = []
+var lpts = []
+var rpts = []
+for p in poses:
+  objs.append(grid)
+  lpts.append(project_points(grid, p, cam))
+  var pr = Pose(p.rvec, tensor([3], [p.tvec[0] - 0.5, p.tvec[1], p.tvec[2]]))
+  rpts.append(project_points(grid, pr, cam))
+var sc = stereo_calibrate(objs, lpts, rpts, calibL, calibR, 320, 240)
+print(sc.error < 0.1)
+print(fabs(sc.translation[0] + 0.5) < 0.001)
+print(fabs(sc.translation[1]) < 0.001)
+print(fabs(sc.rotation[0, 0] - 1.0) < 0.001)
+print(fabs(sc.rotation[0, 1]) < 0.001)
+
+var sr = stereo_rectify(calibL, calibR, sc, 320, 240)
+print(sr.left_projection.shape())
+print(sr.q.shape())
+print(fabs(sr.right_projection[0, 3] / sr.right_projection[0, 0] + 0.5) < 0.01)
+var scene = tensor([240, 320, 3], dtype='uint8')
+scene[100:140, 100:140, 1] = 255
+var rimg = rectify(scene, calibL, sr.left_rotation, sr.left_projection)
+print(rimg.shape())

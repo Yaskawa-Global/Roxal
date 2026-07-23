@@ -1,0 +1,16 @@
+import opencv.*
+
+var img = tensor([40, 40, 3], dtype='uint8')
+circle(img, 20, 20, 8, [0, 255, 0], -1)
+print(img[20, 14, 1])
+rectangle(img, 2, 2, 10, 10, [255, 0, 0])
+print(img[2, 7, 0] > 200)
+line(img, 0, 39, 39, 39, [0, 0, 255], 1)
+print(img[39, 20, 2] > 200)
+put_text(img, 'A', 4, 36, [255, 255, 255])
+var found = false
+for y in range(28 ..< 36):
+  for x in range(2 ..< 16):
+    if img[y, x, 0] > 200:
+      found = true
+print(found)

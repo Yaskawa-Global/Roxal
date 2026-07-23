@@ -21,7 +21,7 @@ JOBS="${JOBS:-$(nproc)}"
 BUILD_TMP="/tmp/roxal-deps-build"
 
 CORE_TARGETS=(eigen antlr4)
-ALL_TARGETS=(eigen antlr4 cyclonedds grpc media pugixml onnxruntime)
+ALL_TARGETS=(eigen antlr4 cyclonedds grpc media pugixml onnxruntime opencv)
 
 # One-line description per target, shown by --help.
 declare -A TARGET_DESC=(
@@ -32,6 +32,7 @@ declare -A TARGET_DESC=(
     [media]="PNG/JPEG image libs (apt only; no deps/ folder)"
     [pugixml]="pugixml 1.15 (lightweight XML parser)"
     [onnxruntime]="ONNX Runtime 1.24.1 (ML inference; GPU default, --cpu-only)"
+    [opencv]="OpenCV 5.0.0 (modules/opencv FFI binding; builds libcvxshim.so)"
 )
 
 print_help() {
@@ -129,6 +130,7 @@ APT_PACKAGES=(
 )
 # Optional apt deps based on targets
 should_build media && APT_PACKAGES+=(libpng-dev libjpeg-dev)
+should_build opencv && APT_PACKAGES+=(libpng-dev libjpeg-dev libavcodec-dev libavformat-dev libswscale-dev)
 
 MISSING=()
 for pkg in "${APT_PACKAGES[@]}"; do
@@ -293,6 +295,31 @@ if should_build onnxruntime; then
     #   mkdir -p deps/onnxruntime/lib
     #   cp -a build/Linux/Release/libonnxruntime*.so* deps/onnxruntime/lib/
     #   cp -r include deps/onnxruntime/
+fi
+
+# ---------- OpenCV 5.0.0 (for the modules/opencv FFI binding) ----------
+# Pinned: modules/opencv/init.rox and shim/cvx_shim.cpp are written against this
+# exact version (the shim static_asserts 5.0 at compile time; init.rox re-checks
+# at import). The source tree stays in deps/opencv because shim/generate.py
+# reads hdr_parser.py and the module headers from it; libraries install to
+# deps/opencv/install where modules/opencv/shim/build.sh expects them.
+if should_build opencv; then
+    OPENCV_VER="5.0.0"
+    echo "=== Building OpenCV ${OPENCV_VER} ==="
+    cd "$DEPS_DIR"
+    [ -d opencv ] || git clone --depth 1 --branch "$OPENCV_VER" https://github.com/opencv/opencv.git opencv
+    cmake -B opencv/build -S opencv \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=ON \
+        -DCMAKE_INSTALL_PREFIX="$DEPS_DIR/opencv/install" \
+        -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF \
+        -DBUILD_opencv_apps=OFF -DBUILD_opencv_python3=OFF -DBUILD_JAVA=OFF \
+        -DBUILD_opencv_js=OFF -DBUILD_DOCS=OFF \
+        -DOPENCV_GENERATE_PKGCONFIG=ON
+    cmake --build opencv/build -j"$JOBS"
+    cmake --install opencv/build
+    bash "$SCRIPT_DIR/modules/opencv/shim/build.sh"
+    echo "  -> installed to $DEPS_DIR/opencv/install (+ modules/opencv/libcvxshim.so)"
 fi
 
 echo ""

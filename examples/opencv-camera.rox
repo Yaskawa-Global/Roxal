@@ -1,0 +1,48 @@
+# Live camera demo: ArUco marker tracking + edge overlay, displayed through
+# qt.FrameView. Close the window to exit.
+#
+# Run from the repo root:  ./build/roxal examples/opencv-camera.rox
+# Needs modules/opencv/libcvxshim.so (see modules/opencv/README.md) and a
+# Qt-enabled build; with no camera attached it falls back to the test video.
+
+import opencv.*
+import qt
+
+var cap
+var from_file = false
+try:
+  cap = open_camera(0)
+  print("camera 0: {cap.width} x {cap.height}")
+except e:
+  print('no camera available; playing tests/testvideo.mp4')
+  cap = open_video('tests/testvideo.mp4')
+  from_file = true
+
+var e = qt.Engine()
+var qml = 'import QtQuick\nimport QtQuick.Window\nimport Roxal\n'
+qml = qml + 'Window { visible: true; width: ' + string(cap.width) + '; height: ' + string(cap.height)
+qml = qml + '; title: "Roxal OpenCV - markers + edges (close to quit)"; '
+qml = qml + 'FrameView { objectName: "fb"; anchors.fill: parent } }'
+e.load_string(qml)
+var fb = e.find('fb')
+
+proc frame_tick():
+  var frame = cap.read()
+  if frame == nil:
+    # end of a video file: restart; cameras just skip the odd empty frame
+    if from_file:
+      cap.set(CapProp.PosFrames, 0.0)
+    return
+  # edge overlay in the blue channel
+  var edges = canny(gaussian_blur(grayscale(frame), 5, 1.5), 60.0, 160.0)
+  frame[0:cap.height, 0:cap.width, 2:3] = edges
+  # ArUco markers, outlined live
+  var markers = detect_markers(frame)
+  for m in markers:
+    draw_marker(frame, m)
+  put_text(frame, string(len(markers)) + ' markers', 8, 24, [0, 255, 0], 0.7, Font.Simplex, 2)
+  fb.present(frame)
+
+qt.every(33, frame_tick)
+e.run()
+cap.close()

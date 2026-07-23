@@ -1,0 +1,13 @@
+import opencv.*
+
+var cap = open_video('../tests/testvideo.mp4')
+print(cap.width)
+print(cap.height)
+print(int(cap.fps()))
+var n = 0
+var frame = cap.read()
+while frame != nil:
+  n = n + 1
+  frame = cap.read()
+print(n)
+cap.close()

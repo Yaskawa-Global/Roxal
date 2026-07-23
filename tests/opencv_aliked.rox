@@ -1,0 +1,27 @@
+import opencv.*
+import math.*
+
+var a = tensor([120, 160, 3], dtype='uint8')
+circle(a, 40, 30, 12, [255, 100, 40], -1)
+circle(a, 100, 70, 9, [40, 255, 120], -1)
+circle(a, 70, 95, 15, [120, 40, 255], -1)
+rectangle(a, 115, 20, 30, 25, [255, 255, 0], -1)
+rectangle(a, 20, 70, 22, 30, [0, 200, 255], -1)
+line(a, 10, 10, 150, 110, [200, 200, 200], 3)
+var b = tensor([120, 160, 3], dtype='uint8')
+b[0:120, 6:160, 0:3] = a[0:120, 0:154, 0:3]
+
+var det = Aliked()
+var fa = det.detect(a)
+var fb = det.detect(b)
+print(fa.points.shape()[0] > 10)
+print(fa.descriptors.shape()[1])
+print(fa.width)
+var lg = LightGlue()
+var ms = lg.match_features(fa, fb)
+var m = ms.pairs.shape()[0]
+print(m > 5)
+var sum_dx = 0.0
+for i in range(0 ..< m):
+  sum_dx = sum_dx + (fb.points[int(ms.pairs[i, 1]), 0] - fa.points[int(ms.pairs[i, 0]), 0])
+print(fabs(sum_dx / m - 6.0) < 1.5)

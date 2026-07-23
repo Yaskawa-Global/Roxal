@@ -1,0 +1,12 @@
+import opencv.*
+
+var img = tensor([16, 12, 3], dtype='uint8')
+img[4:10, 3:9, 0] = 200
+img[2:6, 1:5, 2] = 90
+var data = imencode(img)
+print(data.shape()[0] > 20)
+var back = imdecode(data)
+print(back == img)
+var jpg = imencode(img, '.jpg', 90)
+var jback = imdecode(jpg)
+print(jback.shape())

@@ -1,0 +1,25 @@
+import opencv.*
+import math.*
+
+var scene = tensor([60, 80, 3], dtype='uint8')
+circle(scene, 60, 40, 6, [255, 255, 255], -1)
+var mask = threshold(grayscale(scene), 128.0)
+var cs = find_contours(mask)
+print(len(cs))
+
+var hull = convex_hull(cs[0])
+print(hull.shape()[1])
+print(hull.shape()[0] <= cs[0].shape()[0])
+
+var simple = approx_poly(cs[0], 2.0)
+print(simple.shape()[0] <= 8)
+
+var rr = min_area_rect(cs[0])
+print(fabs(rr.center_x - 60.0) < 1.5)
+print(fabs(rr.center_y - 40.0) < 1.5)
+print(fabs(rr.width - 12.0) < 2.0)
+var bp = box_points(rr)
+print(bp.shape())
+
+draw_contours(scene, cs, [0, 255, 0], 1)
+print(scene[34, 60, 1] > 150 or scene[33, 60, 1] > 150)

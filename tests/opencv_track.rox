@@ -1,0 +1,16 @@
+import opencv.*
+import math.*
+
+var tr = Tracker()
+var f0 = tensor([120, 160, 3], dtype='uint8')
+f0[40:70, 30:60, 1] = 255
+tr.start(f0, 30, 40, 30, 30)
+var box = nil
+for step in range(1 ..< 9):
+  var f = tensor([120, 160, 3], dtype='uint8')
+  var x0 = 30 + step * 4
+  f[40:70, x0:x0+30, 1] = 255
+  box = tr.update(f)
+print(box != nil)
+print(fabs(real(box[0]) - 62.0) < 8.0)
+print(tr.score > 0.3)

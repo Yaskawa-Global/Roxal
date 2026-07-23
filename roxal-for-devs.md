@@ -2238,6 +2238,35 @@ Limitations: no callbacks (C calling back into Roxal), no varargs, POSIX
 libraries stay mapped until process exit (finalizers registered with `free=`
 may run at any GC point, including shutdown).
 
+The `opencv` module (`modules/opencv/init.rox`) is the reference example of a
+complete pure-Roxal binding built this way.
+
+## Advanced: Computer Vision (opencv)
+
+The `opencv` module binds OpenCV 5 as pure Roxal over a small generated C shim
+(no native module in the roxal binary — the reference example of an FFI
+binding). Images are uint8 tensors of shape `[height, width, channels]` in RGB
+order — the same convention as `media.Image` and `qt.FrameView` — so tensors
+flow between all three without conversion.
+
+```roxal
+import opencv.*
+
+var img = imread('photo.jpg')                 # uint8 [H, W, 3] RGB tensor
+var edges = canny(gaussian_blur(grayscale(img), 5, 1.5), 50.0, 150.0)
+imwrite('edges.png', edges)
+```
+
+Coverage: image I/O and in-memory codecs, the imgproc filter/morphology/edge
+family, drawing, geometric transforms, contours, camera + video file capture
+and writing, ArUco markers with pose, camera calibration (chessboard and
+ChArUco), hand-eye calibration, stereo calibration/rectification/depth, ORB
+features and matching, homography/affine estimation.
+
+**Full documentation: `modules/opencv/opencv-guide.md`** (API guide) and
+`modules/opencv/README.md` (architecture and building). Examples:
+`examples/opencv-blobs.rox`, `examples/opencv-camera.rox`.
+
 ## Builtin Modules & Functions Reference
 
 The functions in the sys module are always globally available (- as if `import sys.*` were used).  See `sys.rox`.

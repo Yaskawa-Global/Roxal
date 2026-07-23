@@ -1,0 +1,27 @@
+import opencv.*
+import math.*
+
+var board = charuco_board(5, 4, 0.04, 0.025)
+var bimg = board_image(board, 500, 400, 20)
+print(bimg.shape())
+var det = detect_charuco(bimg, board)
+print(det.corners.shape())
+print(det.ids.shape())
+print(det.object_points.shape())
+
+# board frame: origin at the outer board corner, so 12 inner corners of a
+# 5x4-square board span 0.04..0.16 x 0.04..0.12
+var min_x = 1.0
+var max_x = 0.0
+var max_y = 0.0
+for i in range(0 ..< det.ids.shape()[0]):
+  if det.object_points[i, 0] < min_x:
+    min_x = det.object_points[i, 0]
+  if det.object_points[i, 0] > max_x:
+    max_x = det.object_points[i, 0]
+  if det.object_points[i, 1] > max_y:
+    max_y = det.object_points[i, 1]
+print(fabs(min_x - 0.04) < 1e-6)
+print(fabs(max_x - 0.16) < 1e-6)
+print(fabs(max_y - 0.12) < 1e-6)
+print(det.object_points[0, 2])

@@ -1,0 +1,25 @@
+import opencv.*
+import math.*
+
+var big = tensor([50, 70, 3], dtype='uint8')
+rectangle(big, 30, 20, 12, 9, [200, 60, 120], -1)
+circle(big, 36, 24, 3, [60, 200, 250], -1)
+var templ = big[18:32, 28:46, 0:3]
+var m = find_template(big, templ)
+print(m.x)
+print(m.y)
+print(m.score > 0.99)
+
+var lowc = tensor([40, 40, 1], dtype='uint8')
+lowc[0:40, 0:40, 0] = 100
+lowc[10:30, 10:30, 0] = 110
+var eq = clahe(lowc)
+print(eq.shape())
+print(int(eq[20, 20, 0]) > int(lowc[20, 20, 0]))
+
+var qr = generate_qr('roxal rules', 240)
+print(qr.shape())
+var found = detect_qr(qr)
+print(len(found))
+print(found[0].text)
+print(found[0].corners.shape())

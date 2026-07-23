@@ -44,3 +44,5 @@ node_modules/
 # 3D mesh assets for the qt examples are .obj files, not compiled objects — keep them
 # (the generic *.obj rule above is for build artifacts).
 !examples/qt/*.obj
+modules/opencv/models/*.onnx
+tests/tmp_*

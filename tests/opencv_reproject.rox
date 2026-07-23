@@ -1,0 +1,26 @@
+import opencv.*
+import math.*
+
+var cam = tensor([3, 3], [500.0, 0.0, 160.0,  0.0, 500.0, 120.0,  0.0, 0.0, 1.0])
+var zero_dist = tensor([5])
+var calibL = Calibration(cam, zero_dist, 0.0)
+var calibR = Calibration(cam, zero_dist, 0.0)
+var sc = StereoCalibration(tensor([3, 3], [1.0,0.0,0.0, 0.0,1.0,0.0, 0.0,0.0,1.0]), tensor([3], [-0.5, 0.0, 0.0]), 0.0)
+var sr = stereo_rectify(calibL, calibR, sc, 320, 240)
+
+# cached maps match the one-shot path exactly
+var scene = tensor([240, 320, 3], dtype='uint8')
+scene[100:140, 100:140, 1] = 255
+var rm = RectifyMap(calibL, sr.left_rotation, sr.left_projection, 320, 240)
+print(rm.apply(scene) == rectify(scene, calibL, sr.left_rotation, sr.left_projection))
+
+# z = f * B / d: 500 * 0.5 / 20 = 12.5; min-disparity pixels marked invalid
+var disp = tensor([240, 320, 1], dtype='float32')
+disp[0:240, 0:320, 0] = 10.0
+disp[100:140, 100:200, 0] = 20.0
+var pts3 = reproject_3d(disp, sr.q)
+print(pts3.shape())
+print(fabs(pts3[120, 160, 2] - 12.5) < 0.1)
+print(pts3[10, 10, 2] > 1000.0)
+var pts3b = reproject_3d(disp, sr.q, false)
+print(fabs(pts3b[10, 10, 2] - 25.0) < 0.1)

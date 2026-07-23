@@ -1,0 +1,28 @@
+import opencv.*
+import math.*
+
+var fk = tensor([3, 3], [400.0, 0.0, 160.0,  0.0, 400.0, 120.0,  0.0, 0.0, 1.0])
+var fd = tensor([4], [0.05, -0.02, 0.01, 0.0])
+var grid = tensor([20, 3], dtype='float32')
+for gy in range(0 ..< 4):
+  for gx in range(0 ..< 5):
+    grid[gy * 5 + gx, 0] = real(gx)
+    grid[gy * 5 + gx, 1] = real(gy)
+var poses = [Pose(tensor([3], [0.0, 0.0, 0.0]), tensor([3], [-2.0, -1.5, 10.0])),
+             Pose(tensor([3], [0.3, 0.1, 0.0]), tensor([3], [-1.0, -2.0, 12.0])),
+             Pose(tensor([3], [-0.2, 0.3, 0.1]), tensor([3], [-2.5, -1.0, 9.0]))]
+var objs = []
+var imgs = []
+for p in poses:
+  objs.append(grid)
+  imgs.append(project_points_fisheye(grid, p, fk, fd))
+var fc = calibrate_camera_fisheye(objs, imgs, 320, 240)
+print(fc.error < 0.1)
+print(fabs(fc.camera_matrix[0, 0] - 400.0) < 2.0)
+print(fabs(fc.camera_matrix[0, 2] - 160.0) < 2.0)
+print(fc.dist_coeffs.shape())
+print(fabs(fc.dist_coeffs[0] - 0.05) < 0.01)
+
+var scene = tensor([240, 320, 3], dtype='uint8')
+scene[100:140, 100:140, 1] = 255
+print(undistort_fisheye(scene, fk, fd).shape())

@@ -1,0 +1,39 @@
+import opencv.*
+
+var img = tensor([32, 24, 3], dtype='uint8')
+img[8:16, 6:18, 0:3] = 255
+var g = grayscale(img)
+
+print(median_blur(img, 3).shape())
+print(blur(img, 3).shape())
+print(bilateral_filter(img, 5, 50.0, 50.0).shape())
+print(erode(g, 3).shape())
+print(dilate(g, 3, 2).shape())
+print(morphology(g, MorphOp.Close, 3).shape())
+print(equalize_hist(g).shape())
+print(sobel(g, 1, 0).shape())
+print(laplacian(g).shape())
+
+# flip vertically: white rows 8..15 -> 16..23
+var f = flip(g, 0)
+print(f[20, 12, 0])
+print(f[8, 12, 0])
+
+# rotate 90 clockwise: [32, 24] -> [24, 32]; (y, x) -> (x, 31 - y)
+var r = rotate(img, Rotation.Clockwise90)
+print(r.shape())
+print(r[10, 20, 0])
+
+# identity affine warp preserves pixels
+var m = rotation_matrix(0.0, 0.0, 0.0)
+var wp = warp_affine(img, m, 24, 32)
+print(wp.shape())
+print(wp[10, 10, 0])
+print(wp[0, 0, 0])
+
+# contours of the white square
+var th = threshold(g, 128.0)
+var cs = find_contours(th)
+print(len(cs))
+print(bounding_rect(cs[0]))
+print(contour_area(cs[0]))

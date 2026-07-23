@@ -1,0 +1,1872 @@
+# OpenCV binding for Roxal — pure Roxal over a thin C shim (libcvxshim.so).
+#
+# Images are uint8 tensors of shape [height, width, channels] in RGB channel
+# order (Roxal's image convention, shared with media.Image and qt.FrameView).
+# BGR<->RGB conversion happens inside the shim, at the OpenCV boundary.
+#
+# The section between the GENERATED markers is produced by shim/generate.py
+# from OpenCV's own binding metadata — edit the spec tables there, not the
+# section itself.
+
+import sys
+cvxlib = sys.loadlib('./libcvxshim.so')
+
+
+#
+# internal shim declarations
+
+@cfunc(lib=cvxlib, cname='cvx_version', ret='const char*')
+func _version() -> string:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_last_error', ret='const char*')
+func _last_error() -> string:
+  _
+
+# This module (including its generated section) is written against OpenCV 5.0;
+# fail loudly at import if libcvxshim was built against something else.
+if _version()[0:3] != '5.0':
+  raise RuntimeException('opencv module expects OpenCV 5.0.x but libcvxshim.so reports ' + _version() + ' — rebuild the shim (modules/opencv/shim/build.sh) against the pinned deps/opencv')
+
+@cfunc(lib=cvxlib, cname='cvx_imread', args='const char* path, int channels', ret='void*', free='cvx_mat_release')
+func _imread(path: string, channels: int):
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_mat_rows', args='void* m', ret='int')
+func _mat_rows(m) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_mat_cols', args='void* m', ret='int')
+func _mat_cols(m) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_mat_channels', args='void* m', ret='int')
+func _mat_channels(m) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_mat_copy_to', args='void* m, void* dst, int64_t bytes', ret='int')
+func _mat_copy_to(m, dst, bytes: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_imwrite', args='const char* path, const void* data, int h, int w, int c', ret='int')
+func _imwrite(path: string, data, h: int, w: int, c: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_resize', args='const void* src, int sh, int sw, int c, void* dst, int dh, int dw, int interp', ret='int')
+func _resize(src, sh: int, sw: int, c: int, dst, dh: int, dw: int, interp: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_cvt_color', args='const void* src, int h, int w, int sc, void* dst, int dc, int code', ret='int')
+func _cvt_color(src, h: int, w: int, sc: int, dst, dc: int, code: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_gaussian_blur', args='const void* src, int h, int w, int c, void* dst, int ksize, double sigma', ret='int')
+func _gaussian_blur(src, h: int, w: int, c: int, dst, ksize: int, sigma: real) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_canny', args='const void* src, int h, int w, void* dst, double t1, double t2', ret='int')
+func _canny(src, h: int, w: int, dst, t1: real, t2: real) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_threshold', args='const void* src, int h, int w, void* dst, double thresh, double maxval, int type', ret='double')
+func _threshold(src, h: int, w: int, dst, thresh: real, maxval: real, mode: int) -> real:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_line', args='void* img, int h, int w, int c, int x1, int y1, int x2, int y2, double r, double g, double b, int thickness', ret='int')
+func _line(img, h: int, w: int, c: int, x1: int, y1: int, x2: int, y2: int, r: real, g: real, b: real, thickness: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_rectangle', args='void* img, int h, int w, int c, int x, int y, int rw, int rh, double r, double g, double b, int thickness', ret='int')
+func _rectangle(img, h: int, w: int, c: int, x: int, y: int, rw: int, rh: int, r: real, g: real, b: real, thickness: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_circle', args='void* img, int h, int w, int c, int cx, int cy, int radius, double r, double g, double b, int thickness', ret='int')
+func _circle(img, h: int, w: int, c: int, cx: int, cy: int, radius: int, r: real, g: real, b: real, thickness: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_put_text', args='void* img, int h, int w, int c, const char* text, int x, int y, int font, double scale, double r, double g, double b, int thickness', ret='int')
+func _put_text(img, h: int, w: int, c: int, text: string, x: int, y: int, font: int, scale: real, r: real, g: real, b: real, thickness: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_warp_affine', args='const void* src, int sh, int sw, int c, void* dst, int dh, int dw, const double* m6, int interp', ret='int')
+func _warp_affine(src, sh: int, sw: int, c: int, dst, dh: int, dw: int, m, interp: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_warp_perspective', args='const void* src, int sh, int sw, int c, void* dst, int dh, int dw, const double* m9, int interp', ret='int')
+func _warp_perspective(src, sh: int, sw: int, c: int, dst, dh: int, dw: int, m, interp: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_rotation_matrix_2d', args='double cx, double cy, double angle, double scale, double* out6', ret='int')
+func _rotation_matrix_2d(cx: real, cy: real, angle: real, scale: real, out) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_rotate', args='const void* src, int sh, int sw, int c, void* dst, int dh, int dw, int code', ret='int')
+func _rotate(src, sh: int, sw: int, c: int, dst, dh: int, dw: int, code: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_find_contours', args='const void* src, int h, int w, int mode, int method', ret='void*', free='cvx_contours_release')
+func _find_contours(src, h: int, w: int, mode: int, method: int):
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_contours_count', args='void* cc', ret='int')
+func _contours_count(cc) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_contour_len', args='void* cc, int i', ret='int')
+func _contour_len(cc, i: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_contour_copy', args='void* cc, int i, int32_t* dst', ret='int')
+func _contour_copy(cc, i: int, dst) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_contour_area', args='const int32_t* pts, int n', ret='double')
+func _contour_area(pts, n: int) -> real:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_bounding_rect', args='const int32_t* pts, int n, int32_t* out4', ret='int')
+func _bounding_rect(pts, n: int, out) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_cap_open', args='int index', ret='void*', free='cvx_cap_release')
+func _cap_open(index: int):
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_cap_open_file', args='const char* path', ret='void*', free='cvx_cap_release')
+func _cap_open_file(path: string):
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_cap_get', args='void* cap, int prop', ret='double')
+func _cap_get(cap, prop: int) -> real:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_cap_set', args='void* cap, int prop, double value', ret='int')
+func _cap_set(cap, prop: int, value: real) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_cap_read', args='void* cap, void* dst, int h, int w', ret='int')
+func _cap_read(cap, dst, h: int, w: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_cap_close', args='void* cap')
+proc _cap_close(cap):
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_writer_open', args='const char* path, const char* fourcc, double fps, int w, int h', ret='void*', free='cvx_writer_release')
+func _writer_open(path: string, fourcc: string, fps: real, w: int, h: int):
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_writer_write', args='void* wr, const void* data, int h, int w', ret='int')
+func _writer_write(wr, data, h: int, w: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_writer_close', args='void* wr')
+proc _writer_close(wr):
+  _
+
+
+# ==== BEGIN GENERATED (shim/generate.py) — do not edit by hand ====
+
+type Interpolation enum:
+  Nearest = 0
+  Linear = 1
+  Cubic = 2
+  Area = 3
+  Lanczos4 = 4
+  LinearExact = 5
+  NearestExact = 6
+
+type ThresholdType enum:
+  Binary = 0
+  BinaryInv = 1
+  Trunc = 2
+  Tozero = 3
+  TozeroInv = 4
+  Otsu = 8
+  Triangle = 16
+
+type ColorCode enum:
+  Rgb2Rgba = 0
+  Rgba2Rgb = 1
+  Rgb2Gray = 7
+  Gray2Rgb = 8
+  Gray2Rgba = 9
+  Rgba2Gray = 11
+  Rgb2Xyz = 33
+  Xyz2Rgb = 35
+  Rgb2Ycrcb = 37
+  Ycrcb2Rgb = 39
+  Rgb2Hsv = 41
+  Rgb2Lab = 45
+  Rgb2Luv = 51
+  Rgb2Hls = 53
+  Hsv2Rgb = 55
+  Lab2Rgb = 57
+  Luv2Rgb = 59
+  Hls2Rgb = 61
+  Rgb2Yuv = 83
+  Yuv2Rgb = 85
+
+type MorphShape enum:
+  Rect = 0
+  Cross = 1
+  Ellipse = 2
+
+type MorphOp enum:
+  Open = 2
+  Close = 3
+  Gradient = 4
+  Tophat = 5
+  Blackhat = 6
+
+type ContourMode enum:
+  External = 0
+  List = 1
+  Ccomp = 2
+  Tree = 3
+
+type ContourApprox enum:
+  None = 1
+  Simple = 2
+  Tc89L1 = 3
+  Tc89Kcos = 4
+
+type Font enum:
+  Simplex = 0
+  Plain = 1
+  Duplex = 2
+  Complex = 3
+  Triplex = 4
+  ComplexSmall = 5
+  ScriptSimplex = 6
+  ScriptComplex = 7
+
+type Rotation enum:
+  Clockwise90 = 0
+  Half = 1
+  CounterClockwise90 = 2
+
+type CapProp enum:
+  PosMsec = 0
+  PosFrames = 1
+  FrameWidth = 3
+  FrameHeight = 4
+  Fps = 5
+  Fourcc = 6
+  FrameCount = 7
+  Brightness = 10
+  Contrast = 11
+  Saturation = 12
+  Gain = 14
+  Exposure = 15
+  AutoExposure = 21
+  Buffersize = 38
+
+type ArucoDict enum:
+  Dict4x4_50 = 0
+  Dict4x4_100 = 1
+  Dict4x4_250 = 2
+  Dict4x4_1000 = 3
+  Dict5x5_50 = 4
+  Dict5x5_100 = 5
+  Dict5x5_250 = 6
+  Dict5x5_1000 = 7
+  Dict6x6_50 = 8
+  Dict6x6_100 = 9
+  Dict6x6_250 = 10
+  Dict6x6_1000 = 11
+  Dict7x7_50 = 12
+  Dict7x7_100 = 13
+  Dict7x7_250 = 14
+  Dict7x7_1000 = 15
+  Original = 16
+  AprilTag16h5 = 17
+  AprilTag25h9 = 18
+  AprilTag36h10 = 19
+  AprilTag36h11 = 20
+
+type HandEyeMethod enum:
+  Tsai = 0
+  Park = 1
+  Horaud = 2
+  Andreff = 3
+  Daniilidis = 4
+
+type TemplateMethod enum:
+  Sqdiff = 0
+  SqdiffNormed = 1
+  Ccorr = 2
+  CcorrNormed = 3
+  Ccoeff = 4
+  CcoeffNormed = 5
+
+# destination channel count for each ColorCode (generated from the codes above)
+func _cvt_channels(code) -> int:
+  if code == ColorCode.Rgb2Rgba:
+    return 4
+  if code == ColorCode.Rgb2Gray:
+    return 1
+  if code == ColorCode.Gray2Rgba:
+    return 4
+  if code == ColorCode.Rgba2Gray:
+    return 1
+  return 3
+
+@cfunc(lib=cvxlib, cname='cvx_gen_median_blur', args='const void* src, int h, int w, int c, void* dst, int ksize', ret='int')
+func _gen_median_blur(src, h: int, w: int, c: int, dst, ksize: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_gen_blur', args='const void* src, int h, int w, int c, void* dst, int ksize', ret='int')
+func _gen_blur(src, h: int, w: int, c: int, dst, ksize: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_gen_bilateral_filter', args='const void* src, int h, int w, int c, void* dst, int diameter, double sigma_color, double sigma_space', ret='int')
+func _gen_bilateral_filter(src, h: int, w: int, c: int, dst, diameter: int, sigma_color: real, sigma_space: real) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_gen_equalize_hist', args='const void* src, int h, int w, int c, void* dst', ret='int')
+func _gen_equalize_hist(src, h: int, w: int, c: int, dst) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_gen_sobel', args='const void* src, int h, int w, int c, void* dst, int dx, int dy, int ksize', ret='int')
+func _gen_sobel(src, h: int, w: int, c: int, dst, dx: int, dy: int, ksize: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_gen_laplacian', args='const void* src, int h, int w, int c, void* dst, int ksize', ret='int')
+func _gen_laplacian(src, h: int, w: int, c: int, dst, ksize: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_gen_erode', args='const void* src, int h, int w, int c, void* dst, int ksize, int iterations, int kshape', ret='int')
+func _gen_erode(src, h: int, w: int, c: int, dst, ksize: int, iterations: int, kshape) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_gen_dilate', args='const void* src, int h, int w, int c, void* dst, int ksize, int iterations, int kshape', ret='int')
+func _gen_dilate(src, h: int, w: int, c: int, dst, ksize: int, iterations: int, kshape) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_gen_morphology', args='const void* src, int h, int w, int c, void* dst, int op, int ksize, int iterations, int kshape', ret='int')
+func _gen_morphology(src, h: int, w: int, c: int, dst, op, ksize: int, iterations: int, kshape) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_gen_flip', args='const void* src, int h, int w, int c, void* dst, int axis', ret='int')
+func _gen_flip(src, h: int, w: int, c: int, dst, axis: int) -> int:
+  _
+
+# Median filter; ksize must be odd.
+func median_blur(img: tensor, ksize: int) -> tensor:
+  var s = img.shape()
+  var out = tensor([s[0], s[1], s[2]], dtype='uint8')
+  if _gen_median_blur(img, s[0], s[1], s[2], out, ksize) != 0:
+    raise RuntimeException('median_blur: ' + _last_error())
+  return out
+
+# Box blur.
+func blur(img: tensor, ksize: int) -> tensor:
+  var s = img.shape()
+  var out = tensor([s[0], s[1], s[2]], dtype='uint8')
+  if _gen_blur(img, s[0], s[1], s[2], out, ksize) != 0:
+    raise RuntimeException('blur: ' + _last_error())
+  return out
+
+# Edge-preserving smoothing.
+func bilateral_filter(img: tensor, diameter: int, sigma_color: real, sigma_space: real) -> tensor:
+  var s = img.shape()
+  var out = tensor([s[0], s[1], s[2]], dtype='uint8')
+  if _gen_bilateral_filter(img, s[0], s[1], s[2], out, diameter, sigma_color, sigma_space) != 0:
+    raise RuntimeException('bilateral_filter: ' + _last_error())
+  return out
+
+# Histogram equalization (grayscale).
+func equalize_hist(img: tensor) -> tensor:
+  var s = img.shape()
+  if s[2] != 1:
+    raise RuntimeException('equalize_hist: expects a grayscale image (use grayscale() first)')
+  var out = tensor([s[0], s[1], s[2]], dtype='uint8')
+  if _gen_equalize_hist(img, s[0], s[1], s[2], out) != 0:
+    raise RuntimeException('equalize_hist: ' + _last_error())
+  return out
+
+# Sobel derivative magnitude (grayscale).
+func sobel(img: tensor, dx: int, dy: int, ksize: int = 3) -> tensor:
+  var s = img.shape()
+  if s[2] != 1:
+    raise RuntimeException('sobel: expects a grayscale image (use grayscale() first)')
+  var out = tensor([s[0], s[1], s[2]], dtype='uint8')
+  if _gen_sobel(img, s[0], s[1], s[2], out, dx, dy, ksize) != 0:
+    raise RuntimeException('sobel: ' + _last_error())
+  return out
+
+# Laplacian edge response (grayscale).
+func laplacian(img: tensor, ksize: int = 3) -> tensor:
+  var s = img.shape()
+  if s[2] != 1:
+    raise RuntimeException('laplacian: expects a grayscale image (use grayscale() first)')
+  var out = tensor([s[0], s[1], s[2]], dtype='uint8')
+  if _gen_laplacian(img, s[0], s[1], s[2], out, ksize) != 0:
+    raise RuntimeException('laplacian: ' + _last_error())
+  return out
+
+# Morphological erosion.
+func erode(img: tensor, ksize: int, iterations: int = 1, kshape = MorphShape.Rect) -> tensor:
+  var s = img.shape()
+  var out = tensor([s[0], s[1], s[2]], dtype='uint8')
+  if _gen_erode(img, s[0], s[1], s[2], out, ksize, iterations, kshape) != 0:
+    raise RuntimeException('erode: ' + _last_error())
+  return out
+
+# Morphological dilation.
+func dilate(img: tensor, ksize: int, iterations: int = 1, kshape = MorphShape.Rect) -> tensor:
+  var s = img.shape()
+  var out = tensor([s[0], s[1], s[2]], dtype='uint8')
+  if _gen_dilate(img, s[0], s[1], s[2], out, ksize, iterations, kshape) != 0:
+    raise RuntimeException('dilate: ' + _last_error())
+  return out
+
+# Morphological operation (see MorphOp).
+func morphology(img: tensor, op, ksize: int, iterations: int = 1, kshape = MorphShape.Rect) -> tensor:
+  var s = img.shape()
+  var out = tensor([s[0], s[1], s[2]], dtype='uint8')
+  if _gen_morphology(img, s[0], s[1], s[2], out, op, ksize, iterations, kshape) != 0:
+    raise RuntimeException('morphology: ' + _last_error())
+  return out
+
+# Flip: axis 0 = vertical, 1 = horizontal, -1 = both.
+func flip(img: tensor, axis: int) -> tensor:
+  var s = img.shape()
+  var out = tensor([s[0], s[1], s[2]], dtype='uint8')
+  if _gen_flip(img, s[0], s[1], s[2], out, axis) != 0:
+    raise RuntimeException('flip: ' + _last_error())
+  return out
+
+# ==== END GENERATED ====
+
+
+#
+# public API
+
+func version() -> string:
+  return _version()
+
+# Read an image file as a uint8 [H, W, C] RGB tensor. channels: 3 (RGB, default),
+# 1 (grayscale) or 4 (RGBA).
+func imread(path: string, channels: int = 3) -> tensor:
+  var m = _imread(path, channels)
+  if m == nil:
+    raise RuntimeException('imread: ' + _last_error())
+  var h = _mat_rows(m)
+  var w = _mat_cols(m)
+  var c = _mat_channels(m)
+  var img = tensor([h, w, c], dtype='uint8')
+  if _mat_copy_to(m, img, h * w * c) != 0:
+    raise RuntimeException('imread: ' + _last_error())
+  return img
+
+# Write a uint8 [H, W, C] RGB tensor to an image file (format from extension).
+proc imwrite(path: string, img: tensor):
+  var s = img.shape()
+  if _imwrite(path, img, s[0], s[1], s[2]) != 0:
+    raise RuntimeException('imwrite: ' + _last_error())
+
+# Resize to the given width x height.
+func resize(img: tensor, width: int, height: int, interpolation = Interpolation.Linear) -> tensor:
+  var s = img.shape()
+  var out = tensor([height, width, s[2]], dtype='uint8')
+  if _resize(img, s[0], s[1], s[2], out, height, width, interpolation) != 0:
+    raise RuntimeException('resize: ' + _last_error())
+  return out
+
+# Convert between color spaces (images stay RGB-ordered at this API).
+func cvt_color(img: tensor, code) -> tensor:
+  var s = img.shape()
+  var dc = _cvt_channels(code)
+  var out = tensor([s[0], s[1], dc], dtype='uint8')
+  if _cvt_color(img, s[0], s[1], s[2], out, dc, code) != 0:
+    raise RuntimeException('cvt_color: ' + _last_error())
+  return out
+
+# Convenience: RGB -> single-channel grayscale [H, W, 1]
+func grayscale(img: tensor) -> tensor:
+  return cvt_color(img, ColorCode.Rgb2Gray)
+
+func gaussian_blur(img: tensor, ksize: int, sigma: real = 0.0) -> tensor:
+  var s = img.shape()
+  var out = tensor([s[0], s[1], s[2]], dtype='uint8')
+  if _gaussian_blur(img, s[0], s[1], s[2], out, ksize, sigma) != 0:
+    raise RuntimeException('gaussian_blur: ' + _last_error())
+  return out
+
+# Edge detection on a grayscale [H, W, 1] image.
+func canny(img: tensor, threshold1: real, threshold2: real) -> tensor:
+  var s = img.shape()
+  if s[2] != 1:
+    raise RuntimeException('canny: expects a grayscale image (use grayscale() first)')
+  var out = tensor([s[0], s[1], 1], dtype='uint8')
+  if _canny(img, s[0], s[1], out, threshold1, threshold2) != 0:
+    raise RuntimeException('canny: ' + _last_error())
+  return out
+
+# Threshold a grayscale [H, W, 1] image.
+func threshold(img: tensor, thresh: real, maxval: real = 255.0, mode = ThresholdType.Binary) -> tensor:
+  var s = img.shape()
+  if s[2] != 1:
+    raise RuntimeException('threshold: expects a grayscale image (use grayscale() first)')
+  var out = tensor([s[0], s[1], 1], dtype='uint8')
+  if _threshold(img, s[0], s[1], out, thresh, maxval, mode) < 0.0:
+    raise RuntimeException('threshold: ' + _last_error())
+  return out
+
+# Otsu automatic threshold (returns the binarized image).
+func threshold_otsu(img: tensor, maxval: real = 255.0) -> tensor:
+  var s = img.shape()
+  if s[2] != 1:
+    raise RuntimeException('threshold_otsu: expects a grayscale image (use grayscale() first)')
+  var out = tensor([s[0], s[1], 1], dtype='uint8')
+  if _threshold(img, s[0], s[1], out, 0.0, maxval, 8) < 0.0:
+    raise RuntimeException('threshold_otsu: ' + _last_error())
+  return out
+
+# Rotate by a 90-degree step (see Rotation); 90/270 swap width and height.
+func rotate(img: tensor, rotation) -> tensor:
+  var s = img.shape()
+  var dh = s[0]
+  var dw = s[1]
+  if rotation != Rotation.Half:
+    dh = s[1]
+    dw = s[0]
+  var out = tensor([dh, dw, s[2]], dtype='uint8')
+  if _rotate(img, s[0], s[1], s[2], out, dh, dw, rotation) != 0:
+    raise RuntimeException('rotate: ' + _last_error())
+  return out
+
+
+#
+# drawing (in place, on the passed image; color is [r, g, b], thickness -1 = filled)
+
+proc line(img: tensor, x1: int, y1: int, x2: int, y2: int, color, thickness: int = 1):
+  var s = img.shape()
+  if _line(img, s[0], s[1], s[2], x1, y1, x2, y2, color[0], color[1], color[2], thickness) != 0:
+    raise RuntimeException('line: ' + _last_error())
+
+proc rectangle(img: tensor, x: int, y: int, width: int, height: int, color, thickness: int = 1):
+  var s = img.shape()
+  if _rectangle(img, s[0], s[1], s[2], x, y, width, height, color[0], color[1], color[2], thickness) != 0:
+    raise RuntimeException('rectangle: ' + _last_error())
+
+proc circle(img: tensor, cx: int, cy: int, radius: int, color, thickness: int = 1):
+  var s = img.shape()
+  if _circle(img, s[0], s[1], s[2], cx, cy, radius, color[0], color[1], color[2], thickness) != 0:
+    raise RuntimeException('circle: ' + _last_error())
+
+proc put_text(img: tensor, text: string, x: int, y: int, color, scale: real = 1.0, font = Font.Simplex, thickness: int = 1):
+  var s = img.shape()
+  if _put_text(img, s[0], s[1], s[2], text, x, y, font, scale, color[0], color[1], color[2], thickness) != 0:
+    raise RuntimeException('put_text: ' + _last_error())
+
+
+#
+# geometric transforms
+
+# 2x3 float64 affine matrix for rotation around (cx, cy) by angle degrees.
+func rotation_matrix(cx: real, cy: real, angle: real, scale: real = 1.0) -> tensor:
+  var m = tensor([2, 3])
+  if _rotation_matrix_2d(cx, cy, angle, scale, m) != 0:
+    raise RuntimeException('rotation_matrix: ' + _last_error())
+  return m
+
+# Apply a 2x3 float64 affine matrix; output is width x height.
+func warp_affine(img: tensor, m: tensor, width: int, height: int, interpolation = Interpolation.Linear) -> tensor:
+  var s = img.shape()
+  var out = tensor([height, width, s[2]], dtype='uint8')
+  if _warp_affine(img, s[0], s[1], s[2], out, height, width, m, interpolation) != 0:
+    raise RuntimeException('warp_affine: ' + _last_error())
+  return out
+
+# Apply a 3x3 float64 perspective matrix; output is width x height.
+func warp_perspective(img: tensor, m: tensor, width: int, height: int, interpolation = Interpolation.Linear) -> tensor:
+  var s = img.shape()
+  var out = tensor([height, width, s[2]], dtype='uint8')
+  if _warp_perspective(img, s[0], s[1], s[2], out, height, width, m, interpolation) != 0:
+    raise RuntimeException('warp_perspective: ' + _last_error())
+  return out
+
+
+#
+# contours (on a binary grayscale image, e.g. from threshold() or canny())
+
+# Returns a list of contours, each an int32 [N, 2] tensor of x, y points.
+func find_contours(img: tensor, mode = ContourMode.External, method = ContourApprox.Simple) -> list:
+  var s = img.shape()
+  if s[2] != 1:
+    raise RuntimeException('find_contours: expects a binary grayscale image')
+  var cc = _find_contours(img, s[0], s[1], mode, method)
+  if cc == nil:
+    raise RuntimeException('find_contours: ' + _last_error())
+  var result = []
+  var n = _contours_count(cc)
+  for i in range(..<n):
+    var ln = _contour_len(cc, i)
+    var pts = tensor([ln, 2], dtype='int32')
+    if _contour_copy(cc, i, pts) != 0:
+      raise RuntimeException('find_contours: ' + _last_error())
+    result.append(pts)
+  return result
+
+func contour_area(points: tensor) -> real:
+  var s = points.shape()
+  var a = _contour_area(points, s[0])
+  if a < 0.0:
+    raise RuntimeException('contour_area: ' + _last_error())
+  return a
+
+# Bounding box of an int32 [N, 2] point set as [x, y, width, height].
+func bounding_rect(points: tensor) -> list:
+  var s = points.shape()
+  var out = tensor([4], dtype='int32')
+  if _bounding_rect(points, s[0], out) != 0:
+    raise RuntimeException('bounding_rect: ' + _last_error())
+  return [int(out[0]), int(out[1]), int(out[2]), int(out[3])]
+
+
+#
+# video
+
+type VideoCapture object:
+  var _cap
+  var width: int = 0
+  var height: int = 0
+
+  proc init(cap):
+    _cap = cap
+    width = int(_cap_get(cap, CapProp.FrameWidth))
+    height = int(_cap_get(cap, CapProp.FrameHeight))
+
+  # Next frame as a uint8 [H, W, 3] RGB tensor, or nil at end of stream.
+  func read() -> tensor:
+    var frame = tensor([height, width, 3], dtype='uint8')
+    var rc = _cap_read(_cap, frame, height, width)
+    if rc < 0:
+      raise RuntimeException('VideoCapture.read: ' + _last_error())
+    if rc == 0:
+      return nil
+    return frame
+
+  func fps() -> real:
+    return _cap_get(_cap, CapProp.Fps)
+
+  func get(prop) -> real:
+    return _cap_get(_cap, prop)
+
+  proc set(prop, value: real):
+    if _cap_set(_cap, prop, value) != 0:
+      raise RuntimeException('VideoCapture.set: ' + _last_error())
+
+  # Release the camera/file now (GC would eventually, but this is deterministic).
+  proc close():
+    _cap_close(_cap)
+
+# Open a camera by index.
+func open_camera(index: int = 0) -> VideoCapture:
+  var cap = _cap_open(index)
+  if cap == nil:
+    raise RuntimeException('open_camera: ' + _last_error())
+  return VideoCapture(cap)
+
+# Open a video file.
+func open_video(path: string) -> VideoCapture:
+  var cap = _cap_open_file(path)
+  if cap == nil:
+    raise RuntimeException('open_video: ' + _last_error())
+  return VideoCapture(cap)
+
+type VideoWriter object:
+  var _w
+
+  proc init(path: string, fps: real, width: int, height: int, codec: string = 'mp4v'):
+    _w = _writer_open(path, codec, fps, width, height)
+    if _w == nil:
+      raise RuntimeException('VideoWriter: ' + _last_error())
+
+  # Append a uint8 [H, W, 3] RGB frame (must match the writer's size).
+  proc write(frame: tensor):
+    var s = frame.shape()
+    if _writer_write(_w, frame, s[0], s[1]) != 0:
+      raise RuntimeException('VideoWriter.write: ' + _last_error())
+
+  # Flush and close the file. Do call this — GC finalization is not prompt
+  # enough to guarantee a playable file at script end.
+  proc close():
+    _writer_close(_w)
+
+
+#
+# ---- Tier 2 shim declarations ----
+
+@cfunc(lib=cvxlib, cname='cvx_imencode', args='const char* ext, const void* data, int h, int w, int c, int quality', ret='void*', free='cvx_mat_release')
+func _imencode(ext: string, data, h: int, w: int, c: int, quality: int):
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_imdecode', args='const void* buf, int64_t nbytes, int channels', ret='void*', free='cvx_mat_release')
+func _imdecode(buf, nbytes: int, channels: int):
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_aruco_generate', args='int dict_id, int id, int side, void* dst', ret='int')
+func _aruco_generate(dict_id: int, id: int, side: int, dst) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_aruco_detector_new', args='int dict_id', ret='void*', free='cvx_aruco_detector_release')
+func _aruco_detector_new(dict_id: int):
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_aruco_detect', args='void* det, const void* img, int h, int w, int c', ret='void*', free='cvx_aruco_release')
+func _aruco_detect(det, img, h: int, w: int, c: int):
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_aruco_count', args='void* r', ret='int')
+func _aruco_count(r) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_aruco_get', args='void* r, int i, float* corners8', ret='int')
+func _aruco_get(r, i: int, corners) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_solve_pnp', args='const float* obj, const float* imgp, int n, const double* cam9, const double* dist, int ndist, double* rvec3, double* tvec3', ret='int')
+func _solve_pnp(obj, imgp, n: int, cam, dist, ndist: int, rvec, tvec) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_project_points', args='const float* obj, int n, const double* rvec3, const double* tvec3, const double* cam9, const double* dist, int ndist, float* out', ret='int')
+func _project_points(obj, n: int, rvec, tvec, cam, dist, ndist: int, out) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_find_chessboard', args='const void* img, int h, int w, int c, int cols, int rows, float* out', ret='int')
+func _find_chessboard(img, h: int, w: int, c: int, cols: int, rows: int, out) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_calibrate_camera', args='const float* obj, const float* imgp, const int32_t* counts, int nviews, int img_w, int img_h, double* cam9, double* dist5', ret='double')
+func _calibrate_camera(obj, imgp, counts, nviews: int, img_w: int, img_h: int, cam, dist) -> real:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_undistort', args='const void* src, int h, int w, int c, void* dst, const double* cam9, const double* dist, int ndist', ret='int')
+func _undistort(src, h: int, w: int, c: int, dst, cam, dist, ndist: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_calibrate_hand_eye', args='const double* g2b16, const double* t2c16, int n, int method, double* out16', ret='int')
+func _calibrate_hand_eye(g2b, t2c, n: int, method: int, out) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_orb_detect', args='const void* img, int h, int w, int c, int nfeatures', ret='void*', free='cvx_features_release')
+func _orb_detect(img, h: int, w: int, c: int, nfeatures: int):
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_features_count', args='void* f', ret='int')
+func _features_count(f) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_features_desc_cols', args='void* f', ret='int')
+func _features_desc_cols(f) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_features_keypoints', args='void* f, float* out', ret='int')
+func _features_keypoints(f, out) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_features_descriptors', args='void* f, void* out', ret='int')
+func _features_descriptors(f, out) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_match_hamming', args='const uint8_t* d1, int n1, const uint8_t* d2, int n2, int dsize, int32_t* pairs, float* dists', ret='int')
+func _match_hamming(d1, n1: int, d2, n2: int, dsize: int, pairs, dists) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_stereo_sgbm', args='const void* left, const void* right, int h, int w, int min_disp, int num_disp, int block_size, float* out', ret='int')
+func _stereo_sgbm(left, right, h: int, w: int, min_disp: int, num_disp: int, block_size: int, out) -> int:
+  _
+
+
+#
+# ---- in-memory image codecs ----
+
+# copy a decoded Mat handle into a [H, W, C] uint8 tensor
+func _mat_to_image(m, what: string) -> tensor:
+  var h = _mat_rows(m)
+  var w = _mat_cols(m)
+  var c = _mat_channels(m)
+  var img = tensor([h, w, c], dtype='uint8')
+  if _mat_copy_to(m, img, h * w * c) != 0:
+    raise RuntimeException(what + ': ' + _last_error())
+  return img
+
+# Encode an image to an in-memory byte stream ('.png', '.jpg', ...) as a [N] uint8 tensor.
+func imencode(img: tensor, ext: string = '.png', quality: int = 95) -> tensor:
+  var s = img.shape()
+  var m = _imencode(ext, img, s[0], s[1], s[2], quality)
+  if m == nil:
+    raise RuntimeException('imencode: ' + _last_error())
+  var n = _mat_cols(m)
+  var out = tensor([n], dtype='uint8')
+  if _mat_copy_to(m, out, n) != 0:
+    raise RuntimeException('imencode: ' + _last_error())
+  return out
+
+# Decode an in-memory byte stream to a uint8 [H, W, C] RGB image.
+func imdecode(data: tensor, channels: int = 3) -> tensor:
+  var s = data.shape()
+  var m = _imdecode(data, s[0], channels)
+  if m == nil:
+    raise RuntimeException('imdecode: ' + _last_error())
+  return _mat_to_image(m, 'imdecode')
+
+
+#
+# ---- ArUco markers ----
+
+type Marker object:
+  var id: int = 0
+  var corners      # float32 [4, 2] pixel corners: TL, TR, BR, BL
+
+# Render a marker image (uint8 [side, side, 1]) suitable for printing/display.
+func generate_marker(dictionary, id: int, side: int = 200) -> tensor:
+  var out = tensor([side, side, 1], dtype='uint8')
+  if _aruco_generate(dictionary, id, side, out) != 0:
+    raise RuntimeException('generate_marker: ' + _last_error())
+  return out
+
+# detector instances are cached per dictionary (construction loads tables)
+var _aruco_detectors = {}
+
+func _aruco_detector(dictionary):
+  var key = int(dictionary)
+  if key in _aruco_detectors:
+    return _aruco_detectors[key]
+  var det = _aruco_detector_new(dictionary)
+  if det == nil:
+    raise RuntimeException('detect_markers: ' + _last_error())
+  _aruco_detectors[key] = det
+  return det
+
+# Detect markers; returns a list of Marker.
+func detect_markers(img: tensor, dictionary = ArucoDict.Dict4x4_50) -> list:
+  var s = img.shape()
+  var r = _aruco_detect(_aruco_detector(dictionary), img, s[0], s[1], s[2])
+  if r == nil:
+    raise RuntimeException('detect_markers: ' + _last_error())
+  var result = []
+  for i in range(0 ..< _aruco_count(r)):
+    var corners = tensor([4, 2], dtype='float32')
+    var id = _aruco_get(r, i, corners)
+    if id < 0:
+      raise RuntimeException('detect_markers: ' + _last_error())
+    result.append(Marker(id, corners))
+  return result
+
+# Draw a detected marker outline and id onto the image (in place).
+proc draw_marker(img: tensor, marker: Marker, color = [0, 255, 0], thickness: int = 2):
+  var c = marker.corners
+  for j in range(0 ..< 4):
+    var k = (j + 1) rem 4
+    line(img, int(c[j, 0]), int(c[j, 1]), int(c[k, 0]), int(c[k, 1]), color, thickness)
+  put_text(img, string(marker.id), int(c[0, 0]), int(c[0, 1]) - 6, color, 0.6)
+
+
+#
+# ---- camera calibration and pose ----
+
+type Pose object:
+  var rvec         # float64 [3] Rodrigues rotation vector
+  var tvec         # float64 [3] translation
+
+func _ndist(dist_coeffs) -> int:
+  if dist_coeffs == nil:
+    return 0
+  return dist_coeffs.shape()[0]
+
+# Pose from 3D<->2D correspondences: object_points float32 [N, 3],
+# image_points float32 [N, 2], camera_matrix float64 [3, 3].
+func solve_pnp(object_points: tensor, image_points: tensor, camera_matrix: tensor, dist_coeffs = nil) -> Pose:
+  var n = object_points.shape()[0]
+  var rvec = tensor([3])
+  var tvec = tensor([3])
+  if _solve_pnp(object_points, image_points, n, camera_matrix, dist_coeffs, _ndist(dist_coeffs), rvec, tvec) != 0:
+    raise RuntimeException('solve_pnp: ' + _last_error())
+  return Pose(rvec, tvec)
+
+# Project 3D points (float32 [N, 3]) through a pose; returns float32 [N, 2] pixels.
+func project_points(object_points: tensor, pose: Pose, camera_matrix: tensor, dist_coeffs = nil) -> tensor:
+  var n = object_points.shape()[0]
+  var out = tensor([n, 2], dtype='float32')
+  if _project_points(object_points, n, pose.rvec, pose.tvec, camera_matrix, dist_coeffs, _ndist(dist_coeffs), out) != 0:
+    raise RuntimeException('project_points: ' + _last_error())
+  return out
+
+# Pose of a detected marker whose printed side length is marker_size (any unit;
+# tvec comes back in the same unit).
+func marker_pose(marker: Marker, marker_size: real, camera_matrix: tensor, dist_coeffs = nil) -> Pose:
+  var h = marker_size / 2.0
+  var obj = tensor([4, 3], [-h, h, 0.0,  h, h, 0.0,  h, -h, 0.0,  -h, -h, 0.0], dtype='float32')
+  return solve_pnp(obj, marker.corners, camera_matrix, dist_coeffs)
+
+# Find inner chessboard corners (cols x rows inner corners); float32 [cols*rows, 2]
+# in row-major board order, or nil if the board was not found.
+func find_chessboard(img: tensor, cols: int, rows: int) -> tensor:
+  var s = img.shape()
+  var out = tensor([cols * rows, 2], dtype='float32')
+  var rc = _find_chessboard(img, s[0], s[1], s[2], cols, rows, out)
+  if rc < 0:
+    raise RuntimeException('find_chessboard: ' + _last_error())
+  if rc == 0:
+    return nil
+  return out
+
+type Calibration object:
+  var camera_matrix    # float64 [3, 3]
+  var dist_coeffs      # float64 [5]
+  var error: real = 0.0
+
+# Calibrate from N views: object_points is a list of float32 [Ni, 3] tensors,
+# image_points a list of float32 [Ni, 2] tensors (same lengths).
+func calibrate_camera(object_points: list, image_points: list, width: int, height: int) -> Calibration:
+  var nviews = len(object_points)
+  var total = 0
+  for v in object_points:
+    total = total + v.shape()[0]
+  var obj = tensor([total, 3], dtype='float32')
+  var imgp = tensor([total, 2], dtype='float32')
+  var counts = tensor([nviews], dtype='int32')
+  var off = 0
+  for i in range(0 ..< nviews):
+    var n = object_points[i].shape()[0]
+    obj[off:off+n, 0:3] = object_points[i]
+    imgp[off:off+n, 0:2] = image_points[i]
+    counts[i] = n
+    off = off + n
+  var cam = tensor([3, 3])
+  var dist = tensor([5])
+  var err = _calibrate_camera(obj, imgp, counts, nviews, width, height, cam, dist)
+  if err < 0.0:
+    raise RuntimeException('calibrate_camera: ' + _last_error())
+  return Calibration(cam, dist, err)
+
+# Undo lens distortion using calibration results.
+func undistort(img: tensor, camera_matrix: tensor, dist_coeffs: tensor) -> tensor:
+  var s = img.shape()
+  var out = tensor([s[0], s[1], s[2]], dtype='uint8')
+  if _undistort(img, s[0], s[1], s[2], out, camera_matrix, dist_coeffs, dist_coeffs.shape()[0]) != 0:
+    raise RuntimeException('undistort: ' + _last_error())
+  return out
+
+# Hand-eye calibration: gripper_to_base and target_to_cam are equal-length lists
+# of float64 [4, 4] transforms; returns the camera->gripper [4, 4] transform.
+func hand_eye(gripper_to_base: list, target_to_cam: list, method = HandEyeMethod.Tsai) -> tensor:
+  var n = len(gripper_to_base)
+  var g2b = tensor([n, 4, 4])
+  var t2c = tensor([n, 4, 4])
+  for i in range(0 ..< n):
+    for r in range(0 ..< 4):
+      for c in range(0 ..< 4):
+        g2b[i, r, c] = gripper_to_base[i][r, c]
+        t2c[i, r, c] = target_to_cam[i][r, c]
+  var out = tensor([4, 4])
+  if _calibrate_hand_eye(g2b, t2c, n, method, out) != 0:
+    raise RuntimeException('hand_eye: ' + _last_error())
+  return out
+
+
+#
+# ---- features and matching ----
+
+type Features object:
+  var points           # float32 [N, 4]: x, y, size, angle (nil when none found)
+  var descriptors      # uint8 [N, 32] (ORB) or float32 [N, 128] (ALIKED); nil when none
+  var width: int = 0   # size of the image the features came from
+  var height: int = 0
+
+# build a Features result from a shim CvxFeatures handle
+func _features_from(f, w: int, h: int, what: string) -> Features:
+  var n = _features_count(f)
+  if n == 0:
+    return Features(nil, nil, w, h)
+  var pts = tensor([n, 4], dtype='float32')
+  var dt = 'uint8'
+  if _features_desc_type(f) == 1:
+    dt = 'float32'
+  var desc = tensor([n, _features_desc_cols(f)], dtype=dt)
+  if _features_keypoints(f, pts) != 0 or _features_descriptors(f, desc) != 0:
+    raise RuntimeException(what + ': ' + _last_error())
+  return Features(pts, desc, w, h)
+
+# ORB keypoints + descriptors.
+func orb_detect(img: tensor, nfeatures: int = 500) -> Features:
+  var s = img.shape()
+  var f = _orb_detect(img, s[0], s[1], s[2], nfeatures)
+  if f == nil:
+    raise RuntimeException('orb_detect: ' + _last_error())
+  return _features_from(f, s[1], s[0], 'orb_detect')
+
+func _features_desc_type_of(f: Features) -> int:
+  if f.descriptors.shape()[1] > 32:
+    return 1
+  return 0
+
+type Matches object:
+  var pairs            # int32 [M, 2]: index in a, index in b
+  var distances        # float32 [M]
+
+# Cross-checked brute-force matching of two ORB feature sets.
+func match_features(a: Features, b: Features) -> Matches:
+  if a.points == nil or b.points == nil:
+    return Matches(nil, nil)
+  if _features_desc_type_of(a) != 0:
+    raise RuntimeException('match_features: expects ORB (uint8) descriptors; use LightGlue for ALIKED features')
+  var n1 = a.descriptors.shape()[0]
+  var n2 = b.descriptors.shape()[0]
+  var pairs = tensor([n1, 2], dtype='int32')
+  var dists = tensor([n1], dtype='float32')
+  var m = _match_hamming(a.descriptors, n1, b.descriptors, n2, a.descriptors.shape()[1], pairs, dists)
+  if m < 0:
+    raise RuntimeException('match_features: ' + _last_error())
+  if m == 0:
+    return Matches(nil, nil)
+  return Matches(pairs[0:m, 0:2], dists[0:m])
+
+
+#
+# ---- stereo depth ----
+
+# Disparity map from a rectified grayscale pair; float32 [H, W, 1], in pixels.
+# num_disparities must be a multiple of 16.
+func disparity(left: tensor, right: tensor, num_disparities: int = 64, block_size: int = 9, min_disparity: int = 0) -> tensor:
+  var s = left.shape()
+  if s[2] != 1:
+    raise RuntimeException('disparity: expects grayscale images')
+  var out = tensor([s[0], s[1], 1], dtype='float32')
+  if _stereo_sgbm(left, right, s[0], s[1], min_disparity, num_disparities, block_size, out) != 0:
+    raise RuntimeException('disparity: ' + _last_error())
+  return out
+
+
+#
+# ---- Tier 3 shim declarations ----
+
+@cfunc(lib=cvxlib, cname='cvx_charuco_board_new', args='int sx, int sy, double square_len, double marker_len, int dict_id', ret='void*', free='cvx_charuco_board_release')
+func _charuco_board_new(sx: int, sy: int, square_len: real, marker_len: real, dict_id: int):
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_charuco_board_image', args='void* b, void* dst, int h, int w, int margin', ret='int')
+func _charuco_board_image(b, dst, h: int, w: int, margin: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_charuco_detect', args='void* b, const void* img, int h, int w, int c', ret='void*', free='cvx_charuco_release')
+func _charuco_detect(b, img, h: int, w: int, c: int):
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_charuco_count', args='void* r', ret='int')
+func _charuco_count(r) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_charuco_copy', args='void* r, float* corners, int32_t* ids', ret='int')
+func _charuco_copy(r, corners, ids) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_charuco_match', args='void* b, void* r, float* obj, float* imgp', ret='int')
+func _charuco_match(b, r, obj, imgp) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_stereo_calibrate', args='const float* obj, const float* ipl, const float* ipr, const int32_t* counts, int nviews, int w, int h, const double* cam1, const double* dist1, int nd1, const double* cam2, const double* dist2, int nd2, double* R9, double* T3', ret='double')
+func _stereo_calibrate(obj, ipl, ipr, counts, nviews: int, w: int, h: int, cam1, dist1, nd1: int, cam2, dist2, nd2: int, r, t) -> real:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_stereo_rectify', args='const double* cam1, const double* dist1, int nd1, const double* cam2, const double* dist2, int nd2, int w, int h, const double* R9, const double* T3, double* R1, double* R2, double* P1, double* P2, double* Q', ret='int')
+func _stereo_rectify(cam1, dist1, nd1: int, cam2, dist2, nd2: int, w: int, h: int, r, t, r1, r2, p1, p2, q) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_rectify_remap', args='const void* src, int h, int w, int c, void* dst, const double* cam9, const double* dist, int ndist, const double* R9, const double* P12', ret='int')
+func _rectify_remap(src, h: int, w: int, c: int, dst, cam, dist, ndist: int, r, p) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_find_homography', args='const float* src, const float* dst, int n, int method, double ransac_thresh, double* h9', ret='int')
+func _find_homography(src, dst, n: int, method: int, ransac_thresh: real, h) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_estimate_affine_2d', args='const float* src, const float* dst, int n, double* m6', ret='int')
+func _estimate_affine_2d(src, dst, n: int, m) -> int:
+  _
+
+
+#
+# ---- ChArUco boards (calibration targets) ----
+
+type CharucoBoard object:
+  var _b
+  var squares_x: int = 0
+  var squares_y: int = 0
+
+# A squares_x x squares_y chessboard with ArUco markers in the white squares.
+# square_size/marker_size in your physical unit (e.g. meters).
+func charuco_board(squares_x: int, squares_y: int, square_size: real, marker_size: real, dictionary = ArucoDict.Dict4x4_50) -> CharucoBoard:
+  var b = _charuco_board_new(squares_x, squares_y, square_size, marker_size, dictionary)
+  if b == nil:
+    raise RuntimeException('charuco_board: ' + _last_error())
+  return CharucoBoard(b, squares_x, squares_y)
+
+# Render the board (uint8 [height, width, 1]) for printing/display.
+func board_image(board: CharucoBoard, width: int, height: int, margin: int = 0) -> tensor:
+  var out = tensor([height, width, 1], dtype='uint8')
+  if _charuco_board_image(board._b, out, height, width, margin) != 0:
+    raise RuntimeException('board_image: ' + _last_error())
+  return out
+
+type CharucoDetection object:
+  var corners          # float32 [N, 2] refined corner image points
+  var ids              # int32 [N] board corner ids
+  var object_points    # float32 [N, 3] matching board-frame 3D points
+
+# Detect the board's chessboard corners; nil when none are found. The result
+# pairs image corners with board-frame object points, ready for calibrate_camera.
+func detect_charuco(img: tensor, board: CharucoBoard) -> CharucoDetection:
+  var s = img.shape()
+  var r = _charuco_detect(board._b, img, s[0], s[1], s[2])
+  if r == nil:
+    raise RuntimeException('detect_charuco: ' + _last_error())
+  var n = _charuco_count(r)
+  if n == 0:
+    return nil
+  var corners = tensor([n, 2], dtype='float32')
+  var ids = tensor([n], dtype='int32')
+  if _charuco_copy(r, corners, ids) != 0:
+    raise RuntimeException('detect_charuco: ' + _last_error())
+  var obj = tensor([n, 3], dtype='float32')
+  if _charuco_match(board._b, r, obj, corners) != 0:
+    raise RuntimeException('detect_charuco: ' + _last_error())
+  return CharucoDetection(corners, ids, obj)
+
+
+#
+# ---- stereo calibration and rectification ----
+
+type StereoCalibration object:
+  var rotation         # float64 [3, 3]: right-camera rotation w.r.t. left
+  var translation      # float64 [3]: right-camera translation w.r.t. left
+  var error: real = 0.0
+
+# Relative pose of a rigid two-camera pair. Each camera must be individually
+# calibrated first; per-view point lists mirror calibrate_camera.
+func stereo_calibrate(object_points: list, left_points: list, right_points: list, left: Calibration, right: Calibration, width: int, height: int) -> StereoCalibration:
+  var nviews = len(object_points)
+  var total = 0
+  for v in object_points:
+    total = total + v.shape()[0]
+  var obj = tensor([total, 3], dtype='float32')
+  var ipl = tensor([total, 2], dtype='float32')
+  var ipr = tensor([total, 2], dtype='float32')
+  var counts = tensor([nviews], dtype='int32')
+  var off = 0
+  for i in range(0 ..< nviews):
+    var n = object_points[i].shape()[0]
+    obj[off:off+n, 0:3] = object_points[i]
+    ipl[off:off+n, 0:2] = left_points[i]
+    ipr[off:off+n, 0:2] = right_points[i]
+    counts[i] = n
+    off = off + n
+  var r = tensor([3, 3])
+  var t = tensor([3])
+  var err = _stereo_calibrate(obj, ipl, ipr, counts, nviews, width, height,
+                              left.camera_matrix, left.dist_coeffs, left.dist_coeffs.shape()[0],
+                              right.camera_matrix, right.dist_coeffs, right.dist_coeffs.shape()[0], r, t)
+  if err < 0.0:
+    raise RuntimeException('stereo_calibrate: ' + _last_error())
+  return StereoCalibration(r, t, err)
+
+type StereoRectification object:
+  var left_rotation        # float64 [3, 3]
+  var right_rotation       # float64 [3, 3]
+  var left_projection      # float64 [3, 4]
+  var right_projection     # float64 [3, 4]
+  var q                    # float64 [4, 4] disparity-to-depth mapping
+
+# Rectification transforms that make the two image planes row-aligned (so
+# disparity() can search along rows).
+func stereo_rectify(left: Calibration, right: Calibration, stereo: StereoCalibration, width: int, height: int) -> StereoRectification:
+  var r1 = tensor([3, 3])
+  var r2 = tensor([3, 3])
+  var p1 = tensor([3, 4])
+  var p2 = tensor([3, 4])
+  var q = tensor([4, 4])
+  if _stereo_rectify(left.camera_matrix, left.dist_coeffs, left.dist_coeffs.shape()[0],
+                     right.camera_matrix, right.dist_coeffs, right.dist_coeffs.shape()[0],
+                     width, height, stereo.rotation, stereo.translation, r1, r2, p1, p2, q) != 0:
+    raise RuntimeException('stereo_rectify: ' + _last_error())
+  return StereoRectification(r1, r2, p1, p2, q)
+
+# Undistort + rectify one camera's image (use left_/right_ rotation+projection
+# from stereo_rectify for the matching camera).
+func rectify(img: tensor, calib: Calibration, rotation: tensor, projection: tensor) -> tensor:
+  var s = img.shape()
+  var out = tensor([s[0], s[1], s[2]], dtype='uint8')
+  if _rectify_remap(img, s[0], s[1], s[2], out, calib.camera_matrix,
+                    calib.dist_coeffs, calib.dist_coeffs.shape()[0], rotation, projection) != 0:
+    raise RuntimeException('rectify: ' + _last_error())
+  return out
+
+
+#
+# ---- planar geometry estimation ----
+
+type HomographyMethod enum:
+  LeastSquares = 0
+  Lmeds = 4
+  Ransac = 8
+  Rho = 16
+
+# 3x3 float64 perspective transform mapping src_points onto dst_points
+# (float32 [N, 2] each, N >= 4).
+func find_homography(src_points: tensor, dst_points: tensor, method = HomographyMethod.Ransac, threshold: real = 3.0) -> tensor:
+  var n = src_points.shape()[0]
+  var h = tensor([3, 3])
+  if _find_homography(src_points, dst_points, n, method, threshold, h) != 0:
+    raise RuntimeException('find_homography: ' + _last_error())
+  return h
+
+# 2x3 float64 affine transform mapping src_points onto dst_points (N >= 3).
+func estimate_affine(src_points: tensor, dst_points: tensor) -> tensor:
+  var n = src_points.shape()[0]
+  var m = tensor([2, 3])
+  if _estimate_affine_2d(src_points, dst_points, n, m) != 0:
+    raise RuntimeException('estimate_affine: ' + _last_error())
+  return m
+
+
+#
+# ---- Tier 4 shim declarations (DNN task wrappers) ----
+
+@cfunc(lib=cvxlib, cname='cvx_to_blob', args='const void* src, int h, int w, int c, float* out, int oh, int ow, double scale, double mr, double mg, double mb, double sr, double sg, double sb', ret='int')
+func _to_blob(src, h: int, w: int, c: int, out, oh: int, ow: int, scale: real, mr: real, mg: real, mb: real, sr: real, sg: real, sb: real) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_face_new', args='const char* model, double score_thresh, double nms_thresh', ret='void*', free='cvx_face_release')
+func _face_new(model: string, score_thresh: real, nms_thresh: real):
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_face_detect', args='void* f, const void* img, int h, int w, int c, float* out, int max_faces', ret='int')
+func _face_detect(f, img, h: int, w: int, c: int, out, max_faces: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_aliked_new', args='const char* model', ret='void*', free='cvx_aliked_release')
+func _aliked_new(model: string):
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_aliked_detect', args='void* a, const void* img, int h, int w, int c', ret='void*', free='cvx_features_release')
+func _aliked_detect(a, img, h: int, w: int, c: int):
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_features_desc_type', args='void* f', ret='int')
+func _features_desc_type(f) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_lightglue_new', args='const char* model, double score_thresh', ret='void*', free='cvx_lightglue_release')
+func _lightglue_new(model: string, score_thresh: real):
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_lightglue_match', args='void* m, const float* kpsa, const float* desca, int na, const float* kpsb, const float* descb, int nb, int dcols, int wa, int ha, int wb, int hb, int32_t* pairs, float* dists', ret='int')
+func _lightglue_match(m, kpsa, desca, na: int, kpsb, descb, nb: int, dcols: int, wa: int, ha: int, wb: int, hb: int, pairs, dists) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_tracker_new', args='const char* model', ret='void*', free='cvx_tracker_release')
+func _tracker_new(model: string):
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_tracker_init', args='void* t, const void* img, int h, int w, int c, int x, int y, int rw, int rh', ret='int')
+func _tracker_init(t, img, h: int, w: int, c: int, x: int, y: int, rw: int, rh: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_tracker_update', args='void* t, const void* img, int h, int w, int c, int32_t* rect4, double* score', ret='int')
+func _tracker_update(t, img, h: int, w: int, c: int, rect, score) -> int:
+  _
+
+
+#
+# ---- DNN interop + task wrappers ----
+#
+# The DNN task objects below need ONNX model files: run
+# modules/opencv/models/download-models.sh once (default model paths resolve
+# next to this module via sys.source_dir(); pass model= to override).
+
+var _models = sys.source_dir() + '/models/'
+
+# Convert an RGB image to an NCHW float32 [1, 3, height, width] input blob for
+# DNN inference (e.g. ai.nn Model.predict): resize, then per channel
+# (v * scale - mean) / std. Defaults produce 0..1 values.
+func to_blob(img: tensor, width: int, height: int, scale: real = 0.003921568627451, mean = nil, std = nil) -> tensor:
+  var s = img.shape()
+  var m = mean
+  if m == nil:
+    m = [0.0, 0.0, 0.0]
+  var sd = std
+  if sd == nil:
+    sd = [1.0, 1.0, 1.0]
+  var out = tensor([1, 3, height, width], dtype='float32')
+  if _to_blob(img, s[0], s[1], s[2], out, height, width, scale,
+              m[0], m[1], m[2], sd[0], sd[1], sd[2]) != 0:
+    raise RuntimeException('to_blob: ' + _last_error())
+  return out
+
+type Face object:
+  var box              # [x, y, w, h] ints
+  var landmarks        # float32 [5, 2]: right eye, left eye, nose, mouth corners
+  var score: real = 0.0
+
+type FaceDetector object:
+  var _d
+
+  proc init(model: string = '', score_threshold: real = 0.6, nms_threshold: real = 0.3):
+    var path = model
+    if path == '':
+      path = _models + 'face_detection_yunet_2023mar.onnx'
+    _d = _face_new(path, score_threshold, nms_threshold)
+    if _d == nil:
+      raise RuntimeException('FaceDetector: ' + _last_error())
+
+  # Detect faces; returns a list of Face.
+  func detect(img: tensor) -> list:
+    var s = img.shape()
+    var buf = tensor([64, 15], dtype='float32')
+    var n = _face_detect(_d, img, s[0], s[1], s[2], buf, 64)
+    if n < 0:
+      raise RuntimeException('FaceDetector.detect: ' + _last_error())
+    var result = []
+    for i in range(0 ..< n):
+      var lm = tensor([5, 2], dtype='float32')
+      for j in range(0 ..< 5):
+        lm[j, 0] = buf[i, 4 + 2 * j]
+        lm[j, 1] = buf[i, 5 + 2 * j]
+      var box = [int(buf[i, 0]), int(buf[i, 1]), int(buf[i, 2]), int(buf[i, 3])]
+      result.append(Face(box, lm, buf[i, 14]))
+    return result
+
+# ALIKED learned keypoints/descriptors (drop-in upgrade over orb_detect; match
+# its Features with LightGlue, not match_features).
+type Aliked object:
+  var _a
+
+  proc init(model: string = ''):
+    var path = model
+    if path == '':
+      path = _models + 'aliked-n16rot-top1k-640.onnx'
+    _a = _aliked_new(path)
+    if _a == nil:
+      raise RuntimeException('Aliked: ' + _last_error())
+
+  func detect(img: tensor) -> Features:
+    var s = img.shape()
+    var f = _aliked_detect(_a, img, s[0], s[1], s[2])
+    if f == nil:
+      raise RuntimeException('Aliked.detect: ' + _last_error())
+    return _features_from(f, s[1], s[0], 'Aliked.detect')
+
+# LightGlue attention-based matcher for ALIKED features.
+type LightGlue object:
+  var _m
+
+  proc init(model: string = '', score_threshold: real = 0.0):
+    var path = model
+    if path == '':
+      path = _models + 'lightglue_for_aliked.onnx'
+    _m = _lightglue_new(path, score_threshold)
+    if _m == nil:
+      raise RuntimeException('LightGlue: ' + _last_error())
+
+  func match_features(a: Features, b: Features) -> Matches:
+    if a.points == nil or b.points == nil:
+      return Matches(nil, nil)
+    var na = a.points.shape()[0]
+    var nb = b.points.shape()[0]
+    var pairs = tensor([na, 2], dtype='int32')
+    var dists = tensor([na], dtype='float32')
+    var n = _lightglue_match(_m, a.points, a.descriptors, na, b.points, b.descriptors, nb,
+                             a.descriptors.shape()[1], a.width, a.height, b.width, b.height,
+                             pairs, dists)
+    if n < 0:
+      raise RuntimeException('LightGlue.match: ' + _last_error())
+    if n == 0:
+      return Matches(nil, nil)
+    return Matches(pairs[0:n, 0:2], dists[0:n])
+
+# Single-object tracker (VIT).
+type Tracker object:
+  var _t
+  var score: real = 0.0
+
+  proc init(model: string = ''):
+    var path = model
+    if path == '':
+      path = _models + 'object_tracking_vittrack_2023sep.onnx'
+    _t = _tracker_new(path)
+    if _t == nil:
+      raise RuntimeException('Tracker: ' + _last_error())
+
+  # Start tracking the object inside the given box.
+  proc start(img: tensor, x: int, y: int, width: int, height: int):
+    var s = img.shape()
+    if _tracker_init(_t, img, s[0], s[1], s[2], x, y, width, height) != 0:
+      raise RuntimeException('Tracker.start: ' + _last_error())
+
+  # Track into the next frame; returns [x, y, w, h] or nil when lost.
+  # The confidence is left in .score either way.
+  func update(img: tensor) -> list:
+    var s = img.shape()
+    var rect = tensor([4], dtype='int32')
+    var sc = tensor([1])
+    var rc = _tracker_update(_t, img, s[0], s[1], s[2], rect, sc)
+    if rc < 0:
+      raise RuntimeException('Tracker.update: ' + _last_error())
+    score = sc[0]
+    if rc == 0:
+      return nil
+    return [int(rect[0]), int(rect[1]), int(rect[2]), int(rect[3])]
+
+
+#
+# ---- Tier 5 shim declarations (analysis kit, flow, fisheye) ----
+
+@cfunc(lib=cvxlib, cname='cvx_in_range', args='const void* src, int h, int w, int c, void* dst, double l0, double l1, double l2, double l3, double u0, double u1, double u2, double u3', ret='int')
+func _in_range(src, h: int, w: int, c: int, dst, l0: real, l1: real, l2: real, l3: real, u0: real, u1: real, u2: real, u3: real) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_draw_contour', args='void* img, int h, int w, int c, const int32_t* pts, int n, double r, double g, double b, int thickness', ret='int')
+func _draw_contour(img, h: int, w: int, c: int, pts, n: int, r: real, g: real, b: real, thickness: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_convex_hull', args='const int32_t* pts, int n, int32_t* out', ret='int')
+func _convex_hull(pts, n: int, out) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_approx_poly', args='const int32_t* pts, int n, double epsilon, int closed, int32_t* out', ret='int')
+func _approx_poly(pts, n: int, epsilon: real, closed: int, out) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_min_area_rect', args='const int32_t* pts, int n, double* out5', ret='int')
+func _min_area_rect(pts, n: int, out) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_box_points', args='double cx, double cy, double w, double h, double angle, float* out8', ret='int')
+func _box_points(cx: real, cy: real, w: real, h: real, angle: real, out) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_cc_new', args='const void* src, int h, int w', ret='void*', free='cvx_cc_release')
+func _cc_new(src, h: int, w: int):
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_cc_count', args='void* cc', ret='int')
+func _cc_count(cc) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_cc_copy', args='void* cc, int32_t* stats, double* centroids', ret='int')
+func _cc_copy(cc, stats, centroids) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_match_template', args='const void* img, int h, int w, int c, const void* tmpl, int th, int tw, int method, int32_t* loc2, double* score', ret='int')
+func _match_template(img, h: int, w: int, c: int, tmpl, th: int, tw: int, method: int, loc, score) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_qr_detect', args='const void* img, int h, int w, int c', ret='void*', free='cvx_qr_release')
+func _qr_detect(img, h: int, w: int, c: int):
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_qr_count', args='void* r', ret='int')
+func _qr_count(r) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_qr_text', args='void* r, int i', ret='const char*')
+func _qr_text(r, i: int) -> string:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_qr_corners', args='void* r, int i, float* out8', ret='int')
+func _qr_corners(r, i: int, out) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_qr_encode', args='const char* text, int side, void* dst', ret='int')
+func _qr_encode(text: string, side: int, dst) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_reproject_3d', args='const float* disp, int h, int w, const double* q16, float* out, int mark_missing', ret='int')
+func _reproject_3d(disp, h: int, w: int, q, out, mark_missing: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_rectify_map_new', args='const double* cam9, const double* dist, int ndist, const double* R9, const double* P12, int w, int h', ret='void*', free='cvx_rectify_map_release')
+func _rectify_map_new(cam, dist, ndist: int, r, p, w: int, h: int):
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_rectify_map_apply', args='void* m, const void* src, int h, int w, int c, void* dst', ret='int')
+func _rectify_map_apply(m, src, h: int, w: int, c: int, dst) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_mog2_new', args='int history, double var_threshold, int shadows', ret='void*', free='cvx_mog2_release')
+func _mog2_new(history: int, var_threshold: real, shadows: int):
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_mog2_apply', args='void* m, const void* img, int h, int w, int c, void* mask, double learning_rate', ret='int')
+func _mog2_apply(m, img, h: int, w: int, c: int, mask, learning_rate: real) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_good_features', args='const void* gray, int h, int w, int max_corners, double quality, double min_dist, float* out', ret='int')
+func _good_features(gray, h: int, w: int, max_corners: int, quality: real, min_dist: real, out) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_flow_lk', args='const void* prev, const void* next, int h, int w, const float* pts, int n, float* out, uint8_t* status', ret='int')
+func _flow_lk(prev, next, h: int, w: int, pts, n: int, out, status) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_flow_dense', args='const void* prev, const void* next, int h, int w, float* out', ret='int')
+func _flow_dense(prev, next, h: int, w: int, out) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_clahe', args='const void* src, int h, int w, void* dst, double clip, int tiles', ret='int')
+func _clahe(src, h: int, w: int, dst, clip: real, tiles: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_fisheye_calibrate', args='const float* obj, const float* imgp, const int32_t* counts, int nviews, int w, int h, double* cam9, double* dist4', ret='double')
+func _fisheye_calibrate(obj, imgp, counts, nviews: int, w: int, h: int, cam, dist) -> real:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_fisheye_undistort', args='const void* src, int h, int w, int c, void* dst, const double* cam9, const double* dist4', ret='int')
+func _fisheye_undistort(src, h: int, w: int, c: int, dst, cam, dist) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_fisheye_project', args='const float* obj, int n, const double* rvec3, const double* tvec3, const double* cam9, const double* dist4, float* out', ret='int')
+func _fisheye_project(obj, n: int, rvec, tvec, cam, dist, out) -> int:
+  _
+
+
+#
+# ---- color/intensity segmentation ----
+
+# Mask of pixels whose channels all lie within [lower, upper] (lists, one bound
+# per channel; e.g. HSV bounds after cvt_color(img, ColorCode.Rgb2Hsv)).
+# Returns a binary [H, W, 1] mask (255 inside the range).
+func in_range(img: tensor, lower, upper) -> tensor:
+  var s = img.shape()
+  var c = s[2]
+  var lo = [0.0, 0.0, 0.0, 0.0]
+  var hi = [0.0, 0.0, 0.0, 0.0]
+  for i in range(0 ..< c):
+    lo[i] = lower[i]
+    hi[i] = upper[i]
+  var out = tensor([s[0], s[1], 1], dtype='uint8')
+  if _in_range(img, s[0], s[1], c, out, lo[0], lo[1], lo[2], lo[3], hi[0], hi[1], hi[2], hi[3]) != 0:
+    raise RuntimeException('in_range: ' + _last_error())
+  return out
+
+type Blob object:
+  var x: int = 0
+  var y: int = 0
+  var width: int = 0
+  var height: int = 0
+  var area: int = 0
+  var center_x: real = 0.0
+  var center_y: real = 0.0
+
+# Connected components of a binary mask as a list of Blob (background excluded),
+# optionally dropping blobs smaller than min_area pixels.
+func connected_components(mask: tensor, min_area: int = 1) -> list:
+  var s = mask.shape()
+  if s[2] != 1:
+    raise RuntimeException('connected_components: expects a binary [H, W, 1] mask')
+  var cc = _cc_new(mask, s[0], s[1])
+  if cc == nil:
+    raise RuntimeException('connected_components: ' + _last_error())
+  var n = _cc_count(cc)
+  var result = []
+  if n <= 1:
+    return result
+  var stats = tensor([n, 5], dtype='int32')
+  var cents = tensor([n, 2])
+  if _cc_copy(cc, stats, cents) != 0:
+    raise RuntimeException('connected_components: ' + _last_error())
+  for i in range(1 ..< n):
+    if int(stats[i, 4]) >= min_area:
+      result.append(Blob(int(stats[i, 0]), int(stats[i, 1]), int(stats[i, 2]),
+                         int(stats[i, 3]), int(stats[i, 4]), cents[i, 0], cents[i, 1]))
+  return result
+
+type BackgroundSubtractor object:
+  var _b
+
+  proc init(history: int = 500, threshold: real = 16.0, shadows: bool = true):
+    var sh = 0
+    if shadows:
+      sh = 1
+    _b = _mog2_new(history, threshold, sh)
+    if _b == nil:
+      raise RuntimeException('BackgroundSubtractor: ' + _last_error())
+
+  # Feed the next frame; returns the foreground mask [H, W, 1]
+  # (255 foreground, 127 shadow when shadows are on).
+  func apply(img: tensor, learning_rate: real = -1.0) -> tensor:
+    var s = img.shape()
+    var mask = tensor([s[0], s[1], 1], dtype='uint8')
+    if _mog2_apply(_b, img, s[0], s[1], s[2], mask, learning_rate) != 0:
+      raise RuntimeException('BackgroundSubtractor.apply: ' + _last_error())
+    return mask
+
+
+#
+# ---- contour analysis kit ----
+
+# Draw contours ([N, 2] int32 tensors, as from find_contours) onto the image
+# in place; thickness -1 fills.
+proc draw_contours(img: tensor, contours: list, color, thickness: int = 2):
+  var s = img.shape()
+  for pts in contours:
+    if _draw_contour(img, s[0], s[1], s[2], pts, pts.shape()[0], color[0], color[1], color[2], thickness) != 0:
+      raise RuntimeException('draw_contours: ' + _last_error())
+
+func convex_hull(points: tensor) -> tensor:
+  var n = points.shape()[0]
+  var out = tensor([n, 2], dtype='int32')
+  var m = _convex_hull(points, n, out)
+  if m < 0:
+    raise RuntimeException('convex_hull: ' + _last_error())
+  return out[0:m, 0:2]
+
+# Simplify a contour (Douglas-Peucker); epsilon is the max deviation in pixels.
+func approx_poly(points: tensor, epsilon: real, closed: bool = true) -> tensor:
+  var n = points.shape()[0]
+  var cl = 0
+  if closed:
+    cl = 1
+  var out = tensor([n, 2], dtype='int32')
+  var m = _approx_poly(points, n, epsilon, cl, out)
+  if m < 0:
+    raise RuntimeException('approx_poly: ' + _last_error())
+  return out[0:m, 0:2]
+
+type RotatedRect object:
+  var center_x: real = 0.0
+  var center_y: real = 0.0
+  var width: real = 0.0
+  var height: real = 0.0
+  var angle: real = 0.0     # degrees
+
+# Minimum-area (rotated) bounding rectangle of a point set.
+func min_area_rect(points: tensor) -> RotatedRect:
+  var n = points.shape()[0]
+  var out = tensor([5])
+  if _min_area_rect(points, n, out) != 0:
+    raise RuntimeException('min_area_rect: ' + _last_error())
+  return RotatedRect(out[0], out[1], out[2], out[3], out[4])
+
+# The 4 corners of a RotatedRect as float32 [4, 2] (e.g. to draw it).
+func box_points(rect: RotatedRect) -> tensor:
+  var out = tensor([4, 2], dtype='float32')
+  if _box_points(rect.center_x, rect.center_y, rect.width, rect.height, rect.angle, out) != 0:
+    raise RuntimeException('box_points: ' + _last_error())
+  return out
+
+
+#
+# ---- template matching ----
+
+type TemplateMatch object:
+  var x: int = 0
+  var y: int = 0
+  var score: real = 0.0
+
+# Best location of templ inside img. With the default CcoeffNormed method the
+# score is 1.0 for a perfect match; for Sqdiff methods lower is better.
+func find_template(img: tensor, templ: tensor, method = TemplateMethod.CcoeffNormed) -> TemplateMatch:
+  var s = img.shape()
+  var ts = templ.shape()
+  var loc = tensor([2], dtype='int32')
+  var score = tensor([1])
+  if _match_template(img, s[0], s[1], s[2], templ, ts[0], ts[1], method, loc, score) != 0:
+    raise RuntimeException('find_template: ' + _last_error())
+  return TemplateMatch(int(loc[0]), int(loc[1]), score[0])
+
+
+#
+# ---- QR codes ----
+
+type QrCode object:
+  var text: string = ''
+  var corners        # float32 [4, 2]
+
+# Detect and decode all QR codes in the image.
+func detect_qr(img: tensor) -> list:
+  var s = img.shape()
+  var r = _qr_detect(img, s[0], s[1], s[2])
+  if r == nil:
+    raise RuntimeException('detect_qr: ' + _last_error())
+  var result = []
+  for i in range(0 ..< _qr_count(r)):
+    var corners = tensor([4, 2], dtype='float32')
+    if _qr_corners(r, i, corners) != 0:
+      raise RuntimeException('detect_qr: ' + _last_error())
+    result.append(QrCode(_qr_text(r, i), corners))
+  return result
+
+# Render text as a QR code image (uint8 [side, side, 1]).
+func generate_qr(text: string, side: int = 200) -> tensor:
+  var out = tensor([side, side, 1], dtype='uint8')
+  if _qr_encode(text, side, out) != 0:
+    raise RuntimeException('generate_qr: ' + _last_error())
+  return out
+
+
+#
+# ---- stereo depth to 3D + cached rectification ----
+
+# Turn a disparity map into 3D points (float32 [H, W, 3], same unit as the
+# calibration) using the Q matrix from stereo_rectify. With mark_missing,
+# pixels at the minimal disparity (SGBM's invalid marker) get a huge Z so they
+# are easy to filter out.
+func reproject_3d(disparity: tensor, q: tensor, mark_missing: bool = true) -> tensor:
+  var s = disparity.shape()
+  var mm = 0
+  if mark_missing:
+    mm = 1
+  var out = tensor([s[0], s[1], 3], dtype='float32')
+  if _reproject_3d(disparity, s[0], s[1], q, out, mm) != 0:
+    raise RuntimeException('reproject_3d: ' + _last_error())
+  return out
+
+# Precomputed undistort+rectify maps: build once, apply per frame
+# (rectify() rebuilds the maps on every call — fine for stills, not for loops).
+type RectifyMap object:
+  var _m
+  var width: int = 0
+  var height: int = 0
+
+  proc init(calib: Calibration, rotation: tensor, projection: tensor, width_: int, height_: int):
+    width = width_
+    height = height_
+    _m = _rectify_map_new(calib.camera_matrix, calib.dist_coeffs, calib.dist_coeffs.shape()[0],
+                          rotation, projection, width_, height_)
+    if _m == nil:
+      raise RuntimeException('RectifyMap: ' + _last_error())
+
+  func apply(img: tensor) -> tensor:
+    var s = img.shape()
+    var out = tensor([s[0], s[1], s[2]], dtype='uint8')
+    if _rectify_map_apply(_m, img, s[0], s[1], s[2], out) != 0:
+      raise RuntimeException('RectifyMap.apply: ' + _last_error())
+    return out
+
+
+#
+# ---- optical flow (grayscale inputs) ----
+
+# Strong corner points to seed sparse tracking; float32 [M, 2].
+func good_features(img: tensor, max_corners: int = 100, quality: real = 0.01, min_distance: real = 10.0) -> tensor:
+  var s = img.shape()
+  if s[2] != 1:
+    raise RuntimeException('good_features: expects a grayscale image')
+  var out = tensor([max_corners, 2], dtype='float32')
+  var m = _good_features(img, s[0], s[1], max_corners, quality, min_distance, out)
+  if m < 0:
+    raise RuntimeException('good_features: ' + _last_error())
+  return out[0:m, 0:2]
+
+type FlowResult object:
+  var points         # float32 [N, 2]: tracked positions in the next frame
+  var status         # uint8 [N]: 1 = tracked, 0 = lost
+
+# Sparse Lucas-Kanade optical flow: where did these points move to?
+func flow_points(prev: tensor, next: tensor, points: tensor) -> FlowResult:
+  var s = prev.shape()
+  var n = points.shape()[0]
+  var out = tensor([n, 2], dtype='float32')
+  var status = tensor([n], dtype='uint8')
+  if _flow_lk(prev, next, s[0], s[1], points, n, out, status) != 0:
+    raise RuntimeException('flow_points: ' + _last_error())
+  return FlowResult(out, status)
+
+# Dense Farneback optical flow: per-pixel (dx, dy) as float32 [H, W, 2].
+func flow_dense(prev: tensor, next: tensor) -> tensor:
+  var s = prev.shape()
+  if s[2] != 1:
+    raise RuntimeException('flow_dense: expects grayscale images')
+  var out = tensor([s[0], s[1], 2], dtype='float32')
+  if _flow_dense(prev, next, s[0], s[1], out) != 0:
+    raise RuntimeException('flow_dense: ' + _last_error())
+  return out
+
+# Contrast-limited adaptive histogram equalization (grayscale).
+func clahe(img: tensor, clip_limit: real = 2.0, tiles: int = 8) -> tensor:
+  var s = img.shape()
+  if s[2] != 1:
+    raise RuntimeException('clahe: expects a grayscale image')
+  var out = tensor([s[0], s[1], 1], dtype='uint8')
+  if _clahe(img, s[0], s[1], out, clip_limit, tiles) != 0:
+    raise RuntimeException('clahe: ' + _last_error())
+  return out
+
+
+#
+# ---- fisheye camera model (wide-FOV lenses) ----
+
+# Like calibrate_camera but with the fisheye distortion model
+# (dist_coeffs is float64 [4]).
+func calibrate_camera_fisheye(object_points: list, image_points: list, width: int, height: int) -> Calibration:
+  var nviews = len(object_points)
+  var total = 0
+  for v in object_points:
+    total = total + v.shape()[0]
+  var obj = tensor([total, 3], dtype='float32')
+  var imgp = tensor([total, 2], dtype='float32')
+  var counts = tensor([nviews], dtype='int32')
+  var off = 0
+  for i in range(0 ..< nviews):
+    var n = object_points[i].shape()[0]
+    obj[off:off+n, 0:3] = object_points[i]
+    imgp[off:off+n, 0:2] = image_points[i]
+    counts[i] = n
+    off = off + n
+  var cam = tensor([3, 3])
+  var dist = tensor([4])
+  var err = _fisheye_calibrate(obj, imgp, counts, nviews, width, height, cam, dist)
+  if err < 0.0:
+    raise RuntimeException('calibrate_camera_fisheye: ' + _last_error())
+  return Calibration(cam, dist, err)
+
+func undistort_fisheye(img: tensor, camera_matrix: tensor, dist_coeffs: tensor) -> tensor:
+  var s = img.shape()
+  var out = tensor([s[0], s[1], s[2]], dtype='uint8')
+  if _fisheye_undistort(img, s[0], s[1], s[2], out, camera_matrix, dist_coeffs) != 0:
+    raise RuntimeException('undistort_fisheye: ' + _last_error())
+  return out
+
+func project_points_fisheye(object_points: tensor, pose: Pose, camera_matrix: tensor, dist_coeffs: tensor) -> tensor:
+  var n = object_points.shape()[0]
+  var out = tensor([n, 2], dtype='float32')
+  if _fisheye_project(object_points, n, pose.rvec, pose.tvec, camera_matrix, dist_coeffs, out) != 0:
+    raise RuntimeException('project_points_fisheye: ' + _last_error())
+  return out
+
+
+#
+# ---- feature-match visualization (pure Roxal) ----
+
+# Side-by-side canvas with keypoints and match lines; a debugging aid.
+func draw_matches(img_a: tensor, fa: Features, img_b: tensor, fb: Features, matches: Matches, color = [0, 255, 0], max_draw: int = 50) -> tensor:
+  var sa = img_a.shape()
+  var sb = img_b.shape()
+  var h = sa[0]
+  if sb[0] > h:
+    h = sb[0]
+  var canvas = tensor([h, sa[1] + sb[1], 3], dtype='uint8')
+  canvas[0:sa[0], 0:sa[1], 0:3] = img_a
+  canvas[0:sb[0], sa[1]:sa[1]+sb[1], 0:3] = img_b
+  if matches.pairs == nil:
+    return canvas
+  var n = matches.pairs.shape()[0]
+  if n > max_draw:
+    n = max_draw
+  for i in range(0 ..< n):
+    var pa = int(matches.pairs[i, 0])
+    var pb = int(matches.pairs[i, 1])
+    var xa = int(fa.points[pa, 0])
+    var ya = int(fa.points[pa, 1])
+    var xb = int(fb.points[pb, 0]) + sa[1]
+    var yb = int(fb.points[pb, 1])
+    circle(canvas, xa, ya, 3, color)
+    circle(canvas, xb, yb, 3, color)
+    line(canvas, xa, ya, xb, yb, color)
+  return canvas

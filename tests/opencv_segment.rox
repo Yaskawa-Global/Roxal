@@ -1,0 +1,31 @@
+import opencv.*
+import math.*
+
+var scene = tensor([60, 80, 3], dtype='uint8')
+scene[0:60, 0:80, 0:3] = 40
+circle(scene, 20, 20, 8, [255, 128, 0], -1)
+circle(scene, 60, 40, 6, [255, 128, 0], -1)
+var hsv = cvt_color(scene, ColorCode.Rgb2Hsv)
+var mask = in_range(hsv, [10, 100, 100], [25, 255, 255])
+print(mask.shape())
+print(mask[20, 20, 0])
+print(mask[5, 5, 0])
+var blobs = connected_components(mask, 20)
+print(len(blobs))
+print(fabs(blobs[0].center_x - 20.0) < 2.0)
+print(blobs[0].area > 150)
+print(blobs[1].width)
+
+# MOG2: static background, then a bright object appears
+var bs = BackgroundSubtractor()
+var bg = tensor([60, 80, 3], dtype='uint8')
+bg[0:60, 0:80, 0:3] = 90
+for i in range(0 ..< 10):
+  bs.apply(bg)
+var fg = tensor([60, 80, 3], dtype='uint8')
+fg[0:60, 0:80, 0:3] = 90
+rectangle(fg, 30, 20, 20, 15, [250, 250, 250], -1)
+var fgmask = bs.apply(fg, 0.0)
+print(fgmask.shape())
+print(fgmask[27, 40, 0])
+print(fgmask[5, 5, 0])

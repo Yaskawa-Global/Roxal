@@ -1,0 +1,17 @@
+import opencv.*
+
+print(version()[0:1])
+
+# synthetic image -> write -> read roundtrip (PNG is lossless)
+var img = tensor([16, 12, 3], dtype='uint8')
+img[2:9, 3:7, 0] = 200
+img[2:9, 3:7, 1] = 100
+img[2:9, 3:7, 2] = 50
+imwrite('../tests/tmp_opencv_rt.png', img)
+var back = imread('../tests/tmp_opencv_rt.png')
+print(back.shape())
+print(back == img)
+print(back[2, 3, 0])
+print(back[2, 3, 1])
+print(back[2, 3, 2])
+print(back[0, 0, 0])
