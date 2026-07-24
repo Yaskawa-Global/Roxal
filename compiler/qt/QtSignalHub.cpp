@@ -44,7 +44,22 @@ std::string makeKey(const QObject* sender, const QMetaMethod& signal)
            std::to_string(signal.methodIndex());
 }
 
+// Depth of hub-dispatched Roxal callbacks currently on the main-thread stack.
+// Read by QtSignalHub::inMainThreadCallback() (see the header for why). Hub
+// dispatch is main-thread only, so a plain int -- no atomics -- is correct.
+int g_mainCallbackDepth = 0;
+
+struct MainCallbackScope {
+    MainCallbackScope()  { ++g_mainCallbackDepth; }
+    ~MainCallbackScope() { --g_mainCallbackDepth; }
+};
+
 } // namespace
+
+bool QtSignalHub::inMainThreadCallback()
+{
+    return g_mainCallbackDepth > 0;
+}
 
 // ============================================================
 // Impl (the entries member is the GC root -- TracedMember, v2 phase B)
@@ -114,6 +129,10 @@ struct QtSignalHub::Impl {
         // but ParkedInvokeScope re-parks on return — so after running the handlers we must
         // explicitly leave the thread un-parked when a quit is pending, else run() can't exit.
         if (!cbs.empty()) {
+            // Mark a callback as in-flight so the host-loop busy-pump won't dispatch
+            // another Qt slot on top of it (run-to-completion; see the header). RAII
+            // so a Roxal error unwinding out of invokeClosure still restores depth.
+            MainCallbackScope inCallback;
             for (Value& c : cbs) {
                 if (isClosure(c))
                     VM::instance().invokeClosure(asClosure(c), args);

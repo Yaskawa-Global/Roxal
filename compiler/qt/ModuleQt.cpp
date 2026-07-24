@@ -85,6 +85,15 @@ struct QtHostLoop : roxal::HostEventLoop {
     }
 
     void pump() override {
+        // Run-to-completion for main-thread Roxal callbacks. This is the VM's
+        // *involuntary* 1ms busy-pump; if a hub callback (a qt.connect handler or
+        // qt.every tick) is already executing, dispatching another slot here would
+        // re-enter the VM and interleave two callbacks over shared state -- the
+        // preemptive concurrency Roxal's actor model forbids. Leave pending Qt
+        // events queued; the idle wait dispatches them once the callback returns.
+        // (An explicit `await` inside a handler yields via waitForEvents, not here.)
+        if (QtSignalHub::inMainThreadCallback())
+            return;
         // Non-blocking: drain whatever is ready and return immediately.
         QCoreApplication::processEvents(QEventLoop::AllEvents);
     }

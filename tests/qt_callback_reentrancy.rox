@@ -1,0 +1,39 @@
+// Main-thread Roxal callbacks run to completion: a long hub callback must not be
+// preempted by a second, independent hub callback. The VM's 1ms busy-pump keeps
+// Qt responsive while a script is executing, but it must NOT dispatch another Qt
+// slot on top of a callback already on the stack -- that would interleave two
+// callbacks over shared module state, the preemptive concurrency Roxal's actor
+// model forbids (and the cause of the doom door-array out-of-range crash: the
+// qt.every game tic fired inside the qt.connect key handler mid-mutation).
+//
+// Timer A (long) stands in for the key handler; timer B (fast) for the game tic.
+// If B ever runs while A is mid-flight, `reentrant` becomes true.
+// Run headless via QT_QPA_PLATFORM=offscreen.
+import qt
+
+var busy = false
+var reentrant = false
+var a_ticks = 0
+
+var engine = qt.Engine()
+engine.load_string('import QtQuick\nimport QtQuick.Window\nWindow { id: win; objectName: "win"; visible: true }\n')
+
+qt.every(5, proc():
+  busy = true
+  var t0 = Time.steady_now()
+  var spin = 0
+  while Time.steady_now().since(t0).total_millis() < 8.0:
+    spin = spin + 1
+  busy = false
+  a_ticks = a_ticks + 1
+  if a_ticks >= 8:
+    engine.quit()
+)
+
+qt.every(1, proc():
+  if busy:
+    reentrant = true
+)
+
+engine.run()
+print('reentrant=' + string(reentrant))

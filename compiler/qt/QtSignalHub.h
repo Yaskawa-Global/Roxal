@@ -38,6 +38,17 @@ public:
     // Remove a callback connection by id. Returns true if one was removed.
     bool disconnectId(int connId);
 
+    // True while a Roxal callback dispatched by the hub (a qt.connect signal
+    // handler or a qt.every timer tick) is executing on this (main) thread. The
+    // Qt host-loop busy-pump reads this to preserve run-to-completion: it must
+    // not dispatch another Qt slot -- re-entering the VM with a second callback
+    // that shares state -- while one is mid-flight. Roxal's model isolates mutable
+    // state per actor and forbids preemptive interleaving on a single thread; the
+    // 1ms busy-pump would otherwise smuggle exactly that in (a timer tick firing
+    // inside a key handler, etc.). An explicit `await` inside a handler is a
+    // voluntary yield and still re-enters -- via the idle wait, not this pump.
+    static bool inMainThreadCallback();
+
 private:
     QtSignalHub();
     ~QtSignalHub();
