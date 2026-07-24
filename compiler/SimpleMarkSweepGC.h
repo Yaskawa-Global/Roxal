@@ -111,6 +111,30 @@ public:
         bool entered_;
     };
 
+    // ---- Safe-blocked sections --------------------------------------------
+    // RAII: declare the current thread quiescent (SafeBlocked) for the
+    // duration of a blocking foreign call (a camera read, a model load, any
+    // @cfunc marked blocking=true).  Collections proceed without waiting for
+    // this thread; the destructor waits out any in-flight collection before
+    // the thread touches VM state again.
+    //
+    // CONTRACT for the scoped region: it must not allocate, read, or mutate
+    // GC-managed state, and every GC object it depends on must remain
+    // reachable through VM stacks / persistent roots — NOT solely through
+    // C++ heap containers (a std::vector's heap buffer is invisible to the
+    // conservative stack scan).  The scope object itself is the capture
+    // anchor: C++ locals in frames deeper than it are not scanned.
+    class GCBlockedScope {
+    public:
+        explicit GCBlockedScope(SimpleMarkSweepGC& gc = SimpleMarkSweepGC::instance())
+            : gc_(gc) { gc_.blockEnter(this); }
+        ~GCBlockedScope() { gc_.blockExit(); }
+        GCBlockedScope(const GCBlockedScope&) = delete;
+        GCBlockedScope& operator=(const GCBlockedScope&) = delete;
+    private:
+        SimpleMarkSweepGC& gc_;
+    };
+
     // Coordination observability (cheap atomics; logged at VM::shutdown).
     // Turns soak runs into positive evidence: collections happened, none ran
     // on a thread that ever held an RT section, skip counts sane.

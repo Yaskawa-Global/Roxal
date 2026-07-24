@@ -1,0 +1,31 @@
+import ffi_blocking_lib.*
+
+type Worker actor:
+  func work(ms: int) -> int:
+    return slow_add(20, 22, ms)
+
+  func fill(ms: int) -> bool:
+    # the tensor lives only on this actor's stack while C writes into it with
+    # the thread parked SafeBlocked; a GC on another thread must neither wait
+    # for us nor sweep the buffer
+    var t = tensor([8], dtype='uint8')
+    slow_fill(t, 8, ms)
+    var ok = true
+    for i in range(0 ..< 8):
+      if int(t[i]) != i * 3:
+        ok = false
+    return ok
+
+var w = Worker()
+var fut = w.work(1200)
+wait(ms=250)                       # let the worker enter the C sleep
+var start = Time.steady_now()
+gc()
+var elapsed = Time.steady_now().since(start).total_millis()
+print(elapsed < 600.0)             # gc() must not wait out the 1.2 s C call
+print(wait(for=fut))               # 42: the blocking call's result marshals fine
+
+var fut2 = w.fill(800)
+wait(ms=200)
+gc()                               # sweep while C is mid-write into the tensor
+print(wait(for=fut2))              # true: buffer intact and correct

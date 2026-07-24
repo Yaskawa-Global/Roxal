@@ -28,7 +28,7 @@ func _last_error() -> string:
 if _version()[0:3] != '5.0':
   raise RuntimeException('opencv module expects OpenCV 5.0.x but libcvxshim.so reports ' + _version() + ' — rebuild the shim (modules/opencv/shim/build.sh) against the pinned deps/opencv')
 
-@cfunc(lib=cvxlib, cname='cvx_imread', args='const char* path, int channels', ret='void*', free='cvx_mat_release')
+@cfunc(lib=cvxlib, cname='cvx_imread', args='const char* path, int channels', ret='void*', free='cvx_mat_release', blocking=true)
 func _imread(path: string, channels: int):
   _
 
@@ -48,7 +48,7 @@ func _mat_channels(m) -> int:
 func _mat_copy_to(m, dst, bytes: int) -> int:
   _
 
-@cfunc(lib=cvxlib, cname='cvx_imwrite', args='const char* path, const void* data, int h, int w, int c', ret='int')
+@cfunc(lib=cvxlib, cname='cvx_imwrite', args='const char* path, const void* data, int h, int w, int c', ret='int', blocking=true)
 func _imwrite(path: string, data, h: int, w: int, c: int) -> int:
   _
 
@@ -128,11 +128,11 @@ func _contour_area(pts, n: int) -> real:
 func _bounding_rect(pts, n: int, out) -> int:
   _
 
-@cfunc(lib=cvxlib, cname='cvx_cap_open', args='int index', ret='void*', free='cvx_cap_release')
+@cfunc(lib=cvxlib, cname='cvx_cap_open', args='int index', ret='void*', free='cvx_cap_release', blocking=true)
 func _cap_open(index: int):
   _
 
-@cfunc(lib=cvxlib, cname='cvx_cap_open_file', args='const char* path', ret='void*', free='cvx_cap_release')
+@cfunc(lib=cvxlib, cname='cvx_cap_open_file', args='const char* path', ret='void*', free='cvx_cap_release', blocking=true)
 func _cap_open_file(path: string):
   _
 
@@ -144,23 +144,23 @@ func _cap_get(cap, prop: int) -> real:
 func _cap_set(cap, prop: int, value: real) -> int:
   _
 
-@cfunc(lib=cvxlib, cname='cvx_cap_read', args='void* cap, void* dst, int h, int w', ret='int')
+@cfunc(lib=cvxlib, cname='cvx_cap_read', args='void* cap, void* dst, int h, int w', ret='int', blocking=true)
 func _cap_read(cap, dst, h: int, w: int) -> int:
   _
 
-@cfunc(lib=cvxlib, cname='cvx_cap_close', args='void* cap')
+@cfunc(lib=cvxlib, cname='cvx_cap_close', args='void* cap', blocking=true)
 proc _cap_close(cap):
   _
 
-@cfunc(lib=cvxlib, cname='cvx_writer_open', args='const char* path, const char* fourcc, double fps, int w, int h', ret='void*', free='cvx_writer_release')
+@cfunc(lib=cvxlib, cname='cvx_writer_open', args='const char* path, const char* fourcc, double fps, int w, int h', ret='void*', free='cvx_writer_release', blocking=true)
 func _writer_open(path: string, fourcc: string, fps: real, w: int, h: int):
   _
 
-@cfunc(lib=cvxlib, cname='cvx_writer_write', args='void* wr, const void* data, int h, int w', ret='int')
+@cfunc(lib=cvxlib, cname='cvx_writer_write', args='void* wr, const void* data, int h, int w', ret='int', blocking=true)
 func _writer_write(wr, data, h: int, w: int) -> int:
   _
 
-@cfunc(lib=cvxlib, cname='cvx_writer_close', args='void* wr')
+@cfunc(lib=cvxlib, cname='cvx_writer_close', args='void* wr', blocking=true)
 proc _writer_close(wr):
   _
 
@@ -741,7 +741,7 @@ func _project_points(obj, n: int, rvec, tvec, cam, dist, ndist: int, out) -> int
 func _find_chessboard(img, h: int, w: int, c: int, cols: int, rows: int, out) -> int:
   _
 
-@cfunc(lib=cvxlib, cname='cvx_calibrate_camera', args='const float* obj, const float* imgp, const int32_t* counts, int nviews, int img_w, int img_h, double* cam9, double* dist5', ret='double')
+@cfunc(lib=cvxlib, cname='cvx_calibrate_camera', args='const float* obj, const float* imgp, const int32_t* counts, int nviews, int img_w, int img_h, double* cam9, double* dist5', ret='double', blocking=true)
 func _calibrate_camera(obj, imgp, counts, nviews: int, img_w: int, img_h: int, cam, dist) -> real:
   _
 
@@ -777,7 +777,7 @@ func _features_descriptors(f, out) -> int:
 func _match_hamming(d1, n1: int, d2, n2: int, dsize: int, pairs, dists) -> int:
   _
 
-@cfunc(lib=cvxlib, cname='cvx_stereo_sgbm', args='const void* left, const void* right, int h, int w, int min_disp, int num_disp, int block_size, float* out', ret='int')
+@cfunc(lib=cvxlib, cname='cvx_stereo_sgbm', args='const void* left, const void* right, int h, int w, int min_disp, int num_disp, int block_size, float* out', ret='int', blocking=true)
 func _stereo_sgbm(left, right, h: int, w: int, min_disp: int, num_disp: int, block_size: int, out) -> int:
   _
 
@@ -1054,7 +1054,7 @@ func _charuco_board_new(sx: int, sy: int, square_len: real, marker_len: real, di
 func _charuco_board_image(b, dst, h: int, w: int, margin: int) -> int:
   _
 
-@cfunc(lib=cvxlib, cname='cvx_charuco_detect', args='void* b, const void* img, int h, int w, int c', ret='void*', free='cvx_charuco_release')
+@cfunc(lib=cvxlib, cname='cvx_charuco_detect', args='void* b, const void* img, int h, int w, int c', ret='void*', free='cvx_charuco_release', blocking=true)
 func _charuco_detect(b, img, h: int, w: int, c: int):
   _
 
@@ -1070,7 +1070,7 @@ func _charuco_copy(r, corners, ids) -> int:
 func _charuco_match(b, r, obj, imgp) -> int:
   _
 
-@cfunc(lib=cvxlib, cname='cvx_stereo_calibrate', args='const float* obj, const float* ipl, const float* ipr, const int32_t* counts, int nviews, int w, int h, const double* cam1, const double* dist1, int nd1, const double* cam2, const double* dist2, int nd2, double* R9, double* T3', ret='double')
+@cfunc(lib=cvxlib, cname='cvx_stereo_calibrate', args='const float* obj, const float* ipl, const float* ipr, const int32_t* counts, int nviews, int w, int h, const double* cam1, const double* dist1, int nd1, const double* cam2, const double* dist2, int nd2, double* R9, double* T3', ret='double', blocking=true)
 func _stereo_calibrate(obj, ipl, ipr, counts, nviews: int, w: int, h: int, cam1, dist1, nd1: int, cam2, dist2, nd2: int, r, t) -> real:
   _
 
@@ -1241,19 +1241,19 @@ func estimate_affine(src_points: tensor, dst_points: tensor) -> tensor:
 func _to_blob(src, h: int, w: int, c: int, out, oh: int, ow: int, scale: real, mr: real, mg: real, mb: real, sr: real, sg: real, sb: real) -> int:
   _
 
-@cfunc(lib=cvxlib, cname='cvx_face_new', args='const char* model, double score_thresh, double nms_thresh', ret='void*', free='cvx_face_release')
+@cfunc(lib=cvxlib, cname='cvx_face_new', args='const char* model, double score_thresh, double nms_thresh', ret='void*', free='cvx_face_release', blocking=true)
 func _face_new(model: string, score_thresh: real, nms_thresh: real):
   _
 
-@cfunc(lib=cvxlib, cname='cvx_face_detect', args='void* f, const void* img, int h, int w, int c, float* out, int max_faces', ret='int')
+@cfunc(lib=cvxlib, cname='cvx_face_detect', args='void* f, const void* img, int h, int w, int c, float* out, int max_faces', ret='int', blocking=true)
 func _face_detect(f, img, h: int, w: int, c: int, out, max_faces: int) -> int:
   _
 
-@cfunc(lib=cvxlib, cname='cvx_aliked_new', args='const char* model', ret='void*', free='cvx_aliked_release')
+@cfunc(lib=cvxlib, cname='cvx_aliked_new', args='const char* model', ret='void*', free='cvx_aliked_release', blocking=true)
 func _aliked_new(model: string):
   _
 
-@cfunc(lib=cvxlib, cname='cvx_aliked_detect', args='void* a, const void* img, int h, int w, int c', ret='void*', free='cvx_features_release')
+@cfunc(lib=cvxlib, cname='cvx_aliked_detect', args='void* a, const void* img, int h, int w, int c', ret='void*', free='cvx_features_release', blocking=true)
 func _aliked_detect(a, img, h: int, w: int, c: int):
   _
 
@@ -1261,23 +1261,23 @@ func _aliked_detect(a, img, h: int, w: int, c: int):
 func _features_desc_type(f) -> int:
   _
 
-@cfunc(lib=cvxlib, cname='cvx_lightglue_new', args='const char* model, double score_thresh', ret='void*', free='cvx_lightglue_release')
+@cfunc(lib=cvxlib, cname='cvx_lightglue_new', args='const char* model, double score_thresh', ret='void*', free='cvx_lightglue_release', blocking=true)
 func _lightglue_new(model: string, score_thresh: real):
   _
 
-@cfunc(lib=cvxlib, cname='cvx_lightglue_match', args='void* m, const float* kpsa, const float* desca, int na, const float* kpsb, const float* descb, int nb, int dcols, int wa, int ha, int wb, int hb, int32_t* pairs, float* dists', ret='int')
+@cfunc(lib=cvxlib, cname='cvx_lightglue_match', args='void* m, const float* kpsa, const float* desca, int na, const float* kpsb, const float* descb, int nb, int dcols, int wa, int ha, int wb, int hb, int32_t* pairs, float* dists', ret='int', blocking=true)
 func _lightglue_match(m, kpsa, desca, na: int, kpsb, descb, nb: int, dcols: int, wa: int, ha: int, wb: int, hb: int, pairs, dists) -> int:
   _
 
-@cfunc(lib=cvxlib, cname='cvx_tracker_new', args='const char* model', ret='void*', free='cvx_tracker_release')
+@cfunc(lib=cvxlib, cname='cvx_tracker_new', args='const char* model', ret='void*', free='cvx_tracker_release', blocking=true)
 func _tracker_new(model: string):
   _
 
-@cfunc(lib=cvxlib, cname='cvx_tracker_init', args='void* t, const void* img, int h, int w, int c, int x, int y, int rw, int rh', ret='int')
+@cfunc(lib=cvxlib, cname='cvx_tracker_init', args='void* t, const void* img, int h, int w, int c, int x, int y, int rw, int rh', ret='int', blocking=true)
 func _tracker_init(t, img, h: int, w: int, c: int, x: int, y: int, rw: int, rh: int) -> int:
   _
 
-@cfunc(lib=cvxlib, cname='cvx_tracker_update', args='void* t, const void* img, int h, int w, int c, int32_t* rect4, double* score', ret='int')
+@cfunc(lib=cvxlib, cname='cvx_tracker_update', args='void* t, const void* img, int h, int w, int c, int32_t* rect4, double* score', ret='int', blocking=true)
 func _tracker_update(t, img, h: int, w: int, c: int, rect, score) -> int:
   _
 
@@ -1514,7 +1514,7 @@ func _good_features(gray, h: int, w: int, max_corners: int, quality: real, min_d
 func _flow_lk(prev, next, h: int, w: int, pts, n: int, out, status) -> int:
   _
 
-@cfunc(lib=cvxlib, cname='cvx_flow_dense', args='const void* prev, const void* next, int h, int w, float* out', ret='int')
+@cfunc(lib=cvxlib, cname='cvx_flow_dense', args='const void* prev, const void* next, int h, int w, float* out', ret='int', blocking=true)
 func _flow_dense(prev, next, h: int, w: int, out) -> int:
   _
 
@@ -1522,7 +1522,7 @@ func _flow_dense(prev, next, h: int, w: int, out) -> int:
 func _clahe(src, h: int, w: int, dst, clip: real, tiles: int) -> int:
   _
 
-@cfunc(lib=cvxlib, cname='cvx_fisheye_calibrate', args='const float* obj, const float* imgp, const int32_t* counts, int nviews, int w, int h, double* cam9, double* dist4', ret='double')
+@cfunc(lib=cvxlib, cname='cvx_fisheye_calibrate', args='const float* obj, const float* imgp, const int32_t* counts, int nviews, int w, int h, double* cam9, double* dist4', ret='double', blocking=true)
 func _fisheye_calibrate(obj, imgp, counts, nviews: int, w: int, h: int, cam, dist) -> real:
   _
 

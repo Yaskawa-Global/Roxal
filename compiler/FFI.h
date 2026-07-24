@@ -43,6 +43,7 @@ struct FFIWrapper {
     bool retIsCharPtr{false};
     bool retIsBool{false};
     void (*freeFn)(void*){nullptr}; // finalizer for returned opaque pointers (free= annotation arg)
+    bool blocking{false};           // blocking=true: park for GC (SafeBlocked) during the call
     Value retObjType{}; // ObjObjectType
     std::vector<ffi_type*> retStructElems;
     ffi_type retStructType;

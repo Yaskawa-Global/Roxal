@@ -259,7 +259,7 @@ tests = [
     'math_relu', 'math_softmax', 'math_argmax', 'math_clamp', 'math_abs',
     'value_semantics', 'value_semantics_cow',
     'ffi1', 'ffi_addfloats', 'ffi_struct_out', 'ffi_inttypes', 'ffi_strlen', 'ffi_relative', 'ffi_toupper', 'ffi_primptr', 'ffi_voidptr_struct', 'cstruct1', 'cstruct2', 'cstruct3', 'cstruct_byval', 'cstruct_array',
-    'ffi_int64', 'ffi_ptr_return', 'ffi_free', 'ffi_tensor', 'ffi_tensor_mismatch_err', 'ffi_nullptr',
+    'ffi_int64', 'ffi_ptr_return', 'ffi_free', 'ffi_tensor', 'ffi_tensor_mismatch_err', 'ffi_nullptr', 'ffi_blocking',
     'nested_cstruct', 'nested_cstruct_ptr', 'nested_cstruct_byval',
     'weakref', 'strongref', 'is_operator', 'in_operator', 'stackdepth', 'modulevar2',
     'const_basic', 'const_assign_err', 'const_nonliteral_err', 'const_missing_initializer_err',
@@ -896,6 +896,10 @@ try:
         elif test in doom_tests:
             # WAD/texture setup + software renders; slow on Debug builds
             timeout_secs = DOOM_TIMEOUT_SECS
+        elif test in opencv_dnn_tests:
+            # ONNX model loading (ALIKED + LightGlue is ~52 MB) can brush the
+            # default timeout on a loaded machine
+            timeout_secs = NN_LFS_TIMEOUT_SECS
         else:
             timeout_secs = TEST_TIMEOUT_SECS
 

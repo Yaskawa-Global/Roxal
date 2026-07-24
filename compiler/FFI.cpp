@@ -1,5 +1,6 @@
 #include "FFI.h"
 #include "VM.h"
+#include "SimpleMarkSweepGC.h"
 
 #include <cstring>
 #include <sstream>
@@ -612,6 +613,14 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
             freeFn = reinterpret_cast<void(*)(void*)>(f);
         }
 
+        bool blocking = false;
+        if (auto blockingExpr = getArg("blocking")) {
+            Value v = evalExpr(blockingExpr);
+            if (!v.isBool())
+                throw std::runtime_error("cfunc blocking argument must be a bool");
+            blocking = v.asBool();
+        }
+
         spec = new FFIWrapper;
         spec->fn = fnPtr;
         spec->argTypes = argTypes;
@@ -624,6 +633,7 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
         spec->argPrimPtrTypes = argPrimPtrTypes;
         spec->argIsConstPtr = argIsConstPtr;
         spec->freeFn = freeFn;
+        spec->blocking = blocking;
         for (size_t i=0;i<spec->argStructTypes.size();i++)
             if (spec->argObjTypes[i])
                 spec->argStructTypes[i].elements = spec->argStructElems[i].data();
@@ -890,7 +900,18 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
         retBuf.resize(spec->cif.rtype->size);
         retPtr = retBuf.data();
     }
-    ffi_call(&spec->cif, FFI_FN(spec->fn), retPtr, argValues.data());
+    if (spec->blocking) {
+        // Long/blocking C call (blocking=true): park as SafeBlocked so
+        // collections don't wait for it.  Safe here because the window is
+        // pure C — marshalling is done, and unmarshalling/write-backs run
+        // only after the scope's destructor has waited out any collection.
+        // The Values in argVector are copies of the caller's VM-stack args,
+        // so everything the C code touches stays rooted while parked.
+        SimpleMarkSweepGC::GCBlockedScope blocked;
+        ffi_call(&spec->cif, FFI_FN(spec->fn), retPtr, argValues.data());
+    } else {
+        ffi_call(&spec->cif, FFI_FN(spec->fn), retPtr, argValues.data());
+    }
 
     for (int i=0;i<callSpec.argCount;i++)
         if (structArgInstances[i])

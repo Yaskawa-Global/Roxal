@@ -1,0 +1,12 @@
+# FFI stubs for ffi_blocking.rox — in their own module so the importing test's
+# actor methods can call them (imported symbols are module consts).
+import sys
+_lib = sys.loadlib('./testlib.so')
+
+@cfunc(lib=_lib, cname='slow_add', args='int a, int b, int ms', ret='int', blocking=true)
+func slow_add(a: int, b: int, ms: int) -> int:
+  _
+
+@cfunc(lib=_lib, cname='slow_fill', args='uint8_t* buf, int n, int ms', blocking=true)
+proc slow_fill(t, n: int, ms: int):
+  _

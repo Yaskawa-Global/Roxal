@@ -2191,6 +2191,8 @@ print(mystrlen('hello'))    # 5
 * `ret` — C return type (defaults to `void`)
 * `free` — name of a C function in the same library to call when a returned
   pointer handle is garbage collected (a finalizer, e.g. `free='mat_release'`)
+* `blocking` — `true` parks the calling thread as GC-quiescent during the C
+  call (for calls that block or run long; see below)
 
 **Argument types.** Scalars: `float`, `double`/`real`, `bool`, and signed and
 unsigned integers of all widths (`int8_t` … `int64_t`, plus `int`, `long`,
@@ -2232,6 +2234,15 @@ instance. 64-bit integers round-trip exactly.
 field's C type, including fixed arrays (`'double[4]'`), nested structs, struct
 pointers, and `void*` fields (which surface as `foreignptr`). An optional
 `arch=32|64` selects pointer size/layout for cross-compilation scenarios.
+
+**Blocking calls and the GC.** Collections are stop-the-world: a thread deep
+in a long C call cannot reach a safepoint, so by default it delays any
+garbage collection (and transitively, threads waiting on one) until the call
+returns. Mark such declarations with `blocking=true` — camera reads, model
+loads, anything that blocks or runs long — and the calling thread parks as
+GC-quiescent for the duration of the C call: collections proceed without it,
+and the call resumes only after any in-flight collection finishes. Keep the
+flag off for quick calls (it costs two lock operations per call).
 
 Limitations: no callbacks (C calling back into Roxal), no varargs, POSIX
 (`dlopen`) platforms only. FFI marshalling errors are runtime errors. Loaded

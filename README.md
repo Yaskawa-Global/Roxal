@@ -16,6 +16,7 @@ Features:
   - Builtin library support for AI model inference (via ONNX Runtime)
   - Distribuited Compute (instantiate actors remotely)
   - VM integratable into Real-time control loops via runFor(deadline)
+  - Bundled OpenCV 5 & Qt 6 bindings
 
 See [Roxal-for-devs](roxal-for-devs.md) for an overview.
 

@@ -69,3 +69,9 @@ float sum_f32(const float* buf, int n) { float s = 0; for (int i = 0; i < n; i++
 void scale_f64(double* buf, int n, double k) { for (int i = 0; i < n; i++) buf[i] *= k; }
 
 int sum_or_neg(const int32_t* p, int n) { if (!p) return -1; int s = 0; for (int i = 0; i < n; i++) s += p[i]; return s; }
+
+#include <unistd.h>
+int slow_add(int a, int b, int ms) { usleep(ms * 1000); return a + b; }
+void slow_fill(uint8_t* buf, int n, int ms) {
+    for (int i = 0; i < n; i++) { buf[i] = (uint8_t)(i * 3); usleep(ms * 1000 / n); }
+}
