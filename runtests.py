@@ -136,7 +136,7 @@ tests = [
     'signal_func_nocall', 'signal_func_exec', 'signal_index', 'signal_when_stmt', 'signal_when_threads', 'when_expression', 'signal_when_in_method', 'signal_when_becomes', 'signal_on_changed_test',
     'module_var_when_changed', 'module_var_when_changed_string', 'module_var_when_becomes', 'object_member_when_changed', 'when_obj_becomes', 'when_accessor_var_changes',
     'test_signal_value_property', 'test_signal_name_property', 'signal_named_param', 'construct_by_signal', 'signal_run_stop', 'signal_source', 'signal_default_err', 'signal_network1',
-    'signal_islands', 'signal_domain',
+    'signal_islands', 'signal_domain', 'signal_tensor_isolation', 'signal_tensor_const',
     'dataflow_clocktest1', 'multi_clock', 'clock_error', 'clock_name_param',
     'event1', 'event_when_stmt', 'event_emit_keyword', 'event_when_method', 'event_remove_method', 'event_ref', 'event_actor_ref', 'event_actor_ref2', 'event_actor_ref3', 'event_actor_ref4', 'event_instance_emit',
     'event_payload', 'event_implicit_constructor', 'event_type_when', 'event_target_filter',
@@ -267,7 +267,7 @@ tests = [
     'const-interior-mutation',
     'const_list', 'const_dict', 'const_nested', 'const_snapshots', 'const_alias', 'const_identity',
     'const_deep_chain', 'const_cycle', 'const_diamond', 'const_multi_snapshot', 'const_func', 'const_escape_err',
-    'const_type_qualifier', 'const_mutable_type', 'const_builtin_method_err', 'const_linked_method_err', 'const_mvcc',
+    'const_type_qualifier', 'const_tensor_freeze', 'const_mutable_type', 'const_builtin_method_err', 'const_linked_method_err', 'const_mvcc',
     'const_method_dispatch', 'const_interior_alias',
     'event_const', 'event_const_err', 'event_const_transitive_err',
     'const_signal_err', 'const_signal_type_err',
@@ -402,7 +402,6 @@ tests += xml_tests
 tests += socket_tests
 tests += nn_tests
 tests += media_tests
-tests += opencv_tests
 tests += qt_tests
 tests += compute_server_tests
 
@@ -433,6 +432,7 @@ if args.all:
     tests += long_running_tests
     tests += nn_lfs_tests
     tests += doom_tests
+    tests += opencv_tests   # also require modules/opencv/libcvxshim.so (gated below)
 
 # Filter tests by pattern if --test is specified
 if args.test:

@@ -1,0 +1,42 @@
+# Tensor signals: value-equality change detection and COW isolation in both
+# directions across the actor boundary (snapshot-on-set + clone-on-read).
+const s = signal(20, tensor([2, 2], [1.0, 2.0, 3.0, 4.0]))
+
+var fires = 0
+proc h(evt):
+  fires = fires + 1
+s.on_changed(h)
+wait(ms=100)
+
+# same content, different instance: no change
+s.set(tensor([2, 2], [1.0, 2.0, 3.0, 4.0]))
+wait(ms=100)
+print(fires)
+
+# different content: change
+s.set(tensor([2, 2], [1.0, 2.0, 3.0, 9.0]))
+wait(ms=100)
+print(fires)
+
+# writer-side isolation: mutating the published tensor afterwards must not
+# alter what samplers observe (set() snapshots via COW)
+type Sneaky actor:
+  proc run():
+    var frame = tensor([2], dtype='uint8')
+    frame[0] = 111
+    s.set(frame)
+    wait(ms=120)
+    frame[0] = 222
+
+var a = Sneaky()
+a.run()
+wait(ms=80)
+print(int(s.value[0]))
+wait(ms=200)
+print(int(s.value[0]))
+
+# reader-side isolation: mutating a sampled value must not alter the store
+var v = s.value
+v[0] = 77
+print(int(v[0]))
+print(int(s.value[0]))

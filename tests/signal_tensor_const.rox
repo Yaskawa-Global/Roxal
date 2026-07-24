@@ -1,0 +1,16 @@
+# A const (frozen) tensor publishes through a signal zero-copy and stays
+# frozen: the sampled value rejects mutation (fatal const violation).
+const s = signal(0, tensor([2], dtype='uint8'))
+
+type Cam actor:
+  proc run():
+    var frame = tensor([2], dtype='uint8')
+    frame[0] = 42
+    var pub: const tensor = move(frame)
+    s.set(pub)
+
+var a = Cam()
+a.run()
+wait(ms=150)
+var v = s.value
+v[0] = 9

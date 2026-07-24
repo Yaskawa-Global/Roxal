@@ -1128,6 +1128,11 @@ inline Value cloneIfValueSemantics(const Value& v) {
     // Primitives are copied by value naturally, ObjPrimitive (strings) are immutable
     // Note: clone() uses COW for vector/matrix/tensor - data is shared, not copied
     // nullptr context is fine here - value semantics types (vector/matrix/tensor) don't need cycle tracking
+    // Const (frozen) values pass through unchanged: immutability makes the
+    // reference itself safe to share, and cloning here would silently drop the
+    // const bit (thawing e.g. a `var x: const tensor` at every assignment).
+    if (v.isConst())
+        return v;
     if (v.isObj() && v.valueSemantics() && !isObjPrimitive(v)) {
         return Value(v.asObj()->clone(nullptr));
     }

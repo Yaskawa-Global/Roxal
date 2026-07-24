@@ -1409,6 +1409,32 @@ wait(500ms)  // don't exit until after next tick & handler runs
 print('done')
 ```
 
+**Signals and value-semantics types (tensor, vector, matrix).** `set()` stores
+a copy-on-write snapshot, exactly like assignment: the setter keeping its
+reference and mutating in place never alters what samplers observe, and a
+sampler mutating a sampled value never alters the store. Change detection is
+by *content* for these types (a re-`set()` with equal contents fires nothing).
+Publishing a **const (frozen)** value is zero-copy — immutability makes the
+reference safe to share — and the sampled value stays frozen, so mutation
+attempts fail loudly. This makes signals the sanctioned channel for streaming
+data between actors and the main thread without shared mutable state:
+
+```roxal
+# producer (e.g. a camera actor)
+var pub: const tensor = move(frame)   # freeze in place (sole owner: no copy)
+sig.set(pub)                          # zero-copy publish
+
+# consumer (main thread or another actor)
+when sig changes as evt:
+    render(evt.value)                 # frozen; content-change-detected
+```
+
+See `examples/opencv-signals.rox` for the full camera → dataflow-transform →
+UI pipeline built this way. Note that dataflow function nodes execute on the
+engine's thread, where module variables are frozen — keep function nodes pure
+(inputs to output) and put stateful work in actors.
+
+
 ## Until
 
 The `until` modifier can be used as a suffix for statements to specify a condition for when the statement execution should be stopped (interrupted).

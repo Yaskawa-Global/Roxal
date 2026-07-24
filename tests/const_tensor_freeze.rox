@@ -1,0 +1,7 @@
+# var x: const tensor freezes; plain assignment shares the frozen value
+# (no thaw); mutation through any binding is a const violation.
+var t = tensor([2], dtype='uint8')
+t[0] = 5
+var c: const tensor = move(t)
+var y = c
+y[0] = 7

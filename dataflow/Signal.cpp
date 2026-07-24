@@ -87,7 +87,10 @@ Signal::Signal(double freq, Value initial, std::optional<std::string> name)
         m_period = TimeDuration::microSecs(static_cast<int64_t>(period_round));
     }
 
-    values[TimePoint::zero()] = initial;
+    // Snapshot value-semantics types (tensor/vector/matrix/orient) on store,
+    // exactly like assignment does (COW): the creator keeping its reference
+    // and mutating in place must never alter what samplers observe.
+    values[TimePoint::zero()] = roxal::cloneIfValueSemantics(initial);
 }
 
 
@@ -213,11 +216,19 @@ void Signal::setValueAt(TimePoint t, const Value& v)
 #endif
     }
 
+    // Snapshot value-semantics types (tensor/vector/matrix/orient) on store,
+    // exactly like assignment does (COW, O(1)): the setter keeping its
+    // reference and mutating in place must never alter what samplers (or
+    // change-event payloads) observe.  Reads already snapshot symmetrically.
+    // Const (frozen) values need no snapshot at all — immutability makes the
+    // reference itself safe to share, so publishing a const tensor is free.
+    Value stored = v.isConst() ? v : roxal::cloneIfValueSemantics(v);
+
     bool notifyChange = false;
     {
         std::lock_guard<std::recursive_mutex> lock(m_valuesMutex);
         assert(!values.empty());
-        bool valueChanged = (lastValueBefore(t) != v);
+        bool valueChanged = (lastValueBefore(t) != stored);
 
         // if we're adding a newer time, remove the oldest
         if (t > values.rbegin()->first) {
@@ -225,7 +236,7 @@ void Signal::setValueAt(TimePoint t, const Value& v)
                 values.erase(values.begin()); // map keys are sorted by time, so remove oldest/smallest value
         }
 
-        values[t] = v;
+        values[t] = stored;
 
         if (valueChanged) {
             if (m_suppressInitialChange)
@@ -240,7 +251,7 @@ void Signal::setValueAt(TimePoint t, const Value& v)
     // takes its own m_mutex -- holding m_valuesMutex across that would invert
     // the engine-then-signal lock order the tick path uses.
     if (notifyChange)
-        invokeValueChangedCallbacks(t, v);
+        invokeValueChangedCallbacks(t, stored);
 
     if (m_eventDriven) {
         engine->updateSignalConsumerInputAvailability(ptr_from_this(), t);

@@ -288,6 +288,28 @@ var blob2 = to_blob(frame, 224, 224, mean=[0.485, 0.456, 0.406], std=[0.229, 0.2
 `examples/opencv-detect.rox` is the full loop: camera → `to_blob` → D-FINE
 detection via ai.nn → box parsing → opencv drawing → FrameView display.
 
+## The signals idiom (streaming pipelines)
+
+For continuous processing, publish frames on a signal instead of hand-rolling
+loops: a camera actor freezes each frame (`var pub: const tensor =
+move(frame)`) and `set()`s it (zero-copy — const values share by reference);
+a dataflow function derives the processed view; the UI just reacts to changes.
+Tensor signals change-detect by content, and published frames are immutable to
+samplers. `examples/opencv-signals.rox` is the complete pattern:
+
+```roxal
+const raw = signal(0, tensor([2, 2, 3], dtype='uint8'))   # event-driven
+
+func annotate(frame: tensor) -> tensor:                    # dataflow node
+  var img = clone(frame)                                   # frozen in, mutable copy
+  ...canny / detect_markers / draw...
+  return img
+
+const view = annotate(raw)                                 # derived signal
+when view changes as evt:
+  fb.present(evt.value)
+```
+
 ## Enums
 
 Generated from OpenCV's own headers (values are never hand-transcribed):

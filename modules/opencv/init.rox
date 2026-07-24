@@ -713,12 +713,8 @@ func _imdecode(buf, nbytes: int, channels: int):
 func _aruco_generate(dict_id: int, id: int, side: int, dst) -> int:
   _
 
-@cfunc(lib=cvxlib, cname='cvx_aruco_detector_new', args='int dict_id', ret='void*', free='cvx_aruco_detector_release')
-func _aruco_detector_new(dict_id: int):
-  _
-
-@cfunc(lib=cvxlib, cname='cvx_aruco_detect', args='void* det, const void* img, int h, int w, int c', ret='void*', free='cvx_aruco_release')
-func _aruco_detect(det, img, h: int, w: int, c: int):
+@cfunc(lib=cvxlib, cname='cvx_aruco_detect', args='const void* img, int h, int w, int c, int dict_id', ret='void*', free='cvx_aruco_release')
+func _aruco_detect(img, h: int, w: int, c: int, dict_id: int):
   _
 
 @cfunc(lib=cvxlib, cname='cvx_aruco_count', args='void* r', ret='int')
@@ -830,23 +826,12 @@ func generate_marker(dictionary, id: int, side: int = 200) -> tensor:
     raise RuntimeException('generate_marker: ' + _last_error())
   return out
 
-# detector instances are cached per dictionary (construction loads tables)
-var _aruco_detectors = {}
-
-func _aruco_detector(dictionary):
-  var key = int(dictionary)
-  if key in _aruco_detectors:
-    return _aruco_detectors[key]
-  var det = _aruco_detector_new(dictionary)
-  if det == nil:
-    raise RuntimeException('detect_markers: ' + _last_error())
-  _aruco_detectors[key] = det
-  return det
-
-# Detect markers; returns a list of Marker.
+# Detect markers; returns a list of Marker. (Detector instances are cached
+# per dictionary inside the shim, so this is cheap to call per frame from any
+# thread — main, actors, or dataflow functions.)
 func detect_markers(img: tensor, dictionary = ArucoDict.Dict4x4_50) -> list:
   var s = img.shape()
-  var r = _aruco_detect(_aruco_detector(dictionary), img, s[0], s[1], s[2])
+  var r = _aruco_detect(img, s[0], s[1], s[2], dictionary)
   if r == nil:
     raise RuntimeException('detect_markers: ' + _last_error())
   var result = []

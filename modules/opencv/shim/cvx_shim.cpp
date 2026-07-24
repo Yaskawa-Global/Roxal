@@ -20,6 +20,8 @@
 #include <opencv2/videoio.hpp>
 
 #include <cstring>
+#include <map>
+#include <mutex>
 #include <string>
 
 // The Roxal-side declarations (init.rox, including its generated section) are
@@ -571,23 +573,28 @@ int cvx_aruco_generate(int dict_id, int id, int side, void* dst)
     CVX_CATCH(-1)
 }
 
-struct CvxArucoDetector { cv::aruco::ArucoDetector det; };
-
-void* cvx_aruco_detector_new(int dict_id)
+// Detector instances are cached per dictionary here in the shim (construction
+// builds marker tables).  A C++-side cache keeps the Roxal module stateless:
+// callers may run on any VM thread (main, actors, the dataflow engine), where
+// mutating Roxal module state would be forbidden.  detectMarkers() is const.
+static cv::aruco::ArucoDetector& cvxArucoDetector(int dict_id)
 {
-    CVX_TRY
-    return new CvxArucoDetector{cv::aruco::ArucoDetector(cv::aruco::getPredefinedDictionary(dict_id))};
-    CVX_CATCH(nullptr)
+    static std::mutex mu;
+    static std::map<int, cv::aruco::ArucoDetector> cache;
+    std::lock_guard<std::mutex> lock(mu);
+    auto it = cache.find(dict_id);
+    if (it == cache.end())
+        it = cache.emplace(dict_id,
+                           cv::aruco::ArucoDetector(cv::aruco::getPredefinedDictionary(dict_id))).first;
+    return it->second;
 }
 
-void cvx_aruco_detector_release(void* d) { delete static_cast<CvxArucoDetector*>(d); }
-
-void* cvx_aruco_detect(void* detp, const void* img, int h, int w, int c)
+void* cvx_aruco_detect(const void* img, int h, int w, int c, int dict_id)
 {
     CVX_TRY
     cv::Mat gray = cvxToGray(img, h, w, c);
     auto* r = new CvxArucoResult;
-    static_cast<CvxArucoDetector*>(detp)->det.detectMarkers(gray, r->corners, r->ids);
+    cvxArucoDetector(dict_id).detectMarkers(gray, r->corners, r->ids);
     return r;
     CVX_CATCH(nullptr)
 }

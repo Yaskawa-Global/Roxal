@@ -1,0 +1,82 @@
+# The signals-idiomatic OpenCV pipeline:
+#
+#   camera actor --set()--> raw (const tensor signal)
+#                              |         dataflow func node (engine thread)
+#                              v
+#                           annotate(raw) == view (derived signal)
+#                              |
+#   main thread: when view changes -> FrameView.present
+#
+# The actor freezes each frame (move() into a const tensor) and publishes it
+# zero-copy; change detection is by tensor content; samplers can never mutate
+# a published frame (const) nor observe later writer mutations (COW snapshot).
+# A second signal carries the stop flag back to the actor - no locks anywhere.
+#
+# Run from the repo root:  ./build/roxal examples/opencv-signals.rox
+# Close the window to exit. Falls back to tests/testvideo.mp4 without a camera.
+
+import opencv.*
+import qt
+
+const raw = signal(0, tensor([2, 2, 3], dtype='uint8'))    # event-driven
+const stop = signal(0, false)
+
+# dataflow transform: recomputes on the engine whenever raw changes.
+# The input frame is const (frozen); clone to get a mutable canvas.
+func annotate(frame: tensor) -> tensor:
+  var s = frame.shape()
+  if s[0] < 32:
+    return frame                        # ignore the placeholder initial value
+  var img = clone(frame)
+  var edges = canny(gaussian_blur(grayscale(img), 5, 1.5), 60.0, 160.0)
+  img[0:s[0], 0:s[1], 2:3] = edges      # edge overlay in the blue channel
+  var markers = detect_markers(img)
+  for m in markers:
+    draw_marker(img, m)
+  put_text(img, string(len(markers)) + ' markers', 8, 24, [0, 255, 0], 0.7, Font.Simplex, 2)
+  return img
+
+const view = annotate(raw)
+
+type Camera actor:
+  proc run():
+    var cap
+    var from_file = false
+    try:
+      cap = open_camera(0)
+    except e:
+      cap = open_video('tests/testvideo.mp4')
+      from_file = true
+    while not stop.value:
+      var frame = cap.read()
+      if frame == nil:
+        if from_file:
+          cap.set(CapProp.PosFrames, 0.0)   # loop the file
+      else:
+        var pub: const tensor = move(frame) # freeze: publish is zero-copy
+        raw.set(pub)
+    cap.close()
+
+var cam = Camera()
+cam.run()
+
+# wait for the first real frame so the window matches the stream size
+var shp = raw.value.shape()
+while shp[0] < 32:
+  wait(ms=50)
+  shp = raw.value.shape()
+print("stream: " + shp[1] + " x " + shp[0])
+
+var eng = qt.Engine()
+var qml = 'import QtQuick\nimport QtQuick.Window\nimport Roxal\n'
+qml = qml + 'Window { visible: true; width: ' + string(shp[1]) + '; height: ' + string(shp[0])
+qml = qml + '; title: "Roxal opencv via signals (close to quit)"; '
+qml = qml + 'FrameView { objectName: "fb"; anchors.fill: parent } }'
+eng.load_string(qml)
+var fb = eng.find('fb')
+
+when view changes as evt:
+  fb.present(evt.value)
+
+eng.run()
+stop.set(true)
