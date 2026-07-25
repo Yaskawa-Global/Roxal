@@ -78,6 +78,12 @@ Both cost real debugging time, so they are called out here:
   `[0, 1]` — the header's own prose says so, and the C++ wrapper casts the
   result to its float-based `texture_coordinate`. Reading it as ints is silent
   nonsense.
+- `rs2_align` refreshes only the streams it aligns. Its output frameset carries
+  a stale infrared frame — 19 of 20 reads came back bit-identical, against 0 of
+  20 with alignment off — so an IR view built from the aligned set looks frozen
+  while depth and colour update. `rs_read` therefore copies infrared out of the
+  frameset *before* handing it to the aligner (which also has to happen first,
+  since `rs2_process_frame` consumes the caller's reference).
 - Texturing a point cloud is not just "process the colour frame": the block
   ignores any frame that does not match its `STREAM_FILTER`,
   `STREAM_FORMAT_FILTER` and `STREAM_INDEX_FILTER` options, which is what the

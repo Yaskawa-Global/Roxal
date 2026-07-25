@@ -94,6 +94,14 @@ func _timestamp(h) -> real:
 func _depth_to_meters(src, dst, n: int, scale: real) -> int:
   _
 
+@cfunc(lib=rslib, cname='rs_depth_colorize', args='const void* src, void* dst, int n, double scale, double near_m, double far_m', ret='int')
+func _depth_colorize(src, dst, n: int, scale: real, near_m: real, far_m: real) -> int:
+  _
+
+@cfunc(lib=rslib, cname='rs_gray_to_rgb', args='const void* src, void* dst, int n', ret='int')
+func _gray_to_rgb(src, dst, n: int) -> int:
+  _
+
 @cfunc(lib=rslib, cname='rs_intrinsics', args='void* h, int stream, double* out12', ret='int')
 func _intrinsics(h, stream: int, out12) -> int:
   _
@@ -404,6 +412,27 @@ type Camera object:
     var out = tensor([depth_height, depth_width, 1], dtype='float32')
     if _depth_to_meters(f.depth, out, depth_height * depth_width, depth_scale) != 0:
       raise RuntimeException('depth_meters: ' + _last_error())
+    return out
+
+  # Depth rendered as a viewable RGB heat map: near is warm, far is cool, and
+  # pixels with no reading are black. `near`/`far` are the metre range the ramp
+  # spans; anything beyond is clamped.
+  func depth_image(f, near: real = 0.3, far: real = 4.0) -> tensor:
+    if f.depth == nil:
+      raise RuntimeException('depth_image: this camera has no depth stream')
+    var out = tensor([depth_height, depth_width, 3], dtype='uint8')
+    if _depth_colorize(f.depth, out, depth_height * depth_width, depth_scale, near, far) != 0:
+      raise RuntimeException('depth_image: ' + _last_error())
+    return out
+
+  # Infrared widened to RGB for display (FrameView and the opencv/media modules
+  # all expect 3-channel images).
+  func ir_image(f) -> tensor:
+    if f.ir == nil:
+      raise RuntimeException('ir_image: this camera has no infrared stream')
+    var out = tensor([ir_height, ir_width, 3], dtype='uint8')
+    if _gray_to_rgb(f.ir, out, ir_height * ir_width) != 0:
+      raise RuntimeException('ir_image: ' + _last_error())
     return out
 
   func intrinsics(stream = Stream.Depth) -> Intrinsics:

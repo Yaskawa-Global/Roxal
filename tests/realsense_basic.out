@@ -18,4 +18,5 @@ cloud xyz shape: [307200, 3]
 cloud uv shape: [307200, 2]
 spatial magnitude round-trip: 3
 filtered read keeps shape: true
+infrared is live under align: true
 closed

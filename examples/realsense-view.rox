@@ -1,0 +1,110 @@
+# Live RealSense viewer: colour, depth and infrared in a Qt window.
+#
+#   roxal -p modules examples/realsense-view.rox
+#
+# Optional argument picks the starting view:  colour | depth | ir
+#   roxal -p modules examples/realsense-view.rox depth
+#
+# Keys:  1 colour   2 depth (heat map)   3 infrared   F toggle depth filters
+#        Q / Esc quit
+#
+# Needs modules/realsense/librsshim.so (./install-deps.sh librealsense), a
+# connected RealSense, and a Qt-enabled build.
+
+import sys
+import qt
+import realsense.*
+
+var devs = devices()
+if len(devs) == 0:
+  print('no RealSense camera found', flush=true)
+  sys.exit(1)
+
+var dev = devs[0]
+print("using {dev.name} (serial {dev.serial}, {dev.usb})", flush=true)
+if dev.usb[0:1] == '2':
+  print('warning: USB 2 link — depth will barely stream. Use a cable marked SS.', flush=true)
+
+# align=true puts depth in the colour image's frame, so the same pixel means the
+# same point in the scene whichever view you are looking at.
+var cam = open(width=640, height=480, fps=30, ir=true, align=true)
+print("depth {cam.depth_width}x{cam.depth_height}  colour {cam.color_width}x{cam.color_height}  ir {cam.ir_width}x{cam.ir_height}", flush=true)
+print('keys: 1 colour   2 depth   3 infrared   F filters   Q quit', flush=true)
+
+var mode = 1                      # 1 colour, 2 depth, 3 infrared
+if len(args) > 0:
+  if args[0] == 'depth':
+    mode = 2
+  else:
+    if args[0] == 'ir' or args[0] == 'infrared':
+      mode = 3
+    else:
+      if args[0] != 'colour' and args[0] != 'color':
+        print("unknown view '{args[0]}' — expected colour, depth or ir", flush=true)
+        sys.exit(1)
+var filters_on = false
+
+var e = qt.Engine()
+var w = string(cam.color_width)
+var h = string(cam.color_height)
+var qml = 'import QtQuick\nimport QtQuick.Window\nimport Roxal\n'
+qml = qml + 'Window { objectName: "win"; visible: true; width: ' + w + '; height: ' + h
+qml = qml + '; title: "RealSense"; signal key(int code, bool down)\n'
+qml = qml + '  FrameView { objectName: "fb"; anchors.fill: parent }\n'
+qml = qml + '  Item { focus: true; Keys.onPressed: (ev) => { key(ev.key, true); ev.accepted = true } } }'
+e.load_string(qml)
+var win = e.find('win')
+var fb = e.find('fb')
+
+func mode_name() -> string:
+  if mode == 2:
+    return 'depth'
+  if mode == 3:
+    return 'infrared'
+  return 'colour'
+
+proc update_title():
+  var filt = 'off'
+  if filters_on:
+    filt = 'on'
+  var name = mode_name()
+  win.title = "RealSense — {name}  (filters {filt})  [1/2/3 view, F filters, Q quit]"
+
+update_title()
+
+qt.connect(win, 'key', proc(code, down):
+  if not down:
+    return
+  # Qt key codes: the printable ones follow ASCII, Escape is 16777216
+  if code == 49:                  # 1
+    mode = 1
+  if code == 50:                  # 2
+    mode = 2
+  if code == 51:                  # 3
+    mode = 3
+  if code == 70:                  # F — spatial smoothing + hole filling
+    filters_on = not filters_on
+    cam.enable_filter(Filter.Spatial, filters_on)
+    cam.enable_filter(Filter.HoleFilling, filters_on)
+  if code == 81 or code == 16777216:        # Q or Esc
+    e.quit()
+    return
+  update_title()
+)
+
+proc frame_tick():
+  var f = cam.read(200)
+  if f == nil:
+    return                        # no frameset this tick; try again next time
+  if mode == 2:
+    fb.present(cam.depth_image(f))
+  else:
+    if mode == 3:
+      fb.present(cam.ir_image(f))
+    else:
+      fb.present(f.color)
+
+qt.every(33, frame_tick)
+e.run()
+cam.close()
+print('closed')

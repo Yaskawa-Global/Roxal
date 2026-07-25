@@ -71,6 +71,12 @@ var cam = open(serial='', depth=true, color=true, ir=false, imu=false,
   `color[y, x]` are the same point in the scene. Requires both streams. Aligned
   depth takes the colour stream's geometry *and* its intrinsics.
 
+> The aligner only refreshes the streams it aligns: its output frameset re-emits
+> a **stale infrared frame** (measured: 19 of 20 reads returned a bit-identical
+> IR image, against 0 of 20 unaligned — an IR view looks frozen). The module
+> works around this by taking infrared from the frameset *before* alignment, so
+> `f.ir` is live whether or not `align` is on.
+
 `Camera` exposes `depth_width`, `depth_height`, `color_width`, `color_height`
 and `depth_scale`.
 
@@ -93,6 +99,12 @@ f.timestamp                         # device timestamp, milliseconds
 
 The IMU samples much faster than the video streams, so `gyro`/`accel` carry the
 most recent sample rather than one reading per frame.
+
+For display, `cam.depth_image(f, near, far)` renders depth as an RGB heat map
+(near warm, far cool, black where there is no reading) and `cam.ir_image(f)`
+widens infrared to RGB. Both are C loops — colourising 300k pixels per frame in
+Roxal is far too slow — and both produce the 3-channel uint8 images that
+`qt.FrameView`, `opencv` and `media` all expect.
 
 Depth and colour in one `Frameset` come from the same hardware-synchronised
 set — that is the reason to take both from one camera object rather than two

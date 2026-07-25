@@ -479,7 +479,38 @@ extern "C" int rs_read(void* h, void* depth_dst, void* color_dst, void* ir_dst, 
             return -1;
     }
 
+    bool irTaken = false;
     if (s->align) {
+        // The aligner only refreshes the streams it is aligning: its output
+        // frameset re-emits a *stale* infrared frame (measured: 19 of 20 reads
+        // returned a bit-identical IR image, versus 0 of 20 unaligned). So take
+        // infrared from the original frameset, before aligning. This has to
+        // happen first — rs2_process_frame consumes our reference to `frames`.
+        if (ir_dst) {
+            int n0 = rs2_embedded_frames_count(frames, &e);
+            if (!failed(e, "embedded_frames_count(pre-align)")) {
+                for (int i = 0; i < n0; i++) {
+                    rs2_frame* f0 = rs2_extract_frame(frames, i, &e);
+                    if (failed(e, "extract_frame(pre-align)"))
+                        continue;
+                    const rs2_stream_profile* p0 = rs2_get_frame_stream_profile(f0, &e);
+                    rs2_stream st0 = RS2_STREAM_ANY;
+                    rs2_format fm0 = RS2_FORMAT_ANY;
+                    int i0 = 0, u0 = 0, r0 = 0;
+                    if (!failed(e, "get_frame_stream_profile(pre-align)")) {
+                        rs2_get_stream_profile_data(p0, &st0, &fm0, &i0, &u0, &r0, &e);
+                        if (!failed(e, "get_stream_profile_data(pre-align)") && st0 == RS2_STREAM_INFRARED) {
+                            if (copyFrame(f0, ir_dst, size_t(s->irW) * s->irH, "read(infrared)"))
+                                irTaken = true;
+                        }
+                    }
+                    rs2_release_frame(f0);
+                    if (irTaken)
+                        break;
+                }
+            }
+        }
+
         // rs2_process_frame takes ownership of `frames`; the aligned result comes
         // back from the queue attached to the block at open time.
         rs2_process_frame(s->align, frames, &e);
@@ -528,7 +559,7 @@ extern "C" int rs_read(void* h, void* depth_dst, void* color_dst, void* ir_dst, 
                 rc = -1;
             s->lastColor = f;                  // retained to texture the point cloud
             continue;
-        } else if (stream == RS2_STREAM_INFRARED && ir_dst) {
+        } else if (stream == RS2_STREAM_INFRARED && ir_dst && !irTaken) {
             if (!copyFrame(f, ir_dst, size_t(s->irW) * s->irH, "read(infrared)"))
                 rc = -1;
         } else if (stream == RS2_STREAM_GYRO || stream == RS2_STREAM_ACCEL) {
@@ -559,6 +590,70 @@ extern "C" int rs_depth_to_meters(const void* src, void* dst, int n, double scal
     const float k = static_cast<float>(scale);
     for (int i = 0; i < n; i++)
         out[i] = in[i] * k;                    // 0 stays 0: "no reading at this pixel"
+    return 0;
+}
+
+// Render a raw uint16 depth image as an RGB8 heat map: near is warm, far is
+// cool, and pixels with no reading are black. Like rs_depth_to_meters this is a
+// per-pixel pass over ~300k pixels every frame, which belongs in C.
+extern "C" int rs_depth_colorize(const void* src, void* dst, int n, double scale,
+                                 double near_m, double far_m)
+{
+    if (!src || !dst || n < 0) {
+        g_lastError = "depth_colorize: null buffer";
+        return -1;
+    }
+    if (!(far_m > near_m)) {
+        g_lastError = "depth_colorize: far must be greater than near";
+        return -1;
+    }
+    const uint16_t* in = static_cast<const uint16_t*>(src);
+    uint8_t* out = static_cast<uint8_t*>(dst);
+    const double span = far_m - near_m;
+
+    for (int i = 0; i < n; i++) {
+        uint16_t raw = in[i];
+        if (raw == 0) {                        // no reading here
+            out[i * 3 + 0] = 0;
+            out[i * 3 + 1] = 0;
+            out[i * 3 + 2] = 0;
+            continue;
+        }
+        double t = (raw * scale - near_m) / span;
+        if (t < 0.0) t = 0.0;
+        if (t > 1.0) t = 1.0;
+        // A simple warm->cool ramp: yellow -> red -> magenta -> blue.
+        double r, g, b;
+        if (t < 0.5) {                         // yellow -> red
+            double u = t * 2.0;
+            r = 1.0; g = 1.0 - u; b = 0.0;
+        } else {                               // red -> magenta -> blue
+            double u = (t - 0.5) * 2.0;
+            r = 1.0 - u; g = 0.0; b = u;
+        }
+        out[i * 3 + 0] = static_cast<uint8_t>(r * 255.0);
+        out[i * 3 + 1] = static_cast<uint8_t>(g * 255.0);
+        out[i * 3 + 2] = static_cast<uint8_t>(b * 255.0);
+    }
+    return 0;
+}
+
+// Widen a single-channel uint8 image (infrared) to RGB8 for display. Same
+// rationale as rs_depth_colorize: a per-pixel pass that belongs in C.
+extern "C" int rs_gray_to_rgb(const void* src, void* dst, int n)
+{
+    if (!src || !dst || n < 0) {
+        g_lastError = "gray_to_rgb: null buffer";
+        return -1;
+    }
+    const uint8_t* in = static_cast<const uint8_t*>(src);
+    uint8_t* out = static_cast<uint8_t*>(dst);
+    for (int i = 0; i < n; i++) {
+        uint8_t v = in[i];
+        out[i * 3 + 0] = v;
+        out[i * 3 + 1] = v;
+        out[i * 3 + 2] = v;
+    }
     return 0;
 }
 

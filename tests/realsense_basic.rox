@@ -74,5 +74,28 @@ print("filtered read keeps shape: {filtered_ok}")
 cam.enable_filter(Filter.Spatial, false)
 cam.enable_filter(Filter.HoleFilling, false)
 
+# regression: the aligner re-emits a stale infrared frame, which made an IR view
+# look frozen. Live IR varies with sensor noise, so across a handful of reads at
+# least one must differ; with the bug every one is bit-identical.
+func ir_sig(t) -> real:
+  var acc = 0.0
+  for y in range(0 ..< 480):
+    if y rem 16 == 0:
+      for x in range(0 ..< 640):
+        if x rem 16 == 0:
+          acc = acc + t[y, x, 0]
+  return acc
+
+var prev = -1.0
+var ir_changed = false
+for i in range(0 ..< 5):
+  var fi = cam.read(10000)
+  if fi != nil:
+    var sg = ir_sig(fi.ir)
+    if prev >= 0.0 and sg != prev:
+      ir_changed = true
+    prev = sg
+print("infrared is live under align: {ir_changed}")
+
 cam.close()
 print("closed")
