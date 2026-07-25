@@ -1,0 +1,78 @@
+import realsense.*
+
+# Hardware test: needs a connected RealSense (D400-series). Everything printed
+# here is invariant across cameras and scenes — no serials, timings or depth
+# values — so the expected output holds for any D4xx on any desk.
+
+var devs = devices()
+var any_device = len(devs) >= 1
+print("devices: {any_device}")
+var d = devs[0]
+var has_serial = len(d.serial) > 0
+var has_firmware = len(d.firmware) > 0
+print("has serial: {has_serial}")
+print("has firmware: {has_firmware}")
+
+# depth + colour + infrared at a mode every D4xx supports, aligned into the
+# colour frame
+var cam = open(width=640, height=480, fps=30, ir=true, align=true)
+print("depth size: {cam.depth_width}x{cam.depth_height}")
+print("color size: {cam.color_width}x{cam.color_height}")
+var scale_ok = cam.depth_scale > 0.0
+print("depth scale positive: {scale_ok}")
+
+var f = cam.read(10000)
+var got = f != nil
+print("got frameset: {got}")
+var dshape = f.depth.shape()
+var cshape = f.color.shape()
+var ishape = f.ir.shape()
+print("depth shape: {dshape}")
+print("color shape: {cshape}")
+print("ir shape: {ishape}")
+
+var m = cam.depth_meters(f)
+var mshape = m.shape()
+print("meters shape: {mshape}")
+
+# aligned depth is reprojected into the colour frame, so it must report the
+# colour camera's intrinsics
+var di = cam.intrinsics(Stream.Depth)
+var ci = cam.intrinsics(Stream.Color)
+var intr_sane = di.fx > 0.0 and di.fy > 0.0
+var aligned_match = di.fx == ci.fx and di.width == ci.width
+print("intrinsics sane: {intr_sane}")
+print("aligned intrinsics match color: {aligned_match}")
+
+var ex = cam.extrinsics()
+var rshape = ex.rotation.shape()
+var tshape = ex.translation.shape()
+print("extrinsics shapes: {rshape} {tshape}")
+
+# the depth sensor of a D4xx always has a laser emitter; the colour one does not
+var depth_laser = cam.supports_option(Sensor.Depth, Option.LaserPower)
+var color_laser = cam.supports_option(Sensor.Color, Option.LaserPower)
+print("depth has laser power: {depth_laser}")
+print("color has laser power: {color_laser}")
+
+# point cloud: one point per depth pixel, textured against the colour stream
+var pc = cam.points()
+var xyzshape = pc.xyz.shape()
+var uvshape = pc.uv.shape()
+print("cloud xyz shape: {xyzshape}")
+print("cloud uv shape: {uvshape}")
+
+# depth post-processing filters: toggling and option round-trip
+cam.enable_filter(Filter.Spatial)
+cam.enable_filter(Filter.HoleFilling)
+cam.set_filter_option(Filter.Spatial, FilterOption.Magnitude, 3.0)
+var mag = cam.get_filter_option(Filter.Spatial, FilterOption.Magnitude)
+print("spatial magnitude round-trip: {mag}")
+var ff = cam.read(10000)
+var filtered_ok = ff != nil and ff.depth.shape() == dshape
+print("filtered read keeps shape: {filtered_ok}")
+cam.enable_filter(Filter.Spatial, false)
+cam.enable_filter(Filter.HoleFilling, false)
+
+cam.close()
+print("closed")

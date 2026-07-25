@@ -1,0 +1,19 @@
+import sys
+mylib = sys.loadlib('../tests/testlib.so')
+
+# The working idiom for a pointer-sized out-parameter: a 1-element tensor slot.
+@cfunc(lib=mylib, cname='make_handle', args='void** out')
+proc make_handle(out):
+  _
+
+var slot = tensor([1], dtype='int64')
+make_handle(slot)
+var wrote_something = slot[0] != 0
+print("wrote through the slot: {wrote_something}")
+
+# A plain `void*` still accepts nil as NULL (unchanged behaviour).
+@cfunc(lib=mylib, cname='is_null', args='const void* p', ret='int')
+func is_null(p) -> int:
+  _
+
+print(is_null(nil))

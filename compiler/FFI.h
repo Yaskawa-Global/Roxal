@@ -39,6 +39,9 @@ struct FFIWrapper {
     std::vector<ffi_type> argStructTypes;
     std::vector<PrimitivePtrType> argPrimPtrTypes; // primitive pointer arg types
     std::vector<bool> argIsConstPtr; // pointer arg declared const (no write-back/COW needed)
+    std::vector<bool> argIsPtrPtr;   // pointer-to-pointer arg (void**, T**): nil is rejected, since
+                                     // such a parameter is virtually always an out-param and NULL
+                                     // would have the callee write through a null pointer
     ffi_type* retType;
     bool retIsCharPtr{false};
     bool retIsBool{false};

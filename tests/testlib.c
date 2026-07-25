@@ -75,3 +75,7 @@ int slow_add(int a, int b, int ms) { usleep(ms * 1000); return a + b; }
 void slow_fill(uint8_t* buf, int n, int ms) {
     for (int i = 0; i < n; i++) { buf[i] = (uint8_t)(i * 3); usleep(ms * 1000 / n); }
 }
+
+/* pointer-to-pointer out-parameter (the f(..., Thing** out) / Error** convention) */
+static int handle_target = 99;
+void make_handle(void** out) { *out = &handle_target; }

@@ -2225,8 +2225,41 @@ unsigned integers of all widths (`int8_t` … `int64_t`, plus `int`, `long`,
 `size_t`, `intptr_t`, …). Strings: `const char*` (passed by copy) and `char*`
 (mutable; changes are written back to the Roxal string). Structs: a `@cstruct`
 type name, by value or by pointer (`MyStruct*`, with out-param write-back).
-Pointers to primitives (`int32_t*`, `double*`, …) pass a single scalar by
-reference. A `const` qualifier on any pointer marks it read-only.
+Pointers to primitives (`int32_t*`, `double*`, …) pass a scalar *in* by
+address. A `const` qualifier on any pointer marks it read-only.
+
+**Out-parameters.** A C function returns values through a pointer argument only
+when that argument is something Roxal can mutate in place — the callee writes
+into the object itself, not into a copy:
+
+| Declare | Pass | Result |
+|---|---|---|
+| `MyStruct*` (a `@cstruct` type) | an instance | fields updated in place |
+| `double*`, `int32_t*`, … | a tensor of matching dtype | elements updated in place |
+| `char*` | a string | contents written back |
+
+Passing a plain Roxal **scalar variable** to `int32_t*`/`double*` does *not*
+work in the out direction: the value is passed in correctly, but the write-back
+lands on the argument copy and the caller's variable is unchanged. For a single
+scalar out-param use a 1-element tensor:
+
+```roxal
+@cfunc(lib=mylib, cname='get_size', args='void* h, int32_t* out')
+func get_size(h, out) -> int:
+  _
+
+var n = tensor([1], dtype='int32')
+get_size(h, n)
+print("{n[0]}")
+```
+
+Roxal cannot receive an **opaque handle** through an out-parameter: there is no
+conversion from a written-back pointer value to a `foreignptr`. A C API in the
+`f(args..., Thing** out)` style — or the very common `f(args..., Error** err)`
+error convention — therefore needs a small C shim that returns the handle
+instead (see `modules/realsense/shim/` for a worked example). Passing `nil` for
+a `T**` parameter is rejected rather than silently passed as NULL, which would
+crash the callee as it wrote through it.
 
 **Opaque handles.** An argument declared `void*` (or any unrecognized pointer
 type) accepts a `foreignptr` handle, `nil` (passed as NULL), or a tensor (see

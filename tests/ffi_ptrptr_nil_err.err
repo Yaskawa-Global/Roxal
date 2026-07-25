@@ -1,0 +1,1 @@
+make_handle arg0: nil \(NULL\) is not accepted for a pointer-to-pointer out-parameter

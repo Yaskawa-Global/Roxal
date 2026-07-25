@@ -7,6 +7,7 @@ import socket
 import subprocess
 import argparse
 import fnmatch
+import glob
 import re
 import time
 import tempfile
@@ -260,6 +261,7 @@ tests = [
     'value_semantics', 'value_semantics_cow',
     'ffi1', 'ffi_addfloats', 'ffi_struct_out', 'ffi_inttypes', 'ffi_strlen', 'ffi_relative', 'ffi_toupper', 'ffi_primptr', 'ffi_voidptr_struct', 'cstruct1', 'cstruct2', 'cstruct3', 'cstruct_byval', 'cstruct_array',
     'ffi_int64', 'ffi_ptr_return', 'ffi_free', 'ffi_tensor', 'ffi_tensor_mismatch_err', 'ffi_nullptr', 'ffi_blocking',
+    'ffi_ptrptr_slot', 'ffi_ptrptr_nil_err',
     'nested_cstruct', 'nested_cstruct_ptr', 'nested_cstruct_byval',
     'weakref', 'strongref', 'is_operator', 'in_operator', 'stackdepth', 'modulevar2',
     'const_basic', 'const_assign_err', 'const_nonliteral_err', 'const_missing_initializer_err',
@@ -352,6 +354,9 @@ opencv_tests = ['opencv_basic', 'opencv_imgproc', 'opencv_imgproc2', 'opencv_dra
 # (modules/opencv/models/download-models.sh)
 opencv_dnn_tests = ['opencv_face', 'opencv_aliked', 'opencv_track']
 opencv_tests += opencv_dnn_tests
+# pure-Roxal FFI binding over the rs shim; needs modules/realsense/librsshim.so
+# built AND a RealSense camera plugged in (both gated below)
+realsense_tests = ['realsense_basic']
 qt_tests = ['qt_lifecycle', 'qt_load_file',           # P0: lifecycle
             'qt_properties', 'qt_property_error', 'qt_convert',  # P1: handles/props/methods/convert
             'qt_signal_callback', 'qt_signal_event', 'qt_signal_args',  # P2: signals -> callbacks/events
@@ -434,6 +439,7 @@ if args.all:
     tests += nn_lfs_tests
     tests += doom_tests
     tests += opencv_tests   # also require modules/opencv/libcvxshim.so (gated below)
+    tests += realsense_tests  # also require librsshim.so + a camera (gated below)
 
 # Filter tests by pattern if --test is specified
 if args.test:
@@ -561,6 +567,30 @@ if not has_media:
     if any(test in tests for test in media_tests):
         print("Skipping media tests (feature not enabled).")
         tests = [t for t in tests if t not in media_tests]
+realsense_shim = os.path.join(project_root, 'modules', 'realsense', 'librsshim.so')
+
+
+def realsense_connected() -> bool:
+    """True if a RealSense is on the USB bus (network cameras are not detected;
+    skipping the tests is the safe answer there)."""
+    for product in glob.glob('/sys/bus/usb/devices/*/product'):
+        try:
+            with open(product) as f:
+                if 'RealSense' in f.read():
+                    return True
+        except OSError:
+            pass
+    return False
+
+
+if any(test in tests for test in realsense_tests):
+    if not os.path.exists(realsense_shim):
+        print("Skipping realsense tests (modules/realsense/librsshim.so not built).")
+        tests = [t for t in tests if t not in realsense_tests]
+    elif not realsense_connected():
+        print("Skipping realsense tests (no RealSense camera connected).")
+        tests = [t for t in tests if t not in realsense_tests]
+
 opencv_shim = os.path.join(project_root, 'modules', 'opencv', 'libcvxshim.so')
 if not os.path.exists(opencv_shim):
     if any(test in tests for test in opencv_tests):

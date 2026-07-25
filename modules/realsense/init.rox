@@ -1,0 +1,507 @@
+# Intel RealSense binding for Roxal — pure Roxal over a thin C shim
+# (librsshim.so) around librealsense2.
+#
+# Depth images are uint16 tensors of shape [height, width, 1] in raw sensor
+# units; multiply by `depth_scale` (or call `depth_meters`) for metres. Colour
+# images are uint8 [height, width, 3] RGB — the same convention as the opencv
+# and media modules, so frames flow straight into them without conversion.
+#
+# Unlike a plain V4L2 capture, this carries the camera's factory calibration:
+# intrinsics, depth<->colour extrinsics, the metric depth scale, and hardware
+# depth-to-colour alignment.
+
+import sys
+rslib = sys.loadlib('./librsshim.so')
+
+
+#
+# internal shim declarations
+
+@cfunc(lib=rslib, cname='rs_version', ret='const char*')
+func _version() -> string:
+  _
+
+@cfunc(lib=rslib, cname='rs_last_error', ret='const char*')
+func _last_error() -> string:
+  _
+
+# The shim static_asserts the SDK's major/minor at build time; this catches a
+# librsshim.so left over from a different SDK generation.
+if _version()[0:2] != '2.':
+  raise RuntimeException('realsense module expects librealsense 2.x but librsshim.so reports ' + _version() + ' — rebuild the shim (modules/realsense/shim/build.sh)')
+
+@cfunc(lib=rslib, cname='rs_create_context', ret='void*', free='rs_delete_context')
+func _create_context():
+  _
+
+@cfunc(lib=rslib, cname='rs_device_count', args='void* ctx', ret='int')
+func _device_count(ctx) -> int:
+  _
+
+@cfunc(lib=rslib, cname='rs_device_info', args='void* ctx, int index, int info', ret='const char*')
+func _device_info(ctx, index: int, info: int) -> string:
+  _
+
+@cfunc(lib=rslib, cname='rs_device_reset', args='void* ctx, int index', ret='int', blocking=true)
+func _device_reset(ctx, index: int) -> int:
+  _
+
+@cfunc(lib=rslib, cname='rs_open', args='void* ctx, const char* serial, int enable_depth, int depth_w, int depth_h, int enable_color, int color_w, int color_h, int enable_ir, int enable_imu, int fps, int align', ret='void*', free='rs_close', blocking=true)
+func _open(ctx, serial: string, enable_depth: int, depth_w: int, depth_h: int, enable_color: int, color_w: int, color_h: int, enable_ir: int, enable_imu: int, fps: int, align: int):
+  _
+
+@cfunc(lib=rslib, cname='rs_stop', args='void* h', blocking=true)
+proc _stop(h):
+  _
+
+@cfunc(lib=rslib, cname='rs_read', args='void* h, void* depth, void* color, void* ir, int timeout_ms', ret='int', blocking=true)
+func _read(h, depth, color, ir, timeout_ms: int) -> int:
+  _
+
+@cfunc(lib=rslib, cname='rs_depth_width', args='void* h', ret='int')
+func _depth_width(h) -> int:
+  _
+
+@cfunc(lib=rslib, cname='rs_depth_height', args='void* h', ret='int')
+func _depth_height(h) -> int:
+  _
+
+@cfunc(lib=rslib, cname='rs_color_width', args='void* h', ret='int')
+func _color_width(h) -> int:
+  _
+
+@cfunc(lib=rslib, cname='rs_color_height', args='void* h', ret='int')
+func _color_height(h) -> int:
+  _
+
+@cfunc(lib=rslib, cname='rs_ir_width', args='void* h', ret='int')
+func _ir_width(h) -> int:
+  _
+
+@cfunc(lib=rslib, cname='rs_ir_height', args='void* h', ret='int')
+func _ir_height(h) -> int:
+  _
+
+@cfunc(lib=rslib, cname='rs_depth_scale', args='void* h', ret='double')
+func _depth_scale(h) -> real:
+  _
+
+@cfunc(lib=rslib, cname='rs_timestamp', args='void* h', ret='double')
+func _timestamp(h) -> real:
+  _
+
+@cfunc(lib=rslib, cname='rs_depth_to_meters', args='const void* src, void* dst, int n, double scale', ret='int')
+func _depth_to_meters(src, dst, n: int, scale: real) -> int:
+  _
+
+@cfunc(lib=rslib, cname='rs_intrinsics', args='void* h, int stream, double* out12', ret='int')
+func _intrinsics(h, stream: int, out12) -> int:
+  _
+
+@cfunc(lib=rslib, cname='rs_extrinsics', args='void* h, double* out12', ret='int')
+func _extrinsics(h, out12) -> int:
+  _
+
+@cfunc(lib=rslib, cname='rs_supports_option', args='void* h, int sensor, int option', ret='int')
+func _supports_option(h, sensor: int, option: int) -> int:
+  _
+
+@cfunc(lib=rslib, cname='rs_get_option', args='void* h, int sensor, int option, double* out', ret='int')
+func _get_option(h, sensor: int, option: int, out) -> int:
+  _
+
+@cfunc(lib=rslib, cname='rs_set_option', args='void* h, int sensor, int option, double value', ret='int')
+func _set_option(h, sensor: int, option: int, value: real) -> int:
+  _
+
+@cfunc(lib=rslib, cname='rs_option_range', args='void* h, int sensor, int option, double* out4', ret='int')
+func _option_range(h, sensor: int, option: int, out4) -> int:
+  _
+
+@cfunc(lib=rslib, cname='rs_imu', args='void* h, int stream, double* out3', ret='int')
+func _imu(h, stream: int, out3) -> int:
+  _
+
+@cfunc(lib=rslib, cname='rs_deproject', args='void* h, int stream, double x, double y, double depth_m, double* out3', ret='int')
+func _deproject(h, stream: int, x: real, y: real, depth_m: real, out3) -> int:
+  _
+
+@cfunc(lib=rslib, cname='rs_points_compute', args='void* h', ret='int', blocking=true)
+func _points_compute(h) -> int:
+  _
+
+@cfunc(lib=rslib, cname='rs_points_copy', args='void* h, void* out_xyz, int n', ret='int')
+func _points_copy(h, out_xyz, n: int) -> int:
+  _
+
+@cfunc(lib=rslib, cname='rs_points_copy_uv', args='void* h, void* out_uv, int n', ret='int')
+func _points_copy_uv(h, out_uv, n: int) -> int:
+  _
+
+@cfunc(lib=rslib, cname='rs_enable_filter', args='void* h, int filter, int enabled', ret='int')
+func _enable_filter(h, filter: int, enabled: int) -> int:
+  _
+
+@cfunc(lib=rslib, cname='rs_set_filter_option', args='void* h, int filter, int option, double value', ret='int')
+func _set_filter_option(h, filter: int, option: int, value: real) -> int:
+  _
+
+@cfunc(lib=rslib, cname='rs_get_filter_option', args='void* h, int filter, int option, double* out', ret='int')
+func _get_filter_option(h, filter: int, option: int, out) -> int:
+  _
+
+
+#
+# enums (values mirror librealsense's own; see rs_sensor.h / rs_option.h)
+
+type Stream enum:
+  Depth = 1
+  Color = 2
+  Infrared = 3
+  Gyro = 5
+  Accel = 6
+
+# Depth post-processing blocks, applied in this order when enabled. Decimation
+# is deliberately absent: it changes the depth resolution, which would have to
+# renegotiate every cached frame size and the aligner's geometry.
+type Filter enum:
+  Spatial = 0
+  Temporal = 1
+  HoleFilling = 2
+
+# Options the filter blocks take (see set_filter_option).
+type FilterOption enum:
+  Magnitude = 36        # spatial: number of passes (1..5)
+  SmoothAlpha = 37      # spatial/temporal: weight of the new frame (0..1)
+  SmoothDelta = 38      # spatial/temporal: depth step treated as an edge
+  HolesFill = 39        # spatial/hole-filling: how aggressively to fill
+
+type Sensor enum:
+  Depth = 0
+  Color = 1
+
+# The options a D400-series camera actually honours; the full librealsense list
+# is much longer, and `supports_option` tells you what this device has.
+type Option enum:
+  Exposure = 3
+  Gain = 4
+  WhiteBalance = 9
+  AutoExposure = 10
+  AutoWhiteBalance = 11
+  VisualPreset = 12
+  LaserPower = 13
+  ConfidenceThreshold = 17
+  EmitterEnabled = 18
+  FramesQueueSize = 19
+  DepthUnits = 28
+  GlobalTimeEnabled = 53
+
+type CameraInfo enum:
+  Name = 0
+  Serial = 1
+  Firmware = 2
+  PhysicalPort = 4
+  ProductId = 7
+  UsbType = 9
+  ProductLine = 10
+  IpAddress = 13
+  ConnectionType = 15
+
+type Distortion enum:
+  Rectilinear = 0
+  ModifiedBrownConrady = 1
+  InverseBrownConrady = 2
+  FTheta = 3
+  BrownConrady = 4
+  KannalaBrandt4 = 5
+
+
+#
+# values
+
+type Device object:
+  var index: int = 0
+  var name: string = ''
+  var serial: string = ''
+  var firmware: string = ''
+  var usb: string = ''            # 'USB2'/'USB3' — depth needs USB3 to stream reliably
+  var product_line: string = ''
+
+type Intrinsics object:
+  var width: int = 0
+  var height: int = 0
+  var ppx: real = 0.0             # principal point, pixels
+  var ppy: real = 0.0
+  var fx: real = 0.0              # focal length, pixels
+  var fy: real = 0.0
+  var model: int = 0              # a Distortion value
+  var coeffs                      # float64 [5]
+
+type Extrinsics object:
+  var rotation                    # float64 [3, 3]
+  var translation                 # float64 [3], metres
+
+type OptionRange object:
+  var min: real = 0.0
+  var max: real = 0.0
+  var step: real = 0.0
+  var default_value: real = 0.0
+
+type Frameset object:
+  var depth                       # uint16 [H, W, 1] raw units, or nil
+  var color                       # uint8 [H, W, 3] RGB, or nil
+  var ir                          # uint8 [H, W, 1] left infrared, or nil
+  var gyro                        # float64 [3] angular velocity, rad/s, or nil
+  var accel                       # float64 [3] acceleration, m/s^2 (incl. gravity), or nil
+  var timestamp: real = 0.0       # device timestamp, milliseconds
+
+type PointCloud object:
+  var xyz                         # float32 [N, 3] metres, camera frame
+  var uv                          # float32 [N, 2] texture coordinate in the colour
+                                  # image, normalised to [0, 1] (nil without a
+                                  # colour stream). Multiply by the colour image's
+                                  # width/height for pixels; values outside [0, 1]
+                                  # are points the colour camera cannot see.
+
+
+#
+# module context — one librealsense context serves every camera in the process
+
+var _ctx = _create_context()
+if _ctx == nil:
+  raise RuntimeException('realsense: ' + _last_error())
+
+func _info(index: int, field) -> string:
+  var s = _device_info(_ctx, index, field)
+  if s == nil:
+    return ''                     # this model does not report that field
+  return s
+
+# Every connected RealSense, in librealsense's enumeration order.
+func devices() -> list:
+  var n = _device_count(_ctx)
+  if n < 0:
+    raise RuntimeException('devices: ' + _last_error())
+  var result = []
+  for i in range(0 ..< n):
+    var d = Device(i)
+    d.name = _info(i, CameraInfo.Name)
+    d.serial = _info(i, CameraInfo.Serial)
+    d.firmware = _info(i, CameraInfo.Firmware)
+    d.usb = _info(i, CameraInfo.UsbType)
+    d.product_line = _info(i, CameraInfo.ProductLine)
+    result.append(d)
+  return result
+
+# Hardware-reset a device by enumeration index: it drops off the bus and comes
+# back a second or two later, so re-enumerate before opening it again.
+proc reset_device(index: int = 0):
+  if _device_reset(_ctx, index) != 0:
+    raise RuntimeException('reset_device: ' + _last_error())
+
+
+#
+# camera
+
+type Camera object:
+  var _h
+  var depth_width: int = 0
+  var depth_height: int = 0
+  var color_width: int = 0
+  var color_height: int = 0
+  var ir_width: int = 0
+  var ir_height: int = 0
+  var depth_scale: real = 0.0     # metres per raw depth unit (1 mm on D4xx)
+  var _has_depth: bool = false
+  var _has_color: bool = false
+  var _has_ir: bool = false
+  var _has_imu: bool = false
+
+  proc init(h, has_depth: bool, has_color: bool, has_ir: bool, has_imu: bool):
+    _h = h
+    _has_depth = has_depth
+    _has_color = has_color
+    _has_ir = has_ir
+    _has_imu = has_imu
+    depth_width = _depth_width(h)
+    depth_height = _depth_height(h)
+    color_width = _color_width(h)
+    color_height = _color_height(h)
+    ir_width = _ir_width(h)
+    ir_height = _ir_height(h)
+    depth_scale = _depth_scale(h)
+
+  # Next frameset, or nil if none arrived within timeout_ms. Every stream in it
+  # comes from the same hardware-synchronised set.
+  func read(timeout_ms: int = 5000):
+    var depth = nil
+    var color = nil
+    var ir = nil
+    if _has_depth:
+      depth = tensor([depth_height, depth_width, 1], dtype='uint16')
+    if _has_color:
+      color = tensor([color_height, color_width, 3], dtype='uint8')
+    if _has_ir:
+      ir = tensor([ir_height, ir_width, 1], dtype='uint8')
+    var rc = _read(_h, depth, color, ir, timeout_ms)
+    if rc < 0:
+      raise RuntimeException('read: ' + _last_error())
+    if rc == 0:
+      return nil                  # timed out — an ordinary outcome when polling
+    var gyro = nil
+    var accel = nil
+    if _has_imu:
+      var g = tensor([3], dtype='float64')
+      if _imu(_h, Stream.Gyro, g) == 1:
+        gyro = g
+      var a = tensor([3], dtype='float64')
+      if _imu(_h, Stream.Accel, a) == 1:
+        accel = a
+    return Frameset(depth, color, ir, gyro, accel, _timestamp(_h))
+
+  # Point cloud for the most recent frameset, in metres in the camera frame.
+  # With a colour stream enabled the cloud is textured against it, so .uv gives
+  # each point its pixel in the colour image.
+  func points() -> PointCloud:
+    var n = _points_compute(_h)
+    if n < 0:
+      raise RuntimeException('points: ' + _last_error())
+    if n == 0:
+      return PointCloud(nil, nil)
+    var xyz = tensor([n, 3], dtype='float32')
+    if _points_copy(_h, xyz, n) < 0:
+      raise RuntimeException('points: ' + _last_error())
+    var uv = nil
+    if _has_color:
+      uv = tensor([n, 2], dtype='float32')
+      if _points_copy_uv(_h, uv, n) < 0:
+        raise RuntimeException('points: ' + _last_error())
+    return PointCloud(xyz, uv)
+
+  # Turn a depth post-processing filter on or off. Filters run in Filter order
+  # (spatial, temporal, hole-filling) before alignment.
+  proc enable_filter(filter, enabled: bool = true):
+    var flag = 0
+    if enabled:
+      flag = 1
+    if _enable_filter(_h, filter, flag) != 0:
+      raise RuntimeException('enable_filter: ' + _last_error())
+
+  proc set_filter_option(filter, option, value: real):
+    if _set_filter_option(_h, filter, option, value) != 0:
+      raise RuntimeException('set_filter_option: ' + _last_error())
+
+  func get_filter_option(filter, option) -> real:
+    var out = tensor([1], dtype='float64')
+    if _get_filter_option(_h, filter, option, out) != 0:
+      raise RuntimeException('get_filter_option: ' + _last_error())
+    return out[0]
+
+  # Depth in metres as float32 [H, W, 1]; 0.0 means "no reading at this pixel".
+  func depth_meters(f) -> tensor:
+    if f.depth == nil:
+      raise RuntimeException('depth_meters: this camera has no depth stream')
+    var out = tensor([depth_height, depth_width, 1], dtype='float32')
+    if _depth_to_meters(f.depth, out, depth_height * depth_width, depth_scale) != 0:
+      raise RuntimeException('depth_meters: ' + _last_error())
+    return out
+
+  func intrinsics(stream = Stream.Depth) -> Intrinsics:
+    var out = tensor([12], dtype='float64')
+    if _intrinsics(_h, stream, out) != 0:
+      raise RuntimeException('intrinsics: ' + _last_error())
+    var coeffs = tensor([5], dtype='float64')
+    for i in range(0 ..< 5):
+      coeffs[i] = out[7 + i]
+    return Intrinsics(int(out[0]), int(out[1]), out[2], out[3], out[4], out[5], int(out[6]), coeffs)
+
+  # Rigid transform taking a point in the depth frame to the colour frame.
+  func extrinsics() -> Extrinsics:
+    var out = tensor([12], dtype='float64')
+    if _extrinsics(_h, out) != 0:
+      raise RuntimeException('extrinsics: ' + _last_error())
+    var r = tensor([3, 3], dtype='float64')
+    for row in range(0 ..< 3):
+      for col in range(0 ..< 3):
+        r[row, col] = out[col * 3 + row]        # librealsense stores column-major
+    var t = tensor([3], dtype='float64')
+    for i in range(0 ..< 3):
+      t[i] = out[9 + i]
+    return Extrinsics(r, t)
+
+  # Metric 3D point (metres, camera frame: +x right, +y down, +z forward) for
+  # pixel (x, y) of a frameset, or nil where the sensor returned no depth.
+  #
+  # The deprojection is librealsense's own, so the stream's distortion model is
+  # applied exactly rather than approximated by a plain pinhole.
+  func point_at(f, x: int, y: int):
+    if f.depth == nil:
+      raise RuntimeException('point_at: this camera has no depth stream')
+    var raw = f.depth[y, x, 0]
+    if raw == 0:
+      return nil
+    var z = raw * depth_scale
+    var p = tensor([3], dtype='float64')
+    if _deproject(_h, Stream.Depth, x, y, z, p) != 0:
+      raise RuntimeException('point_at: ' + _last_error())
+    return p
+
+  func supports_option(sensor, option) -> bool:
+    var rc = _supports_option(_h, sensor, option)
+    if rc < 0:
+      raise RuntimeException('supports_option: ' + _last_error())
+    return rc == 1
+
+  func get_option(sensor, option) -> real:
+    var out = tensor([1], dtype='float64')
+    if _get_option(_h, sensor, option, out) != 0:
+      raise RuntimeException('get_option: ' + _last_error())
+    return out[0]
+
+  proc set_option(sensor, option, value: real):
+    if _set_option(_h, sensor, option, value) != 0:
+      raise RuntimeException('set_option: ' + _last_error())
+
+  func option_range(sensor, option) -> OptionRange:
+    var out = tensor([4], dtype='float64')
+    if _option_range(_h, sensor, option, out) != 0:
+      raise RuntimeException('option_range: ' + _last_error())
+    return OptionRange(out[0], out[1], out[2], out[3])
+
+  # Release the camera now (emitter off, device free for other processes).
+  # The GC would eventually do this; close() makes it deterministic.
+  proc close():
+    _stop(_h)
+
+# Open a camera and start streaming.
+#
+#   serial  — pick a specific device ('' = the first one found). Prefer this
+#             over an index for anything long-lived: it is stable across
+#             replugs, and network cameras have no meaningful index.
+#   width/height/fps — requested mode for both streams (0 = SDK default). The
+#             SDK picks the nearest supported mode; read back the actual size
+#             from .depth_width/.color_width etc.
+#   align   — reproject depth onto the colour image, so depth[y, x] and
+#             color[y, x] are the same point in the scene. Requires both
+#             streams; aligned depth takes the colour stream's geometry.
+func open(serial: string = '', depth: bool = true, color: bool = true, ir: bool = false,
+          imu: bool = false, width: int = 0, height: int = 0, fps: int = 0, align: bool = false) -> Camera:
+  var want_depth = 0
+  if depth:
+    want_depth = 1
+  var want_color = 0
+  if color:
+    want_color = 1
+  var want_ir = 0
+  if ir:
+    want_ir = 1
+  var want_imu = 0
+  if imu:
+    want_imu = 1
+  var want_align = 0
+  if align:
+    want_align = 1
+  var h = _open(_ctx, serial, want_depth, width, height, want_color, width, height, want_ir, want_imu, fps, want_align)
+  if h == nil:
+    raise RuntimeException('open: ' + _last_error())
+  return Camera(h, depth, color, ir, imu)

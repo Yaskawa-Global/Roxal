@@ -23,6 +23,7 @@ void* roxal::createFFIWrapper(void* fn, ffi_type* retType,
     spec->argIsConstCharPtr.assign(argTypes.size(), false);
     spec->argIsBool.assign(argTypes.size(), false);
     spec->argIsConstPtr.assign(argTypes.size(), false);
+    spec->argIsPtrPtr.assign(argTypes.size(), false);
     spec->argObjTypes.assign(argTypes.size(), nullptr);
     spec->argStructElems.resize(argTypes.size());
     spec->argStructTypes.resize(argTypes.size());
@@ -307,6 +308,7 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
         std::vector<ffi_type> argStructTypes;
         std::vector<PrimitivePtrType> argPrimPtrTypes;
         std::vector<bool> argIsConstPtr;
+        std::vector<bool> argIsPtrPtr;
         if (argsExpr) {
             std::string argsStr = toUTF8StdString(asUString(evalExpr(argsExpr)));
             std::stringstream ss(argsStr);
@@ -373,6 +375,9 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                     } else {
                         argTypes.push_back(&ffi_type_pointer);
                         argPrimPtrTypes.push_back(PrimitivePtrType::None);
+                        // `void**`/`T**`: the base type is itself a pointer
+                        if (!base.empty() && base.back()=='*')
+                            argIsPtrPtr.push_back(true);
                     }
                 }
                 else {
@@ -471,6 +476,8 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                     argPrimPtrTypes.push_back(PrimitivePtrType::None);
                 if (argIsConstPtr.size() < argTypes.size())
                     argIsConstPtr.push_back(isConstType);
+                if (argIsPtrPtr.size() < argTypes.size())
+                    argIsPtrPtr.push_back(false);
             }
         }
 
@@ -632,6 +639,7 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
         spec->argStructTypes = argStructTypes;
         spec->argPrimPtrTypes = argPrimPtrTypes;
         spec->argIsConstPtr = argIsConstPtr;
+        spec->argIsPtrPtr = argIsPtrPtr;
         spec->freeFn = freeFn;
         spec->blocking = blocking;
         for (size_t i=0;i<spec->argStructTypes.size();i++)
@@ -866,6 +874,14 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                 }
             } else {
                 if (argVector[i].isNil()) {
+                    // A `T**` parameter is virtually always an out-param, so NULL makes the
+                    // callee write through a null pointer — a segfault with no diagnostic.
+                    // Refuse it, and point at the idiom that does work.
+                    if (spec->argIsPtrPtr.size()>i && spec->argIsPtrPtr[i])
+                        throw std::invalid_argument(funcNameAndArg(i)+
+                            ": nil (NULL) is not accepted for a pointer-to-pointer out-parameter; "
+                            "pass a 1-element tensor as the destination slot instead "
+                            "(e.g. tensor([1], dtype='int64') for a handle-sized value)");
                     structPtrs[i] = nullptr;                     // NULL pointer
                     argValues[i] = &structPtrs[i];
                 } else if (isForeignPtr(argVector[i])) {

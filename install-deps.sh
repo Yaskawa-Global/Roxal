@@ -21,7 +21,7 @@ JOBS="${JOBS:-$(nproc)}"
 BUILD_TMP="/tmp/roxal-deps-build"
 
 CORE_TARGETS=(eigen antlr4)
-ALL_TARGETS=(eigen antlr4 cyclonedds grpc media pugixml onnxruntime opencv)
+ALL_TARGETS=(eigen antlr4 cyclonedds grpc media pugixml onnxruntime opencv librealsense)
 
 # One-line description per target, shown by --help.
 declare -A TARGET_DESC=(
@@ -33,6 +33,7 @@ declare -A TARGET_DESC=(
     [pugixml]="pugixml 1.15 (lightweight XML parser)"
     [onnxruntime]="ONNX Runtime 1.24.1 (ML inference; GPU default, --cpu-only)"
     [opencv]="OpenCV 5.0.0 (modules/opencv FFI binding; builds libcvxshim.so)"
+    [librealsense]="librealsense 2.58.3 (modules/realsense FFI binding; builds librsshim.so)"
 )
 
 print_help() {
@@ -131,6 +132,7 @@ APT_PACKAGES=(
 # Optional apt deps based on targets
 should_build media && APT_PACKAGES+=(libpng-dev libjpeg-dev)
 should_build opencv && APT_PACKAGES+=(libpng-dev libjpeg-dev libavcodec-dev libavformat-dev libswscale-dev)
+should_build librealsense && APT_PACKAGES+=(libudev-dev libusb-1.0-0-dev libssl-dev)
 
 MISSING=()
 for pkg in "${APT_PACKAGES[@]}"; do
@@ -320,6 +322,36 @@ if should_build opencv; then
     cmake --install opencv/build
     bash "$SCRIPT_DIR/modules/opencv/shim/build.sh"
     echo "  -> installed to $DEPS_DIR/opencv/install (+ modules/opencv/libcvxshim.so)"
+fi
+
+# ---------- librealsense 2.58.3 (for the modules/realsense FFI binding) ----------
+# Pinned: modules/realsense/shim/rs_shim.cpp static_asserts 2.58+ at compile time
+# and init.rox re-checks the major version at import. BUILD_WITH_DDS=ON adds the
+# Ethernet transport used by D555-class cameras (it FetchContents Fast-DDS, which
+# is why this build is not quick); USB cameras do not need it.
+#
+# Note for non-root use: the SDK installs udev rules under
+# deps/librealsense/config/99-realsense-libusb.rules. Without them the IMU's IIO
+# nodes and some device metadata stay root-only:
+#   sudo cp deps/librealsense/config/99-realsense-libusb.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+if should_build librealsense; then
+    LRS_VER="2.58.3"
+    echo "=== Building librealsense ${LRS_VER} ==="
+    cd "$DEPS_DIR"
+    [ -d librealsense ] || git clone --depth 1 --branch "v${LRS_VER}" https://github.com/IntelRealSense/librealsense.git librealsense
+    cmake -B librealsense/build -S librealsense \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=ON \
+        -DCMAKE_INSTALL_PREFIX="$DEPS_DIR/librealsense/install" \
+        -DBUILD_EXAMPLES=OFF -DBUILD_GRAPHICAL_EXAMPLES=OFF \
+        -DBUILD_TOOLS=OFF -DBUILD_UNIT_TESTS=OFF \
+        -DBUILD_PYTHON_BINDINGS=OFF \
+        -DBUILD_WITH_DDS=ON
+    cmake --build librealsense/build -j"$JOBS"
+    cmake --install librealsense/build
+    bash "$SCRIPT_DIR/modules/realsense/shim/build.sh"
+    echo "  -> installed to $DEPS_DIR/librealsense/install (+ modules/realsense/librsshim.so)"
 fi
 
 echo ""

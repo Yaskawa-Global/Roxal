@@ -1,0 +1,82 @@
+# RealSense depth camera: metric depth, deprojection, and a live ASCII depth map.
+#
+#   roxal -p modules examples/realsense-depth.rox
+#
+# Needs a connected RealSense (D400-series) and modules/realsense/librsshim.so
+# (./install-deps.sh librealsense).
+
+import sys
+import realsense.*
+
+var devs = devices()
+if len(devs) == 0:
+  print("no RealSense camera found")
+  sys.exit(1)
+
+var d = devs[0]
+print("using {d.name} (serial {d.serial}, firmware {d.firmware}, {d.usb})")
+if d.usb[0:1] == '2':
+  print("warning: this camera is on a USB 2 link — depth will barely stream. Use a cable marked SS.")
+
+# align=true puts depth in the colour image's frame, so depth[y, x] and
+# color[y, x] are the same point in the scene.
+var cam = open(width=640, height=480, fps=30, align=true)
+print("streaming depth {cam.depth_width}x{cam.depth_height}, {cam.depth_scale} m per unit")
+
+var intr = cam.intrinsics(Stream.Depth)
+print("intrinsics: fx={intr.fx} fy={intr.fy} ppx={intr.ppx} ppy={intr.ppy}")
+
+# Spatial smoothing plus hole filling markedly improves depth coverage; both
+# run before alignment and cost a few milliseconds per frame.
+cam.enable_filter(Filter.Spatial)
+cam.enable_filter(Filter.HoleFilling)
+
+# A coarse ASCII rendering: near is dense ink, far is sparse, '.' is no reading.
+var ramp = '@%#*+=-:. '
+var cols = 48
+var rows = 16
+
+for frame_no in range(0 ..< 30):
+  var f = cam.read()
+  if f == nil:
+    print("(no frame)")
+    continue
+
+  var m = cam.depth_meters(f)
+  var line = ''
+  var picture = ''
+  for r in range(0 ..< rows):
+    line = ''
+    for c in range(0 ..< cols):
+      var y = r * cam.depth_height / rows
+      var x = c * cam.depth_width / cols
+      var z = m[y, x, 0]
+      if z <= 0.0:
+        line = line + ' '
+      else:
+        # 0.3 m -> darkest, 4 m and beyond -> lightest
+        var t = (z - 0.3) / 3.7
+        if t < 0.0:
+          t = 0.0
+        if t > 1.0:
+          t = 1.0
+        var idx = int(t * 9.0)
+        line = line + ramp[idx:idx + 1]
+    picture = picture + line + '\n'
+
+  var cy = cam.depth_height / 2
+  var cx = cam.depth_width / 2
+  var centre = m[cy, cx, 0]
+  var p = cam.point_at(f, cx, cy)
+
+  print(picture)
+  if p == nil:
+    print("centre: no depth reading")
+  else:
+    var px = p[0]
+    var py = p[1]
+    var pz = p[2]
+    print("centre distance {centre} m   3D point ({px}, {py}, {pz}) m")
+
+cam.close()
+print("done")

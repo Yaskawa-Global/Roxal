@@ -1,0 +1,11 @@
+import sys
+mylib = sys.loadlib('../tests/testlib.so')
+
+# A `T**` parameter is an out-param: NULL would have the callee write through a
+# null pointer, so nil is refused with a diagnostic rather than silently passed.
+@cfunc(lib=mylib, cname='make_handle', args='void** out')
+proc make_handle(out):
+  _
+
+var h = nil
+make_handle(h)

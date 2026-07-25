@@ -1,0 +1,21 @@
+devices: true
+has serial: true
+has firmware: true
+depth size: 640x480
+color size: 640x480
+depth scale positive: true
+got frameset: true
+depth shape: [480, 640, 1]
+color shape: [480, 640, 3]
+ir shape: [480, 640, 1]
+meters shape: [480, 640, 1]
+intrinsics sane: true
+aligned intrinsics match color: true
+extrinsics shapes: [3, 3] [3]
+depth has laser power: true
+color has laser power: false
+cloud xyz shape: [307200, 3]
+cloud uv shape: [307200, 2]
+spatial magnitude round-trip: 3
+filtered read keeps shape: true
+closed
