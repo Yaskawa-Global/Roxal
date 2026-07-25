@@ -659,16 +659,29 @@ type VideoCapture object:
   proc set(prop, value: real):
     if _cap_set(_cap, prop, value) != 0:
       raise RuntimeException('VideoCapture.set: ' + _last_error())
+    # drivers snap size requests to a supported mode; keep the cached
+    # shape (which read() allocates from) in step with what was granted
+    if prop == CapProp.FrameWidth or prop == CapProp.FrameHeight:
+      width = int(_cap_get(_cap, CapProp.FrameWidth))
+      height = int(_cap_get(_cap, CapProp.FrameHeight))
 
   # Release the camera/file now (GC would eventually, but this is deterministic).
   proc close():
     _cap_close(_cap)
 
-# Open a camera by index.
-func open_camera(index: int = 0) -> VideoCapture:
+# Open a camera by index. Optional width/height/fps request a capture mode
+# (0 = driver default); drivers snap to the nearest supported mode, so read
+# .width/.height/.fps() for what was actually granted.
+func open_camera(index: int = 0, width: int = 0, height: int = 0, fps: int = 0) -> VideoCapture:
   var cap = _cap_open(index)
   if cap == nil:
     raise RuntimeException('open_camera: ' + _last_error())
+  if width > 0:
+    _cap_set(cap, CapProp.FrameWidth, width)
+  if height > 0:
+    _cap_set(cap, CapProp.FrameHeight, height)
+  if fps > 0:
+    _cap_set(cap, CapProp.Fps, fps)
   return VideoCapture(cap)
 
 # Open a video file.

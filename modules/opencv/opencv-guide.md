@@ -126,9 +126,9 @@ contrast-limited adaptive histogram equalization for poor lighting.
 ## Video
 
 ```roxal
-var cap = open_camera(0)                      # or open_video('file.mp4')
+var cap = open_camera(0, width=1280, height=720, fps=30)   # or open_video('file.mp4')
 var frame = cap.read()                        # RGB tensor; nil at end of stream
-print("{cap.width} x {cap.height} @ {cap.fps()}")
+print("{cap.width} x {cap.height} @ {cap.fps()}")   # the mode actually granted
 cap.set(CapProp.PosFrames, 0.0)               # seek (files)
 cap.close()                                   # release the device now
 
@@ -139,6 +139,11 @@ w.close()                                     # REQUIRED: flushes the file
 
 Camera capture uses V4L2; video files use FFmpeg (enabled when the OpenCV
 build found the FFmpeg dev packages).
+
+`open_camera`'s width/height/fps are requests (0 = driver default): drivers
+snap to the nearest mode they support, and `cap.width`/`cap.height` always
+report the granted size — as does `set()` of `CapProp.FrameWidth/FrameHeight`,
+which re-reads it.
 
 ## ArUco markers
 
