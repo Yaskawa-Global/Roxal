@@ -28081,7 +28081,13 @@ static ma_result ma_device_stop__alsa(ma_device* pDevice)
     resultPoll = poll((struct pollfd*)pDevice->alsa.pPollDescriptorsCapture, 1, 0);
     if (resultPoll > 0) {
         ma_uint64 t;
-        read(((struct pollfd*)pDevice->alsa.pPollDescriptorsCapture)[0].fd, &t, sizeof(t));
+        /* ROXAL LOCAL CHANGE (vendored miniaudio 0.11.21): consume the result of
+           the wakeup-fd drain. glibc declares read() warn_unused_result, and a
+           (void) cast does not silence that in GCC. A short read or error here
+           is not actionable — the fd is only being emptied. */
+        if (read(((struct pollfd*)pDevice->alsa.pPollDescriptorsCapture)[0].fd, &t, sizeof(t)) < 0) {
+            /* ignored */
+        }
     }
     }
 
@@ -28102,7 +28108,11 @@ static ma_result ma_device_stop__alsa(ma_device* pDevice)
     resultPoll = poll((struct pollfd*)pDevice->alsa.pPollDescriptorsPlayback, 1, 0);
     if (resultPoll > 0) {
         ma_uint64 t;
-        read(((struct pollfd*)pDevice->alsa.pPollDescriptorsPlayback)[0].fd, &t, sizeof(t));
+        /* ROXAL LOCAL CHANGE (vendored miniaudio 0.11.21): see the matching
+           comment in the capture path above. */
+        if (read(((struct pollfd*)pDevice->alsa.pPollDescriptorsPlayback)[0].fd, &t, sizeof(t)) < 0) {
+            /* ignored */
+        }
     }
 
     }
