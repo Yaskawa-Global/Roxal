@@ -28,6 +28,40 @@ using ast::Access;
 
 namespace {
 
+/// Would `0` followed by this suffix lex as a base-prefixed integer instead?
+/// Hex/octal/binary literals win that contest (they are declared ahead of the
+/// suffixed tokens in Roxal.g4), so such a suffix could never apply to a literal
+/// starting with 0. Returns the base name for the diagnostic, or nullptr.
+const char* suffixShadowedByNumericBase(const std::string& s)
+{
+    if (s.size() < 2)
+        return nullptr;
+    auto allDigitsOfBase = [&s](bool (*isDigit)(char)) {
+        for (size_t i = 1; i < s.size(); i++)
+            if (!isDigit(s[i]))
+                return false;
+        return true;
+    };
+    switch (s[0]) {
+        case 'x': case 'X':
+            if (allDigitsOfBase([](char c) {
+                    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }))
+                return "hexadecimal";
+            break;
+        case 'o': case 'O':
+            if (allDigitsOfBase([](char c) { return c >= '0' && c <= '7'; }))
+                return "octal";
+            break;
+        case 'b': case 'B':
+            if (allDigitsOfBase([](char c) { return c == '0' || c == '1'; }))
+                return "binary";
+            break;
+        default:
+            break;
+    }
+    return nullptr;
+}
+
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
 constexpr std::uint32_t ModuleCacheVersion = 47;
 
@@ -2342,9 +2376,20 @@ std::any RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
                     icu::UnicodeString suffixStr = s->str;
                     // '%' is reserved as a standalone one-char suffix. Any other
                     // suffix that contains '%' is rejected at registration.
+                    const char* clashBase = suffixShadowedByNumericBase(toUTF8StdString(suffixStr));
                     if (suffixStr.indexOf((UChar)'%') >= 0
                             && suffixStr != icu::UnicodeString("%")) {
                         error("@suffix string may not contain '%' (the '%' suffix is reserved as a standalone single-character form)");
+                    } else if (clashBase) {
+                        // e.g. @suffix("x1F"): '0x1F' lexes as a hex literal, not as
+                        // 0 with this suffix, so the suffix could never apply to a
+                        // literal starting with 0. Say so now rather than let it
+                        // silently do nothing.
+                        error("@suffix '" + toUTF8StdString(suffixStr) + "' is shadowed by "
+                              + clashBase + " literals: '0" + toUTF8StdString(suffixStr)
+                              + "' lexes as one, and base-prefixed literals take precedence over"
+                              " suffixes. Choose a suffix that is not 'x'/'o'/'b' followed only by"
+                              " digits of that base.");
                     } else {
                         icu::UnicodeString funcName = ast->func->name.value_or(toUnicodeString(""));
                         icu::UnicodeString modName;

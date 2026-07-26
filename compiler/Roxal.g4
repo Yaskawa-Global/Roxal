@@ -744,6 +744,26 @@ integer
 // Standalone '%': numeric-only carve-out for percent literals (e.g. 50%, 0.5%).
 // '%' is only a percent suffix in Roxal — there is no '%' modulo operator
 // (use the 'rem' keyword instead).
+// Base-prefixed integers must be declared BEFORE the suffixed tokens. Both can
+// match the same text — '0x51' is either a hex literal or '0' with the bare
+// suffix 'x51' — and ANTLR breaks an equal-length tie by declaration order. With
+// the suffixed rules first, every hex/octal/binary literal lexed as 0 + suffix
+// and failed with "unknown literal suffix". A base literal wins the tie now; a
+// suffix that would still swallow one (e.g. '0xFFms', where 0 + suffix is the
+// strictly longer match) is rejected when the suffix is registered — see the
+// @suffix handling in RoxalCompiler.cpp.
+OCT_INTEGER
+ : '0' [oO] OCT_DIGIT+
+ ;
+
+HEX_INTEGER
+ : '0' [xX] HEX_DIGIT+
+ ;
+
+BIN_INTEGER
+ : '0' [bB] BIN_DIGIT+
+ ;
+
 SUFFIXED_FLOAT
  : ( POINT_FLOAT | EXPONENT_FLOAT ) ( BRACED_SUFFIX | BARE_SUFFIX | '%' )
  ;
@@ -766,18 +786,8 @@ DECIMAL_INTEGER
  | '0'+
  ;
 
-OCT_INTEGER
- : '0' [oO] OCT_DIGIT+
- ;
-
-HEX_INTEGER
- : '0' [xX] HEX_DIGIT+
- ;
-
-BIN_INTEGER
- : '0' [bB] BIN_DIGIT+
- ;
-
+// OCT_INTEGER / HEX_INTEGER / BIN_INTEGER are declared above, ahead of the
+// suffixed tokens, so they win the equal-length tie against '0' + bare suffix.
 
 FLOAT_NUMBER
  : POINT_FLOAT

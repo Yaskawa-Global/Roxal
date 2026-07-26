@@ -1,0 +1,58 @@
+// Non-decimal integer literals: hexadecimal, binary and octal, in both letter
+// cases. These regressed when user-defined literal suffixes were added — '0x51'
+// lexed as 0 with the bare suffix 'x51' — so this covers the values themselves
+// and their coexistence with suffixes.
+
+// hexadecimal
+print(0x0)
+print(0x51)
+print(0xFF)
+print(0xff)
+print(0XdeadBEEF)
+print(0x7FFFFFFFFFFFFFFF)
+
+// binary
+print(0b0)
+print(0b1010)
+print(0B11111111)
+
+// octal
+print(0o17)
+print(0O777)
+
+// in expressions, and mixed with decimals
+print(0xFF + 1)
+print(0b1000 * 0o10)
+print(0x10 == 16)
+print(0b1111 == 0xF)
+
+// negation and comparison
+print(-0x10)
+print(0xFF > 0o377 - 1)
+
+// indexing and slicing accept them like any int
+var items = [10, 20, 30, 40]
+print(items[0x2])
+
+@suffix("px")
+func pixels(v):
+  return v * 2
+
+// suffixes still apply to decimal literals...
+print(10px)
+print(0px)
+print(3.5px)
+print(50%)
+
+// ...and a suffix that merely looks like a base prefix is fine, because the
+// literal rules only win when the trailing text is valid digits of that base
+@suffix("xyz")
+func not_hex(v):
+  return v + 1
+
+@suffix("b2")
+func not_binary(v):
+  return v + 100
+
+print(0xyz)
+print(0b2)

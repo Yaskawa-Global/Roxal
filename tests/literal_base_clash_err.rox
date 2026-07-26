@@ -1,0 +1,9 @@
+// A suffix that would be swallowed by a base-prefixed literal is rejected when
+// it is registered: '0x1F' lexes as a hexadecimal literal, so this suffix could
+// never apply to a literal starting with 0.
+
+@suffix("x1F")
+func shadowed(v):
+  return v
+
+print(1)
