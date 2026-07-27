@@ -801,6 +801,10 @@ bool ProtoAdapter::nameMatch(const std::string& fullName, const std::string& nam
 
 Value ProtoAdapter::declForFullName(const std::string& fullName) const
 {
+    // Guarded for the same reason as clearDecls(): a server-streaming
+    // reader thread decodes responses through here, concurrently with
+    // whatever the main thread is doing to the decl maps.
+    std::lock_guard<std::recursive_mutex> lk(m_mutex);
     auto it = m_declByFullName->find(fullName);
     if (it != m_declByFullName->end())
         return it->second;
@@ -822,6 +826,13 @@ void ProtoAdapter::logError(const std::string& errormsg) const
 
 void ProtoAdapter::clearDecls()
 {
+    // MUST hold m_mutex.  generateRoxalResponse() takes the lock for the
+    // whole of a response decode, and that decode reaches the decl maps
+    // via declForFullName().  Server-streaming calls run that decode on a
+    // reader thread, so clearing the maps unguarded races a live decode
+    // and corrupts the hashtable mid-lookup -- seen as a SIGSEGV in
+    // _M_find_before_node when a client with an open stream exits.
+    std::lock_guard<std::recursive_mutex> lk(m_mutex);
     m_declByFullName->clear();
     m_declByShortName->clear();
 }
