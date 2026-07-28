@@ -349,7 +349,8 @@ opencv_tests = ['opencv_basic', 'opencv_imgproc', 'opencv_imgproc2', 'opencv_dra
                 'opencv_features', 'opencv_charuco', 'opencv_stereo_calib',
                 'opencv_homography', 'opencv_blob',
                 'opencv_segment', 'opencv_contour_kit', 'opencv_template_qr',
-                'opencv_flow', 'opencv_reproject', 'opencv_fisheye']
+                'opencv_flow', 'opencv_reproject', 'opencv_fisheye',
+                'opencv_depth']
 # DNN task wrappers additionally need the downloaded models
 # (modules/opencv/models/download-models.sh)
 opencv_dnn_tests = ['opencv_face', 'opencv_aliked', 'opencv_track']

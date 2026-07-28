@@ -1868,3 +1868,162 @@ func draw_matches(img_a: tensor, fa: Features, img_b: tensor, fb: Features, matc
     circle(canvas, xb, yb, 3, color)
     line(canvas, xa, ya, xb, yb, color)
   return canvas
+
+
+#
+# ---- depth images / 3D point maps ----
+
+# Primitives for depth-camera pipelines (deprojection, rigid transform,
+# box crop -- rgbd::depthTo3d / PCL CropBox equivalents).  Point maps are
+# float32 [H, W, 3] (or flat [N, 3]) in the OPTICAL convention: +X right,
+# +Y down, +Z forward, matching the camera matrix they came from.
+# Invalid points are NaN; every function treats NaN as "no data".
+
+@cfunc(lib=cvxlib, cname='cvx_depth_to_points', args='const void* depth, int h, int w, int dtype, const double* cam9, double scale, float* out', ret='int')
+func _depth_to_points(depth, h: int, w: int, dtype: int, cam, scale: real, out) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_transform_points', args='const float* pts, int n, const double* rt12, float* out', ret='int')
+func _transform_points(pts, n: int, rt, out) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_crop_box', args='const float* pts, int n, double x0, double y0, double z0, double x1, double y1, double z1, uint8_t* mask', ret='int')
+func _crop_box(pts, n: int, x0: real, y0: real, z0: real, x1: real, y1: real, z1: real, mask) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_rodrigues', args='const double* rvec3, double* r9', ret='int')
+func _rodrigues_c(rvec, r9) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_median_blur_u16', args='const uint16_t* src, int h, int w, uint16_t* dst, int ksize', ret='int')
+func _median_blur_u16(src, h: int, w: int, dst, ksize: int) -> int:
+  _
+
+@cfunc(lib=cvxlib, cname='cvx_in_range_u16', args='const uint16_t* src, int h, int w, uint8_t* dst, double lo, double hi', ret='int')
+func _in_range_u16(src, h: int, w: int, dst, lo: real, hi: real) -> int:
+  _
+
+# Shared helpers: accept [H, W], [H, W, 1] (image-shaped) or [N, 3] /
+# [H, W, 3] (point-shaped) tensors and return [rows, cols, points].
+func _depth_hw(t: tensor, context: string) -> list:
+  var s = t.shape()
+  if len(s) == 2:
+    return [s[0], s[1]]
+  if len(s) == 3 and s[2] == 1:
+    return [s[0], s[1]]
+  raise RuntimeException(context + ': expects an [H, W] or [H, W, 1] depth image')
+
+func _points_n(t: tensor, context: string) -> int:
+  var s = t.shape()
+  var rank = len(s)
+  if rank < 2 or s[rank - 1] != 3:
+    raise RuntimeException(context + ': expects an [..., 3] float32 point tensor')
+  var n = 1
+  var i = 0
+  while i < rank - 1:
+    n = n * s[i]
+    i = i + 1
+  return n
+
+# Rodrigues rotation vector [3] -> rotation matrix [3, 3] (float64).
+func rodrigues(rvec: tensor) -> tensor:
+  var rv = rvec
+  if rv.dtype() != 'float64':
+    rv = rv.astype('float64')
+  var out = tensor([3, 3], dtype='float64')
+  if _rodrigues_c(rv, out) != 0:
+    raise RuntimeException('rodrigues: ' + _last_error())
+  return out
+
+# Deproject a depth image to a float32 [H, W, 3] point map in the camera
+# frame.  `depth` is [H, W] or [H, W, 1]; uint16 raw units are converted
+# to metres by `scale` (e.g. 0.001 for millimetre depth), float32/float64
+# are taken as metres unless a scale is given.  Invalid depth
+# (0 / non-finite) becomes NaN points, which crop_box() excludes.
+func depth_to_points(depth: tensor, camera_matrix: tensor, scale: real = 1.0) -> tensor:
+  var hw = _depth_hw(depth, 'depth_to_points')
+  var tags = {'uint16': 0, 'float32': 1, 'float64': 2}
+  var dt = depth.dtype()
+  if not (dt in tags):
+    raise RuntimeException('depth_to_points: unsupported depth dtype ' + dt)
+  var cam = camera_matrix
+  if cam.dtype() != 'float64':
+    cam = cam.astype('float64')
+  var out = tensor([hw[0], hw[1], 3], dtype='float32')
+  if _depth_to_points(depth, hw[0], hw[1], tags[dt], cam, scale, out) != 0:
+    raise RuntimeException('depth_to_points: ' + _last_error())
+  return out
+
+# Rigidly transform a point tensor ([H, W, 3] or [N, 3] float32).  `pose`
+# is a Pose (rvec/tvec, e.g. from solve_pnp) or a [3, 4] / [4, 4]
+# row-major transform tensor.  NaN points stay NaN.
+func transform_points(points: tensor, pose) -> tensor:
+  var n = _points_n(points, 'transform_points')
+  var pts = points
+  if pts.dtype() != 'float32':
+    pts = pts.astype('float32')
+  var rt = tensor([12], dtype='float64')
+  if pose is Pose:
+    var r9 = rodrigues(pose.rvec)
+    for r in range(0 ..< 3):
+      for c in range(0 ..< 3):
+        rt[r * 4 + c] = r9[r, c]
+      rt[r * 4 + 3] = pose.tvec[r]
+  else:
+    var m = pose
+    if m.dtype() != 'float64':
+      m = m.astype('float64')
+    var ms = m.shape()
+    if len(ms) != 2 or ms[1] != 4 or ms[0] < 3:
+      raise RuntimeException('transform_points: pose must be a Pose or a [3, 4] / [4, 4] tensor')
+    for r in range(0 ..< 3):
+      for c in range(0 ..< 4):
+        rt[r * 4 + c] = m[r, c]
+  var out = tensor(points.shape(), dtype='float32')
+  if _transform_points(pts, n, rt, out) != 0:
+    raise RuntimeException('transform_points: ' + _last_error())
+  return out
+
+# Axis-aligned box crop: uint8 mask, 255 where the point is finite and
+# inside the closed box [min, max] (3-element lists/vectors).  A
+# [H, W, 3] point map gives a [H, W, 1] mask ready for the 8-bit family
+# (morphology, connected_components); [N, 3] points give [N, 1].
+func crop_box(points: tensor, min, max) -> tensor:
+  var n = _points_n(points, 'crop_box')
+  var pts = points
+  if pts.dtype() != 'float32':
+    pts = pts.astype('float32')
+  var s = points.shape()
+  var out = nil
+  if len(s) == 3:
+    out = tensor([s[0], s[1], 1], dtype='uint8')
+  else:
+    out = tensor([n, 1], dtype='uint8')
+  if _crop_box(pts, n, real(min[0]), real(min[1]), real(min[2]),
+               real(max[0]), real(max[1]), real(max[2]), out) != 0:
+    raise RuntimeException('crop_box: ' + _last_error())
+  return out
+
+# uint16 depth-image band mask: 255 where lo <= depth <= hi (raw units).
+# The uint16 counterpart of in_range() for pre-deprojection range gating.
+func in_range_depth(depth: tensor, lo: real, hi: real) -> tensor:
+  var hw = _depth_hw(depth, 'in_range_depth')
+  if depth.dtype() != 'uint16':
+    raise RuntimeException('in_range_depth: expects a uint16 depth image')
+  var out = tensor([hw[0], hw[1], 1], dtype='uint8')
+  if _in_range_u16(depth, hw[0], hw[1], out, lo, hi) != 0:
+    raise RuntimeException('in_range_depth: ' + _last_error())
+  return out
+
+# uint16 median filter (speckle removal on raw depth before
+# deprojection).  OpenCV supports uint16 medians for ksize 3 and 5 only.
+func median_blur_depth(depth: tensor, ksize: int = 3) -> tensor:
+  var hw = _depth_hw(depth, 'median_blur_depth')
+  if depth.dtype() != 'uint16':
+    raise RuntimeException('median_blur_depth: expects a uint16 depth image')
+  if ksize != 3 and ksize != 5:
+    raise RuntimeException('median_blur_depth: ksize must be 3 or 5')
+  var out = tensor(depth.shape(), dtype='uint16')
+  if _median_blur_u16(depth, hw[0], hw[1], out, ksize) != 0:
+    raise RuntimeException('median_blur_depth: ' + _last_error())
+  return out

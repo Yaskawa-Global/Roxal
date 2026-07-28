@@ -19,7 +19,9 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/videoio.hpp>
 
+#include <cmath>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <string>
@@ -1651,6 +1653,134 @@ int cvx_fisheye_project(const float* obj, int n, const double* rvec3, const doub
         out[2*i]   = result[i].x;
         out[2*i+1] = result[i].y;
     }
+    return 0;
+    CVX_CATCH(-1)
+}
+
+//
+// depth images / 3D point maps
+//
+// Deprojection, rigid transform and box crop for depth-camera pipelines
+// (PCL CropBox / rgbd::depthTo3d equivalents).  Point maps are float32
+// [H, W, 3] (or flat [N, 3]) in the OPTICAL convention: +X right,
+// +Y down, +Z forward -- matching the camera matrix they came from.
+// Invalid points are NaN; every function here treats NaN as "no data"
+// and propagates or excludes it rather than computing with it.
+
+// Depth dtype tags shared with init.rox (keep in sync).
+enum { CVX_DEPTH_U16 = 0, CVX_DEPTH_F32 = 1, CVX_DEPTH_F64 = 2 };
+
+int cvx_depth_to_points(const void* depth, int h, int w, int dtype,
+                        const double* cam9, double scale, float* out)
+{
+    CVX_TRY
+    const double fx = cam9[0], cx = cam9[2];
+    const double fy = cam9[4], cy = cam9[5];
+    if (fx == 0.0 || fy == 0.0) { g_lastError = "depth_to_points: fx/fy must be non-zero"; return -1; }
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            double z;
+            const size_t i = (size_t)y * w + x;
+            switch (dtype) {
+                case CVX_DEPTH_U16: z = static_cast<const uint16_t*>(depth)[i]; break;
+                case CVX_DEPTH_F32: z = static_cast<const float*>(depth)[i];    break;
+                case CVX_DEPTH_F64: z = static_cast<const double*>(depth)[i];   break;
+                default: g_lastError = "depth_to_points: bad dtype tag"; return -1;
+            }
+            z *= scale;
+            float* p = out + 3 * i;
+            if (z <= 0.0 || !std::isfinite(z)) {
+                p[0] = p[1] = p[2] = nan;
+                continue;
+            }
+            p[0] = static_cast<float>((x - cx) / fx * z);
+            p[1] = static_cast<float>((y - cy) / fy * z);
+            p[2] = static_cast<float>(z);
+        }
+    }
+    return 0;
+    CVX_CATCH(-1)
+}
+
+// rt12 = row-major 3x4 [R | t].  NaN points stay NaN.
+int cvx_transform_points(const float* pts, int n, const double* rt12, float* out)
+{
+    CVX_TRY
+    const double* R = rt12;        // rows of 4: R[r*4 + c], t = R[r*4 + 3]
+    for (int i = 0; i < n; i++) {
+        const float* p = pts + 3 * i;
+        float* q = out + 3 * i;
+        if (!std::isfinite(p[0]) || !std::isfinite(p[1]) || !std::isfinite(p[2])) {
+            q[0] = q[1] = q[2] = std::numeric_limits<float>::quiet_NaN();
+            continue;
+        }
+        const double x = p[0], y = p[1], z = p[2];
+        q[0] = static_cast<float>(R[0]*x + R[1]*y + R[2]*z  + R[3]);
+        q[1] = static_cast<float>(R[4]*x + R[5]*y + R[6]*z  + R[7]);
+        q[2] = static_cast<float>(R[8]*x + R[9]*y + R[10]*z + R[11]);
+    }
+    return 0;
+    CVX_CATCH(-1)
+}
+
+// mask[i] = 255 when the point is finite and inside the closed box.
+int cvx_crop_box(const float* pts, int n,
+                 double x0, double y0, double z0,
+                 double x1, double y1, double z1, uint8_t* mask)
+{
+    CVX_TRY
+    for (int i = 0; i < n; i++) {
+        const float* p = pts + 3 * i;
+        const bool in = std::isfinite(p[0]) && std::isfinite(p[1]) && std::isfinite(p[2]) &&
+                        p[0] >= x0 && p[0] <= x1 &&
+                        p[1] >= y0 && p[1] <= y1 &&
+                        p[2] >= z0 && p[2] <= z1;
+        mask[i] = in ? 255 : 0;
+    }
+    return 0;
+    CVX_CATCH(-1)
+}
+
+int cvx_rodrigues(const double* rvec3, double* r9)
+{
+    CVX_TRY
+    cv::Mat rv(3, 1, CV_64F, const_cast<double*>(rvec3));
+    cv::Mat R(3, 3, CV_64F, r9);
+    void* rp = R.data;
+    cv::Rodrigues(rv, R);
+    if (R.data != rp) { g_lastError = "rodrigues: output buffer mismatch"; return -1; }
+    return 0;
+    CVX_CATCH(-1)
+}
+
+// uint16 depth-image variants of the two 8-bit-only entry points a depth
+// pipeline actually wants BEFORE deprojection: speckle smoothing and
+// range banding.  (After crop_box everything is a uint8 mask and the
+// existing 8-bit family applies.)
+
+// cv::medianBlur supports CV_16U only for ksize 3 or 5.
+int cvx_median_blur_u16(const uint16_t* src, int h, int w, uint16_t* dst, int ksize)
+{
+    CVX_TRY
+    cv::Mat s(h, w, CV_16U, const_cast<uint16_t*>(src));
+    cv::Mat d(h, w, CV_16U, dst);
+    void* dp = d.data;
+    cv::medianBlur(s, d, ksize);
+    if (d.data != dp) { g_lastError = "median_blur: output buffer mismatch"; return -1; }
+    return 0;
+    CVX_CATCH(-1)
+}
+
+int cvx_in_range_u16(const uint16_t* src, int h, int w, uint8_t* dst,
+                     double lo, double hi)
+{
+    CVX_TRY
+    cv::Mat s(h, w, CV_16U, const_cast<uint16_t*>(src));
+    cv::Mat d(h, w, CV_8U, dst);
+    void* dp = d.data;
+    cv::inRange(s, cv::Scalar(lo), cv::Scalar(hi), d);
+    if (d.data != dp) { g_lastError = "in_range: output buffer mismatch"; return -1; }
     return 0;
     CVX_CATCH(-1)
 }

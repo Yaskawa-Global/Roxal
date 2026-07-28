@@ -1,0 +1,92 @@
+import opencv.*
+import math.*
+
+# ---- deprojection: known K, uint16 depth in millimetres ----
+var K = tensor([3, 3], [100.0, 0.0, 2.0,  0.0, 100.0, 1.5,  0.0, 0.0, 1.0])
+var depth = tensor([4, 4, 1], dtype='uint16')
+depth[0:4, 0:4, 0] = 1000                 # 1 m everywhere
+depth[1, 2, 0] = 2000                     # one pixel at 2 m
+depth[0, 0, 0] = 0                        # invalid (no return)
+var pts = depth_to_points(depth, K, 0.001)
+print(pts.shape())
+print(pts.dtype())
+print(fabs(pts[1, 2, 2] - 2.0) < 1e-6)            # z
+print(fabs(pts[1, 2, 0] - 0.0) < 1e-6)            # x = (2-cx)/fx * z = 0
+print(fabs(pts[1, 2, 1] - (-0.01)) < 1e-6)        # y = (1-1.5)/100 * 2
+print(fabs(pts[3, 3, 0] - 0.01) < 1e-6)           # x = (3-2)/100 * 1
+print(fabs(pts[3, 3, 1] - 0.015) < 1e-6)          # y = (3-1.5)/100 * 1
+
+# invalid depth -> NaN point, excluded even by a huge box
+var mask_all = crop_box(pts, [-100.0, -100.0, -100.0], [100.0, 100.0, 100.0])
+print(mask_all.shape())
+print(mask_all[0, 0, 0])
+print(mask_all[1, 2, 0])
+print(int(mask_all.sum() / 255.0))                # 15 of 16 pixels valid
+
+# a tight box selects only the far pixel (z in [1.5, 2.5])
+var mask_far = crop_box(pts, [-1.0, -1.0, 1.5], [1.0, 1.0, 2.5])
+print(int(mask_far.sum() / 255.0))
+print(mask_far[1, 2, 0])
+
+# ---- round-trip: deproject -> project_points recovers the pixel ----
+var sample = [[1, 2], [3, 3], [2, 0], [0, 3]]     # [y, x] pixels
+var obj = tensor([4, 3], dtype='float32')
+var i = 0
+for yx in sample:
+  obj[i, 0] = pts[yx[0], yx[1], 0]
+  obj[i, 1] = pts[yx[0], yx[1], 1]
+  obj[i, 2] = pts[yx[0], yx[1], 2]
+  i = i + 1
+var ident = Pose(tensor([3], dtype='float64'), tensor([3], dtype='float64'))
+var proj = project_points(obj, ident, K)
+var ok = true
+i = 0
+for yx in sample:
+  if fabs(proj[i, 0] - real(yx[1])) > 1e-3:
+    ok = false
+  if fabs(proj[i, 1] - real(yx[0])) > 1e-3:
+    ok = false
+  i = i + 1
+print(ok)
+
+# ---- transform_points: translation via [3, 4] tensor ----
+var T = tensor([3, 4], [1.0, 0.0, 0.0, 10.0,
+                        0.0, 1.0, 0.0, 20.0,
+                        0.0, 0.0, 1.0, 30.0])
+var moved = transform_points(obj, T)
+print(fabs(moved[0, 0] - (obj[0, 0] + 10.0)) < 1e-5)
+print(fabs(moved[0, 1] - (obj[0, 1] + 20.0)) < 1e-5)
+print(fabs(moved[0, 2] - (obj[0, 2] + 30.0)) < 1e-5)
+
+# rotation via Pose: 90 degrees about Z maps (1,0,0) -> (0,1,0)
+var unit = tensor([1, 3], [1.0, 0.0, 0.0])
+var rot = Pose(tensor([3], [0.0, 0.0, pi * 0.5]), tensor([3], dtype='float64'))
+var rout = transform_points(unit, rot)
+print(fabs(rout[0, 0]) < 1e-6)
+print(fabs(rout[0, 1] - 1.0) < 1e-6)
+print(fabs(rout[0, 2]) < 1e-6)
+
+# rodrigues directly: identity rotation
+var R0 = rodrigues(tensor([3], dtype='float64'))
+print(fabs(R0[0, 0] - 1.0) < 1e-12)
+print(fabs(R0[1, 1] - 1.0) < 1e-12)
+print(fabs(R0[0, 1]) < 1e-12)
+
+# NaN propagates through a transform (invalid pixel still excluded)
+var moved_map = transform_points(pts, T)
+var mask_moved = crop_box(moved_map, [-1000.0, -1000.0, -1000.0],
+                          [1000.0, 1000.0, 1000.0])
+print(mask_moved[0, 0, 0])
+print(int(mask_moved.sum() / 255.0))
+
+# ---- uint16 depth helpers: median speckle removal + band mask ----
+var d2 = tensor([5, 5, 1], dtype='uint16')
+d2[0:5, 0:5, 0] = 1000
+d2[2, 2, 0] = 4000                                # speckle spike
+var sm = median_blur_depth(d2, 3)
+print(sm.dtype())
+print(sm[2, 2, 0])
+var band = in_range_depth(d2, 900.0, 1100.0)
+print(band.dtype())
+print(band[2, 2, 0])
+print(band[1, 1, 0])
