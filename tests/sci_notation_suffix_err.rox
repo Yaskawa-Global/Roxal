@@ -1,0 +1,6 @@
+// A suffix that an exponent literal would shadow is rejected at registration
+// rather than silently never applying: '0e3' lexes as a float, so this suffix
+// could never match.  Same guard as for 'x1F'/'o17'/'b101' (hex/octal/binary).
+@suffix("e3")
+func scaled(v):
+  return v

@@ -1,0 +1,49 @@
+// Scientific notation.
+//
+// 'e' also starts a legal bare literal suffix, so '1e3' can be read either as
+// an EXPONENT_FLOAT or as '1' with the suffix 'e3' -- an exact-length tie that
+// ANTLR breaks by declaration order.  FLOAT_NUMBER is declared ahead of the
+// SUFFIXED_* rules so the float wins; before that, every positive-exponent
+// literal failed with "invalid literal suffix".
+
+// positive exponents
+print(1e3)
+print(1E3)
+print(2e10)
+print(0e1)
+print(1.5e3)
+print(1.0e3)
+print(6.022e23)
+print(1e30)
+
+// negative and explicitly-signed exponents were never affected: '-' and '+' are
+// not legal bare-suffix characters, so there was no competing reading
+print(1e-3)
+print(1.5e-3)
+print(1e+3)
+
+// ordering only decides exact ties, so genuine suffixed literals are unchanged:
+// '1e3m' is strictly longer as a suffixed float than the '1e3' a plain float
+// would take, and longest-match still picks the suffixed reading
+print(5m)
+print(1.5m)
+print(1e3m)
+print(1.5e3m)
+print(1{kg})
+print(50%)
+print(0.5%)
+
+// base-prefixed literals keep their own precedence over suffixes
+print(0xFF)
+print(0o17)
+print(0b101)
+
+// plain floats
+print(1.5)
+print(.5)
+print(3.0)
+
+// exponents compose with arithmetic and with string interpolation
+var n = 2e3
+print(n / 4)
+print("value={1e3} and {2.5e-2}")

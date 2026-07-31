@@ -1,0 +1,1 @@
+.*sci_notation_suffix_err\.rox:6:9: error: @suffix 'e3' is shadowed by floating-point exponent literals: '0e3' lexes as one, and those take precedence over suffixes\.

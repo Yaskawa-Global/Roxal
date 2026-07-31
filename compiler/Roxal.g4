@@ -747,21 +747,18 @@ integer
  | BIN_INTEGER
  ;
 
-// Suffixed literal tokens — must appear before plain numeric/string tokens
-// so that ANTLR4 longest-match picks the suffixed variant when a suffix is present.
-// Bare suffix: starts with alpha, continues with alpha/digit/·/²³¹⁻/^//
-// Braced suffix: {contents} — allows alpha, digits, ·, ², ³, ¹, ⁻, ^, /, spaces
-// Standalone '%': numeric-only carve-out for percent literals (e.g. 50%, 0.5%).
-// '%' is only a percent suffix in Roxal — there is no '%' modulo operator
-// (use the 'rem' keyword instead).
-// Base-prefixed integers must be declared BEFORE the suffixed tokens. Both can
-// match the same text — '0x51' is either a hex literal or '0' with the bare
-// suffix 'x51' — and ANTLR breaks an equal-length tie by declaration order. With
-// the suffixed rules first, every hex/octal/binary literal lexed as 0 + suffix
-// and failed with "unknown literal suffix". A base literal wins the tie now; a
-// suffix that would still swallow one (e.g. '0xFFms', where 0 + suffix is the
-// strictly longer match) is rejected when the suffix is registered — see the
-// @suffix handling in RoxalCompiler.cpp.
+// Suffix forms: bare (alpha, then alpha/digit/·/²³¹⁻/^//), braced {m/s}, and a
+// standalone '%' for percent literals. '%' is only ever a suffix — there is no
+// modulo operator (use 'rem').
+//
+// ORDERING: the tokens below must precede the SUFFIXED_* rules. Each can match
+// the same text — '0x51' is hex or '0'+suffix 'x51'; '1e3' is a float or
+// '1'+suffix 'e3' — and ANTLR breaks an equal-length tie by declaration order,
+// so declared later they all lexed as suffixed literals and failed. Ordering
+// only decides EXACT ties, so real suffixed literals ('1.5m', '1e3m') are
+// unaffected: they are strictly longer, and longest-match still wins.
+// A suffix that would be shadowed this way is rejected at registration — see
+// suffixShadowedByNumericBase() in RoxalCompiler.cpp.
 OCT_INTEGER
  : '0' [oO] OCT_DIGIT+
  ;
@@ -772,6 +769,11 @@ HEX_INTEGER
 
 BIN_INTEGER
  : '0' [bB] BIN_DIGIT+
+ ;
+
+FLOAT_NUMBER
+ : POINT_FLOAT
+ | EXPONENT_FLOAT
  ;
 
 SUFFIXED_FLOAT
@@ -796,13 +798,8 @@ DECIMAL_INTEGER
  | '0'+
  ;
 
-// OCT_INTEGER / HEX_INTEGER / BIN_INTEGER are declared above, ahead of the
-// suffixed tokens, so they win the equal-length tie against '0' + bare suffix.
-
-FLOAT_NUMBER
- : POINT_FLOAT
- | EXPONENT_FLOAT
- ;
+// OCT_INTEGER / HEX_INTEGER / BIN_INTEGER / FLOAT_NUMBER are declared above the
+// SUFFIXED_* rules, to win the equal-length tie — see the note there.
 
 TRIPLE_STRING
  : '"""' ( . | '\r' | '\n' )*? '"""'

@@ -99,7 +99,8 @@ sustained) — present/scene path adds ~7 ms, worth investigating.
 interpreter work (register VM / NaN-boxing) in parallel with M2/M3, per the 15–33 ms
 band; (b) cheap wins identified: small-tensor op dispatch overhead and the ~7 ms
 present path. Roxal gotchas learned: `elseif` parses but is unimplemented (use `match`),
-scientific notation literals (1e30) don't parse, `import math.*` exports `pi`.
+`import math.*` exports `pi`. (Scientific notation literals such as `1e30` also failed to
+parse at the time — fixed since, in 0.8.31.)
 
 Pure grid-map DDA raycaster per Lodev: 320 columns, textured walls, solid floor/ceiling
 fills, WASD+arrow movement with grid collision, procedural 64×64 textures (no WAD yet).

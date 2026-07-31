@@ -56,6 +56,12 @@ const char* suffixShadowedByNumericBase(const std::string& s)
             if (allDigitsOfBase([](char c) { return c == '0' || c == '1'; }))
                 return "binary";
             break;
+        case 'e': case 'E':
+            // '1e3' lexes as a float, not as 1 with the suffix 'e3' — the same
+            // shadowing as the base prefixes above, in the exponent position.
+            if (allDigitsOfBase([](char c) { return c >= '0' && c <= '9'; }))
+                return "floating-point exponent";
+            break;
         default:
             break;
     }
@@ -2387,9 +2393,9 @@ std::any RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
                         // silently do nothing.
                         error("@suffix '" + toUTF8StdString(suffixStr) + "' is shadowed by "
                               + clashBase + " literals: '0" + toUTF8StdString(suffixStr)
-                              + "' lexes as one, and base-prefixed literals take precedence over"
-                              " suffixes. Choose a suffix that is not 'x'/'o'/'b' followed only by"
-                              " digits of that base.");
+                              + "' lexes as one, and those take precedence over suffixes."
+                              " Choose a suffix that is not 'x'/'o'/'b'/'e' followed only by"
+                              " digits.");
                     } else {
                         icu::UnicodeString funcName = ast->func->name.value_or(toUnicodeString(""));
                         icu::UnicodeString modName;
