@@ -1,0 +1,4 @@
+// Placeholders are rooted at logic_or, below assignment: a string cannot
+// have a side effect on the variables it mentions.
+var a = 1
+print("{a = 5}")

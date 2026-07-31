@@ -35,7 +35,7 @@ print("b.label default = '{b.label}'") # '' (empty default)
 # A bad QML snippet raises a catchable error.
 var raised = false
 try:
-  engine.create_component_string("this is not valid qml {")
+  engine.create_component_string("this is not valid qml \{")
 except e:
   raised = true
 print("bad qml raised = {raised}")    # true

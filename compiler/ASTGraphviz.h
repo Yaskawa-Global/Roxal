@@ -54,6 +54,7 @@ public:
     virtual std::any visit(ptr<ast::Literal> ast);
     virtual std::any visit(ptr<ast::Bool> ast);
     virtual std::any visit(ptr<ast::Str> ast);
+    virtual std::any visit(ptr<ast::StrInterp> ast);
     virtual std::any visit(ptr<ast::Type> ast);
     virtual std::any visit(ptr<ast::Num> ast);
     virtual std::any visit(ptr<ast::SuffixedNum> ast);

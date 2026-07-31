@@ -1066,6 +1066,18 @@ std::any TypeDeducer::visit(ptr<ast::Str> ast)
 }
 
 
+std::any TypeDeducer::visit(ptr<ast::StrInterp> ast)
+{
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    // A suffixed interpolated string is a call of the suffix function, whose
+    // return type the compiler resolves — same as visit(SuffixedStr) below.
+    if (ast->suffix.isEmpty())
+        ast->type = make_ptr<Type>(BuiltinType::String);
+    return results;
+}
+
+
 std::any TypeDeducer::visit(ptr<ast::Type> ast)
 {
     ast->type = make_ptr<Type>(BuiltinType::Type);

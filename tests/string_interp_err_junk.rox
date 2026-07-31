@@ -1,0 +1,5 @@
+// interp_expr is `logic_or EOF`, so a truncated expression is reported
+// instead of silently parsing just the first token.
+var a = 1
+var b = 2
+print("{a b}")

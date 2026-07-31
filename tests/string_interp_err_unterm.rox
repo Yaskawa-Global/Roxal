@@ -1,0 +1,4 @@
+// A '{' that opens no valid placeholder is an error (write '\{' for a literal
+// brace).  It used to be emitted silently as literal text.
+var s = "X"
+print("a { b")

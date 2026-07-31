@@ -1,0 +1,1 @@
+.*string_interp_err_empty\.rox:2:9: error: empty string placeholder\n\s*2 \| print\("a \{\} b"\)\n\s*\|\s*\^\n?

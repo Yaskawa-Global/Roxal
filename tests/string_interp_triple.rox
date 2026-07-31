@@ -1,0 +1,25 @@
+// Triple-quoted strings interpolate on the same rules as double-quoted ones.
+var name = "roxal"
+var n = 2
+
+print("""simple {name}""")
+
+// Placeholders on different lines of the same string: each one's diagnostics
+// and source positions have to be tracked per-line, not per-token.
+print("""
+name:  {name}
+count: {n}
+sum:   {n + n}
+text:  \{literal}
+""")
+
+// A triple-quoted token accepts double quotes inside, so a placeholder in one
+// may itself contain a double-quoted (and therefore interpolating) string.
+func wrap(s):
+  return "<" + s + ">"
+
+print("""nested {wrap("inner {name}")} done""")
+print("""deeper {wrap(wrap("x{n}"))} done""")
+
+// A hole may span the width of a line but not a line break.
+print("""wide {  n  +  n  } ok""")

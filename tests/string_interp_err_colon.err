@@ -1,0 +1,1 @@
+.*string_interp_err_colon\.rox:3:15: error: ':' is not allowed at the top level of a string placeholder -- parenthesize the expression\n

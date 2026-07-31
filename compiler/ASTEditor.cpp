@@ -525,6 +525,12 @@ std::any ASTEditor::visit(ptr<ast::Str> ast)
     return {};
 }
 
+std::any ASTEditor::visit(ptr<ast::StrInterp> ast)
+{
+    //std::vector<StrInterpPart> parts; icu::UnicodeString suffix;
+    return {};
+}
+
 std::any ASTEditor::visit(ptr<ast::Type> ast)
 {
     //BuiltinType t;

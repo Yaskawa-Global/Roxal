@@ -1,0 +1,1 @@
+.*string_interp_err_junk\.rox:5:10: error: in string placeholder: extraneous input 'b' expecting <EOF>\n

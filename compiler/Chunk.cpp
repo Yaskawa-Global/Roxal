@@ -297,6 +297,10 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return simpleInstruction("LESS_EQUAL", offset);
         case OpCode::Add:
             return simpleInstruction("ADD", offset);
+        case OpCode::ToStringPart:
+            return simpleInstruction("TO_STRING_PART", offset);
+        case OpCode::Concat:
+            return byteInstruction("CONCAT", offset);
         case OpCode::Subtract:
             return simpleInstruction("SUBTRACT", offset);
         case OpCode::Multiply:

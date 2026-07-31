@@ -53,6 +53,7 @@ public:
     virtual std::any visit(ptr<ast::Literal> ast);
     virtual std::any visit(ptr<ast::Bool> ast);
     virtual std::any visit(ptr<ast::Str> ast);
+    virtual std::any visit(ptr<ast::StrInterp> ast);
     virtual std::any visit(ptr<ast::Type> ast);
     virtual std::any visit(ptr<ast::Num> ast);
     virtual std::any visit(ptr<ast::SuffixedNum> ast);
@@ -141,6 +142,7 @@ public:
     std::any visit(ptr<roxal::ast::Bool> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Type> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Str> ast) override { if(m_f) m_f(ast); return{}; }
+    std::any visit(ptr<roxal::ast::StrInterp> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Num> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::SuffixedNum> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::SuffixedStr> ast) override { if(m_f) m_f(ast); return{}; }

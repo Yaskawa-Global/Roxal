@@ -10,3 +10,16 @@ from method=Box letters has alpha
 dict lookup=letters
 matrix direct=4
 matrix vars=5
+sum=5
+group=10
+cmp=true true true
+neg=-2 not=true
+bits=3 2
+dotted index=clerk
+index chain=2
+kwargs=2
+hex=255 oct=15 bin=5
+list=[2, 3] dict={"k": 2}
+escaped braces are text: {'k': a}
+chained=Box letters has alpha
+mixed=2/1.5/true/nil

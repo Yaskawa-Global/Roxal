@@ -1,6 +1,6 @@
 // Single-quoted strings in JSON5 (both keys and values).
-print(to_json(from_json("""{'k': 'v'}"""), false))
+print(to_json(from_json("""\{'k': 'v'}"""), false))
 print(to_json(from_json("""['hello', 'world']"""), false))
-print(to_json(from_json("""{'mixed': "with double inside"}"""), false))
+print(to_json(from_json("""\{'mixed': "with double inside"}"""), false))
 // \' escape inside single-quoted string
 print(to_json(from_json("""['has\\'apos']"""), false))

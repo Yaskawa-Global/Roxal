@@ -836,6 +836,24 @@ std::any ASTGraphviz::visit(ptr<ast::SuffixedStr> ast)
 }
 
 
+std::any ASTGraphviz::visit(ptr<ast::StrInterp> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+
+    // postorder: only the placeholder parts pushed a node — literal runs are
+    // held as plain text on the StrInterp itself
+    auto n = ast->exprCount();
+    for(size_t i=0; i<n; i++)
+        addLink(name, stackPop(), std::to_string(n-i-1));
+
+    nodes[name] = node(name,"strinterp", toUTF8StdString(ast->suffix));
+    stackPush(name);
+    endVisit();
+    return {};
+}
+
+
 std::any ASTGraphviz::visit(ptr<ast::List> ast)
 {
     startVisit();

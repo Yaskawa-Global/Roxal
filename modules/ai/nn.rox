@@ -4,7 +4,7 @@ func tensor_device(t):
 
 @builtin
 func memory_info(device:string='auto'):
-  """Return memory info dict: {device, total, free, used} (bytes). Device: 'auto' (GPU if available, else CPU), 'cpu', or 'cuda'."""
+  """Return memory info dict: \{device, total, free, used} (bytes). Device: 'auto' (GPU if available, else CPU), 'cpu', or 'cuda'."""
 
 @builtin
 type Model object:
@@ -15,15 +15,15 @@ type Model object:
 
   @builtin
   func predict(input):
-    """Run inference. Input may be a tensor, a dict {name: tensor}, or a list of tensors. Returns output tensor (or list if multiple outputs). Also works with signals for reactive dataflow."""
+    """Run inference. Input may be a tensor, a dict \{name: tensor}, or a list of tensors. Returns output tensor (or list if multiple outputs). Also works with signals for reactive dataflow."""
 
   @builtin
   func inputs():
-    """Return list of input descriptors [{name, shape, dtype}, ...]."""
+    """Return list of input descriptors [\{name, shape, dtype}, ...]."""
 
   @builtin
   func outputs():
-    """Return list of output descriptors [{name, shape, dtype}, ...]."""
+    """Return list of output descriptors [\{name, shape, dtype}, ...]."""
 
   @builtin
   func device():

@@ -396,6 +396,16 @@ lambda_proc
 expression
  : assignment ;
 
+// Entry rule for the contents of a "{...}" string-interpolation placeholder.
+// Never reached from file_input -- ASTGenerator drives it directly on the
+// placeholder text extracted from a string token.  Deliberately rooted at
+// logic_or rather than expression, so assignment (and its at_clause) is
+// structurally impossible inside a placeholder rather than needing a check.
+// The explicit EOF is what makes ANTLR report trailing junk: without it,
+// "{a b}" would match just `a` and return with no syntax error.
+interp_expr
+ : logic_or EOF ;
+
 assignment
  : ( call DOT )? IDENTIFIER (EQUALS | COPYINTO) assignment at_clause?
  | call (EQUALS | COPYINTO) assignment at_clause?
@@ -802,6 +812,15 @@ SINGLE_STRING
  : '\'' ( STRING_ESCAPE_SEQ | ~[\\\r\n\f'] )* '\''
  ;
 
+// NOTE: a '{' placeholder cannot contain a double-quoted string, because this
+// token ends at the first inner '"'.  Adding a recursive INTERP_HOLE fragment
+// here does lift that restriction, but at an unacceptable price: longest-match
+// then merges  ("a {" + "}")  into a SINGLE token whose hole is '" + "', which
+// parses successfully and silently prints 'a  + ' instead of concatenating two
+// strings.  Today that same source is a clean "unterminated string
+// placeholder" error.  Use single quotes inside a placeholder ({d['k']}), or a
+// triple-quoted string, whose token already admits inner double quotes and so
+// supports nesting for free.
 DOUBLE_STRING
  : '"' ( STRING_ESCAPE_SEQ | ~[\\\r\n\f"] )* '"'
  ;

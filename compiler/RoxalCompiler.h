@@ -83,6 +83,7 @@ public:
     virtual std::any visit(ptr<ast::Literal> ast);
     virtual std::any visit(ptr<ast::Bool> ast);
     virtual std::any visit(ptr<ast::Str> ast);
+    virtual std::any visit(ptr<ast::StrInterp> ast);
     virtual std::any visit(ptr<ast::Type> ast);
     virtual std::any visit(ptr<ast::Num> ast);
     virtual std::any visit(ptr<ast::SuffixedNum> ast);
@@ -165,6 +166,11 @@ protected:
     void registerSuffix(const icu::UnicodeString& suffix, const icu::UnicodeString& funcName,
                         const icu::UnicodeString& moduleName);
     const SuffixRegistration* lookupSuffix(const icu::UnicodeString& suffix) const;
+
+    // suffix codegen, split so an interpolated suffixed string can build its
+    // argument between the two halves (see visit(ptr<ast::StrInterp>))
+    bool emitSuffixCallee(const icu::UnicodeString& suffix);
+    void emitSuffixCall();
 
     std::map<ModuleInfo,Value> importedModules;  // allowed-raw: rooted by importedModulesRoot
 

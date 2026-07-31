@@ -1,0 +1,1 @@
+.*string_interp_err_assign\.rox:4:10: error: in string placeholder: mismatched input '=' expecting <EOF>\n

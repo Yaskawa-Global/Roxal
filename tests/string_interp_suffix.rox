@@ -1,0 +1,33 @@
+// A literal suffix is a unary call on the string value, so it composes with
+// interpolation: "...{x}..."sfx becomes sfx(<the joined string>).
+
+@suffix("en")
+func english(s):
+  return "EN:" + s
+
+@suffix("shout")
+func shout(s):
+  return s.upper()
+
+var n = 3
+var who = "world"
+
+// suffix with interpolation
+print("count {n}"en)
+print("hello {who}, {n} times"shout)
+
+// suffix without interpolation still works unchanged
+print("plain"en)
+
+// single-quoted suffixed strings never interpolate
+print('no {n} interp'en)
+
+// braced suffix form
+@suffix("per_item")
+func per_item(s):
+  return s + "/item"
+
+print("{n} apples"{per_item})
+
+// escaped braces inside a suffixed string
+print("literal \{n} here"en)

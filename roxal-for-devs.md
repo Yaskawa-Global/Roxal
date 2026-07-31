@@ -33,8 +33,13 @@ Value types:
 
 Reference types:
   * `string` - Unicode (UTF-8) (literals are interned)
-    * Single quoted `'like this'` or double quoted `"like this"`
-    * With double quotes, `{}` placeholders interpolate identifiers, dotted properties, and indexes using identifiers, numeric literals, or single-quoted string literals. Multiple comma-separated indices are allowed (for example `"lookup={record['name']}"` or `"matrix element={mat[row, 2]}"`).
+    * Single quoted `'like this'` or double quoted `"like this"` or triple quoted `"""like this"""` (which may span lines)
+    * Double- and triple-quoted strings interpolate: a `{}` placeholder holds any single-line Roxal expression, parsed by the ordinary grammar. Single-quoted strings never interpolate, so they are the way to write text containing braces.
+      ```
+      "sum={a + b}"  "cmp={a != nil}"  "call={obj.method(2)}"  "group={(a + b) * c}"
+      "lookup={record['name']}"  "matrix element={mat[row, 2]}"  "list={[a, b]}"
+      ```
+    * Write `\{` for a literal brace (`{{` and `}}` also work)
   * `list` - [list, of, values] - heterogeneous
     * A list that holds only `byte` values is stored packed (one byte per element) transparently, rather than boxed, making it an efficient blob for binary data.
   * `dict` - {key:value,key2:value2} - heterogeneous (hash, map)

@@ -5254,23 +5254,26 @@ std::any RoxalCompiler::visit(ptr<ast::SuffixedNum> ast)
     return {};
 }
 
-std::any RoxalCompiler::visit(ptr<ast::SuffixedStr> ast)
+// A literal suffix compiles to a unary call of its registered function on the
+// literal's value.  Split into callee/call halves because the callee has to be
+// pushed before the argument, and for an interpolated suffixed string the
+// argument takes many instructions to build.
+bool RoxalCompiler::emitSuffixCallee(const icu::UnicodeString& suffix)
 {
-    currentNode = ast;
-
-    auto* reg = lookupSuffix(ast->suffix);
+    auto* reg = lookupSuffix(suffix);
     if (!reg) {
-        std::string suf; ast->suffix.toUTF8String(suf);
+        std::string suf; suffix.toUTF8String(suf);
         error("unknown literal suffix '" + suf + "'. Did you mean to use spaces?");
-        return {};
+        return false;
     }
 
-    // Push suffix function onto stack
     if (!namedVariable(reg->functionName))
         namedModuleVariable(reg->functionName);
+    return true;
+}
 
-    emitConstant(Value::stringVal(ast->str));
-
+void RoxalCompiler::emitSuffixCall()
+{
     CallSpec callSpec {};
     callSpec.allPositional = true;
     callSpec.argCount = 1;
@@ -5281,6 +5284,57 @@ std::any RoxalCompiler::visit(ptr<ast::SuffixedStr> ast)
         emitByte(OpCode::Call);
         for (auto b : bytes) emitByte(b);
     }
+}
+
+
+std::any RoxalCompiler::visit(ptr<ast::SuffixedStr> ast)
+{
+    currentNode = ast;
+
+    if (!emitSuffixCallee(ast->suffix))
+        return {};
+
+    emitConstant(Value::stringVal(ast->str));
+    emitSuffixCall();
+    return {};
+}
+
+
+std::any RoxalCompiler::visit(ptr<ast::StrInterp> ast)
+{
+    currentNode = ast;
+
+    const bool suffixed = !ast->suffix.isEmpty();
+    if (suffixed && !emitSuffixCallee(ast->suffix))
+        return {};
+
+    // Concat's operand count is a single byte, so long strings are folded in
+    // chunks: each Concat leaves one string, which becomes the first operand
+    // of the next chunk.  No arbitrary limit on placeholder count that way.
+    constexpr size_t MaxOperands = 255;
+    size_t onStack = 0;
+
+    for(auto& part : ast->parts) {
+        if (part.isLiteral())
+            emitConstant(Value::stringVal(part.text));
+        else {
+            part.expr->accept(*this);
+            emitByte(OpCode::ToStringPart);
+        }
+        if (++onStack == MaxOperands) {
+            emitBytes(OpCode::Concat, uint8_t(MaxOperands));
+            onStack = 1;
+        }
+    }
+
+    if (ast->parts.empty())
+        emitConstant(Value::stringVal(icu::UnicodeString()));
+    else if (onStack > 1)
+        emitBytes(OpCode::Concat, uint8_t(onStack));
+    // onStack == 1: the single part is already a string on top of the stack
+
+    if (suffixed)
+        emitSuffixCall();
     return {};
 }
 

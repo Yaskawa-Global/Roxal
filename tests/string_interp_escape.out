@@ -1,0 +1,14 @@
+brace { alone
+pair {s} stays text
+doubled { and }
+doubled pair {s}
+close } alone
+a } b } c
+[before {s} after]
+json: {"a": 1}
+nested: { "a": { "b": 2 } }
+tab	here X newline follows
+(next)
+backslash \ then {s} then X
+{s} needs no escape
+{}

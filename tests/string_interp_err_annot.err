@@ -1,0 +1,1 @@
+.*string_interp_err_annot\.rox:5:5: error: an annotation argument may not use string interpolation -- write .\\\{. for a literal .\{.\n

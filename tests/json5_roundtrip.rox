@@ -1,13 +1,15 @@
 // End-to-end JSON5 round-trip: comments, trailing commas, unquoted keys,
 // single quotes, mixed numbers.
+// '\{' escapes a literal brace: in a double- or triple-quoted string a bare
+// '{' opens an interpolation placeholder.
 var src = """
-{
+\{
   // a config-like document
   name: 'roxal',
   version: 0.5,
   flags: [+1, .5, 0xff,],
   /* nested */
-  nested: {
+  nested: \{
     enabled: true,
     notes: 'multi\\nline',
   },

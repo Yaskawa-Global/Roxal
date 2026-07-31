@@ -1,0 +1,27 @@
+File
+ VarDecl s
+  Str "x"
+ VarDecl n
+  Num 1:int
+ VarDecl plain
+  Str "no placeholders"
+ VarDecl one
+  StrInterp
+   expr:
+    Variable s
+ VarDecl mixed
+  StrInterp
+   text: "a"
+   expr:
+    Variable s
+   text: "b"
+   expr:
+    Variable n
+   text: "c"
+ VarDecl literal_hole
+  StrInterp
+   expr:
+    Str "x"
+ VarDecl escaped
+  Str "all {braces} escaped"
+

@@ -1,0 +1,6 @@
+// A docstring is lifted into a @doc annotation argument, so it has to be a
+// plain literal.  This used to crash the compiler on an unconditional cast.
+var n = 1
+type T object:
+  "doc with {n} inside"
+  var x

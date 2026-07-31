@@ -1,0 +1,15 @@
+// Regression guard for the AST shape of an interpolated string.
+//
+// Interpolation must NOT be desugared into a chain of '+' at AST-generation
+// time: the visual editor consumes the AST, so an interpolated string has to
+// stay one node that records exactly what was written.  Literal runs and
+// placeholder expressions are kept distinguishable, so that "x" and "{'x'}"
+// do not collapse to the same thing.
+var s = "x"
+var n = 1
+
+var plain = "no placeholders"
+var one = "{s}"
+var mixed = "a{s}b{n}c"
+var literal_hole = "{'x'}"
+var escaped = "all \{braces\} escaped"

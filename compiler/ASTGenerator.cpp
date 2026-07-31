@@ -48,25 +48,43 @@ protected:
 std::stack<std::pair<std::string,std::string>> ParseTracer::parseStack {};
 
 
-void ASTGenerator::reportError(antlr4::Token* token, const std::string& message)
+void ASTGenerator::reportErrorAt(size_t line, size_t pos, const std::string& message)
 {
     hadError = true;
+    compileError(std::to_string(line) + ":" + std::to_string(pos) + " - " + message);
+}
+
+void ASTGenerator::reportError(antlr4::Token* token, const std::string& message)
+{
     if (token) {
-        compileError(std::to_string(token->getLine()) + ":" +
-                     std::to_string(token->getCharPositionInLine()) + " - " + message);
+        reportErrorAt(token->getLine(), token->getCharPositionInLine(), message);
     } else {
+        hadError = true;
         compileError(message);
     }
 }
 
+
+// Positions coming out of a placeholder sub-parse are relative to the
+// placeholder's own text, which is a fresh ANTLRInputStream.  Shift them back
+// into file coordinates so diagnostics, sourceText() and the editor all agree.
+// Only the fragment's first line needs the column shift; later lines start at
+// column 0 in both spaces (and placeholders are single-line anyway).
+LinePos ASTGenerator::remapFragmentPos(const LinePos& p) const
+{
+    if (fragmentOrigin.line == 0)
+        return p;
+    return LinePos(fragmentOrigin.line + p.line - 1,
+                   p.line == 1 ? fragmentOrigin.pos + p.pos : p.pos);
+}
 
 
 void ASTGenerator::setSourceInfo(ptr<AST> ast, antlr4::ParserRuleContext* context)
 {
     ast->source = source;
 
-    LinePos start { context->start->getLine(), context->start->getCharPositionInLine() };
-    LinePos end { context->stop->getLine(),  context->stop->getCharPositionInLine() };
+    LinePos start = remapFragmentPos({ context->start->getLine(), context->start->getCharPositionInLine() });
+    LinePos end   = remapFragmentPos({ context->stop->getLine(),  context->stop->getCharPositionInLine() });
 
     ast->interval = std::make_pair(start, end);
 
@@ -82,7 +100,7 @@ void ASTGenerator::setSourceInfo(ptr<AST> ast, antlr4::tree::TerminalNode* termi
     auto symbol = terminal->getSymbol();
     auto symbolLength = symbol->getStopIndex() - symbol->getStartIndex();
 
-    LinePos start { size_t(symbol->getLine()), size_t(symbol->getCharPositionInLine()) };
+    LinePos start = remapFragmentPos({ size_t(symbol->getLine()), size_t(symbol->getCharPositionInLine()) });
 
     ast->interval = std::make_pair(start,
                                    LinePos(start.line,  start.pos + symbolLength) );
@@ -159,227 +177,6 @@ UnicodeString ASTGenerator::operatorNameFromContext(RoxalParser::Operator_nameCo
 
     return prefix + symbol;
 }
-
-
-ptr<Expression> ASTGenerator::parseInterpolationExpression(const std::string& text, antlr4::ParserRuleContext* context)
-{
-    std::string trimmed = trim(text);
-    if (trimmed.empty())
-        throw std::runtime_error("Empty string interpolation expression");
-
-    size_t pos = 0;
-    auto skipWhitespace = [&]() {
-        while (pos < trimmed.size() && std::isspace(static_cast<unsigned char>(trimmed[pos])))
-            ++pos;
-    };
-
-    auto parseIdentifier = [&]() -> std::string {
-        skipWhitespace();
-        if (pos >= trimmed.size())
-            throw std::runtime_error("Incomplete identifier in string interpolation expression: " + text);
-        size_t start = pos;
-        unsigned char ch = static_cast<unsigned char>(trimmed[pos]);
-        if (!(std::isalpha(ch) || ch == '_'))
-            throw std::runtime_error("Invalid identifier in string interpolation expression: " + text);
-        ++pos;
-        while (pos < trimmed.size()) {
-            unsigned char next = static_cast<unsigned char>(trimmed[pos]);
-            if (std::isalnum(next) || next == '_')
-                ++pos;
-            else
-                break;
-        }
-        return trimmed.substr(start, pos - start);
-    };
-
-    auto parseNumericLiteral = [&]() -> ptr<Expression> {
-        skipWhitespace();
-        size_t start = pos;
-        if (pos < trimmed.size() && (trimmed[pos] == '-' || trimmed[pos] == '+'))
-            ++pos;
-        bool hasDigits = false;
-        bool hasDot = false;
-        while (pos < trimmed.size()) {
-            unsigned char ch = static_cast<unsigned char>(trimmed[pos]);
-            if (std::isdigit(ch)) {
-                hasDigits = true;
-                ++pos;
-            } else if (trimmed[pos] == '.' && !hasDot) {
-                hasDot = true;
-                ++pos;
-            } else {
-                break;
-            }
-        }
-        if (!hasDigits)
-            throw std::runtime_error("Invalid numeric literal in string interpolation expression: " + text);
-
-        std::string numberText = trimmed.substr(start, pos - start);
-        ptr<Num> num = make_ptr<Num>();
-        setSourceInfo(num, context);
-        try {
-            if (hasDot) {
-                num->num = std::stod(numberText);
-            } else {
-                long long value = std::stoll(numberText);
-                if ((value > std::numeric_limits<int32_t>::max()) || (value < std::numeric_limits<int32_t>::min()))
-                    throw std::runtime_error("Numeric literal out of range in string interpolation expression: " + numberText);
-                num->num = static_cast<int32_t>(value);
-            }
-        } catch (const std::invalid_argument&) {
-            throw std::runtime_error("Invalid numeric literal in string interpolation expression: " + numberText);
-        } catch (const std::out_of_range&) {
-            throw std::runtime_error("Invalid numeric literal in string interpolation expression: " + numberText);
-        }
-        return num;
-    };
-
-    auto parseStringLiteral = [&]() -> ptr<Expression> {
-        skipWhitespace();
-        if (pos >= trimmed.size() || trimmed[pos] != '\'')
-            throw std::runtime_error("Invalid string literal in string interpolation expression: " + text);
-        ++pos; // skip opening quote
-
-        std::string buffer;
-        bool closed = false;
-        while (pos < trimmed.size()) {
-            char ch = trimmed[pos++];
-            if (ch == '\\') {
-                if (pos >= trimmed.size())
-                    throw std::runtime_error("Invalid escape in string interpolation expression: " + text);
-                char escaped = trimmed[pos++];
-                buffer.push_back('\\');
-                buffer.push_back(escaped);
-            } else if (ch == '\'') {
-                closed = true;
-                break;
-            } else {
-                buffer.push_back(ch);
-            }
-        }
-
-        if (!closed)
-            throw std::runtime_error("Unterminated string literal in string interpolation expression: " + text);
-
-        ptr<Str> str = make_ptr<Str>();
-        setSourceInfo(str, context);
-        str->str = toUnicodeString(buffer).unescape();
-        return str;
-    };
-
-    auto parseSimpleExpression = [&](const std::string& what) -> ptr<Expression> {
-        skipWhitespace();
-        if (pos >= trimmed.size())
-            throw std::runtime_error("Missing " + what + " expression in string interpolation expression: " + text);
-
-        unsigned char peek = static_cast<unsigned char>(trimmed[pos]);
-        if (std::isalpha(peek) || peek == '_') {
-            std::string ident = parseIdentifier();
-            ptr<Variable> var = make_ptr<Variable>(toUnicodeString(ident));
-            setSourceInfo(var, context);
-            return var;
-        }
-        if (peek == '\'')
-            return parseStringLiteral();
-        if (std::isdigit(peek) || peek == '-' || peek == '+')
-            return parseNumericLiteral();
-
-        throw std::runtime_error("Invalid " + what + " expression in string interpolation expression: " + text);
-    };
-
-    std::string baseIdent = parseIdentifier();
-    skipWhitespace();
-
-    ptr<Variable> baseVar = make_ptr<Variable>(toUnicodeString(baseIdent));
-    setSourceInfo(baseVar, context);
-    ptr<Expression> current = baseVar;
-
-    while (true) {
-        skipWhitespace();
-        if (pos >= trimmed.size())
-            break;
-        char next = trimmed[pos];
-        if (next == '.') {
-            ++pos;
-            std::string member = parseIdentifier();
-            ptr<UnaryOp> access = make_ptr<UnaryOp>(UnaryOp::Accessor);
-            setSourceInfo(access, context);
-            access->arg = current;
-            access->member = toUnicodeString(member);
-            current = access;
-        } else if (next == '[') {
-            ++pos;
-            skipWhitespace();
-            if (pos >= trimmed.size())
-                throw std::runtime_error("Unterminated index in string interpolation expression: " + text);
-            ptr<Index> idxExpr = make_ptr<Index>();
-            setSourceInfo(idxExpr, context);
-            idxExpr->indexable = current;
-
-            while (true) {
-                ptr<Expression> indexExpr = parseSimpleExpression("index");
-                idxExpr->args.push_back(indexExpr);
-
-                skipWhitespace();
-                if (pos >= trimmed.size())
-                    throw std::runtime_error("Unterminated index in string interpolation expression: " + text);
-                if (trimmed[pos] == ',') {
-                    ++pos;
-                    continue;
-                }
-                if (trimmed[pos] == ']') {
-                    ++pos;
-                    break;
-                }
-                throw std::runtime_error("Invalid index separator in string interpolation expression: " + text);
-            }
-
-            current = idxExpr;
-        } else if (next == '(') {
-            ++pos;
-            ptr<Call> call = make_ptr<Call>();
-            setSourceInfo(call, context);
-            call->callable = current;
-
-            skipWhitespace();
-            if (pos >= trimmed.size())
-                throw std::runtime_error("Unterminated call in string interpolation expression: " + text);
-
-            if (trimmed[pos] == ')') {
-                ++pos;
-            } else {
-                while (true) {
-                    ptr<Expression> argExpr = parseSimpleExpression("argument");
-                    call->args.emplace_back(icu::UnicodeString(), argExpr);
-
-                    skipWhitespace();
-                    if (pos >= trimmed.size())
-                        throw std::runtime_error("Unterminated call in string interpolation expression: " + text);
-                    if (trimmed[pos] == ',') {
-                        ++pos;
-                        continue;
-                    }
-                    if (trimmed[pos] == ')') {
-                        ++pos;
-                        break;
-                    }
-                    throw std::runtime_error("Invalid call separator in string interpolation expression: " + text);
-                }
-            }
-
-            current = call;
-        } else {
-            throw std::runtime_error("Invalid token in string interpolation expression: " + text);
-        }
-    }
-
-    skipWhitespace();
-    if (pos != trimmed.size())
-        throw std::runtime_error("Invalid string interpolation expression: " + text);
-
-    return current;
-}
-
 
 
 // is ptr<P> p down-castable to ptr<C> where C is a subclass of P (or the same class)?
@@ -1510,6 +1307,7 @@ std::any ASTGenerator::visitFunction(RoxalParser::FunctionContext *context)
         if (std::holds_alternative<ptr<Statement>>(first)) {
             auto stmt = std::get<ptr<Statement>>(first);
             if (auto exprStmt = dynamic_ptr_cast<ExpressionStatement>(stmt)) {
+                rejectInterpolatedDocstring(exprStmt->expr);
                 if (auto str = dynamic_ptr_cast<Str>(exprStmt->expr)) {
                     str->str = trim(str->str);
                     ptr<Annotation> annot = make_ptr<Annotation>();
@@ -1751,12 +1549,21 @@ std::any ASTGenerator::visitObject_type_decl(RoxalParser::Object_type_declContex
         // `error()` mechanism, which produces a single clean diagnostic.
 
         if (context->str()) {
-            auto strVal = as<Str>(visitStr(context->str()));
-            strVal->str = trim(strVal->str);
-            ptr<Annotation> annotation = make_ptr<Annotation>();
-            annotation->name = UnicodeString::fromUTF8("doc");
-            annotation->args.emplace_back(UnicodeString(), strVal);
-            typeDecl->annotations.push_back(annotation);
+            // as<Str> here would abort on an interpolated docstring, since
+            // visitStr returns a StrInterp for one -- check before casting
+            auto strAny = visitStr(context->str());
+            if (!isa<Str>(strAny)) {
+                reportError(context->str()->start,
+                            "a docstring may not use string interpolation"
+                            " -- write '\\{' for a literal '{'");
+            } else {
+                auto strVal = as<Str>(strAny);
+                strVal->str = trim(strVal->str);
+                ptr<Annotation> annotation = make_ptr<Annotation>();
+                annotation->name = UnicodeString::fromUTF8("doc");
+                annotation->args.emplace_back(UnicodeString(), strVal);
+                typeDecl->annotations.push_back(annotation);
+            }
         }
 
         if (context->method().size() > 255)
@@ -1864,12 +1671,21 @@ std::any ASTGenerator::visitEvent_type_decl(RoxalParser::Event_type_declContext 
         }
 
         if (context->str()) {
-            auto strVal = as<Str>(visitStr(context->str()));
-            strVal->str = trim(strVal->str);
-            ptr<Annotation> annotation = make_ptr<Annotation>();
-            annotation->name = UnicodeString::fromUTF8("doc");
-            annotation->args.emplace_back(UnicodeString(), strVal);
-            typeDecl->annotations.push_back(annotation);
+            // as<Str> here would abort on an interpolated docstring, since
+            // visitStr returns a StrInterp for one -- check before casting
+            auto strAny = visitStr(context->str());
+            if (!isa<Str>(strAny)) {
+                reportError(context->str()->start,
+                            "a docstring may not use string interpolation"
+                            " -- write '\\{' for a literal '{'");
+            } else {
+                auto strVal = as<Str>(strAny);
+                strVal->str = trim(strVal->str);
+                ptr<Annotation> annotation = make_ptr<Annotation>();
+                annotation->name = UnicodeString::fromUTF8("doc");
+                annotation->args.emplace_back(UnicodeString(), strVal);
+                typeDecl->annotations.push_back(annotation);
+            }
         }
 
         for (auto* memberVarContext : context->member_var()) {
@@ -1910,6 +1726,7 @@ std::any ASTGenerator::visitMethod(RoxalParser::MethodContext *context)
             if (std::holds_alternative<ptr<Statement>>(first)) {
                 auto stmt = std::get<ptr<Statement>>(first);
                 if (auto exprStmt = dynamic_ptr_cast<ExpressionStatement>(stmt)) {
+                    rejectInterpolatedDocstring(exprStmt->expr);
                     if (auto str = dynamic_ptr_cast<Str>(exprStmt->expr)) {
                         str->str = trim(str->str);
                         ptr<Annotation> annot = make_ptr<Annotation>();
@@ -2169,6 +1986,15 @@ std::any ASTGenerator::visitAnnot_argument(RoxalParser::Annot_argumentContext *c
 
     UnicodeString argName { context->IDENTIFIER()? identifierFromTerminal(context->IDENTIFIER()) : UnicodeString() };
     ptr<Expression> expr = as<Expression>(visitExpression(context->expression()));
+
+    // Annotation arguments are compile-time metadata -- there is no scope to
+    // interpolate against, and writeExpr() (Object.cpp) can only serialize
+    // plain literals into a precompiled object.  Report it here rather than
+    // letting it through to a throw at precompile time.
+    if (dynamic_ptr_cast<StrInterp>(expr))
+        reportErrorAt(expr->interval.first.line, expr->interval.first.pos,
+                      "an annotation argument may not use string interpolation"
+                      " -- write '\\{' for a literal '{'");
 
     return std::make_pair(argName, expr);
     visitEnd();
@@ -3440,6 +3266,372 @@ static std::string validateBareSuffix(const std::string& suffix)
 }
 
 
+// ---------------------------------------------------------------------------
+// String interpolation
+//
+// A "{...}" placeholder holds a real Roxal expression, so it is parsed by the
+// real grammar rather than by a bespoke mini-parser: scanInterpolation() splits
+// the token's content into literal runs and placeholder source, and
+// parseInterpolationExpression() re-parses each placeholder through the
+// `interp_expr` rule and visits it with this same ASTGenerator.
+//
+// Placeholder positions are relative to the placeholder's own text, so
+// fragmentOrigin (installed by FragmentScope) shifts them back into file
+// coordinates -- see remapFragmentPos().  The generator's `source` and the
+// Error.h compile context are deliberately left pointing at the whole file, so
+// the caret line in diagnostics and AST::sourceText() keep working.
+// ---------------------------------------------------------------------------
+
+// Active while visiting a sub-parsed placeholder.  Saves the enclosing origin
+// as well as currentToken: the enclosing origin so that nesting composes, and
+// currentToken because it points into the fragment's token stream, which dies
+// with the fragment parser -- leaving it dangling would make any later
+// reportError(currentToken, ...) undefined.
+struct ASTGenerator::FragmentScope {
+    FragmentScope(ASTGenerator& gen, const LinePos& origin)
+      : g(gen), savedOrigin(gen.fragmentOrigin), savedToken(gen.currentToken)
+    {
+        g.fragmentOrigin = origin;
+    }
+    ~FragmentScope()
+    {
+        g.fragmentOrigin = savedOrigin;
+        g.currentToken = savedToken;
+    }
+    ASTGenerator& g;
+    LinePos savedOrigin;
+    antlr4::Token* savedToken;
+};
+
+
+namespace {
+
+// Reports syntax errors from a placeholder sub-parse at their true file
+// position.  compileSource() still holds the whole file, so the caret line
+// printed by compileError() is the real source line.
+class FragmentErrorListener : public antlr4::BaseErrorListener {
+public:
+    FragmentErrorListener(ASTGenerator& gen, const LinePos& origin)
+      : generator(gen), origin(origin) {}
+
+    void syntaxError(antlr4::Recognizer*, antlr4::Token*,
+                     size_t line, size_t charPositionInLine,
+                     const std::string& msg, std::exception_ptr) override
+    {
+        if (hadError)
+            return;   // one diagnostic per placeholder; the rest is recovery noise
+        hadError = true;
+        generator.reportErrorAt(origin.line + line - 1,
+                                line == 1 ? origin.pos + charPositionInLine : charPositionInLine,
+                                "in string placeholder: " + msg);
+    }
+
+    ASTGenerator& generator;
+    LinePos origin;
+    bool hadError { false };
+};
+
+
+// Interpret backslash escapes in a literal run.  ICU signals a malformed
+// escape by returning an empty/bogus string, which used to silently delete the
+// run; surface it instead.
+bool unescapeLiteralRun(const std::string& raw, UnicodeString& out)
+{
+    if (raw.empty()) {
+        out = UnicodeString();
+        return true;
+    }
+    out = toUnicodeString(raw).unescape();
+    return !out.isBogus() && !out.isEmpty();
+}
+
+} // namespace
+
+
+bool ASTGenerator::hasInterpolation(const std::string& content)
+{
+    return content.find('{') != std::string::npos;
+}
+
+
+// A docstring must be a plain string literal: it is lifted into a @doc
+// annotation argument (and serialized as one into precompiled objects), and
+// there is nothing in scope to interpolate against where it is read back.
+// Without this check an interpolated docstring silently stops being a
+// docstring -- the Str cast just fails and the help text disappears -- which
+// is a good deal worse than an error.
+bool ASTGenerator::rejectInterpolatedDocstring(ptr<Expression>& expr)
+{
+    auto interp = dynamic_ptr_cast<StrInterp>(expr);
+    if (!interp)
+        return false;
+    reportErrorAt(interp->interval.first.line, interp->interval.first.pos,
+                  "a docstring may not use string interpolation"
+                  " -- write '\\{' for a literal '{'");
+    return true;
+}
+
+
+LinePos ASTGenerator::positionOf(const std::string& content, size_t byteOffset,
+                                 size_t contentOffset, antlr4::Token* token) const
+{
+    // The opening delimiter is ASCII, so its byte length is also its width in
+    // code points -- which is what ANTLR counts for charPositionInLine.
+    size_t line = token->getLine();
+    size_t pos  = token->getCharPositionInLine() + contentOffset;
+
+    for(size_t i=0; i<byteOffset && i<content.size(); i++) {
+        unsigned char c = (unsigned char)content[i];
+        if (c == '\n') {
+            line++;
+            pos = 0;
+        } else if (c == '\r') {
+            if (i+1 >= content.size() || content[i+1] != '\n') {
+                line++;
+                pos = 0;
+            }
+            // else: let the '\n' do the work, so CRLF counts as one break
+        } else if ((c & 0xC0) != 0x80) {
+            pos++;   // count UTF-8 lead bytes, i.e. code points
+        }
+    }
+    return remapFragmentPos(LinePos(line, pos));
+}
+
+
+bool ASTGenerator::scanInterpolation(const std::string& content, size_t contentOffset,
+                                     antlr4::Token* token, std::vector<InterpSegment>& segments)
+{
+    auto errorAt = [&](size_t byteOffset, const std::string& msg) {
+        auto p = positionOf(content, byteOffset, contentOffset, token);
+        reportErrorAt(p.line, p.pos, msg);
+        return false;
+    };
+
+    std::string literal;              // accumulating literal run
+    size_t literalStart = 0;          // byte offset of `literal` within content
+
+    auto flushLiteral = [&]() {
+        if (!literal.empty()) {
+            segments.push_back(InterpSegment { false, literal, literalStart });
+            literal.clear();
+        }
+    };
+
+    size_t i = 0;
+    while (i < content.size()) {
+        char c = content[i];
+
+        if (c == '\\' && i+1 < content.size()) {
+            char next = content[i+1];
+            if (next == '{' || next == '}') {
+                // the escape for a literal brace: consume it here so the
+                // backslash never reaches ICU (a run ending in a lone
+                // backslash unescapes to nothing, silently losing the text)
+                if (literal.empty()) literalStart = i;
+                literal.push_back(next);
+                i += 2;
+                continue;
+            }
+            // any other escape passes through untouched for ICU
+            if (literal.empty()) literalStart = i;
+            literal.push_back(c);
+            literal.push_back(next);
+            i += 2;
+            continue;
+        }
+
+        if (c == '{' && i+1 < content.size() && content[i+1] == '{') {
+            if (literal.empty()) literalStart = i;
+            literal.push_back('{');
+            i += 2;
+            continue;
+        }
+        if (c == '}' && i+1 < content.size() && content[i+1] == '}') {
+            if (literal.empty()) literalStart = i;
+            literal.push_back('}');
+            i += 2;
+            continue;
+        }
+
+        if (c != '{') {
+            // a lone '}' needs no escaping -- only '{' opens anything
+            if (literal.empty()) literalStart = i;
+            literal.push_back(c);
+            i++;
+            continue;
+        }
+
+        // --- placeholder ----------------------------------------------------
+        flushLiteral();
+        size_t open = i;
+        size_t j = i + 1;
+        int depth = 0;      // nesting of (), [] and {} *inside* the placeholder
+        bool closed = false;
+
+        while (j < content.size()) {
+            char h = content[j];
+
+            if (h == '\\') {
+                j += 2;     // escape inside a nested string literal
+                continue;
+            }
+            if (h == '\'' || h == '"') {
+                char quote = h;
+                size_t k = j + 1;
+                bool terminated = false;
+                while (k < content.size()) {
+                    if (content[k] == '\\') { k += 2; continue; }
+                    if (content[k] == quote) { terminated = true; k++; break; }
+                    if (content[k] == '\n' || content[k] == '\r') break;
+                    k++;
+                }
+                if (!terminated)
+                    return errorAt(j, "unterminated string literal in string placeholder");
+                j = k;
+                continue;
+            }
+            if (h == '\n' || h == '\r')
+                return errorAt(j, "a string placeholder may not span lines");
+            if (h == '/' && j+1 < content.size() && content[j+1] == '/')
+                return errorAt(j, "a string placeholder may not contain a comment");
+            if (h == ':' && depth == 0)
+                return errorAt(j, "':' is not allowed at the top level of a string placeholder"
+                                  " -- parenthesize the expression");
+
+            if (h == '(' || h == '[' || h == '{') {
+                depth++;
+                j++;
+                continue;
+            }
+            if (h == ')' || h == ']') {
+                if (depth == 0)
+                    return errorAt(j, std::string("unbalanced '") + h + "' in string placeholder");
+                depth--;
+                j++;
+                continue;
+            }
+            if (h == '}') {
+                if (depth == 0) { closed = true; break; }
+                depth--;
+                j++;
+                continue;
+            }
+            j++;
+        }
+
+        if (!closed)
+            return errorAt(open, "unterminated string placeholder"
+                                 " -- write '\\{' for a literal '{'");
+
+        std::string holeSrc = content.substr(open + 1, j - open - 1);
+        if (trim(holeSrc).empty())
+            return errorAt(open, "empty string placeholder");
+
+        segments.push_back(InterpSegment { true, holeSrc, open + 1 });
+        i = j + 1;
+    }
+
+    flushLiteral();
+    return true;
+}
+
+
+ptr<Expression> ASTGenerator::parseInterpolationExpression(const std::string& fragment,
+                                                           const LinePos& origin)
+{
+    using namespace antlr4;
+
+    // A placeholder is a single line, so the indentation lexer is not only
+    // unnecessary but harmful: it injects NEWLINE+INDENT when the fragment
+    // starts with whitespace, which no expression rule can match.  Nothing
+    // reachable from logic_or requires NEWLINE or INDENT.
+    ANTLRInputStream input(fragment);
+    RoxalLexer lexer(&input);
+    CommonTokenStream tokens(&lexer);
+    RoxalParser parser(&tokens);
+
+    FragmentErrorListener listener(*this, origin);
+    lexer.removeErrorListeners();
+    parser.removeErrorListeners();
+    lexer.addErrorListener(&listener);
+    parser.addErrorListener(&listener);
+
+    // interp_expr is `logic_or EOF`: the EOF is what makes trailing junk an
+    // error rather than a silently truncated expression.
+    auto* tree = parser.interp_expr();
+
+    if (listener.hadError || parser.getNumberOfSyntaxErrors() != 0)
+        return nullptr;
+
+    // The lexer/parser (and so the tree's tokens) must outlive this visit.
+    FragmentScope scope(*this, origin);
+    auto result = visitInterp_expr(tree);
+    if (!result.has_value() || !anyis<TypeValue>(result) || !isa<Expression>(result)) {
+        reportErrorAt(origin.line, origin.pos, "invalid expression in string placeholder");
+        return nullptr;
+    }
+    return as<Expression>(result);
+}
+
+
+ptr<Expression> ASTGenerator::buildInterpolation(const std::string& content, size_t quoteLen,
+                                                 antlr4::Token* token,
+                                                 antlr4::ParserRuleContext* context,
+                                                 const UnicodeString& suffix)
+{
+    std::vector<InterpSegment> segments;
+    if (!scanInterpolation(content, quoteLen, token, segments))
+        return nullptr;
+
+    bool anyHole = false;
+    for(auto& seg : segments)
+        if (seg.isHole) { anyHole = true; break; }
+
+    // No placeholder after all (e.g. the string only used "\{"): a plain Str,
+    // built from the scanner's output so the brace escapes stay applied.
+    if (!anyHole && suffix.isEmpty()) {
+        std::string joined;
+        for(auto& seg : segments) joined += seg.text;
+        UnicodeString text;
+        if (!unescapeLiteralRun(joined, text)) {
+            auto p = positionOf(content, 0, quoteLen, token);
+            reportErrorAt(p.line, p.pos, "invalid escape sequence in string literal");
+            return nullptr;
+        }
+        ptr<Str> str = make_ptr<Str>();
+        setSourceInfo(str, context);
+        str->str = text;
+        return str;
+    }
+
+    ptr<StrInterp> interp = make_ptr<StrInterp>();
+    setSourceInfo(interp, context);
+    interp->suffix = suffix;
+
+    for(auto& seg : segments) {
+        if (!seg.isHole) {
+            UnicodeString text;
+            if (!unescapeLiteralRun(seg.text, text)) {
+                auto p = positionOf(content, seg.offset, quoteLen, token);
+                reportErrorAt(p.line, p.pos, "invalid escape sequence in string literal");
+                return nullptr;
+            }
+            interp->parts.emplace_back(text);
+            continue;
+        }
+
+        auto origin = positionOf(content, seg.offset, quoteLen, token);
+        auto expr = parseInterpolationExpression(seg.text, origin);
+        if (!expr)
+            return nullptr;
+        interp->parts.emplace_back(expr);
+    }
+
+    return interp;
+}
+
+
 std::any ASTGenerator::visitStr(RoxalParser::StrContext *context)
 {
     visitStart();
@@ -3463,8 +3655,18 @@ std::any ASTGenerator::visitStr(RoxalParser::StrContext *context)
         // Strip enclosing quotes from valuePart
         std::string strContent = valuePart.substr(1, valuePart.size()-2);
 
-        // TODO: for suffixed double-quoted strings, interpolation is not yet supported.
-        // The string is treated as a plain string for now.
+        // A suffix is a unary call on the string value, so it composes with
+        // interpolation: "{n} items"kg becomes kg(concat(...)).
+        if (isDouble && hasInterpolation(strContent)) {
+            auto expr = buildInterpolation(strContent, 1, token->getSymbol(), context,
+                                           toUnicodeString(suffixPart));
+            if (!expr) {
+                ptr<Str> placeholder = make_ptr<Str>();   // reported; keep the tree walkable
+                setSourceInfo(placeholder, context);
+                return typeValue(placeholder);
+            }
+            return typeValue(expr);
+        }
 
         ptr<SuffixedStr> sstr = make_ptr<SuffixedStr>();
         setSourceInfo(sstr, token);
@@ -3474,83 +3676,42 @@ std::any ASTGenerator::visitStr(RoxalParser::StrContext *context)
     }
 
     std::string text;
-    bool isDouble = false;
-    bool isTriple = false;
+    bool interpolates = false;   // single-quoted strings never interpolate
+    antlr4::Token* token = nullptr;
+    size_t quoteLen = 1;
     if (context->SINGLE_STRING()) {
         text = context->SINGLE_STRING()->getText();
+        token = context->SINGLE_STRING()->getSymbol();
     } else if (context->DOUBLE_STRING()) {
         text = context->DOUBLE_STRING()->getText();
-        isDouble = true;
+        token = context->DOUBLE_STRING()->getSymbol();
+        interpolates = true;
     } else {
         text = context->TRIPLE_STRING()->getText();
-        isTriple = true;
+        token = context->TRIPLE_STRING()->getSymbol();
+        interpolates = true;
+        quoteLen = 3;
     }
 
     // drop enclosing quotes
-    if (isTriple)
-        text = text.substr(3, text.size()-6);
-    else
-        text = text.substr(1, text.size()-2);
+    text = text.substr(quoteLen, text.size() - 2*quoteLen);
 
-    if (isDouble && text.find('{') != std::string::npos) {
-        std::vector<ptr<Expression>> parts;
-        size_t pos = 0;
-        while (true) {
-            size_t open = text.find('{', pos);
-            if (open == std::string::npos) break;
-            size_t close = text.find('}', open + 1);
-            if (close == std::string::npos) break;
-            if (open > pos) {
-                ptr<Str> s = make_ptr<Str>();
-                setSourceInfo(s, context);
-                s->str = toUnicodeString(text.substr(pos, open - pos)).unescape();
-                parts.push_back(s);
-            }
-            auto placeholder = text.substr(open + 1, close - open - 1);
-            ptr<Expression> exprPart = parseInterpolationExpression(placeholder, context);
-            parts.push_back(exprPart);
-            pos = close + 1;
-        }
-        if (pos < text.size()) {
-            ptr<Str> s = make_ptr<Str>();
-            setSourceInfo(s, context);
-            s->str = toUnicodeString(text.substr(pos)).unescape();
-            parts.push_back(s);
-        }
-        if (parts.empty()) {
-            ptr<Str> str = make_ptr<Str>();
-            setSourceInfo(str, context);
-            str->str = toUnicodeString(text).unescape();
-            return typeValue(str);
-        }
-        // Ensure the first element is a string so concatenation works correctly
-        ptr<Expression> expr;
-        size_t startIdx;
-        if (auto str = dynamic_ptr_cast<Str>(parts[0])) {
-            expr = parts[0];
-            startIdx = 1;
-        } else {
-            // First part is not a string, start with empty string
-            ptr<Str> empty = make_ptr<Str>();
-            setSourceInfo(empty, context);
-            empty->str = toUnicodeString("").unescape();
-            expr = empty;
-            startIdx = 0;
-        }
-        for (size_t i = startIdx; i < parts.size(); ++i) {
-            ptr<BinaryOp> add = make_ptr<BinaryOp>(BinaryOp::Add);
-            setSourceInfo(add, context);
-            add->lhs = expr;
-            add->rhs = parts[i];
-            expr = add;
+    if (interpolates && hasInterpolation(text)) {
+        // may still come back a plain Str, e.g. when every brace was escaped
+        auto expr = buildInterpolation(text, quoteLen, token, context, UnicodeString());
+        if (!expr) {
+            ptr<Str> placeholder = make_ptr<Str>();   // reported; keep the tree walkable
+            setSourceInfo(placeholder, context);
+            return typeValue(placeholder);
         }
         return typeValue(expr);
-    } else {
-            ptr<Str> str = make_ptr<Str>();
-            setSourceInfo(str, context);
-            str->str = toUnicodeString(text).unescape();
-            return typeValue(str);
-        }
+    }
+
+    ptr<Str> str = make_ptr<Str>();
+    setSourceInfo(str, context);
+    str->str = toUnicodeString(text).unescape();
+    return typeValue(str);
+
     visitEnd();
 }
 

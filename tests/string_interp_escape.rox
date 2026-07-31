@@ -1,0 +1,31 @@
+// Escaping literal braces in an interpolating (double- or triple-quoted) string.
+var s = "X"
+
+// '\{' is the escape; '{{' and '}}' work too, for familiarity.
+print("brace \{ alone")
+print("pair \{s} stays text")
+print("doubled {{ and }}")
+print("doubled pair {{s}}")
+
+// A lone '}' needs no escape -- only '{' opens a placeholder.
+print("close } alone")
+print("a } b } c")
+
+// Regression: the literal run before an escaped brace used to be silently
+// deleted, because it was handed to the unescaper still ending in a backslash.
+print("[" + "before \{s} after" + "]")
+
+// JSON-ish text in a double-quoted string
+print("json: \{\"a\": 1}")
+print("nested: \{ \"a\": \{ \"b\": 2 } }")
+
+// Escapes and placeholders side by side; other escapes are untouched.
+print("tab\there {s} newline follows\n(next)")
+print("backslash \\ then \{s} then {s}")
+
+// Single-quoted strings never interpolate, so braces are plain there.
+print('{s} needs no escape')
+
+// A string whose every brace is escaped is a plain literal, not an
+// interpolation -- it must still round-trip unchanged.
+print("\{\}")

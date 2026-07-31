@@ -38,3 +38,42 @@ var row = 1
 print("dict lookup={metadata['tags']['primary']}")
 print("matrix direct={mat[1, 0]}")
 print("matrix vars={mat[row, col]}")
+
+// A placeholder holds any single-line expression the grammar accepts, so
+// the following all work as ordinary Roxal expressions.
+
+var a = 2
+var b = 3
+
+// operators and grouping
+print("sum={a + b}")
+print("group={(a + b) * a}")
+print("cmp={a != b} {a < b} {a == 2 and b == 3}")
+print("neg={-a} not={not (a == b)}")
+print("bits={a | b} {a & b}")
+
+// dotted / computed index, index chains
+var keys = Item("owner")
+print("dotted index={metadata[keys.name]}")
+var nested = [[1, 2], [3, 4]]
+print("index chain={nested[0][1]}")
+
+// keyword and defaulted call arguments
+func pick(first, second):
+  return first
+
+print("kwargs={pick(second=b, first=a)}")
+
+// base-prefixed numerics inside a placeholder
+print("hex={0xff} oct={0o17} bin={0b101}")
+
+// Literals as placeholder expressions.  A dict literal needs a space after the
+// opening brace: "{{" is the escape for a literal '{', so "{{'k': a}}" is text.
+print("list={[a, b]} dict={ {'k': a} }")
+print("escaped braces are text: {{'k': a}}")
+
+// a placeholder may call a method on the result of another call
+print("chained={box.describe(0)}")
+
+// conversions still apply to non-string parts
+print("mixed={a}/{1.5}/{true}/{nil}")

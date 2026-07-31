@@ -93,6 +93,7 @@ class LambdaFunc;
 class Literal;
 class Bool;
 class Str;
+class StrInterp;
 class Type;
 class Num;
 class SuffixedNum;
@@ -156,6 +157,7 @@ public:
     virtual std::any visit(ptr<Literal> ast) = 0;
     virtual std::any visit(ptr<Bool> ast) = 0;
     virtual std::any visit(ptr<Str> ast) = 0;
+    virtual std::any visit(ptr<StrInterp> ast) = 0;
     virtual std::any visit(ptr<Type> ast) = 0;
     virtual std::any visit(ptr<Num> ast) = 0;
     virtual std::any visit(ptr<SuffixedNum> ast) = 0;
@@ -903,7 +905,8 @@ struct Literal : public Expression {
         Vector,
         Matrix,
         SuffixedNum,
-        SuffixedStr
+        SuffixedStr,
+        StrInterp    // keep last: Literal::output prints literalType as a raw int
     };
     Literal() : Expression(ExprType::Literal), literalType(Nil) {}
 
@@ -939,6 +942,45 @@ struct Str : public Literal {
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
+};
+
+
+// One piece of an interpolated string: either a run of literal text or a
+// "{...}" placeholder expression, never both.  Kept discriminated (rather than
+// wrapping literal runs in Str nodes) so the original string can be
+// reconstructed exactly -- a literal run and a placeholder holding a string
+// literal, `"x"` vs `"{'x'}"`, must not look alike to the visual editor.
+struct StrInterpPart {
+    StrInterpPart() = default;
+    explicit StrInterpPart(const icu::UnicodeString& t) : text(t) {}
+    explicit StrInterpPart(ptr<Expression> e) : expr(e) {}
+
+    icu::UnicodeString text;   // literal run; meaningful only when expr == nullptr
+    ptr<Expression> expr;      // placeholder expression; null for a literal run
+
+    bool isLiteral() const { return expr == nullptr; }
+};
+
+// An interpolated string literal: "text {expr} more".  Note this is NOT
+// desugared into a chain of `+` -- the AST has to reflect what was written
+// because the visual editor consumes it.
+struct StrInterp : public Literal {
+    StrInterp() { literalType = LiteralType::StrInterp; }
+
+    std::vector<StrInterpPart> parts;
+    icu::UnicodeString suffix;   // empty unless this was a suffixed literal ("{n} m"kg)
+
+    // number of parts that are placeholders (i.e. children a visitor will see)
+    size_t exprCount() const {
+        size_t n = 0;
+        for (auto& p : parts) if (!p.isLiteral()) n++;
+        return n;
+    }
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v, Anys& results);
 };
 
 

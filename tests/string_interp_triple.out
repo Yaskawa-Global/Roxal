@@ -1,0 +1,10 @@
+simple roxal
+
+name:  roxal
+count: 2
+sum:   4
+text:  {literal}
+
+nested <inner roxal> done
+deeper <<x2>> done
+wide 4 ok

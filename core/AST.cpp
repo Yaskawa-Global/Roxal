@@ -1636,6 +1636,7 @@ std::any Literal::accept(ASTVisitor& v)
         case Bool: { return dynamic_ptr_cast<ast::Bool>(ptr_from_this())->accept(v); break; }
         case Num: { return dynamic_ptr_cast<ast::Num>(ptr_from_this())->accept(v); break; }
         case Str: { return dynamic_ptr_cast<ast::Str>(ptr_from_this())->accept(v); break; }
+        case StrInterp: { return dynamic_ptr_cast<ast::StrInterp>(ptr_from_this())->accept(v); break; }
         default: throw std::runtime_error("unimplemented Literal::accept() alternative");
     }
     return {};
@@ -1697,6 +1698,49 @@ std::any Str::accept(ASTVisitor& v)
 void Str::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Str \"" << toUTF8StdString(str) << "\"" << std::endl;
+}
+
+
+std::any StrInterp::accept(ASTVisitor& v)
+{
+    Anys results {};
+
+    if (v.visitFirst())
+        results.push_back( v.visit(dynamic_ptr_cast<StrInterp>(ptr_from_this())) );
+
+    if (v.visitChildren())
+        acceptChildren(v, results);
+
+    if (v.visitLast())
+        results.push_back( v.visit(dynamic_ptr_cast<StrInterp>(ptr_from_this())) );
+
+    return results;
+}
+
+void StrInterp::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"StrInterp";
+    if (!suffix.isEmpty())
+        os << " suffix=\"" << toUTF8StdString(suffix) << "\"";
+    os << std::endl;
+    for(auto& part : parts) {
+        if (part.isLiteral())
+            os << spaces(indent+1) << "text: \"" << toUTF8StdString(part.text) << "\"" << std::endl;
+        else {
+            os << spaces(indent+1) << "expr:" << std::endl;
+            part.expr->output(os, indent+2);
+        }
+    }
+}
+
+// Only placeholder parts are children; literal runs hold no node.  Visitors that
+// count what they visited (ASTGraphviz pops one stack entry per child) must use
+// exprCount(), not parts.size().
+void StrInterp::acceptChildren(ASTVisitor& v, Anys& results)
+{
+    for(auto& part : parts)
+        if (!part.isLiteral())
+            results.push_back( part.expr->accept(v) );
 }
 
 

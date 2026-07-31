@@ -1,0 +1,9 @@
+// Concat takes a single-byte operand count, so a string with more parts than
+// that is folded in chunks -- each Concat leaves one string that becomes the
+// first operand of the next chunk.  300 placeholders interleaved with 300
+// literal runs is 600 parts, crossing the boundary twice.
+var n = 7
+var s = "{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}.{n}."
+print(len(s))
+print(s[0:12])
+print(s[588:600])

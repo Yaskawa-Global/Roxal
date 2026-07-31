@@ -1,0 +1,6 @@
+// Annotation arguments are compile-time metadata: there is no scope to
+// interpolate against, and only plain literals can be serialized into a
+// precompiled object.
+var n = 1
+@doc("ann {n}")
+var x = 1

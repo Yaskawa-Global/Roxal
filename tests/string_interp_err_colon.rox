@@ -1,0 +1,3 @@
+// A ':' at the top level of a placeholder is reserved.  A lambda that is
+// actually called has its ':' nested inside parens, so it is unaffected.
+print("{func(x): x*2}")

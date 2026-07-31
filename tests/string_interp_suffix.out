@@ -1,0 +1,6 @@
+EN:count 3
+HELLO WORLD, 3 TIMES
+EN:plain
+EN:no {n} interp
+3 apples/item
+EN:literal {n} here

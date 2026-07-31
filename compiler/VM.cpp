@@ -8144,6 +8144,68 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 }
                 break;
             }
+            case OpCode::ToStringPart: {
+                // Convert top-of-stack to a string, for one part of an interpolated
+                // string.  This exists separately from Concat because of one case:
+                // a user object with an @implicit operator string() whose conversion
+                // needs its own call frame.  That has to suspend, and suspending is
+                // only tractable while the value is alone on top of the stack -- a
+                // fused Concat could not reach a mid-stack operand to convert it.
+                // Splitting it out lets us reuse the existing
+                // PendingConversion::Kind::Concat completion handler unchanged.
+                if (tryAwaitFuture(peek(0)) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
+
+                if (isString(peek(0)))
+                    break;   // already a string: nothing to do
+
+                if (isObjectInstance(peek(0)) || isActorInstance(peek(0))) {
+                    Value v = pop();
+                    // savedLHS = "" makes the completion handler push exactly the
+                    // converted value, since it pushes savedLHS + converted.
+                    auto outcome = tryConvertValue(v, Value::typeVal(ValueType::String),
+                                                   false, /*implicitCall=*/true,
+                                                   Thread::PendingConversion::Kind::Concat,
+                                                   Value::stringVal(icu::UnicodeString()));
+                    if (outcome.result == ConversionResult::NeedsAsyncFrame) {
+                        frame = thread->frames.end() - 1;
+                        break;
+                    }
+                    if (outcome.result == ConversionResult::ConvertedSync) {
+                        push(isString(outcome.convertedValue)
+                                ? outcome.convertedValue
+                                : Value::stringVal(toUnicodeString(toString(outcome.convertedValue))));
+                        break;
+                    }
+                    push(v);   // no conversion operator — fall through to toString()
+                }
+
+                {
+                    Value v = pop();
+                    push(Value::stringVal(toUnicodeString(toString(v))));
+                }
+                break;
+            }
+            case OpCode::Concat: {
+                // Join N parts of an interpolated string in one allocation.  Every
+                // operand is already a string (ToStringPart guarantees it), so there
+                // is no conversion, no future and no suspension to handle here.
+                int n = readByte();
+                int32_t total = 0;
+                for(int i=0; i<n; i++)
+                    total += asUString(peek(i)).length();
+
+                icu::UnicodeString out(total, 0, 0);   // preallocate, length 0
+                for(int i=n-1; i>=0; i--)              // deepest operand is leftmost
+                    out.append(asUString(peek(i)));
+
+                // build the result before popping, so the operands stay rooted
+                // across the allocation
+                Value result = Value::stringVal(out);
+                popN(n);
+                push(result);
+                break;
+            }
             case OpCode::Subtract: ROX_LBL(Subtract) {
                 // fast path: plain int/real arithmetic — skips the future check,
                 // operator-hash dispatch and generic binaryOp Value churn

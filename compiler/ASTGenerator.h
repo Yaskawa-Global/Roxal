@@ -118,6 +118,11 @@ public:
 
     virtual std::any visitExpression(RoxalParser::ExpressionContext *context);
 
+    // string-interpolation placeholder entry rule: `logic_or EOF` — the EOF is
+    // there for the parser's benefit (trailing-junk detection), so just forward
+    virtual std::any visitInterp_expr(RoxalParser::Interp_exprContext *context) override
+        { return visitLogic_or(context->logic_or()); }
+
     virtual std::any visitAssignment(RoxalParser::AssignmentContext *context);
 
 
@@ -192,15 +197,70 @@ public:
 protected:
     void setSourceInfo(ptr<ast::AST> ast, antlr4::ParserRuleContext* context);
     void setSourceInfo(ptr<ast::AST> ast, antlr4::tree::TerminalNode* terminal);
-    ptr<ast::Expression> parseInterpolationExpression(const std::string& text, antlr4::ParserRuleContext* context);
     icu::UnicodeString normalizeIdentifier(const std::string& text);
     icu::UnicodeString identifierFromTerminal(antlr4::tree::TerminalNode* terminal);
     icu::UnicodeString identifierFromContext(antlr4::ParserRuleContext* context);
     icu::UnicodeString operatorNameFromContext(RoxalParser::Operator_nameContext* context);
 
+    // ---- string interpolation ----------------------------------------------
+    // One piece of a scanned interpolated string: a run of literal text (with
+    // its escapes still unprocessed, for ICU) or the source of a "{...}"
+    // placeholder.  `offset` is the byte offset of `text` within the token's
+    // content, used to place diagnostics.
+    struct InterpSegment {
+        bool isHole { false };
+        std::string text;
+        size_t offset { 0 };
+    };
+
+    // Split a string token's content into literal runs and placeholders.
+    // Returns false (having reported) on a malformed placeholder.
+    bool scanInterpolation(const std::string& content, size_t contentOffset,
+                           antlr4::Token* token, std::vector<InterpSegment>& segments);
+
+    // Parse one placeholder's source with the real grammar (interp_expr) and
+    // return the expression.  Returns nullptr (having reported) on error.
+    ptr<ast::Expression> parseInterpolationExpression(const std::string& fragment,
+                                                      const ast::LinePos& origin);
+
+    // Build the StrInterp for a token whose content contains at least one
+    // placeholder.  `quoteLen` is the opening delimiter length (1 or 3).
+    ptr<ast::Expression> buildInterpolation(const std::string& content, size_t quoteLen,
+                                            antlr4::Token* token,
+                                            antlr4::ParserRuleContext* context,
+                                            const icu::UnicodeString& suffix);
+
+    // True when a string token's content has a placeholder that would make it a
+    // StrInterp rather than a plain Str.  Cheap pre-check.
+    static bool hasInterpolation(const std::string& content);
+
+    // Reports (and returns true) if expr is an interpolated string in a
+    // docstring position, where only a plain literal is usable.
+    bool rejectInterpolatedDocstring(ptr<ast::Expression>& expr);
+
+    // Source position of `content[byteOffset]`, in file coordinates.
+    ast::LinePos positionOf(const std::string& content, size_t byteOffset,
+                            size_t contentOffset, antlr4::Token* token) const;
+
+    // Map a position produced by a fragment sub-parse back into file
+    // coordinates.  Identity when not inside a fragment.
+    ast::LinePos remapFragmentPos(const ast::LinePos& p) const;
+
+    // Active while visiting a sub-parsed placeholder: the file position of the
+    // fragment's first character.  line == 0 means "not in a fragment".
+    // Composes correctly when nested, because the origin of a nested fragment
+    // is itself remapped through the enclosing one before being installed.
+    ast::LinePos fragmentOrigin { 0, 0 };
+    struct FragmentScope;
+    friend struct FragmentScope;
+
     antlr4::Token* currentToken;
     ptr<std::string> source;
     std::string sourceName;
+
+public:
+    // used by the fragment error listener, which lives outside the class
+    void reportErrorAt(size_t line, size_t pos, const std::string& message);
 
 private:
     void reportError(antlr4::Token* token, const std::string& message);

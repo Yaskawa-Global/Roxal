@@ -117,6 +117,11 @@ enum class OpCode {
     InvokeOverloadAt,      // like Invoke but with explicit overload index — compile-time-resolved method dispatch
     PopToCount,    // 'jump' stack cleanup: close upvalues & pop locals down to a frame-relative
                    // slot count (fixed 2-byte arg, like Jump).
+    ToStringPart,  // convert top of stack to a string in place (string interpolation part).
+                   // Handles @implicit operator string() -- including the async-frame case --
+                   // so that Concat below only ever sees strings.
+    Concat,        // pop N strings (1-byte arg), push their concatenation (one allocation).
+                   // Every operand is guaranteed already a string: see ToStringPart.
     _Last
 };
 
