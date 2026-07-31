@@ -1,0 +1,39 @@
+// More elements than the C array holds is an error, not a silent truncation.
+// (Fewer is fine, and stays zero-filled -- out-params depend on it.)
+import sys
+mylib = sys.loadlib('../tests/testlib.so')
+
+@cstruct
+type Entry object:
+
+  @ctype(ctype='int32_t')
+  var id :int
+
+  @ctype(ctype='double')
+  var weight :real
+
+@cstruct
+type Table object:
+
+  @ctype(ctype='int32_t')
+  var count :int
+
+  @ctype(ctype='Entry[4]')
+  var entries :list
+
+  @ctype(ctype='int32_t')
+  var tail :int
+
+@cfunc(lib=mylib, args='const Table* t', ret='int32_t')
+func table_get_count(t :Table) -> int:
+  _
+
+var t = Table()
+var es = []
+for i in range(0..4):
+  var e = Entry()
+  e.id = i
+  e.weight = 0.0
+  es.append(e)
+t.entries = es
+print(table_get_count(t))

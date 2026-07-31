@@ -3315,7 +3315,7 @@ Value ModuleSys::gc_config_builtin(VM& vm, ArgsView args)
 // byte of a raw writeValue stream (always a ValueType tag <= ~30 or the Boxed
 // sentinel 0xff), so a foreign/headerless stream is cleanly rejected.
 static constexpr uint8_t SerializeMagic = 0x52;        // 'R'
-static constexpr uint32_t SerializeFormatVersion = 1;
+static constexpr uint32_t SerializeFormatVersion = 2;
 
 Value ModuleSys::serialize_builtin(VM& vm, ArgsView args)
 {

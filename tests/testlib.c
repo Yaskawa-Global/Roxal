@@ -79,3 +79,48 @@ void slow_fill(uint8_t* buf, int n, int ms) {
 /* pointer-to-pointer out-parameter (the f(..., Thing** out) / Error** convention) */
 static int handle_target = 99;
 void make_handle(void** out) { *out = &handle_target; }
+
+/* Nested struct whose alignment (8) exceeds that of the member preceding it: `pair`
+   must start at offset 24, not 20. Getting this wrong shifts every later field. */
+typedef struct { double a; double b; } AlignPair;
+typedef struct {
+    int32_t   lead;   /* off 0  */
+    double    mid;    /* off 8  */
+    int32_t   gap;    /* off 16 -- leaves the offset 4-aligned, not 8 */
+    AlignPair pair;   /* off 24 */
+    int32_t   tail1;  /* off 40 */
+    int32_t   tail2;  /* off 44 */
+} AlignProbe;         /* size 48 */
+
+/* Weighted so a shifted field changes the result rather than cancelling out. */
+double align_probe_check(const AlignProbe* p) {
+    return p->lead + p->gap * 10 + p->tail1 * 100 + p->tail2 * 1000
+         + p->mid + p->pair.a + p->pair.b;
+}
+void align_probe_fill(AlignProbe* p) {
+    p->lead = 1; p->mid = 2.5; p->gap = 3;
+    p->pair.a = 4.5; p->pair.b = 5.5;
+    p->tail1 = 6; p->tail2 = 7;
+}
+
+/* Array of structs. `entries` must start at offset 8 (Pair is 8-aligned) and the four
+   elements sit back to back, so a wrong element stride or a missed lead pad shows up
+   in `tail`. */
+typedef struct { int32_t id; double weight; } Entry;   /* 16 bytes, align 8 */
+typedef struct {
+    int32_t count;        /* off 0  */
+    Entry   entries[4];   /* off 8  */
+    int32_t tail;         /* off 72 */
+} Table;                  /* size 80 */
+
+int32_t table_sizeof(void)                    { return (int32_t)sizeof(Table); }
+int32_t table_get_count(const Table* t)       { return t->count; }
+int32_t table_get_tail(const Table* t)        { return t->tail; }
+int32_t table_entry_id(const Table* t, int32_t i)     { return t->entries[i].id; }
+double  table_entry_weight(const Table* t, int32_t i)  { return t->entries[i].weight; }
+
+void table_fill(Table* t) {
+    t->count = 4;
+    for (int i = 0; i < 4; i++) { t->entries[i].id = 100 + i; t->entries[i].weight = 1.5 + i; }
+    t->tail = 999;
+}

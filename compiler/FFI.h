@@ -67,6 +67,15 @@ Value ffi_native(ArgsView args);
 
 Value callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* args);
 
+// Split a `T[N]` ctype spec into its base name and element count. False when `spec`
+// is not an array form. Shared so the compiler and the marshaller agree on the syntax.
+bool parseCTypeArray(const std::string& spec, std::string& base, size_t& count);
+
+// True when `name` is a C scalar the marshaller lays out directly (int32_t, double,
+// char*, T*, ...). A `T[N]` base that is *not* one of these must name a cstruct type,
+// which is resolved at declaration time -- see ObjObjectType::Property::ctypeElemType.
+bool isBuiltinCTypeName(const std::string& name);
+
 void marshalProperty(const Value& val, const ObjObjectType::Property& prop,
                      size_t ptrSize, std::vector<uint8_t>& buffer,
                      size_t& offset, size_t& structAlign,

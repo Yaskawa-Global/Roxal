@@ -5421,8 +5421,30 @@ void VM::defineProperty(ObjString* name)
         auto itType = mod->propertyCTypes.find(objType->name.hashCode());
         if (itType != mod->propertyCTypes.end()) {
             auto itProp = itType->second.find(name->hash);
-            if (itProp != itType->second.end())
-                objType->properties[name->hash].ctype = itProp->second;
+            if (itProp != itType->second.end()) {
+                auto& declared = objType->properties[name->hash];
+                declared.ctype = itProp->second;
+
+                // A `T[N]` whose element is a cstruct has to be resolved here: the ctype is
+                // only text, a Roxal list carries no element type, and the FFI marshals
+                // during a call where this module namespace is no longer reachable.
+                std::string spec = toUTF8StdString(itProp->second);
+                std::string base;
+                size_t count = 0;
+                if (parseCTypeArray(spec, base, count) && !isBuiltinCTypeName(base)) {
+                    auto ubase = icu::UnicodeString::fromUTF8(base);
+                    auto found = moduleVars().load(ubase.hashCode());
+                    if (!found.has_value() || !isObjectType(found.value()))
+                        throw std::runtime_error("ctype '" + spec + "' on member '"
+                            + toUTF8StdString(name->s) + "': no type named '" + base
+                            + "' is declared in this module (declare it before use)");
+                    if (!asObjectType(found.value())->isCStruct)
+                        throw std::runtime_error("ctype '" + spec + "' on member '"
+                            + toUTF8StdString(name->s) + "': '" + base
+                            + "' is not a @cstruct type");
+                    declared.ctypeElemType = found.value();
+                }
+            }
         }
     }
     popN(hasConstFlag ? 4 : 3);

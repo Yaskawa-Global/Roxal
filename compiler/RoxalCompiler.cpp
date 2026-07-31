@@ -69,7 +69,7 @@ const char* suffixShadowedByNumericBase(const std::string& s)
 }
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 47;
+constexpr std::uint32_t ModuleCacheVersion = 48;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())

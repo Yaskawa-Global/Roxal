@@ -1,0 +1,93 @@
+// A cstruct member may be a fixed-size array of another cstruct. The element type comes
+// from resolving the ctype base name at declaration time -- a Roxal list carries no
+// element type of its own, unlike a C array.
+import sys
+mylib = sys.loadlib('../tests/testlib.so')
+
+@cstruct
+type Entry object:
+
+  @ctype(ctype='int32_t')
+  var id :int
+
+  @ctype(ctype='double')
+  var weight :real
+
+@cstruct
+type Table object:
+
+  @ctype(ctype='int32_t')
+  var count :int
+
+  @ctype(ctype='Entry[4]')
+  var entries :list
+
+  @ctype(ctype='int32_t')
+  var tail :int
+
+@cfunc(lib=mylib, args='', ret='int32_t')
+func table_sizeof() -> int:
+  _
+
+@cfunc(lib=mylib, args='const Table* t', ret='int32_t')
+func table_get_count(t :Table) -> int:
+  _
+
+@cfunc(lib=mylib, args='const Table* t', ret='int32_t')
+func table_get_tail(t :Table) -> int:
+  _
+
+@cfunc(lib=mylib, args='const Table* t,int32_t i', ret='int32_t')
+func table_entry_id(t :Table, i :int) -> int:
+  _
+
+@cfunc(lib=mylib, args='const Table* t,int32_t i', ret='double')
+func table_entry_weight(t :Table, i :int) -> real:
+  _
+
+@cfunc(lib=mylib, args='Table* t', ret='void')
+proc table_fill(t :Table):
+  _
+
+print(table_sizeof())
+
+// Roxal -> C
+var t = Table()
+t.count = 4
+var es = []
+for i in range(0..3):
+  var e = Entry()
+  e.id = 100 + i
+  e.weight = 1.5 + i
+  es.append(e)
+t.entries = es
+t.tail = 999
+
+print(table_get_count(t))
+print(table_get_tail(t))
+for i in range(0..3):
+  print(table_entry_id(t, i))
+for i in range(0..3):
+  print(table_entry_weight(t, i))
+
+// C -> Roxal: the array comes back as a list of instances.
+var u = Table()
+table_fill(u)
+print(u.count)
+print(u.tail)
+print(len(u.entries))
+for e in u.entries:
+  print("{e.id} {e.weight}")
+
+// A short list is zero-filled -- an unassigned array member is [], which every
+// out-param relies on.
+var s = Table()
+s.count = 1
+var one = Entry()
+one.id = 7
+one.weight = 0.5
+s.entries = [one]
+s.tail = 42
+print(table_entry_id(s, 0))
+print(table_entry_id(s, 3))
+print(table_get_tail(s))

@@ -408,27 +408,25 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                                         return &ffi_type_pointer;
                                     return nullptr;
                                 };
-                                auto parseArray = [&](const std::string& str, std::string& base, size_t& len) -> bool {
-                                    auto lb=str.find('['); auto rb=str.find(']', lb==std::string::npos?0:lb);
-                                    if(lb!=std::string::npos && rb==str.size()-1){
-                                        base=str.substr(0,lb); while(!base.empty() && isspace(base.back())) base.pop_back();
-                                        std::string ls=str.substr(lb+1, rb-lb-1); len=strtoul(ls.c_str(),nullptr,10); return len>0; }
-                                    return false; };
-
                                 ffi_type* et = nullptr;
                                 size_t arrLen = 0; std::string arrBase;
-                                bool isArr = (!ct.empty() && parseArray(ct, arrBase, arrLen));
+                                bool isArr = (!ct.empty() && parseCTypeArray(ct, arrBase, arrLen));
+                                if (isArr && isObjectType(prop.ctypeElemType)) {
+                                    // Array of structs: the element struct, repeated.
+                                    for (size_t ai=0; ai<arrLen; ++ai)
+                                        appendStruct(asObjectType(prop.ctypeElemType));
+                                    continue;
+                                }
                                 if (isArr) {
                                     et = byName(arrBase);
+                                } else if (isObjectType(prop.type) && (ct.empty() || ct.back()!='*')
+                                           && asObjectType(prop.type)->isCStruct) {
+                                    // Nested struct by value; the annotation is optional since
+                                    // the declared type already says what this is.
+                                    appendStruct(asObjectType(prop.type));
+                                    continue;
                                 } else if (!ct.empty()) {
                                     et = byName(ct);
-                                    if (!et && isObjectType(prop.type) && ct.back()!='*') {
-                                        ObjObjectType* nt = asObjectType(prop.type);
-                                        if (!nt->isCStruct)
-                                            throw std::runtime_error("nested struct field not cstruct in arg type "+type);
-                                        appendStruct(nt);
-                                        continue;
-                                    }
                                 } else if (isTypeSpec(prop.type)) {
                                     ObjTypeSpec* ts = asTypeSpec(prop.type);
                                     switch(ts->typeValue) {
@@ -555,27 +553,24 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                                     return &ffi_type_pointer;
                                 return nullptr;
                             };
-                            auto parseArray = [&](const std::string& str, std::string& base, size_t& len) -> bool {
-                                auto lb=str.find('['); auto rb=str.find(']', lb==std::string::npos?0:lb);
-                                if(lb!=std::string::npos && rb==str.size()-1){
-                                    base=str.substr(0,lb); while(!base.empty() && isspace(base.back())) base.pop_back();
-                                    std::string ls=str.substr(lb+1, rb-lb-1); len=strtoul(ls.c_str(),nullptr,10); return len>0; }
-                                return false; };
-
                             ffi_type* et = nullptr;
                             size_t arrLen = 0; std::string arrBase;
-                            bool isArr = (!ct.empty() && parseArray(ct, arrBase, arrLen));
+                            bool isArr = (!ct.empty() && parseCTypeArray(ct, arrBase, arrLen));
+                            if (isArr && isObjectType(prop.ctypeElemType)) {
+                                // Array of structs: the element struct, repeated.
+                                for (size_t ai=0; ai<arrLen; ++ai)
+                                    appendStruct(asObjectType(prop.ctypeElemType));
+                                continue;
+                            }
                             if (isArr) {
                                 et = byName(arrBase);
+                            } else if (isObjectType(prop.type) && (ct.empty() || ct.back()!='*')
+                                       && asObjectType(prop.type)->isCStruct) {
+                                // Nested struct by value; the annotation is optional.
+                                appendStruct(asObjectType(prop.type));
+                                continue;
                             } else if (!ct.empty()) {
                                 et = byName(ct);
-                                if (!et && isObjectType(prop.type) && ct.back()!='*') {
-                                    ObjObjectType* nt = asObjectType(prop.type);
-                                    if (!nt->isCStruct)
-                                        throw std::runtime_error("nested struct field not cstruct in return type "+r);
-                                    appendStruct(nt);
-                                    continue;
-                                }
                             } else if (isTypeSpec(prop.type)) {
                                 ObjTypeSpec* ts = asTypeSpec(prop.type);
                                 switch(ts->typeValue) {
@@ -1014,6 +1009,181 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
         return Value::nilVal();
 }
 
+namespace {
+
+// Lay one cstruct out at the current offset, starting on a boundary of its own
+// alignment as a C compiler would place it, and padding to a multiple of that
+// alignment at the end. Returns the alignment used.
+//
+// Both the by-value member case and each element of a struct array go through here.
+// Keeping it in one place is deliberate: this logic was previously written out once per
+// direction, which is why an alignment bug in it existed -- and had to be fixed -- twice.
+size_t marshalCStructAt(ObjectInstance* inst, ObjObjectType* t, size_t ptrSize,
+                        std::vector<uint8_t>& buffer, size_t& offset,
+                        std::vector<std::string>* stringStore, CStructContext* ctx);
+
+Value unmarshalCStructAt(ObjObjectType* t, size_t ptrSize, const uint8_t* bytes, size_t len,
+                         size_t& offset, CStructContext* ctx, size_t& alignUsed);
+
+// Alignment a C compiler gives a named scalar ctype. 0 means "not a scalar we know".
+// Must stay in step with the types handled by writeByNameVal/readByNameVal.
+size_t ctypeAlignOf(const std::string& ctype, size_t ptrSize)
+{
+    if (ctype == "float") return 4;
+    if (ctype == "double" || ctype == "real") return 8;
+    if (ctype == "int64_t" || ctype == "long long") return 8;
+    if (ctype == "uint64_t" || ctype == "unsigned long long") return 8;
+    if (ctype == "int" || ctype == "int32_t" || ctype == "uint32_t") return 4;
+    if (ctype == "int16_t" || ctype == "uint16_t") return 2;
+    if (ctype == "int8_t" || ctype == "uint8_t" || ctype == "bool") return 1;
+    if (!ctype.empty() && ctype.back() == '*') return ptrSize; // char*, void*, T*
+    return 0;
+}
+
+size_t cstructAlignOf(ObjObjectType* type, size_t ptrSize);
+
+size_t propertyAlignOf(const ObjObjectType::Property& prop, size_t ptrSize)
+{
+    std::string ctypeStr;
+    if (prop.ctype.has_value())
+        ctypeStr = toUTF8StdString(prop.ctype.value());
+
+    // T[N] aligns as T
+    std::string base;
+    size_t count = 0;
+    if (parseCTypeArray(ctypeStr, base, count)) {
+        // A struct element aligns as the struct; the element type was resolved when the
+        // member was declared, since the base name is not resolvable from here.
+        if (isObjectType(prop.ctypeElemType))
+            return cstructAlignOf(asObjectType(prop.ctypeElemType), ptrSize);
+        size_t a = ctypeAlignOf(base, ptrSize);
+        return a ? a : 1;
+    }
+
+    if (isObjectType(prop.type) && !ctypeStr.empty()) {
+        if (ctypeStr.back() == '*')
+            return ptrSize;                                   // nested struct by pointer
+        return cstructAlignOf(asObjectType(prop.type), ptrSize); // nested struct by value
+    }
+
+    if (!ctypeStr.empty()) {
+        if (size_t a = ctypeAlignOf(ctypeStr, ptrSize))
+            return a;
+    }
+
+    if (isTypeSpec(prop.type)) {
+        switch (asTypeSpec(prop.type)->typeValue) {
+            case ValueType::Bool:
+            case ValueType::Byte: return 1;
+            case ValueType::Int:
+            case ValueType::Enum: return 4;
+            case ValueType::Real: return 8;
+            default: break;
+        }
+    }
+    return 1;
+}
+
+// A struct's alignment is the strictest alignment among its members.
+size_t cstructAlignOf(ObjObjectType* type, size_t ptrSize)
+{
+    size_t align = 1;
+    for (int32_t h : type->propertyOrder)
+        align = std::max(align, propertyAlignOf(type->properties.at(h), ptrSize));
+    return align;
+}
+
+} // namespace
+
+bool roxal::parseCTypeArray(const std::string& spec, std::string& base, size_t& count)
+{
+    auto lb = spec.find('[');
+    auto rb = spec.find(']', lb == std::string::npos ? 0 : lb);
+    if (lb == std::string::npos || rb != spec.size() - 1)
+        return false;
+    std::string b = spec.substr(0, lb);
+    while (!b.empty() && isspace(b.back())) b.pop_back();
+    size_t n = std::strtoul(spec.substr(lb + 1, rb - lb - 1).c_str(), nullptr, 10);
+    if (n == 0)
+        return false;
+    base = std::move(b);
+    count = n;
+    return true;
+}
+
+bool roxal::isBuiltinCTypeName(const std::string& name)
+{
+    // ptrSize is irrelevant to the yes/no answer -- pointers are recognised by suffix.
+    return ctypeAlignOf(name, 8) != 0;
+}
+
+namespace {
+
+size_t marshalCStructAt(ObjectInstance* inst, ObjObjectType* t, size_t ptrSize,
+                        std::vector<uint8_t>& buffer, size_t& offset,
+                        std::vector<std::string>* stringStore, CStructContext* ctx)
+{
+    if (!t->isCStruct)
+        throw std::runtime_error("nested struct field is not a cstruct type");
+
+    size_t align = cstructAlignOf(t, ptrSize);
+    size_t leadPad = (align - (offset % align)) % align;
+    buffer.insert(buffer.end(), leadPad, 0);
+    offset += leadPad;
+
+    size_t startOffset = offset;
+    for (int32_t h : t->propertyOrder) {
+        const auto& subProp = t->properties.at(h);
+        auto it = inst->findProperty(subProp.name.hashCode());
+        if (!it)
+            throw std::runtime_error("instance missing property in nested struct");
+        try {
+            roxal::marshalProperty(it->value, subProp, ptrSize, buffer, offset, align, stringStore, ctx);
+        } catch (const std::runtime_error& e) {
+            throw std::runtime_error("Error marshalling nested struct property '"
+                                     + toUTF8StdString(subProp.name) + "' of type "
+                                     + toString(subProp.type) + ": " + e.what());
+        }
+    }
+
+    size_t finalPad = (align - ((offset - startOffset) % align)) % align;
+    buffer.insert(buffer.end(), finalPad, 0);
+    offset += finalPad;
+    return align;
+}
+
+Value unmarshalCStructAt(ObjObjectType* t, size_t ptrSize, const uint8_t* bytes, size_t len,
+                         size_t& offset, CStructContext* ctx, size_t& alignUsed)
+{
+    if (!t->isCStruct)
+        throw std::runtime_error("nested struct field is not a cstruct type");
+
+    size_t align = cstructAlignOf(t, ptrSize);
+    size_t leadPad = (align - (offset % align)) % align;
+    if (offset + leadPad > len)
+        throw std::runtime_error("buffer too small for cstruct unmarshalling");
+    offset += leadPad;
+
+    Value instVal { Value::objectInstanceVal(Value::objRef(t)) };
+    ObjectInstance* inst = asObjectInstance(instVal);
+
+    size_t startOffset = offset;
+    for (int32_t h : t->propertyOrder) {
+        const auto& subProp = t->properties.at(h);
+        Value subVal = roxal::unmarshalProperty(subProp, ptrSize, bytes, len, offset, align, ctx);
+        inst->assignProperty(subProp.name.hashCode(), subVal);
+    }
+
+    size_t finalPad = (align - ((offset - startOffset) % align)) % align;
+    if (offset + finalPad > len)
+        throw std::runtime_error("buffer too small for cstruct unmarshalling");
+    offset += finalPad;
+    alignUsed = align;
+    return instVal;
+}
+
+} // namespace
+
 void roxal::marshalProperty(const Value& val, const ObjObjectType::Property& prop,
                             size_t ptrSize, std::vector<uint8_t>& buffer,
                             size_t& offset, size_t& structAlign,
@@ -1024,20 +1194,9 @@ void roxal::marshalProperty(const Value& val, const ObjObjectType::Property& pro
     if (prop.ctype.has_value())
         ctypeStr = toUTF8StdString(prop.ctype.value());
 
-    bool isArray = false;
     std::string arrayBase;
     size_t arrayLen = 0;
-    auto lb = ctypeStr.find('[');
-    auto rb = ctypeStr.find(']', lb == std::string::npos ? 0 : lb);
-    if (lb != std::string::npos && rb == ctypeStr.size() - 1) {
-        arrayBase = ctypeStr.substr(0, lb);
-        while(!arrayBase.empty() && isspace(arrayBase.back())) arrayBase.pop_back();
-        std::string lenStr = ctypeStr.substr(lb+1, rb-lb-1);
-        arrayLen = std::strtoul(lenStr.c_str(), nullptr, 10);
-        if (arrayLen > 0) {
-            isArray = true;
-        }
-    }
+    bool isArray = parseCTypeArray(ctypeStr, arrayBase, arrayLen);
 
     auto appendPadded = [&](const void* data, size_t size, size_t align) {
         size_t padding = (align - (offset % align)) % align;
@@ -1124,6 +1283,38 @@ void roxal::marshalProperty(const Value& val, const ObjObjectType::Property& pro
             throw std::runtime_error("ctype array field " + toUTF8StdString(prop.name) + " expects list value");
         ObjList* list = asList(val);
         size_t len = list->length();
+        // Too many elements would silently drop data, so it is an error. Too few is not:
+        // an unassigned array member is [], and out-params rely on being zero-filled.
+        if (len > arrayLen)
+            throw std::runtime_error("ctype array field '" + toUTF8StdString(prop.name) + "' declared "
+                                     + ctypeStr + " but was given " + std::to_string(len) + " elements");
+
+        if (isObjectType(prop.ctypeElemType)) {
+            // Array of structs. Elements land back to back -- each one's own leading pad
+            // is a no-op after the first, since the array is already element-aligned.
+            ObjObjectType* elemType = asObjectType(prop.ctypeElemType);
+            size_t elemAlign = cstructAlignOf(elemType, ptrSize);
+            size_t lead = (elemAlign - (offset % elemAlign)) % elemAlign;
+            buffer.insert(buffer.end(), lead, 0);
+            offset += lead;
+            for (size_t i = 0; i < arrayLen; ++i) {
+                Value elem = (i < len) ? list->getElement(i) : Value::nilVal();
+                if (elem.isNil()) {
+                    // Absent trailing element: emit a zero-filled instance of the right size.
+                    Value blank { Value::objectInstanceVal(prop.ctypeElemType) };
+                    marshalCStructAt(asObjectInstance(blank), elemType, ptrSize, buffer, offset, stringStore, ctx);
+                    continue;
+                }
+                if (!isObjectInstance(elem))
+                    throw std::runtime_error("ctype array field '" + toUTF8StdString(prop.name)
+                                             + "' expects " + toUTF8StdString(elemType->name)
+                                             + " elements at index " + std::to_string(i));
+                marshalCStructAt(asObjectInstance(elem), elemType, ptrSize, buffer, offset, stringStore, ctx);
+            }
+            structAlign = std::max(structAlign, elemAlign);
+            return;
+        }
+
         for (size_t i = 0; i < arrayLen; ++i) {
             Value elem = (i < len) ? list->getElement(i) : Value(0);
             if (!writeByNameVal(arrayBase, elem))
@@ -1151,29 +1342,16 @@ void roxal::marshalProperty(const Value& val, const ObjObjectType::Property& pro
         return;
     }
 
-    if (isObjectType(prop.type) && !ctypeStr.empty() && ctypeStr.back() != '*') {
+    // Nested struct by value. The annotation is optional: a member whose declared type is
+    // already a cstruct carries everything needed. An annotation on such a member is only
+    // meaningful to say "by pointer", which is handled above.
+    if (isObjectType(prop.type) && (ctypeStr.empty() || ctypeStr.back() != '*')
+        && asObjectType(prop.type)->isCStruct) {
         if (!isObjectInstance(val))
             throw std::runtime_error("struct field '"+toUTF8StdString(prop.name)+"' expects object instance of type "+toString(prop.type));
         ObjectInstance* inst = asObjectInstance(val);
-        ObjObjectType* t = asObjectType(inst->instanceType);
-        if (!t->isCStruct)
-            throw std::runtime_error("nested struct field not cstruct type");
-        size_t startOffset = offset;
-        size_t nestedAlign = 1;
-        for (int32_t h : t->propertyOrder) {
-            const auto& subProp = t->properties.at(h);
-            auto it = inst->findProperty(subProp.name.hashCode());
-            if (!it)
-                throw std::runtime_error("instance missing property in nested struct");
-            try {
-                marshalProperty(it->value, subProp, ptrSize, buffer, offset, nestedAlign, stringStore, ctx);
-            } catch (const std::runtime_error& e) {
-                throw std::runtime_error("Error marshalling nested struct property '" + toUTF8StdString(subProp.name) + "' of type " + toString(subProp.type) + ": " + e.what());
-            }
-        }
-        size_t finalPad = (nestedAlign - ((offset - startOffset) % nestedAlign)) % nestedAlign;
-        buffer.insert(buffer.end(), finalPad, 0);
-        offset += finalPad;
+        size_t nestedAlign = marshalCStructAt(inst, asObjectType(inst->instanceType), ptrSize,
+                                              buffer, offset, stringStore, ctx);
         structAlign = std::max(structAlign, nestedAlign);
         return;
     }
@@ -1237,19 +1415,9 @@ Value roxal::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSi
     if (prop.ctype.has_value())
         ctypeStr = toUTF8StdString(prop.ctype.value());
 
-    bool isArray = false;
     std::string arrayBase;
     size_t arrayLen = 0;
-    auto lb = ctypeStr.find('[');
-    auto rb = ctypeStr.find(']', lb == std::string::npos ? 0 : lb);
-    if (lb != std::string::npos && rb == ctypeStr.size() - 1) {
-        arrayBase = ctypeStr.substr(0, lb);
-        while(!arrayBase.empty() && isspace(arrayBase.back())) arrayBase.pop_back();
-        std::string lenStr = ctypeStr.substr(lb+1, rb-lb-1);
-        arrayLen = std::strtoul(lenStr.c_str(), nullptr, 10);
-        if (arrayLen > 0)
-            isArray = true;
-    }
+    bool isArray = parseCTypeArray(ctypeStr, arrayBase, arrayLen);
 
     if (isObjectType(prop.type) && !ctypeStr.empty() && ctypeStr.back()=='*') {
         void* p = nullptr;
@@ -1321,26 +1489,36 @@ Value roxal::unmarshalProperty(const ObjObjectType::Property& prop, size_t ptrSi
         return false;
     };
 
-    if (isObjectType(prop.type) && !ctypeStr.empty() && ctypeStr.back() != '*') {
-        ObjObjectType* t = asObjectType(prop.type);
-        Value instVal { Value::objectInstanceVal(prop.type) };
-        ObjectInstance* inst = asObjectInstance(instVal);
-        size_t startOffset = offset;
+    // Nested struct by value -- see the matching branch in marshalProperty for why the
+    // annotation is optional here.
+    if (isObjectType(prop.type) && (ctypeStr.empty() || ctypeStr.back() != '*')
+        && asObjectType(prop.type)->isCStruct) {
         size_t nestedAlign = 1;
-        for (int32_t h : t->propertyOrder) {
-            const auto& subProp = t->properties.at(h);
-            Value subVal = unmarshalProperty(subProp, ptrSize, bytes, len, offset, nestedAlign, ctx);
-            inst->assignProperty(subProp.name.hashCode(), subVal);
-        }
-        size_t finalPad = (nestedAlign - ((offset - startOffset) % nestedAlign)) % nestedAlign;
-        if (offset + finalPad > len)
-            throw std::runtime_error("buffer too small for cstruct unmarshalling");
-        offset += finalPad;
+        Value instVal = unmarshalCStructAt(asObjectType(prop.type), ptrSize, bytes, len,
+                                           offset, ctx, nestedAlign);
         structAlign = std::max(structAlign, nestedAlign);
         return instVal;
     }
 
     auto readByName = [&](const std::string& ctype) -> bool { return readByNameVal(ctype, val); };
+
+    if (isArray && isObjectType(prop.ctypeElemType)) {
+        ObjObjectType* elemType = asObjectType(prop.ctypeElemType);
+        size_t elemAlign = cstructAlignOf(elemType, ptrSize);
+        size_t lead = (elemAlign - (offset % elemAlign)) % elemAlign;
+        if (offset + lead > len)
+            throw std::runtime_error("buffer too small for cstruct unmarshalling");
+        offset += lead;
+        std::vector<Value> elements;
+        elements.reserve(arrayLen);
+        for (size_t i = 0; i < arrayLen; ++i) {
+            size_t used = 1;
+            elements.push_back(unmarshalCStructAt(elemType, ptrSize, bytes, len, offset, ctx, used));
+        }
+        structAlign = std::max(structAlign, elemAlign);
+        val = Value::listVal(elements);
+        return val;
+    }
 
     if (isArray) {
         std::vector<Value> elements;

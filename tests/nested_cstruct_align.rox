@@ -1,0 +1,68 @@
+// A nested cstruct is laid out on a boundary of its own alignment, even when the
+// member before it leaves the offset less strictly aligned. Here `pair` (align 8)
+// follows an int32, so it must start at offset 24 rather than 20 -- otherwise
+// `tail1`/`tail2` land 4 bytes late and silently read as the wrong fields.
+import sys
+mylib = sys.loadlib('../tests/testlib.so')
+
+@cstruct
+type AlignPair object:
+
+  @ctype(ctype='double')
+  var a :real
+
+  @ctype(ctype='double')
+  var b :real
+
+@cstruct
+type AlignProbe object:
+
+  @ctype(ctype='int32_t')
+  var lead :int
+
+  @ctype(ctype='double')
+  var mid :real
+
+  @ctype(ctype='int32_t')
+  var gap :int
+
+  @ctype(ctype='AlignPair')
+  var pair :AlignPair
+
+  @ctype(ctype='int32_t')
+  var tail1 :int
+
+  @ctype(ctype='int32_t')
+  var tail2 :int
+
+@cfunc(lib=mylib, args='const AlignProbe* p', ret='double')
+func align_probe_check(p :AlignProbe) -> real:
+  _
+
+@cfunc(lib=mylib, args='AlignProbe* p', ret='void')
+proc align_probe_fill(p :AlignProbe):
+  _
+
+// Roxal -> C: C must read back every field where it expects it.
+var p = AlignProbe()
+p.lead = 1
+p.mid = 2.5
+p.gap = 3
+p.pair = AlignPair()
+p.pair.a = 4.5
+p.pair.b = 5.5
+p.tail1 = 6
+p.tail2 = 7
+print(align_probe_check(p))
+
+// C -> Roxal: the same layout has to survive the trip back.
+var q = AlignProbe()
+q.pair = AlignPair()
+align_probe_fill(q)
+print(q.lead)
+print(q.mid)
+print(q.gap)
+print(q.pair.a)
+print(q.pair.b)
+print(q.tail1)
+print(q.tail2)

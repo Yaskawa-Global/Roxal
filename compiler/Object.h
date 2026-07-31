@@ -1859,6 +1859,12 @@ struct ObjObjectType : public ObjTypeSpec
         bool isConst { false };
         Value ownerType { Value::nilVal() }; // weak ref to owning type
         std::optional<icu::UnicodeString> ctype;
+        // Resolved element type for a `SomeCStruct[N]` ctype. A Roxal list carries no
+        // element type (unlike a C array), and the ctype is only text, so the base name
+        // is resolved against the declaring module's namespace at declaration time --
+        // the FFI marshals during a call, where that namespace is out of reach.
+        // Nil for scalar arrays and every non-array member.
+        Value ctypeElemType { Value::nilVal() };
     };
     std::unordered_map<int32_t, Property> properties;
     std::vector<int32_t> propertyOrder;

@@ -1,0 +1,35 @@
+// A member whose declared type is already a @cstruct needs no @ctype annotation to be
+// laid out by value -- the declared type carries everything. An annotation on such a
+// member is only meaningful to say "by pointer".
+//
+// MyStruct2 here is laid out identically to the annotated version in
+// nested_cstruct_byval.rox, which is the point.
+import sys
+mylib = sys.loadlib('../tests/testlib.so')
+
+@cstruct
+type IntHolder object:
+  var i:int
+
+@cstruct
+type MyStruct2 object:
+  var r:real
+  var h:IntHolder          // no @ctype -- inferred from the declared type
+
+@cfunc(lib=mylib, args='MyStruct2 s', ret='double')
+func nested_sum(s: MyStruct2) -> real:
+  _
+
+@cfunc(lib=mylib, ret='MyStruct2')
+func make_nested_struct() -> MyStruct2:
+  _
+
+s = MyStruct2()
+s.r = 1.25
+s.h = IntHolder()
+s.h.i = 3
+print(nested_sum(s))
+
+s2 = make_nested_struct()
+print(s2.r)
+print(s2.h.i)

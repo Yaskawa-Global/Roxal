@@ -3479,6 +3479,7 @@ void ObjObjectType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
             out.write(reinterpret_cast<char*>(&ctlen),4);
             out.write(ct.data(), ctlen);
         }
+        writeValue(out, prop.ctypeElemType, ctx);
     }
 
     // Method serialization: write the total number of overloads across all
@@ -3574,10 +3575,11 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
             std::string cts(ctlen,'\0'); if(ctlen>0) in.read(cts.data(), ctlen);
             ct = icu::UnicodeString::fromUTF8(cts);
         }
+        Value ctypeElem = readValue(in, ctx);
         int32_t hash = uname.hashCode();
         if (ownerType.isNil())
             ownerType = Value::objRef(this).weakRef();
-        Property prop{uname, ptype, init, static_cast<ast::Access>(acc), isConst != 0, ownerType, ct};
+        Property prop{uname, ptype, init, static_cast<ast::Access>(acc), isConst != 0, ownerType, ct, ctypeElem};
         // Re-freeze initial value for const members with const type (const bit lost during serialization)
         if (prop.isConst && (prop.type.isNil() || prop.type.isConst())
             && prop.initialValue.isObj() && !prop.initialValue.isConst())
@@ -3646,6 +3648,7 @@ void ObjObjectType::trace(ValueVisitor& visitor) const
         visitor.visit(prop.type);
         visitor.visit(prop.initialValue);
         visitor.visit(prop.ownerType);
+        visitor.visit(prop.ctypeElemType);
     }
     for (const auto& entry : methods) {
         for (const auto& method : entry.second.overloads) {
