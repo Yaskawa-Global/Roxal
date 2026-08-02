@@ -3516,9 +3516,16 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             return Value::objRef(it->second);
         }
         obj = objMaker();
-        if(useCtx) ctx->idToObj[id] = obj;
+        // Take the caller's reference up front so the object is rooted for the
+        // duration of read(): idToObj is non-owning, so without the retained
+        // trace root a concurrent collection mid-read would sweep it.
+        Value owned = Value::objRef(obj);
+        if(useCtx) {
+            ctx->idToObj[id] = obj;
+            ctx->retained.push_back(owned);
+        }
         obj->read(in, ctx);
-        return Value::objRef(obj);
+        return owned;
     };
 
     // Many cached objects need to be reconstructed as fresh allocations so the
@@ -3627,14 +3634,18 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             in.putback(static_cast<char>(subType));
 
             Obj* obj = owned.asObj();
-            if (useCtx)
+            if (useCtx) {
                 ctx->idToObj[id] = obj;
+                ctx->retained.push_back(owned);
+            }
             obj->read(in, ctx);
             Value resolved = owned;
 #ifdef ROXAL_COMPUTE_SERVER
             resolved = resolveCanonicalSerializedObjectType(owned);
-            if (useCtx && resolved.isObj())
+            if (useCtx && resolved.isObj()) {
                 ctx->idToObj[id] = resolved.asObj();
+                ctx->retained.push_back(resolved);
+            }
 #endif
             return resolved;
         }
@@ -3688,8 +3699,10 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             debug_assert_msg(!t->isActor, "Expected object type for deserialization");
             Value objVal = Value::objectInstanceVal(typeVal);
             ObjectInstance* obj = asObjectInstance(objVal);
-            if (useCtx)
+            if (useCtx) {
                 ctx->idToObj[id] = obj;
+                ctx->retained.push_back(objVal);
+            }
             uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
             obj->clearProperties();
             for(uint32_t i=0;i<count;i++) {
@@ -3715,6 +3728,7 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             Value objVal = Value::objVal(std::move(actorHolder));
             if(useCtx) {
                 ctx->idToObj[id] = obj;
+                ctx->retained.push_back(objVal);
             }
 
             Value typeVal = readValue(in, ctx);
@@ -3777,7 +3791,10 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
                 owned = Value::closureVal(func);
             }
             Obj* obj = owned.asObj();
-            if (useCtx) ctx->idToObj[id] = obj;
+            if (useCtx) {
+                ctx->idToObj[id] = obj;
+                ctx->retained.push_back(owned);
+            }
             obj->read(in, ctx);
             return owned;
         }
