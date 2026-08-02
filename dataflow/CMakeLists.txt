@@ -47,6 +47,12 @@ add_library(dataflow ${DATAFLOW_SOURCES})
 target_link_libraries(dataflow
     PUBLIC
         pthread
+        # Signal.cpp / DataflowEngine.cpp / FuncNode.cpp include compiler/Object.h
+        # and compiler/Thread.h, so this target MUST see the same ABI defines as
+        # roxalcore -- without them it compiled ActorInstance and Thread without
+        # their ROXAL_COMPUTE_SERVER members, an ODR violation -Wodr reports at
+        # LTO link time.  See the roxal_abi target in the top-level CMakeLists.
+        roxal_abi
 )
 
 

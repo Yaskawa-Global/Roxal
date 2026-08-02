@@ -1,3 +1,8 @@
+#ifdef ROXAL_ENABLE_ONNX
+// Object.h only forward-declares Ort::Value now, so the TUs that construct or
+// dereference one pull in the real header themselves.
+#include <onnxruntime_cxx_api.h>
+#endif
 #include <stdexcept>
 #include <cassert>
 #include <unordered_map>
@@ -4432,6 +4437,10 @@ ObjTensor::ObjTensor()
 {
     type = ObjType::Tensor;
 }
+
+// Out-of-line: the body differs between ORT and non-ORT builds, so an inline
+// destructor would let the linker pick one arbitrarily across an ABI boundary.
+ObjTensor::~ObjTensor() = default;
 
 ObjTensor::ObjTensor(const std::vector<int64_t>& shape, TensorDType dtype)
     : shape_(shape), dtype_(dtype)

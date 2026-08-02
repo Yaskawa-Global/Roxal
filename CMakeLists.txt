@@ -308,8 +308,11 @@ endif()
 # missing.
 pkg_check_modules(LIBFFI REQUIRED libffi)
 
-# Build the dataflow engine library
-add_subdirectory(dataflow)
+# NOTE: add_subdirectory(dataflow) is deliberately NOT here.  dataflow's sources
+# include compiler/Object.h and compiler/Thread.h, so it needs the same include
+# set as roxalcore (compiler/grpc, compiler/dds, ...) -- and include_directories()
+# only reaches subdirectories added after the call.  It is added below, straight
+# after that block.
 
 # Add the source files
 set(CORE_SOURCES
@@ -437,6 +440,12 @@ include_directories(
     ${CMAKE_SOURCE_DIR}/compiler/qt
 )
 
+# Build the dataflow engine library.  Must come after the include_directories()
+# above: Signal/DataflowEngine/FuncNode include compiler/Object.h + Thread.h, and
+# with roxal_abi's feature macros those headers pull in ModuleGrpc.h / ModuleDDS.h
+# from compiler/grpc and compiler/dds.
+add_subdirectory(dataflow)
+
 link_directories(
     ${antlr4_ROOT}/lib
     ${CMAKE_SOURCE_DIR}/cpp-gen
@@ -486,24 +495,48 @@ target_compile_definitions(roxalast PRIVATE
 # silently corrupt memory across the host<->plugin boundary (it did, once, before
 # this existed). Add new feature flags HERE, never on an individual target.
 # ---------------------------------------------------------------------------
+# The ABI-affecting flags as a plain configure-time list.  Built once and fed to
+# BOTH roxal_abi (targets inside this project) and roxal_features.cmake (hosts
+# like FC that consume libroxal.a as a prebuilt artifact and so cannot link
+# roxal_abi).  One list is what makes the "add new flags HERE" rule above hold
+# for out-of-tree hosts too -- previously they had to re-derive the set from the
+# ROXAL_HAS_* exports, which silently omitted FILEIO/SOCKET/AI_NN and produced
+# ODR violations across the host<->libroxal boundary.
+set(ROXAL_ABI_DEFINITIONS "")
+foreach(_roxal_feature FILEIO GRPC DDS REGEX XML SOCKET ONNX AI_NN MEDIA QT)
+    if(ROXAL_ENABLE_${_roxal_feature})
+        list(APPEND ROXAL_ABI_DEFINITIONS ROXAL_ENABLE_${_roxal_feature})
+    endif()
+endforeach()
+unset(_roxal_feature)
+if(ROXAL_COMPUTE_SERVER)
+    list(APPEND ROXAL_ABI_DEFINITIONS ROXAL_COMPUTE_SERVER)
+endif()
+if(ROXAL_GC_DEDICATED_THREAD)
+    list(APPEND ROXAL_ABI_DEFINITIONS ROXAL_GC_DEDICATED_THREAD)
+endif()
+
 add_library(roxal_abi INTERFACE)
 target_compile_definitions(roxal_abi INTERFACE
+    # DEBUG_BUILD stays a generator expression so multi-config generators still
+    # get it per-config; the export below resolves it from CMAKE_BUILD_TYPE.
     $<$<CONFIG:DEBUG>:DEBUG_BUILD>
-    $<$<BOOL:${ROXAL_ENABLE_FILEIO}>:ROXAL_ENABLE_FILEIO>
-    $<$<BOOL:${ROXAL_ENABLE_GRPC}>:ROXAL_ENABLE_GRPC>
-    $<$<BOOL:${ROXAL_ENABLE_DDS}>:ROXAL_ENABLE_DDS>
-    $<$<BOOL:${ROXAL_ENABLE_REGEX}>:ROXAL_ENABLE_REGEX>
-    $<$<BOOL:${ROXAL_ENABLE_XML}>:ROXAL_ENABLE_XML>
-    $<$<BOOL:${ROXAL_ENABLE_SOCKET}>:ROXAL_ENABLE_SOCKET>
-    $<$<BOOL:${ROXAL_ENABLE_ONNX}>:ROXAL_ENABLE_ONNX>
-    $<$<BOOL:${ROXAL_ENABLE_AI_NN}>:ROXAL_ENABLE_AI_NN>
-    $<$<BOOL:${ROXAL_ENABLE_MEDIA}>:ROXAL_ENABLE_MEDIA>
-    $<$<BOOL:${ROXAL_ENABLE_QT}>:ROXAL_ENABLE_QT>
-    $<$<BOOL:${ROXAL_COMPUTE_SERVER}>:ROXAL_COMPUTE_SERVER>
-    $<$<BOOL:${ROXAL_GC_DEDICATED_THREAD}>:ROXAL_GC_DEDICATED_THREAD>
+    ${ROXAL_ABI_DEFINITIONS}
     ROXAL_VERSION="${ROXAL_PROJECT_VERSION}"
     ROXAL_GIT_HASH="${ROXAL_GIT_HASH}"
     ROXAL_PRERELEASE="${ROXAL_PRERELEASE}"
+)
+
+# The macros above make VM.h/Object.h #include their module headers (ModuleGrpc.h,
+# dds/ModuleDDS.h, onnxruntime_cxx_api.h, ...), which need their dependencies'
+# headers in turn.  Those arrive via imported targets, not include_directories --
+# CycloneDDS_INCLUDE_DIRS is empty with the CONFIG package.  Carry them here so
+# consuming roxal_abi is sufficient to COMPILE the headers the macros select,
+# not just to spell the macros.
+target_link_libraries(roxal_abi INTERFACE
+    $<$<BOOL:${ROXAL_ENABLE_GRPC}>:protobuf::libprotobuf>
+    $<$<BOOL:${ROXAL_ENABLE_DDS}>:CycloneDDS::ddsc>
+    $<$<BOOL:${ROXAL_ENABLE_XML}>:pugixml::pugixml>
 )
 
 # Build the static library containing the core compiler and VM
@@ -628,6 +661,37 @@ endif()
 
 # Export enabled features so embedding projects (e.g. FC) can conditionally
 # link the transitive dependencies that libroxal.a requires.
+#
+# roxal_abi carries DEBUG_BUILD as a per-config generator expression; hosts get
+# a single resolved answer, so fold it in here from CMAKE_BUILD_TYPE.
+set(_roxal_abi_defs_export ${ROXAL_ABI_DEFINITIONS})
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    list(APPEND _roxal_abi_defs_export DEBUG_BUILD)
+endif()
+
+# ...and the include dirs those macros make the headers reach for.  Inside this
+# project roxal_abi supplies them by linking the imported targets; a host that
+# only has libroxal.a needs the resolved paths.  e.g. ROXAL_ENABLE_ONNX makes
+# Object.h include <onnxruntime_cxx_api.h> because ObjTensor's storage member is
+# literally shared_ptr<Ort::Value> -- there is no way to see the right layout
+# without the ONNX headers on the include path.
+# Only roxal's own header dirs, plus Eigen (Object.h includes <Eigen/Geometry>
+# unconditionally, so that one is not feature-related).  No dependency include
+# paths appear here on purpose: the ABI headers forward-declare the optional
+# modules and Ort::Value rather than including them, so a host needs the
+# ROXAL_ENABLE_* macros -- which select WHICH members are declared -- but never
+# the gRPC, CycloneDDS, pugixml or ONNX Runtime headers.  Keep it that way: the
+# moment an ABI header includes a dependency's header, every host inherits that
+# dependency's include path just to compile a pointer member.
+set(_roxal_abi_incs_export
+    "${CMAKE_SOURCE_DIR}"
+    "${CMAKE_SOURCE_DIR}/core"
+    "${CMAKE_SOURCE_DIR}/compiler"
+    "${CMAKE_SOURCE_DIR}/compiler/cpp-gen")
+if(EIGEN3_INCLUDE_DIR)
+    list(APPEND _roxal_abi_incs_export "${EIGEN3_INCLUDE_DIR}")
+endif()
+list(REMOVE_DUPLICATES _roxal_abi_incs_export)
 file(WRITE "${CMAKE_BINARY_DIR}/roxal_features.cmake"
     # Build configuration, not a feature: hosts link libroxal.a as a prebuilt
     # artifact, so they must compile the roxal headers with a compatible
@@ -636,6 +700,18 @@ file(WRITE "${CMAKE_BINARY_DIR}/roxal_features.cmake"
     # can -- and the host's sizeof(VM) guard only catches the feature-flag case.
     # Exported so hosts can inherit it, or warn when it disagrees.
     "set(ROXAL_BUILD_TYPE \"${CMAKE_BUILD_TYPE}\")\n"
+    # The exact ABI-affecting preprocessor set libroxal.a was compiled with.  A
+    # host MUST apply these verbatim when compiling roxal headers: they are the
+    # #defines that decide class layout (ActorInstance::isRemote,
+    # Thread::remoteComputeCallState, ObjTensor's storage union, ...), and a
+    # mismatch is an ODR violation that silently corrupts memory rather than
+    # failing to link.  Re-deriving the set from the ROXAL_HAS_* flags below is
+    # NOT equivalent -- those are spelled differently (HAS_ vs ENABLE_) and omit
+    # FILEIO/SOCKET/AI_NN entirely.  Apply with add_compile_definitions().
+    "set(ROXAL_ABI_DEFINITIONS ${_roxal_abi_defs_export})\n"
+    # Include dirs required to compile the roxal headers with the defines above.
+    # Apply with include_directories() wherever ROXAL_ABI_DEFINITIONS is applied.
+    "set(ROXAL_ABI_INCLUDE_DIRS ${_roxal_abi_incs_export})\n"
     # LTO leaves GIMPLE bytecode in libroxal.a, so the host's link runs
     # lto-wrapper (serially, unless it passes -flto=auto).  Exported so hosts
     # can explain the resulting link times, or opt out.

@@ -34,7 +34,14 @@
 #include <Eigen/Geometry>
 
 #ifdef ROXAL_ENABLE_ONNX
-#include <onnxruntime_cxx_api.h>
+// Forward declaration only.  ObjTensor's ORT storage is a std::shared_ptr, whose
+// layout is independent of the pointee, and ~shared_ptr does not need the
+// complete type either (the deleter is type-erased into the control block at
+// construction).  Keeping <onnxruntime_cxx_api.h> out of this header means a
+// host linking libroxal.a needs the ROXAL_ENABLE_ONNX macro -- which selects
+// WHICH member is declared, and so is ABI-critical -- but not the ONNX Runtime
+// headers.  TUs that actually touch an Ort::Value include the real header.
+namespace Ort { struct Value; }
 #endif
 
 
@@ -989,7 +996,7 @@ struct ObjTensor : public Obj
     /// Non-ORT builds adopt the buffer (zero-copy move); ORT builds do one memcpy.
     /// bytes.size() must equal numel(shape) * dtypeSize(dtype). Host byte order.
     ObjTensor(const std::vector<int64_t>& shape, TensorDType dtype, std::vector<uint8_t>&& bytes);
-    virtual ~ObjTensor() {}
+    virtual ~ObjTensor();
 
 #ifdef ROXAL_ENABLE_ONNX
     /// Construct from an ONNX Runtime value (takes ownership, zero-copy).

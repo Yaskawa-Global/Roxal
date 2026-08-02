@@ -33,6 +33,29 @@
 
 #include <core/TimePoint.h>
 #include "VM.h"
+// VM.h forward-declares the optional modules rather than including them, so the
+// TUs that instantiate or call into one pull in the real headers here.
+#ifdef ROXAL_ENABLE_FILEIO
+#include "ModuleFileIO.h"
+#endif
+#ifdef ROXAL_ENABLE_GRPC
+#include "ModuleGrpc.h"
+#endif
+#ifdef ROXAL_ENABLE_DDS
+#include "dds/ModuleDDS.h"
+#endif
+#ifdef ROXAL_ENABLE_REGEX
+#include "ModuleRegex.h"
+#endif
+#ifdef ROXAL_ENABLE_SOCKET
+#include "ModuleSocket.h"
+#endif
+#ifdef ROXAL_ENABLE_AI_NN
+#include "ModuleNN.h"
+#endif
+#ifdef ROXAL_ENABLE_MEDIA
+#include "ModuleMedia.h"
+#endif
 #include "Object.h"
 #include "OverloadResolver.h"
 #ifdef ROXAL_COMPUTE_SERVER

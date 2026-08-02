@@ -18,27 +18,16 @@
 #include "Thread.h"
 #include "BuiltinModule.h"
 #include "LazyModuleRegistry.h"
-#ifdef ROXAL_ENABLE_FILEIO
-#include "ModuleFileIO.h"
-#endif
-#ifdef ROXAL_ENABLE_GRPC
-#include "ModuleGrpc.h"
-#endif
-#ifdef ROXAL_ENABLE_DDS
-#include "dds/ModuleDDS.h"
-#endif
-#ifdef ROXAL_ENABLE_REGEX
-#include "ModuleRegex.h"
-#endif
-#ifdef ROXAL_ENABLE_SOCKET
-#include "ModuleSocket.h"
-#endif
-#ifdef ROXAL_ENABLE_AI_NN
-#include "ModuleNN.h"
-#endif
-#ifdef ROXAL_ENABLE_MEDIA
-#include "ModuleMedia.h"
-#endif
+// The optional module headers are deliberately NOT included here.  VM.h needs
+// none of them: ModuleFileIO/Regex/Socket/NN/Media are unreferenced in this
+// header, and the only gRPC/DDS uses are the forward declarations, friend
+// declarations and the `ModuleGrpc*`/`ModuleDDS*` members below -- all of which
+// a forward declaration satisfies.  Including them here would force every
+// consumer of VM.h (including out-of-tree hosts linking libroxal.a, which must
+// define the same ROXAL_ENABLE_* macros to get matching class layouts) onto the
+// include paths of gRPC, CycloneDDS, pugixml and friends purely to compile a
+// pointer member.  TUs that touch a module include its header directly.
+// Same rationale as the qt note below, which the core has always followed.
 // NOTE: the qt module (ModuleQt) is a dlopen'd plugin, not part of the core build, so
 // its header is deliberately NOT included here — the core only loads it via a C entry
 // point (roxal_qt_create_module) resolved at runtime. See the qt factory in VM.cpp.
