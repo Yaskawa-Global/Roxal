@@ -69,7 +69,7 @@ const char* suffixShadowedByNumericBase(const std::string& s)
 }
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 48;
+constexpr std::uint32_t ModuleCacheVersion = 49;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -3387,6 +3387,9 @@ std::any RoxalCompiler::visit(ptr<ast::UntilStatement> ast)
     auto jumpEnd = emitJump(OpCode::Jump);
 
     patchJump(jumpNext);
+    // No-match path: discard the Is result left by the peeking JumpIfFalse,
+    // so Throw rethrows the exception rather than that bool (see TryStatement).
+    emitByte(OpCode::Pop, "is result (no match)");
     emitByte(OpCode::Throw); // rethrow if not ConditionalInterrupt
 
     patchJump(jumpEnd);
@@ -3474,8 +3477,15 @@ std::any RoxalCompiler::visit(ptr<ast::TryStatement> ast)
 
         jumpsToEnd.push_back(emitJump(OpCode::Jump));
 
-        if (ec.type.has_value())
+        if (ec.type.has_value()) {
             patchJump(jumpNext);
+            // No-match path. JumpIfFalse *peeks* its condition rather than
+            // popping it, so the Is result is still sitting above the
+            // exception here — the Pop above only runs when the type matched.
+            // Discard it, otherwise the next clause's Dup (and the trailing
+            // rethrow Throw) would consume this bool instead of the exception.
+            emitByte(OpCode::Pop, "is result (no match)");
+        }
     }
 
     if (ast->finallySuite.has_value())

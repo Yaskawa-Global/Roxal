@@ -1,0 +1,53 @@
+// A typed `except` whose type does not match must leave the original exception
+// intact — for the remaining clauses of the same try, and for any enclosing
+// handler. (The type test's result used to be rethrown in its place.)
+
+// nested: the inner clause misses, the outer one catches
+try:
+  try:
+    raise RuntimeException('boom')
+  except e :ConditionalInterrupt:
+    print('inner should not run')
+except e :RuntimeException:
+  print('outer: '+string(e))
+
+// several clauses: the first two miss, the third matches
+try:
+  raise ProgramException('bad')
+except e :ConditionalInterrupt:
+  print('clause 1 should not run')
+except e :ZeroDivisionError:
+  print('clause 2 should not run')
+except e :ProgramException:
+  print('clause 3: '+string(e))
+
+// a bare clause following a missed typed one binds the exception itself
+try:
+  raise RuntimeException('bare')
+except e :ConditionalInterrupt:
+  print('typed should not run')
+except e:
+  print('bare: '+string(e))
+
+// the exception survives a `finally` on the no-match path
+try:
+  try:
+    raise RuntimeException('fin')
+  except e :ConditionalInterrupt:
+    print('should not run')
+  finally:
+    print('inner finally')
+except e :RuntimeException:
+  print('outer after finally: '+string(e))
+
+// an exception raised in an `until` body that is not a ConditionalInterrupt
+// is rethrown unchanged
+var done :event
+
+func work():
+  raise RuntimeException('from until')
+
+try:
+  work() until done
+except e :RuntimeException:
+  print('until: '+string(e))

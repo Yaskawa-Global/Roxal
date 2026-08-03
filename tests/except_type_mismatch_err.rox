@@ -1,0 +1,6 @@
+// With no matching clause the original exception must reach the top level.
+// It previously surfaced as the type test's result: `<exception false>`.
+try:
+  raise RuntimeException('boom')
+except e :ConditionalInterrupt:
+  print('should not run')
