@@ -1279,6 +1279,27 @@ finally:
   print("That's all")
 ```
 
+The built-in exception types form a small hierarchy rooted at `exception`:
+
+| Type | Raised by |
+|---|---|
+| `exception` | base type — an `except e :exception:` handler catches everything |
+| `RuntimeException` | errors detected while running |
+| `ZeroDivisionError` | a `/` or `rem` with a zero divisor (subtype of `RuntimeException`) |
+| `FileIOException` | fileio errors, e.g. `read_line` on a binary file (subtype of `RuntimeException`) |
+| `ProgramException` | application-level failures |
+| `ConditionalInterrupt` | an `until` condition becoming true |
+
+For example, dividing by zero raises a catchable `ZeroDivisionError`:
+
+```php
+for d in [1, 0, 2]:
+  try:
+    print(10 / d)
+  except e :ZeroDivisionError:
+    print('cannot divide by zero')
+```
+
 
 ## Events
 

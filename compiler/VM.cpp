@@ -1354,6 +1354,10 @@ VM::VM()
     asObjectType(programExType)->superType = exType;
     Value condIntType = Value::objVal(newObjectTypeObj(toUnicodeString("ConditionalInterrupt"), false));
     asObjectType(condIntType)->superType = exType;
+    // Raised by the Divide/Modulo opcodes on a zero divisor (see
+    // VM::raiseZeroDivisionError). Named after Python's ZeroDivisionError.
+    Value zeroDivType = Value::objVal(newObjectTypeObj(toUnicodeString("ZeroDivisionError"), false));
+    asObjectType(zeroDivType)->superType = runtimeExType;
 #ifdef ROXAL_ENABLE_FILEIO
     Value fileIOExceptionTypeVal = Value::objectTypeVal(toUnicodeString("FileIOException"), false);
     asObjectType(fileIOExceptionTypeVal)->superType = runtimeExType;
@@ -1363,6 +1367,7 @@ VM::VM()
     globals.storeGlobal(toUnicodeString("RuntimeException"), runtimeExType);
     globals.storeGlobal(toUnicodeString("ProgramException"), programExType);
     globals.storeGlobal(toUnicodeString("ConditionalInterrupt"), condIntType);
+    globals.storeGlobal(toUnicodeString("ZeroDivisionError"), zeroDivType);
 #ifdef ROXAL_ENABLE_FILEIO
     globals.storeGlobal(toUnicodeString("FileIOException"), fileIOExceptionTypeVal);
 #endif
@@ -6102,6 +6107,21 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
         push( op(lhs,rhs) );
     };
 
+    // Convert a native zero-divisor error into a catchable Roxal
+    // ZeroDivisionError and resume at the handler. Returns true when execute()
+    // must bail out with errorReturn instead: either the raise became a fatal
+    // uncaught error, or it exhausted every frame inside an actor call and was
+    // stashed for forwarding through the actor's return future (frames/stack
+    // have been reset — continuing to dispatch would run on a dead frame).
+    // Mirrors the frames-empty handling in OpCode::Throw.
+    auto handleZeroDivision = [&](const char* msg) -> bool {
+        raiseZeroDivisionError(msg);
+        if (runtimeErrorFlag.load() || thread->frames.empty())
+            return true;
+        frame = thread->frames.end()-1;
+        return false;
+    };
+
     auto unwindFrame = [&]() {
         auto f = thread->frames.back();
         closeUpvalues(f.slots);
@@ -8348,6 +8368,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 
                 try {
                     binaryOp([](Value l, Value r) -> Value { return divide(l, r); });
+                } catch (ZeroDivisionError& e) {
+                    // Division by zero is a catchable Roxal exception, not a
+                    // fatal error: user code may try/except ZeroDivisionError.
+                    if (handleZeroDivision(e.what())) return errorReturn;
+                    goto postInstructionDispatch;
                 } catch (std::exception& e) {
                     runtimeError(e.what());
                     return errorReturn;
@@ -8392,6 +8417,10 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 
                 try {
                     binaryOp([](Value a, Value b) -> Value { return mod(a,b); });
+                } catch (ZeroDivisionError& e) {
+                    // See OpCode::Divide — a zero divisor is catchable.
+                    if (handleZeroDivision(e.what())) return errorReturn;
+                    goto postInstructionDispatch;
                 } catch (std::exception& e) {
                     runtimeError(e.what());
                     return errorReturn;
@@ -11456,6 +11485,13 @@ void VM::raiseException(Value exc)
             unwindFrame();
         }
     }
+}
+
+
+void VM::raiseZeroDivisionError(const char* msg)
+{
+    Value exType = globals.load(toUnicodeString("ZeroDivisionError")).value();
+    raiseException(Value::exceptionVal(Value::stringVal(toUnicodeString(msg)), exType));
 }
 
 

@@ -1,0 +1,28 @@
+// A ZeroDivisionError raised inside an actor call behaves like any other
+// exception: catchable within the actor, and otherwise forwarded through the
+// call's return future to the awaiting thread's handler.
+
+type Worker actor:
+  func divide(a:int, b:int) -> int:
+    return a / b
+
+  func safeDivide(a:int, b:int) -> int:
+    try:
+      return a / b
+    except e :ZeroDivisionError:
+      print('actor caught internally')
+      return -1
+
+var w = Worker()
+
+// caught inside the actor
+print(wait(for=w.safeDivide(10, 0)))
+
+// uncaught in the actor: forwarded through the return future
+try:
+  print(wait(for=w.divide(10, 0)))
+except e :ZeroDivisionError:
+  print('caught across actor boundary: '+string(e))
+
+// the actor is still usable afterwards
+print(wait(for=w.divide(10, 2)))

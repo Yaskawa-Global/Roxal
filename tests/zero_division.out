@@ -1,0 +1,13 @@
+Divide by 0
+<type object ZeroDivisionError>
+real: Divide by 0
+rem: Divide by 0
+tensor: Tensor division by zero
+tensor rem: Divide by 0
+caught as RuntimeException
+caught bare
+from func: Divide by 0
+caught
+finally ran
+skip zero divisor
+total=15

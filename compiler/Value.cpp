@@ -2682,20 +2682,20 @@ Value roxal::divide(Value l, Value r)
         // newObj unique_ptr terminates (UnreleasedObj contract).
         for (int64_t i = 0; i < rt->numel(); ++i)
             if (rt->at(i) == 0.0)
-                throw std::invalid_argument("Tensor division by zero");
+                throw ZeroDivisionError("Tensor division by zero");
         return tensorEwTensorTensor(lt, rt, [](double a, double b) { return a / b; });
     }
     if (isTensor(l) && r.isNumber()) {
         const double s = scalarOf(r);
         if (s == 0.0)
-            throw std::invalid_argument("Tensor division by zero");
+            throw ZeroDivisionError("Tensor division by zero");
         return tensorEwMap(asTensor(l), [s](double a) { return a / s; });
     }
     if (l.isNumber() && isTensor(r)) {
         const ObjTensor* rt = asTensor(r);
         for (int64_t i = 0; i < rt->numel(); ++i)
             if (rt->at(i) == 0.0)
-                throw std::invalid_argument("Tensor division by zero");
+                throw ZeroDivisionError("Tensor division by zero");
         const double s = scalarOf(l);
         return tensorEwMap(rt, [s](double a) { return s / a; });
     }
@@ -2710,16 +2710,16 @@ Value roxal::divide(Value l, Value r)
     if (!r.isNumber())
         throw std::invalid_argument("RHS must be a number");
 
+    // Type-agnostic zero-divisor guard: covers every numeric result type
+    // (Int/Real/Byte/Decimal), so the per-case arms below need no further check.
     if (toType(ValueType::Real, r, false).asReal() == 0.0)
-        throw std::invalid_argument("Divide by 0");
+        throw ZeroDivisionError("Divide by 0");
 
     ValueType resultType(binaryOpType(l,r));
     switch (resultType) {
         case ValueType::Int: {
             int64_t lhs = l.asInt();
             int64_t rhs = r.asInt();
-            if (rhs == 0)
-                throw std::invalid_argument("Divide by 0");
             if (lhs == std::numeric_limits<int64_t>::min() && rhs == -1)
                 throw std::overflow_error("integer division overflow");
             return Value::intVal(lhs / rhs);
@@ -2747,7 +2747,7 @@ Value roxal::mod(Value l, Value r)
     if (isTensor(l) && r.isNumber()) {
         int64_t rhs = toType(ValueType::Int, r, false).asInt();
         if (rhs == 0)
-            throw std::invalid_argument("Divide by 0");
+            throw ZeroDivisionError("Divide by 0");
         return tensorEwMap(asTensor(l), [rhs](double a) {
             return static_cast<double>(static_cast<int64_t>(a) % rhs);
         });
@@ -2762,7 +2762,7 @@ Value roxal::mod(Value l, Value r)
         const int64_t n = rt->numel();
         for (int64_t i = 0; i < n; ++i)
             if (static_cast<int64_t>(rt->at(i)) == 0)
-                throw std::invalid_argument("Divide by 0");
+                throw ZeroDivisionError("Divide by 0");
         return tensorEwTensorTensor(lt, rt, [](double a, double b) {
             return static_cast<double>(static_cast<int64_t>(a) % static_cast<int64_t>(b));
         });
@@ -2776,7 +2776,7 @@ Value roxal::mod(Value l, Value r)
     int64_t lhs = toType(ValueType::Int, l, false).asInt();
     int64_t rhs = toType(ValueType::Int, r, false).asInt();
     if (rhs == 0)
-        throw std::invalid_argument("Divide by 0");
+        throw ZeroDivisionError("Divide by 0");
     return Value::intVal(lhs % rhs);
 }
 

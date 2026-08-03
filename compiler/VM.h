@@ -852,6 +852,10 @@ public:
     void cleanupWeakRegistries();
     void unwindFrame();
     void raiseException(Value exc);
+    // Raise a catchable Roxal ZeroDivisionError carrying `msg`. Used by the
+    // arithmetic opcodes to convert a native roxal::ZeroDivisionError into an
+    // exception user code can try/except, rather than a fatal runtimeError().
+    void raiseZeroDivisionError(const char* msg);
     void outputAllocatedObjs();
 
     void concatenate();

@@ -1,0 +1,71 @@
+// Division by zero raises a catchable ZeroDivisionError (Python-style)
+// rather than terminating the program.
+
+try:
+  print(10 / 0)
+except e :ZeroDivisionError:
+  print(e)
+  print(typeof(e))
+
+// real operands
+try:
+  print(10.0 / 0.0)
+except e :ZeroDivisionError:
+  print('real: '+string(e))
+
+// remainder by zero
+try:
+  print(10 rem 0)
+except e :ZeroDivisionError:
+  print('rem: '+string(e))
+
+// tensor operands
+try:
+  var t = tensor(3, data=[1.0,2.0,3.0])
+  print(t / 0)
+except e :ZeroDivisionError:
+  print('tensor: '+string(e))
+
+try:
+  var t2 = tensor(3, data=[4.0,5.0,6.0])
+  print(t2 rem 0)
+except e :ZeroDivisionError:
+  print('tensor rem: '+string(e))
+
+// ZeroDivisionError is a RuntimeException subtype
+try:
+  print(1 / 0)
+except e :RuntimeException:
+  print('caught as RuntimeException')
+
+// a bare except catches it too
+try:
+  print(1 / 0)
+except:
+  print('caught bare')
+
+// propagates out of a function to the caller's handler
+func risky(a:int, b:int) -> int:
+  return a / b
+
+try:
+  print(risky(6, 0))
+except e :ZeroDivisionError:
+  print('from func: '+string(e))
+
+// finally still runs
+try:
+  print(1 / 0)
+except e :ZeroDivisionError:
+  print('caught')
+finally:
+  print('finally ran')
+
+// execution continues normally afterwards
+var total = 0
+for d in [1, 0, 2]:
+  try:
+    total = total + 10 / d
+  except e :ZeroDivisionError:
+    print('skip zero divisor')
+print('total='+string(total))

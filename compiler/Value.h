@@ -10,6 +10,7 @@
 #include <cassert>
 #include <ostream>
 #include <istream>
+#include <stdexcept>
 #include <string>
 
 #include <core/common.h>
@@ -665,6 +666,21 @@ std::vector<std::tuple<std::string,bool,std::string>> testOrientConversions();
 
 bool isFalsey(const Value& v);
 bool isTruthy(const Value& v);
+
+
+/// Thrown by divide()/mod() when the divisor is zero.
+///
+/// Derives from std::invalid_argument so that every existing generic
+/// `catch (std::exception&)` site keeps its current behaviour unchanged. The
+/// VM's Divide/Modulo opcodes catch it specifically and convert it into a
+/// catchable Roxal `ZeroDivisionError` exception (see VM::raiseZeroDivisionError),
+/// so user code can try/except a division by zero instead of the process dying.
+/// Paths that do not run under VM opcode dispatch (dataflow signal ops, module
+/// natives) still see it as a plain std::invalid_argument.
+class ZeroDivisionError : public std::invalid_argument {
+public:
+    using std::invalid_argument::invalid_argument;
+};
 
 
 Value negate(Value v);
