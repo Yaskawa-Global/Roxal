@@ -87,37 +87,6 @@ Value roxal::loadlib_native(ArgsView args)
     return Value::libraryVal(h);
 }
 
-// Directory of the calling function's source file (same resolution loadlib
-// uses for relative library paths) — lets modules locate data files they ship
-// with (e.g. ONNX models) independently of the process working directory.
-Value roxal::source_dir_native(ArgsView args)
-{
-    if (args.size() != 0)
-        throw std::invalid_argument("source_dir expects no arguments");
-
-    std::filesystem::path base;
-    if (VM::thread && !VM::thread->frames.empty()) {
-        const CallFrame& frame = VM::thread->frames.back();
-        ObjFunction* fn = asFunction(asClosure(frame.closure)->function);
-        Value moduleValue = fn->moduleType.strongRef();
-        ObjModuleType* moduleType = moduleValue.isObj() ? asModuleType(moduleValue) : nullptr;
-        if (moduleType && !moduleType->sourcePath.isEmpty())
-            base = std::filesystem::path(toUTF8StdString(moduleType->sourcePath)).parent_path();
-        if (base.empty()) {
-            std::string src = toUTF8StdString(fn->chunk->sourceName);
-            if (!src.empty())
-                base = std::filesystem::path(src).parent_path();
-        }
-    }
-    if (base.empty())
-        base = ".";
-    std::error_code ec;
-    std::filesystem::path absolute = std::filesystem::absolute(base, ec);
-    if (!ec)
-        base = absolute.lexically_normal();
-    return Value::stringVal(toUnicodeString(base.string()));
-}
-
 Value roxal::ffi_native(ArgsView args)
 {
     ObjNative* native = asNative(*(args.data-1));

@@ -62,7 +62,6 @@ void* createFFIWrapper(void* fn, ffi_type* retType,
                        const std::vector<ffi_type*>& argTypes);
 
 Value loadlib_native(ArgsView args);
-Value source_dir_native(ArgsView args);
 Value ffi_native(ArgsView args);
 
 Value callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* args);

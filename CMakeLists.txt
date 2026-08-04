@@ -62,6 +62,7 @@ option(ROXAL_ENABLE_DDS "Enable CycloneDDS support" OFF)
 option(ROXAL_ENABLE_REGEX "Enable regex module (requires libpcre2)" OFF)
 option(ROXAL_ENABLE_XML "Enable XML parsing/writing support" OFF)
 option(ROXAL_ENABLE_SOCKET "Enable socket module (POSIX sockets)" ON)
+option(ROXAL_ENABLE_FFI "Enable Foreign Function Interface (FFI; requires libffi)" ON)
 # Dedicated GC collector thread: runtime collections run on their own non-RT
 # thread (demoted to SCHED_OTHER, kept off the RT core) instead of electing a
 # mutator inline.  Default ON on Linux (desktop sim and RT hardware hosts
@@ -92,6 +93,7 @@ if(ROXAL_ENABLE_ALL)
     set(ROXAL_ENABLE_REGEX ON CACHE BOOL "Enabled by ROXAL_ENABLE_ALL" FORCE)
     set(ROXAL_ENABLE_XML ON CACHE BOOL "Enabled by ROXAL_ENABLE_ALL" FORCE)
     set(ROXAL_ENABLE_SOCKET ON CACHE BOOL "Enabled by ROXAL_ENABLE_ALL" FORCE)
+    set(ROXAL_ENABLE_FFI ON CACHE BOOL "Enabled by ROXAL_ENABLE_ALL" FORCE)
     set(ROXAL_COMPUTE_SERVER ON CACHE BOOL "Enabled by ROXAL_ENABLE_ALL" FORCE)
     set(ROXAL_ENABLE_ONNX ON CACHE BOOL "Enabled by ROXAL_ENABLE_ALL" FORCE)
     set(ROXAL_ENABLE_AI_NN ON CACHE BOOL "Enabled by ROXAL_ENABLE_ALL" FORCE)
@@ -303,10 +305,26 @@ if(ROXAL_ENABLE_QT)
     find_package(Qt6 COMPONENTS Core Gui Qml Quick REQUIRED)
 endif()
 
-# Detect libffi via pkg-config so that include and library paths
-# are recorded explicitly and the build fails clearly if libffi is
-# missing.
-pkg_check_modules(LIBFFI REQUIRED libffi)
+# Detect libffi via pkg-config so that include and library paths are recorded
+# explicitly and the build fails clearly if libffi is missing.  Only probed when
+# ROXAL_ENABLE_FFI is ON -- an FFI-less build must not require libffi to be
+# installed at all (that is the point of the flag).
+if(ROXAL_ENABLE_FFI)
+    pkg_check_modules(LIBFFI REQUIRED libffi)
+    # Report the resolved library, not LIBFFI_LIBDIR: pkg-config reports the
+    # latter as the prefix libdir (/usr/lib) while the actual .so commonly lives
+    # in a multiarch subdir (/usr/lib/x86_64-linux-gnu), which is the thing worth
+    # seeing when a non-system libffi is picked up via PKG_CONFIG_PATH.
+    if(LIBFFI_LINK_LIBRARIES)
+        list(GET LIBFFI_LINK_LIBRARIES 0 _roxal_libffi_where)
+    else()
+        set(_roxal_libffi_where "${LIBFFI_PREFIX}")
+    endif()
+    message(STATUS "FFI: enabled — libffi ${LIBFFI_VERSION} (${_roxal_libffi_where})")
+    unset(_roxal_libffi_where)
+else()
+    message(STATUS "FFI: disabled — no libffi needed; @cfunc/@cstruct and sys.loadlib unavailable")
+endif()
 
 # NOTE: add_subdirectory(dataflow) is deliberately NOT here.  dataflow's sources
 # include compiler/Object.h and compiler/Thread.h, so it needs the same include
@@ -333,7 +351,6 @@ set(COMPILER_SOURCES
     compiler/BuiltinModule.cpp
     compiler/Object.cpp
     compiler/OverloadResolver.cpp
-    compiler/FFI.cpp
     compiler/RoxalCompiler.cpp
     compiler/RoxalIndentationLexer.cpp
     compiler/TypeDeducer.cpp
@@ -375,6 +392,9 @@ if(ROXAL_ENABLE_REGEX)
 endif()
 if(ROXAL_ENABLE_SOCKET)
     list(APPEND COMPILER_SOURCES compiler/ModuleSocket.cpp)
+endif()
+if(ROXAL_ENABLE_FFI)
+    list(APPEND COMPILER_SOURCES compiler/FFI.cpp)
 endif()
 if(ROXAL_COMPUTE_SERVER)
     list(APPEND COMPILER_SOURCES compiler/ComputeConnection.cpp)
@@ -454,7 +474,9 @@ link_directories(
 )
 
 # Add libffi include directories discovered via pkg-config
-include_directories(${LIBFFI_INCLUDE_DIRS})
+if(ROXAL_ENABLE_FFI AND LIBFFI_INCLUDE_DIRS)
+    include_directories(${LIBFFI_INCLUDE_DIRS})
+endif()
 
 
 # Build a minimal static library containing just the AST + ANTLR-driven
@@ -503,18 +525,49 @@ target_compile_definitions(roxalast PRIVATE
 # ROXAL_HAS_* exports, which silently omitted FILEIO/SOCKET/AI_NN and produced
 # ODR violations across the host<->libroxal boundary.
 set(ROXAL_ABI_DEFINITIONS "")
-foreach(_roxal_feature FILEIO GRPC DDS REGEX XML SOCKET ONNX AI_NN MEDIA QT)
+set(_roxal_features_on "")
+set(_roxal_features_off "")
+foreach(_roxal_feature FILEIO GRPC DDS REGEX XML SOCKET FFI ONNX AI_NN MEDIA QT)
+    string(TOLOWER "${_roxal_feature}" _roxal_feature_label)
     if(ROXAL_ENABLE_${_roxal_feature})
         list(APPEND ROXAL_ABI_DEFINITIONS ROXAL_ENABLE_${_roxal_feature})
+        list(APPEND _roxal_features_on "${_roxal_feature_label}")
+    else()
+        list(APPEND _roxal_features_off "${_roxal_feature_label}")
     endif()
 endforeach()
 unset(_roxal_feature)
+unset(_roxal_feature_label)
 if(ROXAL_COMPUTE_SERVER)
     list(APPEND ROXAL_ABI_DEFINITIONS ROXAL_COMPUTE_SERVER)
+    list(APPEND _roxal_features_on compute_server)
+else()
+    list(APPEND _roxal_features_off compute_server)
 endif()
 if(ROXAL_GC_DEDICATED_THREAD)
     list(APPEND ROXAL_ABI_DEFINITIONS ROXAL_GC_DEDICATED_THREAD)
+    list(APPEND _roxal_features_on gc_dedicated_thread)
+else()
+    list(APPEND _roxal_features_off gc_dedicated_thread)
 endif()
+
+# Summary of the configured feature set, derived from the very same list that
+# builds ROXAL_ABI_DEFINITIONS above so it cannot drift from what is actually
+# compiled in.  Each name is the lowercased flag suffix -- i.e. exactly what you
+# would pass to -DROXAL_ENABLE_<NAME> (or -DROXAL_<NAME> for the last two) --
+# so the "off" line doubles as the answer to "why did my regex script fail?".
+foreach(_roxal_list on off)
+    if(_roxal_features_${_roxal_list})
+        string(REPLACE ";" ", " _roxal_features_${_roxal_list} "${_roxal_features_${_roxal_list}}")
+    else()
+        set(_roxal_features_${_roxal_list} "(none)")
+    endif()
+endforeach()
+unset(_roxal_list)
+message(STATUS "Features on:  ${_roxal_features_on}")
+message(STATUS "Features off: ${_roxal_features_off}")
+unset(_roxal_features_on)
+unset(_roxal_features_off)
 
 add_library(roxal_abi INTERFACE)
 target_compile_definitions(roxal_abi INTERFACE
@@ -557,7 +610,7 @@ target_link_libraries(roxalcore
         pthread
         dataflow
         dl
-        ${LIBFFI_LIBRARIES}
+        $<$<BOOL:${ROXAL_ENABLE_FFI}>:${LIBFFI_LIBRARIES}>
         $<$<BOOL:${ROXAL_ENABLE_GRPC}>:protobuf::libprotobuf>
         $<$<AND:$<BOOL:${ROXAL_ENABLE_GRPC}>,$<BOOL:${ROXAL_GRPC_FROM_SOURCE}>>:gRPC::grpc++>
         $<$<AND:$<BOOL:${ROXAL_ENABLE_GRPC}>,$<NOT:$<BOOL:${ROXAL_GRPC_FROM_SOURCE}>>>:${GRPC_LIBRARIES}>
@@ -720,6 +773,7 @@ file(WRITE "${CMAKE_BINARY_DIR}/roxal_features.cmake"
     "set(ROXAL_HAS_DDS ${ROXAL_ENABLE_DDS})\n"
     "set(ROXAL_HAS_ONNX ${ROXAL_ENABLE_ONNX})\n"
     "set(ROXAL_HAS_REGEX ${ROXAL_ENABLE_REGEX})\n"
+    "set(ROXAL_HAS_FFI ${ROXAL_ENABLE_FFI})\n"
     "set(ROXAL_HAS_XML ${ROXAL_ENABLE_XML})\n"
     "set(ROXAL_HAS_MEDIA ${ROXAL_ENABLE_MEDIA})\n"
     "set(ROXAL_HAS_COMPUTE_SERVER ${ROXAL_COMPUTE_SERVER})\n"

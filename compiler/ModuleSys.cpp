@@ -11,7 +11,9 @@
 #include "dataflow/Signal.h"
 #include "dataflow/FuncNode.h"
 #include "dataflow/DataflowEngine.h"
+#ifdef ROXAL_ENABLE_FFI
 #include "FFI.h"
+#endif
 #include "Introspection.h"
 #include "CallableInfo.h"
 #ifdef ROXAL_ENABLE_XML
@@ -20,6 +22,8 @@
 #include <sstream>
 #include <time.h>
 #include <cmath>
+#include <filesystem>
+#include <system_error>
 #include <limits>
 #include <cstdint>
 #include <algorithm>
@@ -4867,12 +4871,47 @@ Value ModuleSys::df_graphdot_native(VM& vm, ArgsView args)
 
 Value ModuleSys::loadlib_native(VM& vm, ArgsView args)
 {
+    (void)vm;
+#ifndef ROXAL_ENABLE_FFI
+    (void)args;
+    throw std::runtime_error("FFI support not enabled in this build: sys.loadlib is unavailable");
+#else
     return roxal::loadlib_native(args);
+#endif
 }
 
+// Directory of the calling function's source file (the same resolution loadlib
+// uses for relative library paths) — lets modules locate data files they ship
+// with (e.g. ONNX models) independently of the process working directory.
+// Deliberately not part of the FFI translation unit: it carries no libffi or
+// dlopen dependency, and modules need it in builds configured without FFI.
 Value ModuleSys::source_dir_native(VM& vm, ArgsView args)
 {
-    return roxal::source_dir_native(args);
+    (void)vm;
+    if (args.size() != 0)
+        throw std::invalid_argument("source_dir expects no arguments");
+
+    std::filesystem::path base;
+    if (VM::thread && !VM::thread->frames.empty()) {
+        const CallFrame& frame = VM::thread->frames.back();
+        ObjFunction* fn = asFunction(asClosure(frame.closure)->function);
+        Value moduleValue = fn->moduleType.strongRef();
+        ObjModuleType* moduleType = moduleValue.isObj() ? asModuleType(moduleValue) : nullptr;
+        if (moduleType && !moduleType->sourcePath.isEmpty())
+            base = std::filesystem::path(toUTF8StdString(moduleType->sourcePath)).parent_path();
+        if (base.empty()) {
+            std::string src = toUTF8StdString(fn->chunk->sourceName);
+            if (!src.empty())
+                base = std::filesystem::path(src).parent_path();
+        }
+    }
+    if (base.empty())
+        base = ".";
+    std::error_code ec;
+    std::filesystem::path absolute = std::filesystem::absolute(base, ec);
+    if (!ec)
+        base = absolute.lexically_normal();
+    return Value::stringVal(toUnicodeString(base.string()));
 }
 
 Value ModuleSys::module_paths_native(VM& vm, ArgsView args)

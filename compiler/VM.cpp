@@ -18,7 +18,6 @@
 #if defined(_WIN32)
 #include <windows.h>
 #endif
-#include <ffi.h>
 #include <dlfcn.h>
 
 #include <core/json5.h>
@@ -61,7 +60,9 @@
 #ifdef ROXAL_COMPUTE_SERVER
 #include "ComputeConnection.h"
 #endif
+#ifdef ROXAL_ENABLE_FFI
 #include "FFI.h"
+#endif
 #include "ModuleMath.h"
 #include "ModuleSys.h"
 #ifdef ROXAL_ENABLE_GRPC
@@ -331,6 +332,9 @@ std::vector<std::string> VM::featureStrings()
 #endif
 #ifdef ROXAL_ENABLE_SOCKET
     features.push_back("socket");
+#endif
+#ifdef ROXAL_ENABLE_FFI
+    features.push_back("ffi");
 #endif
 #ifdef ROXAL_COMPUTE_SERVER
     features.push_back("server");
@@ -3897,6 +3901,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                         if (annot->name == "cfunc") { cfunc = true; break; }
                     }
                     if (cfunc) {
+#ifdef ROXAL_ENABLE_FFI
                         try {
                             Value result { roxal::callCFunc(closure, callSpec, &*(thread->stackTop - callSpec.argCount)) };
                             *(thread->stackTop - callSpec.argCount - 1) = result;
@@ -3906,6 +3911,13 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                             runtimeError(e.what());
                             return false;
                         }
+#else
+                        // Without FFI the declaration is a docstring-only body, so falling
+                        // through to call() would silently return nil.  Fail loudly instead.
+                        runtimeError("FFI support not enabled in this build: cannot call @cfunc '"
+                                     + toUTF8StdString(function->name) + "'");
+                        return false;
+#endif
                     }
                     return call(closure, callSpec);
                 }
@@ -5453,6 +5465,7 @@ void VM::defineProperty(ObjString* name)
                 auto& declared = objType->properties[name->hash];
                 declared.ctype = itProp->second;
 
+#ifdef ROXAL_ENABLE_FFI
                 // A `T[N]` whose element is a cstruct has to be resolved here: the ctype is
                 // only text, a Roxal list carries no element type, and the FFI marshals
                 // during a call where this module namespace is no longer reachable.
@@ -5472,6 +5485,7 @@ void VM::defineProperty(ObjString* name)
                             + "' is not a @cstruct type");
                     declared.ctypeElemType = found.value();
                 }
+#endif // ROXAL_ENABLE_FFI
             }
         }
     }
@@ -13766,6 +13780,7 @@ Value VM::dataflow_run_native(ArgsView args)
     return Value::nilVal();
 }
 
+#ifdef ROXAL_ENABLE_FFI
 Value VM::loadlib_native(ArgsView args)
 {
     return roxal::loadlib_native(args);
@@ -13776,6 +13791,7 @@ Value VM::ffi_native(ArgsView args)
 {
     return roxal::ffi_native(args);
 }
+#endif // ROXAL_ENABLE_FFI
 
 
 

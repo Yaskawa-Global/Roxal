@@ -24,7 +24,9 @@
 
 #include <core/types.h>
 #include "VM.h"
+#ifdef ROXAL_ENABLE_FFI
 #include "FFI.h"
+#endif
 #include "Value.h"
 #include "Thread.h"
 #ifdef ROXAL_COMPUTE_SERVER
@@ -6210,10 +6212,15 @@ void ObjFunction::clear()
         chunk.reset();
     }
     paramDefaultFunc.clear();
+#ifdef ROXAL_ENABLE_FFI
+    // nativeSpec is only ever populated by callCFunc (an FFIWrapper); the member
+    // itself stays unconditional so sizeof(ObjFunction) does not depend on the
+    // FFI flag -- see the roxal_abi comment in CMakeLists.txt.
     if (nativeSpec) {
         delete static_cast<FFIWrapper*>(nativeSpec);
         nativeSpec = nullptr;
     }
+#endif
     builtinInfo.reset();
 }
 

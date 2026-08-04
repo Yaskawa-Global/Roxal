@@ -31,8 +31,6 @@
 // NOTE: the qt module (ModuleQt) is a dlopen'd plugin, not part of the core build, so
 // its header is deliberately NOT included here — the core only loads it via a C entry
 // point (roxal_qt_create_module) resolved at runtime. See the qt factory in VM.cpp.
-#include <ffi.h>
-#include <vector>
 
 namespace roxal { struct ObjObjectType; }
 using roxal::ObjObjectType;
@@ -1023,8 +1021,10 @@ public:
     Value range_first_getter(Value& receiver);
     Value range_last_getter(Value& receiver);
 
+#ifdef ROXAL_ENABLE_FFI
     Value loadlib_native(ArgsView args);
     Value ffi_native(ArgsView args);
+#endif
 
 private:
     // Serializes reclamation-role handoffs (dedicated collector thread,

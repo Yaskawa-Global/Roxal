@@ -263,11 +263,6 @@ tests = [
     'tensor_introspect',
     'math_relu', 'math_softmax', 'math_argmax', 'math_clamp', 'math_abs',
     'value_semantics', 'value_semantics_cow',
-    'ffi1', 'ffi_addfloats', 'ffi_struct_out', 'ffi_inttypes', 'ffi_strlen', 'ffi_relative', 'ffi_toupper', 'ffi_primptr', 'ffi_voidptr_struct', 'cstruct1', 'cstruct2', 'cstruct3', 'cstruct_byval', 'cstruct_array',
-    'ffi_int64', 'ffi_ptr_return', 'ffi_free', 'ffi_tensor', 'ffi_tensor_mismatch_err', 'ffi_nullptr', 'ffi_blocking',
-    'ffi_ptrptr_slot', 'ffi_ptrptr_nil_err',
-    'nested_cstruct', 'nested_cstruct_ptr', 'nested_cstruct_byval', 'nested_cstruct_align',
-    'nested_cstruct_infer', 'cstruct_array_struct', 'cstruct_array_overflow_err',
     'weakref', 'strongref', 'is_operator', 'in_operator', 'stackdepth', 'modulevar2',
     'const_basic', 'const_assign_err', 'const_nonliteral_err', 'const_missing_initializer_err',
     'const_property', 'const_property_method_err', 'const_property_runtime_err', 'const_module_assign',
@@ -342,6 +337,17 @@ xml_tests = [
     'xml_write_mode_error', 'xml_shape_error'
 ]
 socket_tests = ['socket_basic']
+# @cfunc / @cstruct / sys.loadlib against tests/testlib.so; need ROXAL_ENABLE_FFI
+ffi_tests = [
+    'ffi1', 'ffi_addfloats', 'ffi_struct_out', 'ffi_inttypes', 'ffi_strlen', 'ffi_relative',
+    'ffi_toupper', 'ffi_primptr', 'ffi_voidptr_struct', 'cstruct1', 'cstruct2', 'cstruct3',
+    'cstruct_byval', 'cstruct_array',
+    'ffi_int64', 'ffi_ptr_return', 'ffi_free', 'ffi_tensor', 'ffi_tensor_mismatch_err',
+    'ffi_nullptr', 'ffi_blocking',
+    'ffi_ptrptr_slot', 'ffi_ptrptr_nil_err',
+    'nested_cstruct', 'nested_cstruct_ptr', 'nested_cstruct_byval', 'nested_cstruct_align',
+    'nested_cstruct_infer', 'cstruct_array_struct', 'cstruct_array_overflow_err',
+]
 nn_tests = ['nn_mnist', 'nn_signal', 'nn_chain', 'nn_signal_chain', 'nn_dynamic', 'nn_multi_io', 'nn_async', 'nn_tokenizer']
 nn_lfs_tests = ['nn_dfine']  # require LFS model files (only run with --all)
 media_tests = ['media_read_write', 'media_manipulate', 'media_convert',
@@ -414,6 +420,7 @@ tests += dds_tests
 tests += regex_tests
 tests += xml_tests
 tests += socket_tests
+tests += ffi_tests
 tests += nn_tests
 tests += media_tests
 tests += qt_tests
@@ -482,22 +489,8 @@ if args.opcode_prof and not is_debug_build(build_dir):
 
 opcode_profile_path = os.path.abspath(os.path.join(build_dir, 'opcode_profile.json'))
 
-# Ensure the FFI test shared library is built
-testlib_c = os.path.join(test_dir, 'testlib.c')
-testlib_so = os.path.join(test_dir, 'testlib.so')
-if os.path.exists(testlib_c):
-    if (not os.path.exists(testlib_so) or
-            os.path.getmtime(testlib_so) < os.path.getmtime(testlib_c)):
-        try:
-            subprocess.check_call(
-                ['gcc', '-shared', '-fPIC', '-o', testlib_so, testlib_c])
-        except Exception as e:
-            print('Failed to build testlib.so:', e)
-        if os.path.exists(testlib_so):
-            print('Built testlib.so')
-
-    if not os.path.exists(testlib_so):
-        raise 'testlib.so was not built'
+# NOTE: building tests/testlib.so happens after feature detection below — an
+# FFI-less build has no use for it and must not require a working gcc.
 
 
 # Track how many tests pass or fail
@@ -515,6 +508,7 @@ has_dds = 'dds' in features
 has_regex = 'regex' in features
 has_xml = 'xml' in features
 has_socket = 'socket' in features
+has_ffi = 'ffi' in features
 has_nn = 'nn' in features
 has_compute_server = 'server' in features
 has_qt = 'qt' in features
@@ -535,6 +529,34 @@ if has_qt:
             unexpected_failures.append('no_qt_dependency')
         else:
             print("Check: roxal binary carries no direct Qt dependency (qt loads as a plugin). OK")
+
+if has_ffi:
+    # Ensure the FFI test shared library is built (only meaningful with FFI enabled)
+    testlib_c = os.path.join(test_dir, 'testlib.c')
+    testlib_so = os.path.join(test_dir, 'testlib.so')
+    if os.path.exists(testlib_c):
+        if (not os.path.exists(testlib_so) or
+                os.path.getmtime(testlib_so) < os.path.getmtime(testlib_c)):
+            try:
+                subprocess.check_call(
+                    ['gcc', '-shared', '-fPIC', '-o', testlib_so, testlib_c])
+            except Exception as e:
+                print('Failed to build testlib.so:', e)
+            if os.path.exists(testlib_so):
+                print('Built testlib.so')
+
+        if not os.path.exists(testlib_so):
+            raise SystemExit('testlib.so was not built')
+else:
+    if any(test in tests for test in ffi_tests):
+        print("Skipping FFI tests (feature not enabled).")
+        tests = [t for t in tests if t not in ffi_tests]
+    # opencv/realsense are pure-Roxal @cfunc bindings over a shim .so, so they
+    # need FFI too — independently of whether their shim happens to be built.
+    _ffi_modules = opencv_tests + realsense_tests
+    if any(test in tests for test in _ffi_modules):
+        print("Skipping opencv/realsense tests (FFI feature not enabled).")
+        tests = [t for t in tests if t not in _ffi_modules]
 
 if not has_grpc and any(test in tests for test in grpc_tests):
     print("Skipping gRPC tests (feature not enabled).")
