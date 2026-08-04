@@ -76,17 +76,17 @@ ptr<type::Type> readTypeInfo(std::istream& in);
 void writeAnnotation(std::ostream& out, const ast::Annotation& a);
 ptr<ast::Annotation> readAnnotation(std::istream& in);
 
-void writeString(std::ostream& out, const icu::UnicodeString& s) {
+void writeString(std::ostream& out, const ustring& s) {
     std::string u8; s.toUTF8String(u8);
     uint32_t len = u8.size();
     out.write(reinterpret_cast<char*>(&len),4);
     out.write(u8.data(), len);
 }
 
-icu::UnicodeString readString(std::istream& in) {
+ustring readString(std::istream& in) {
     uint32_t len; in.read(reinterpret_cast<char*>(&len),4);
     std::string u8(len,'\0'); if(len) in.read(u8.data(), len);
-    return icu::UnicodeString::fromUTF8(u8);
+    return ustring::fromUTF8(u8);
 }
 
 void writeTypeInfo(std::ostream& out, const type::Type& t) {
@@ -248,7 +248,7 @@ ptr<ast::Annotation> readAnnotation(std::istream& in){
     a->name = readString(in);
     uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
     for(uint32_t i=0;i<count;i++){
-        icu::UnicodeString name = readString(in);
+        ustring name = readString(in);
         ptr<ast::Expression> expr = readExpr(in);
         a->args.emplace_back(name, expr);
     }
@@ -717,7 +717,7 @@ static atomic_unordered_map<uint64_t, ObjString*> strings {};
 namespace {
 
 // 64-bit FNV-1a over UTF-16 code units, with optional salt to rehash on collision.
-uint64_t fnv1a64(const UnicodeString& s, uint64_t salt = 0)
+uint64_t fnv1a64(const ustring& s, uint64_t salt = 0)
 {
     uint64_t hash = 1469598103934665603ULL ^ salt;
     const char16_t* buf = s.getBuffer();
@@ -731,7 +731,7 @@ uint64_t fnv1a64(const UnicodeString& s, uint64_t salt = 0)
 
 // Blend multiple cheap discriminators into a 64-bit key and allow deterministic
 // perturbation via salt so we can walk away from an observed collision.
-uint64_t computeInternKey(const UnicodeString& s, uint32_t salt = 0)
+uint64_t computeInternKey(const ustring& s, uint32_t salt = 0)
 {
     const uint64_t base = fnv1a64(s);
     const uint64_t icuHash = static_cast<uint32_t>(s.hashCode());
@@ -792,7 +792,7 @@ ObjString::ObjString()
     hash = 0;
 }
 
-ObjString::ObjString(const UnicodeString& us)
+ObjString::ObjString(const ustring& us)
     :  s(us), internKey(0)
 {
     type = ObjType::String;
@@ -821,7 +821,7 @@ Value ObjString::index(const Value& i) const
     if (!i.isNumber() && !isRange(i))
         throw std::invalid_argument("String index must be a number or a range.");
 
-    UnicodeString substr {};
+    ustring substr {};
     if (i.isNumber()) {
         auto len = s.length();
         auto unit = i.asInt();
@@ -856,7 +856,7 @@ Value ObjString::index(const Value& i) const
 
 
 
-static uint32_t fnv1a32(const UnicodeString& s)
+static uint32_t fnv1a32(const ustring& s)
 {
     // FNV-1a 32bit hash
     //  see https://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function
@@ -873,7 +873,7 @@ static uint32_t fnv1a32(const UnicodeString& s)
 }
 
 
-unique_ptr<ObjString, UnreleasedObj> roxal::newObjString(const UnicodeString& s, bool* wasInterned)
+unique_ptr<ObjString, UnreleasedObj> roxal::newObjString(const ustring& s, bool* wasInterned)
 {
     if (wasInterned) *wasInterned = false;
 
@@ -962,14 +962,14 @@ unique_ptr<ObjString, UnreleasedObj> roxal::newObjString(const UnicodeString& s,
     return objStr;
 }
 
-void roxal::updateInternedString(ObjString* obj, const UnicodeString& newVal)
+void roxal::updateInternedString(ObjString* obj, const ustring& newVal)
 {
     if (!obj) return;
     // Detach under the lock, ownership-checked: our entry may already have
     // been replaced by another string at this key -- a blind erase would
     // remove the replacement.  Detaching BEFORE the mutation also keeps the
     // invariant that locked readers never content-compare a string whose
-    // UnicodeString is mid-assignment.
+    // ustring is mid-assignment.
     if (obj->internKey != 0) {
         strings.lockedApply([&](auto& interned) {
             auto it = interned.find(obj->internKey);
@@ -1019,7 +1019,7 @@ void ObjString::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     in.read(reinterpret_cast<char*>(&len), 4);
     std::string ss(len, '\0');
     if (len > 0) in.read(ss.data(), len);
-    UnicodeString us = UnicodeString::fromUTF8(ss);
+    ustring us = ustring::fromUTF8(ss);
     updateInternedString(this, us);
 }
 
@@ -2542,7 +2542,7 @@ void ObjChangeNotifier::read(std::istream& in, roxal::ptr<SerializationContext> 
     type = ObjType::ChangeNotifier;
 }
 
-ObjEventType::ObjEventType(const icu::UnicodeString& typeName)
+ObjEventType::ObjEventType(const ustring& typeName)
     : name(typeName)
     , superType(Value::nilVal())
 {
@@ -2593,7 +2593,7 @@ void ObjEventType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     uint32_t len; in.read(reinterpret_cast<char*>(&len), 4);
     std::string ns(len, '\0');
     if (len > 0) in.read(ns.data(), len);
-    name = icu::UnicodeString::fromUTF8(ns);
+    name = ustring::fromUTF8(ns);
 
     superType = readValue(in, ctx);
 
@@ -2605,7 +2605,7 @@ void ObjEventType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         uint32_t plen; in.read(reinterpret_cast<char*>(&plen), 4);
         std::string pn(plen, '\0');
         if (plen > 0) in.read(pn.data(), plen);
-        icu::UnicodeString propName = icu::UnicodeString::fromUTF8(pn);
+        ustring propName = ustring::fromUTF8(pn);
 
         Value typeValue = readValue(in, ctx);
         Value initial = readValue(in, ctx);
@@ -2899,7 +2899,7 @@ void ObjFunction::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 
     uint32_t len; in.read(reinterpret_cast<char*>(&len),4);
     std::string ns(len,'\0'); if(len) in.read(ns.data(),len);
-    name = icu::UnicodeString::fromUTF8(ns);
+    name = ustring::fromUTF8(ns);
 
     uint8_t hasType; in.read(reinterpret_cast<char*>(&hasType),1);
     if(hasType)
@@ -2910,7 +2910,7 @@ void ObjFunction::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     in.read(reinterpret_cast<char*>(&arity),4);
     in.read(reinterpret_cast<char*>(&upvalueCount),4);
 
-    chunk = make_ptr<Chunk>(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
+    chunk = make_ptr<Chunk>(ustring(), ustring(), ustring());
     chunk->deserialize(in, ctx);
 
     uint32_t annCount; in.read(reinterpret_cast<char*>(&annCount),4);
@@ -2922,9 +2922,9 @@ void ObjFunction::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         uint32_t dlen; in.read(reinterpret_cast<char*>(&dlen),4);
         if(dlen) {
             std::string ds(dlen,'\0'); in.read(ds.data(),dlen);
-            doc = icu::UnicodeString::fromUTF8(ds);
+            doc = ustring::fromUTF8(ds);
         } else {
-            doc = icu::UnicodeString();
+            doc = ustring();
         }
     }
 
@@ -2943,7 +2943,7 @@ void ObjFunction::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     paramDefaultFunc.clear();
     for(uint32_t i=0;i<defCount;i++) {
         int32_t key; in.read(reinterpret_cast<char*>(&key),4);
-        Value func = Value::functionVal(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
+        Value func = Value::functionVal(ustring(), ustring(), ustring(), ustring());
         asFunction(func)->read(in, ctx);
         paramDefaultFunc[key] = func;
     }
@@ -3543,7 +3543,7 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     uint32_t len; in.read(reinterpret_cast<char*>(&len),4);
     std::string ns(len, '\0');
     if(len>0) in.read(ns.data(), len);
-    name = icu::UnicodeString::fromUTF8(ns);
+    name = ustring::fromUTF8(ns);
 
     uint8_t b;
     in.read(reinterpret_cast<char*>(&b),1); isActor = b!=0;
@@ -3567,7 +3567,7 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     for(uint32_t i=0;i<pcount;i++) {
         uint32_t plen; in.read(reinterpret_cast<char*>(&plen),4);
         std::string pn(plen,'\0'); if(plen>0) in.read(pn.data(), plen);
-        icu::UnicodeString uname = icu::UnicodeString::fromUTF8(pn);
+        ustring uname = ustring::fromUTF8(pn);
         Value ptype = readValue(in, ctx);
         Value init  = readValue(in, ctx);
         uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1);
@@ -3576,11 +3576,11 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         if (!ownerType.isNil())
             ownerType = ownerType.weakRef();
         uint8_t hasC; in.read(reinterpret_cast<char*>(&hasC),1);
-        std::optional<icu::UnicodeString> ct;
+        std::optional<ustring> ct;
         if(hasC) {
             uint32_t ctlen; in.read(reinterpret_cast<char*>(&ctlen),4);
             std::string cts(ctlen,'\0'); if(ctlen>0) in.read(cts.data(), ctlen);
-            ct = icu::UnicodeString::fromUTF8(cts);
+            ct = ustring::fromUTF8(cts);
         }
         Value ctypeElem = readValue(in, ctx);
         int32_t hash = uname.hashCode();
@@ -3600,7 +3600,7 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     for(uint32_t i=0;i<mcount;i++) {
         uint32_t mlen; in.read(reinterpret_cast<char*>(&mlen),4);
         std::string mn(mlen,'\0'); if(mlen>0) in.read(mn.data(), mlen);
-        icu::UnicodeString uname = icu::UnicodeString::fromUTF8(mn);
+        ustring uname = ustring::fromUTF8(mn);
         Value clos = readValue(in, ctx);
         uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1);
         uint8_t mods; in.read(reinterpret_cast<char*>(&mods),1);
@@ -3622,7 +3622,7 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     for(uint32_t i=0;i<lcount;i++) {
         uint32_t llen; in.read(reinterpret_cast<char*>(&llen),4);
         std::string ln(llen,'\0'); if(llen>0) in.read(ln.data(), llen);
-        icu::UnicodeString uname = icu::UnicodeString::fromUTF8(ln);
+        ustring uname = ustring::fromUTF8(ln);
         Value val = readValue(in, ctx);
         int32_t hash = uname.hashCode();
         enumLabelValues[hash] = {uname, val};
@@ -3633,7 +3633,7 @@ void ObjObjectType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     for(uint32_t i=0;i<ntcount;i++) {
         uint32_t nlen; in.read(reinterpret_cast<char*>(&nlen),4);
         std::string nn(nlen,'\0'); if(nlen>0) in.read(nn.data(), nlen);
-        icu::UnicodeString uname = icu::UnicodeString::fromUTF8(nn);
+        ustring uname = ustring::fromUTF8(nn);
         Value val = readValue(in, ctx);
         uint8_t acc; in.read(reinterpret_cast<char*>(&acc),1);
         int32_t hash = uname.hashCode();
@@ -3787,7 +3787,7 @@ void ObjModuleType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
         out.write(source.data(), sourceLen);
 
     auto varsSnapshot = vars.snapshot();
-    std::unordered_map<int32_t, icu::UnicodeString> aliasLookup;
+    std::unordered_map<int32_t, ustring> aliasLookup;
     for (const auto& alias : moduleAliasSnapshot())
         aliasLookup.emplace(alias.first.hashCode(), alias.second);
 
@@ -3805,7 +3805,7 @@ void ObjModuleType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
         uint8_t flags = 0;
         if (constVars.find(nameHash) != constVars.end())
             flags |= 0x2;
-        icu::UnicodeString aliasFullName;
+        ustring aliasFullName;
         auto aliasIt = aliasLookup.find(nameHash);
         if (aliasIt != aliasLookup.end()) {
             flags |= 0x1;
@@ -3879,7 +3879,7 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     uint32_t len; in.read(reinterpret_cast<char*>(&len),4);
     std::string ns(len, '\0');
     if(len>0) in.read(ns.data(), len);
-    name = icu::UnicodeString::fromUTF8(ns);
+    name = ustring::fromUTF8(ns);
 
     uint32_t fullLen = 0;
     in.read(reinterpret_cast<char*>(&fullLen), 4);
@@ -3887,7 +3887,7 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     if (fullLen)
         in.read(full.data(), fullLen);
     if (fullLen > 0)
-        fullName = icu::UnicodeString::fromUTF8(full);
+        fullName = ustring::fromUTF8(full);
     else
         fullName = name;
 
@@ -3897,9 +3897,9 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     if (sourceLen)
         in.read(source.data(), sourceLen);
     if (sourceLen > 0)
-        sourcePath = icu::UnicodeString::fromUTF8(source);
+        sourcePath = ustring::fromUTF8(source);
     else
-        sourcePath = icu::UnicodeString();
+        sourcePath = ustring();
 
     allModules.push_back(Value::objRef(this));
 
@@ -3914,7 +3914,7 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         std::string name(nameLen, '\0');
         if (nameLen)
             in.read(name.data(), nameLen);
-        icu::UnicodeString varName = icu::UnicodeString::fromUTF8(name);
+        ustring varName = ustring::fromUTF8(name);
 
         uint8_t flags = 0;
         in.read(reinterpret_cast<char*>(&flags), 1);
@@ -3926,7 +3926,7 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
             std::string alias(aliasLen, '\0');
             if (aliasLen)
                 in.read(alias.data(), aliasLen);
-            icu::UnicodeString aliasFullName = icu::UnicodeString::fromUTF8(alias);
+            ustring aliasFullName = ustring::fromUTF8(alias);
             if (aliasFullName.isEmpty())
                 aliasFullName = varName;
             // Store the alias so reconcileModuleReferences() knows which fully
@@ -3970,7 +3970,7 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
             std::string ctypeUtf8(ctypeLen, '\0');
             if (ctypeLen)
                 in.read(ctypeUtf8.data(), ctypeLen);
-            props[propHash] = icu::UnicodeString::fromUTF8(ctypeUtf8);
+            props[propHash] = ustring::fromUTF8(ctypeUtf8);
         }
     }
 }
@@ -3999,33 +3999,33 @@ void ObjModuleType::dropReferences()
     vars.clear();
     clearModuleAliases();
     cstructArch.clear();
-    sourcePath = icu::UnicodeString();
+    sourcePath = ustring();
     propertyCTypes.clear();
 }
 
-void ObjModuleType::registerModuleAlias(const icu::UnicodeString& alias,
-                                        const icu::UnicodeString& moduleFullName)
+void ObjModuleType::registerModuleAlias(const ustring& alias,
+                                        const ustring& moduleFullName)
 {
     // Track aliases by hash so they survive cache round-trips without
     // depending on the underlying table layout.
     moduleAliases.insert_or_assign(alias.hashCode(), std::make_pair(alias, moduleFullName));
 }
 
-std::vector<std::pair<icu::UnicodeString, icu::UnicodeString>> ObjModuleType::moduleAliasSnapshot() const
+std::vector<std::pair<ustring, ustring>> ObjModuleType::moduleAliasSnapshot() const
 {
-    std::vector<std::pair<icu::UnicodeString, icu::UnicodeString>> result;
+    std::vector<std::pair<ustring, ustring>> result;
     result.reserve(moduleAliases.size());
     for (const auto& entry : moduleAliases)
         result.push_back(entry.second);
     return result;
 }
 
-icu::UnicodeString ObjModuleType::moduleAliasFullName(const icu::UnicodeString& alias) const
+ustring ObjModuleType::moduleAliasFullName(const ustring& alias) const
 {
     auto it = moduleAliases.find(alias.hashCode());
     if (it != moduleAliases.end())
         return it->second.second;
-    return icu::UnicodeString();
+    return ustring();
 }
 
 void ObjModuleType::clearModuleAliases()
@@ -5471,7 +5471,7 @@ std::string roxal::objSignalToString(const ObjSignal* os)
     }
 }
 
-unique_ptr<ObjEventType, UnreleasedObj> roxal::newEventTypeObj(const icu::UnicodeString& name,
+unique_ptr<ObjEventType, UnreleasedObj> roxal::newEventTypeObj(const ustring& name,
                                                                Value superType)
 {
     #ifdef DEBUG_BUILD
@@ -5617,12 +5617,12 @@ std::string roxal::stackTraceToString(Value frames)
     for(const auto& v : list) {
         if (!isDict(v)) continue;
         ObjDict* d = asDict(v);
-        Value funcVal = d->at(Value::stringVal(UnicodeString("function")));
-        Value lineVal = d->at(Value::stringVal(UnicodeString("line")));
-        Value colVal  = d->at(Value::stringVal(UnicodeString("col")));
-        Value fileVal = d->at(Value::stringVal(UnicodeString("filename")));
+        Value funcVal = d->at(Value::stringVal(ustring("function")));
+        Value lineVal = d->at(Value::stringVal(ustring("line")));
+        Value colVal  = d->at(Value::stringVal(ustring("col")));
+        Value fileVal = d->at(Value::stringVal(ustring("filename")));
 
-        UnicodeString funcName = isString(funcVal) ? asStringObj(funcVal)->s : UnicodeString("<script>");
+        ustring funcName = isString(funcVal) ? asStringObj(funcVal)->s : ustring("<script>");
         int line = lineVal.isNumber() ? lineVal.asInt() : -1;
         int col  = colVal.isNumber() ? colVal.asInt() : -1;
         std::string fname = isString(fileVal) ? toUTF8StdString(asStringObj(fileVal)->s) : "";
@@ -6188,10 +6188,10 @@ std::string roxal::toString(FunctionType ft)
 
 
 
-ObjFunction::ObjFunction(const icu::UnicodeString& name,
-                         const icu::UnicodeString& packageName,
-                         const icu::UnicodeString& moduleName,
-                         const icu::UnicodeString& sourceName)
+ObjFunction::ObjFunction(const ustring& name,
+                         const ustring& packageName,
+                         const ustring& moduleName,
+                         const ustring& sourceName)
     : arity(0), upvalueCount(0), name(name), strict(false), ownerType(Value::nilVal())
 {
     type = ObjType::Function;
@@ -6202,7 +6202,7 @@ void ObjFunction::clear()
 {
     arity = 0;
     upvalueCount = 0;
-    name = icu::UnicodeString();
+    name = ustring();
     strict = false;
     ownerType = Value::nilVal();
     moduleType = Value::nilVal();
@@ -6259,7 +6259,7 @@ unique_ptr<ObjNative, UnreleasedObj> roxal::newNativeObj(NativeFn function, void
 
 std::unordered_map<uint16_t, roxal::ObjObjectType*> ObjObjectType::enumTypes {};
 
-ObjObjectType::ObjObjectType(const icu::UnicodeString& typeName, bool isactor, bool isinterface, bool isenumeration)
+ObjObjectType::ObjObjectType(const ustring& typeName, bool isactor, bool isinterface, bool isenumeration)
     : name(typeName), isActor(isactor), isInterface(isinterface), isEnumeration(isenumeration), superType(Value::nilVal())
 {
     typeValue = ValueType::Object;
@@ -6282,7 +6282,7 @@ ObjObjectType::ObjObjectType(const icu::UnicodeString& typeName, bool isactor, b
     }
 }
 
-unique_ptr<ObjObjectType, UnreleasedObj> roxal::newObjectTypeObj(const icu::UnicodeString& typeName, bool isActor, bool isInterface, bool isEnumeration)
+unique_ptr<ObjObjectType, UnreleasedObj> roxal::newObjectTypeObj(const ustring& typeName, bool isActor, bool isInterface, bool isEnumeration)
 {
     #ifdef DEBUG_BUILD
     return newObj<ObjObjectType>((std::string(__func__)+" "+toUTF8StdString(typeName)), __FILE__, __LINE__, typeName, isActor, isInterface, isEnumeration);
@@ -6293,14 +6293,14 @@ unique_ptr<ObjObjectType, UnreleasedObj> roxal::newObjectTypeObj(const icu::Unic
 
 
 
-ObjModuleType::ObjModuleType(const icu::UnicodeString& typeName)
+ObjModuleType::ObjModuleType(const ustring& typeName)
     : name(typeName)
 {
     typeValue = ValueType::Module;
     fullName = typeName;
 }
 
-unique_ptr<ObjModuleType, UnreleasedObj> roxal::newModuleTypeObj(const icu::UnicodeString& typeName)
+unique_ptr<ObjModuleType, UnreleasedObj> roxal::newModuleTypeObj(const ustring& typeName)
 {
     #ifdef DEBUG_BUILD
     auto mt = newObj<ObjModuleType>(std::string(__func__)+" "+toUTF8StdString(typeName), __FILE__, __LINE__, typeName);
@@ -6363,7 +6363,7 @@ ObjectInstance::ObjectInstance(const Value& objectType)
 
 ObjectInstance::~ObjectInstance() {}
 
-Value ObjectInstance::getProperty(const icu::UnicodeString& name) const
+Value ObjectInstance::getProperty(const ustring& name) const
 {
     auto it = properties_->find(name.hashCode());
     if (it != properties_->end())
@@ -6372,7 +6372,7 @@ Value ObjectInstance::getProperty(const icu::UnicodeString& name) const
     // If property not found and name doesn't start with '_', check for backing field
     // (accessor properties store their data in _<name>)
     if (!name.startsWith("_")) {
-        icu::UnicodeString backingName = UnicodeString("_") + name;
+        ustring backingName = ustring("_") + name;
         it = properties_->find(backingName.hashCode());
         if (it != properties_->end())
             return it->second.value;
@@ -6411,7 +6411,7 @@ void ObjectInstance::emplaceProperty(int32_t hash, VariablesMap::MonitoredValue 
     if (guard.active()) control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
 
-void ObjectInstance::setProperty(const icu::UnicodeString& name, Value value)
+void ObjectInstance::setProperty(const ustring& name, Value value)
 {
     ensureMutable();
     CowGuard guard(control);
@@ -6420,7 +6420,7 @@ void ObjectInstance::setProperty(const icu::UnicodeString& name, Value value)
     // Check if this property has a backing field (accessor property)
     // If so, set the backing field instead of creating a separate property
     if (!name.startsWith("_")) {
-        icu::UnicodeString backingName = UnicodeString("_") + name;
+        ustring backingName = ustring("_") + name;
         auto it = properties_->find(backingName.hashCode());
         if (it != properties_->end()) {
             // Use backing field instead
@@ -6933,7 +6933,7 @@ ObjBoundMethod::ObjBoundMethod(const Value& instance, const Value& closure)
 ObjBoundMethod::~ObjBoundMethod() {}
 
 
-ObjOverloadSet::ObjOverloadSet(const icu::UnicodeString& n) : name(n)
+ObjOverloadSet::ObjOverloadSet(const ustring& n) : name(n)
 {
     type = ObjType::OverloadSet;
 }
@@ -6992,7 +6992,7 @@ void ObjOverloadSet::read(std::istream& in, roxal::ptr<SerializationContext> ctx
 
     uint32_t nlen; in.read(reinterpret_cast<char*>(&nlen),4);
     std::string nm(nlen,'\0'); if (nlen > 0) in.read(nm.data(), nlen);
-    name = icu::UnicodeString::fromUTF8(nm);
+    name = ustring::fromUTF8(nm);
 
     uint8_t imported; in.read(reinterpret_cast<char*>(&imported),1);
     importedFromModule = (imported != 0);

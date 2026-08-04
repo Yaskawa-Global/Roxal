@@ -228,7 +228,7 @@ tests = [
     'is_subtype',
     'private_prop', 'private_method', 'private_inherit',
     'operator_overload', 'operator_overload_cmp', 'operator_overload_commutative',
-    'operator_overload_lr', 'operator_overload_inherit', 'operator_overload_fallthrough',
+    'operator_overload_lr', 'operator_overload_unary_lr', 'operator_overload_inherit', 'operator_overload_fallthrough',
     'operator_overload_proc_err', 'operator_overload_unpaired_err', 'operator_overload_both_err',
     'overload_basic', 'overload_runtime', 'overload_default_param', 'overload_variadic',
     'overload_untyped', 'overload_local', 'overload_subtype', 'overload_ambiguous',
@@ -512,6 +512,7 @@ has_ffi = 'ffi' in features
 has_nn = 'nn' in features
 has_compute_server = 'server' in features
 has_qt = 'qt' in features
+has_icu = 'icu' in features
 
 # Distributable-property guard: when this build supports qt (via the dlopen'd plugin),
 # the roxal binary itself must NOT directly depend on Qt — otherwise it won't start on
@@ -597,6 +598,11 @@ if not has_media:
     if any(test in tests for test in media_tests):
         print("Skipping media tests (feature not enabled).")
         tests = [t for t in tests if t not in media_tests]
+if not has_icu:
+    unicode_case_tests = ['string_case', 'string_interp_suffix']
+    if any(test in tests for test in unicode_case_tests):
+        print("Skipping Unicode case-mapping tests (ICU backend not enabled).")
+        tests = [t for t in tests if t not in unicode_case_tests]
 realsense_shim = os.path.join(project_root, 'modules', 'realsense', 'librsshim.so')
 
 

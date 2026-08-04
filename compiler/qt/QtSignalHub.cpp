@@ -204,7 +204,7 @@ Value QtSignalHub::eventTypeFor(QObject* sender, const QMetaMethod& signal)
         std::string pname = (i < pnames.size() && !pnames[i].isEmpty())
                                 ? std::string(pnames[i].constData())
                                 : ("arg" + std::to_string(i));
-        icu::UnicodeString uname = toUnicodeString(pname);
+        ustring uname = toUnicodeString(pname);
         ev->payloadProperties.push_back({ uname, Value::nilVal(), Value::nilVal() });
         ev->propertyLookup[uname.hashCode()] = ev->payloadProperties.size() - 1;
     }

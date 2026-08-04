@@ -61,10 +61,10 @@ protected:
 
 private:
     struct Role {
-        QString name; icu::UnicodeString uname; int32_t nameHash; bool editable;
+        QString name; ustring uname; int32_t nameHash; bool editable;
         bool computed { false };          // accessor property: read via __get_, write via __set_
-        icu::UnicodeString getterName;    // "__get_<name>"  (computed only)
-        icu::UnicodeString setterName;    // "__set_<name>"  (computed only)
+        ustring getterName;               // "__get_<name>"  (computed only)
+        ustring setterName;               // "__set_<name>"  (computed only)
         int32_t backingHash { 0 };        // hash of the "_<name>" backing field (computed; auto-notify)
     };
     void buildRoles();
@@ -77,7 +77,7 @@ private:
 
     Value obj_;                                   // wrapped ObjectInstance (traced by hub)
     std::vector<Role> roles_;
-    std::vector<icu::UnicodeString> methodNames_; // public methods exposed as callable values
+    std::vector<ustring> methodNames_;            // public methods exposed as callable values
     std::shared_ptr<std::atomic<bool>> alive_;    // guards signal callbacks past destruction
     QString suppressKey_;                         // re-entrancy guard during a QML write
     std::unique_ptr<RoxalMethodBridge> bridge_;   // dynamic QObject for QML→method dispatch

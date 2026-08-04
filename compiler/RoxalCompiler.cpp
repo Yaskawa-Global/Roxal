@@ -85,9 +85,9 @@ std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath
 }
 
 // Compose a dotted module name from the package path and the leaf module.
-icu::UnicodeString makeFullModuleName(const icu::UnicodeString& packagePath,
-                                      const icu::UnicodeString& moduleName) {
-    icu::UnicodeString full;
+ustring makeFullModuleName(const ustring& packagePath,
+                           const ustring& moduleName) {
+    ustring full;
     if (!packagePath.isEmpty()) {
         full = packagePath;
         for (int32_t i = 0; i < full.length(); ++i) {
@@ -487,7 +487,7 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
         }
     };
 
-    auto toKey = [](const icu::UnicodeString& value) {
+    auto toKey = [](const ustring& value) {
         std::string result;
         value.toUTF8String(result);
         return result;
@@ -504,7 +504,7 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
     // A deserialized module that names a builtin must resolve to the live,
     // populated instance -- its native @builtin members cannot be rebuilt from
     // a cache, so any fabricated duplicate would be an empty stub.
-    auto resolveBuiltinModule = [&](const icu::UnicodeString& qualifiedName) -> Value {
+    auto resolveBuiltinModule = [&](const ustring& qualifiedName) -> Value {
         Value builtin = resolverVM->getBuiltinModuleType(qualifiedName);
         if (builtin.isNil()) {
             int32_t dot = qualifiedName.lastIndexOf('.');
@@ -544,7 +544,7 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
             return strongCanonical;
         };
 
-        icu::UnicodeString qualified = moduleQualifiedName(module);
+        ustring qualified = moduleQualifiedName(module);
         Value builtin = resolveBuiltinModule(qualified);
         if (builtin.isNonNil()) {
             mergeModuleTypes(asModuleType(builtin), module);
@@ -596,7 +596,7 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
         }
 
         // Try to match an existing module by name/fullName (e.g., dynamically imported IDL/proto)
-        auto findExistingModule = [&](const icu::UnicodeString& name, const icu::UnicodeString& fullName) -> Value {
+        auto findExistingModule = [&](const ustring& name, const ustring& fullName) -> Value {
             auto modules = ObjModuleType::allModules.get();
             Value best { Value::nilVal() };
             size_t bestVars = 0;
@@ -657,7 +657,7 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
     // hierarchy below.
     std::unordered_set<ObjFunction*> visited;
     std::vector<ObjFunction*> stack;
-    using AliasList = std::vector<std::pair<icu::UnicodeString, icu::UnicodeString>>;
+    using AliasList = std::vector<std::pair<ustring, ustring>>;
     std::unordered_map<ObjModuleType*, AliasList> moduleImports;
     std::unordered_map<std::string, Value> canonicalModules;
 
@@ -703,9 +703,9 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
             for (const auto& entry : moduleType->vars.snapshot()) {
                 if (!isModuleType(entry.second))
                     continue;
-                const icu::UnicodeString& name = entry.first;
+                const ustring& name = entry.first;
                 if (importHashes.insert(name.hashCode()).second)
-                    imports.emplace_back(name, icu::UnicodeString());
+                    imports.emplace_back(name, ustring());
             }
         }
 
@@ -754,8 +754,8 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
 
     std::unordered_map<std::string, Value> ensuredModules;
 
-    std::function<Value(const icu::UnicodeString&)> ensureModuleHierarchy =
-        [&](const icu::UnicodeString& fullName) -> Value {
+    std::function<Value(const ustring&)> ensureModuleHierarchy =
+        [&](const ustring& fullName) -> Value {
             if (fullName.isEmpty())
                 return Value::nilVal();
 
@@ -773,7 +773,7 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
                 if (!gExisting.has_value()) {
                     int32_t dotIndexTmp = fullName.lastIndexOf('.');
                     if (dotIndexTmp >= 0) {
-                        icu::UnicodeString local = fullName.tempSubString(dotIndexTmp + 1);
+                        ustring local = fullName.tempSubString(dotIndexTmp + 1);
                         gExisting = resolverVM->loadGlobal(local);
                     }
                 }
@@ -790,7 +790,7 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
                     // module references a package parent that was not serialized
                     // in the cache file).
                     int32_t dotIndex = fullName.lastIndexOf('.');
-                    icu::UnicodeString localName = dotIndex >= 0 ? fullName.tempSubString(dotIndex + 1)
+                    ustring localName = dotIndex >= 0 ? fullName.tempSubString(dotIndex + 1)
                                                                  : fullName;
                     moduleValue = Value::moduleTypeVal(localName);
                     ObjModuleType* created = asModuleType(moduleValue);
@@ -808,10 +808,10 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
 
             int32_t dotIndex = fullName.lastIndexOf('.');
             if (dotIndex >= 0) {
-                icu::UnicodeString parentFullName = fullName.tempSubString(0, dotIndex);
+                ustring parentFullName = fullName.tempSubString(0, dotIndex);
                 Value parentValue = ensureModuleHierarchy(parentFullName);
                 if (parentValue.isNonNil()) {
-                    icu::UnicodeString alias = fullName.tempSubString(dotIndex + 1);
+                    ustring alias = fullName.tempSubString(dotIndex + 1);
                     ObjModuleType* parentModule = asModuleType(parentValue);
                     // Recreate the parent->child relationship so lookups on
                     // the parent module continue to work as they did during
@@ -825,12 +825,12 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
         };
 
     for (const auto& canonicalEntry : canonicalModules)
-        ensureModuleHierarchy(icu::UnicodeString::fromUTF8(canonicalEntry.first));
+        ensureModuleHierarchy(ustring::fromUTF8(canonicalEntry.first));
 
     for (const auto& entry : moduleImports) {
         ObjModuleType* moduleType = entry.first;
 
-        std::unordered_map<int32_t, icu::UnicodeString> previousAliases;
+        std::unordered_map<int32_t, ustring> previousAliases;
         for (const auto& alias : moduleType->moduleAliasSnapshot())
             previousAliases.emplace(alias.first.hashCode(), alias.second);
 
@@ -838,8 +838,8 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
         moduleType->clearModuleAliases();
 
         for (const auto& alias : entry.second) {
-            const icu::UnicodeString& aliasName = alias.first;
-            icu::UnicodeString aliasFullName = alias.second;
+            const ustring& aliasName = alias.first;
+            ustring aliasFullName = alias.second;
             if (aliasFullName.isEmpty()) {
                 auto fallback = previousAliases.find(aliasName.hashCode());
                 if (fallback != previousAliases.end())
@@ -892,8 +892,8 @@ void RoxalCompiler::setModuleResolverVM(VM* vm)
 }
 
 
-void RoxalCompiler::registerSuffix(const icu::UnicodeString& suffix, const icu::UnicodeString& funcName,
-                                   const icu::UnicodeString& moduleName)
+void RoxalCompiler::registerSuffix(const ustring& suffix, const ustring& funcName,
+                                   const ustring& moduleName)
 {
     auto it = suffixRegistry.find(suffix);
     if (it != suffixRegistry.end()) {
@@ -919,7 +919,7 @@ void RoxalCompiler::registerSuffix(const icu::UnicodeString& suffix, const icu::
     }
 }
 
-const RoxalCompiler::SuffixRegistration* RoxalCompiler::lookupSuffix(const icu::UnicodeString& suffix) const
+const RoxalCompiler::SuffixRegistration* RoxalCompiler::lookupSuffix(const ustring& suffix) const
 {
     auto it = suffixRegistry.find(suffix);
     if (it != suffixRegistry.end())
@@ -1034,7 +1034,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
     }
 
     bool builtinModule = false;
-    icu::UnicodeString builtinRegistryKey;  // dotted name for lazy registry lookup
+    ustring builtinRegistryKey;  // dotted name for lazy registry lookup
     if (module.isProto || module.isIdl)
         currentModuleHasDynamicImport = true;
 
@@ -1049,7 +1049,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
     // Check if this is a builtin module (even if a file also exists).
     // Support both single-component (e.g., "regex") and dotted (e.g., "ai.nn") names.
     {
-        icu::UnicodeString joinedModName;
+        ustring joinedModName;
         for (size_t i = 0; i < ast->packages.size(); ++i) {
             if (i > 0) joinedModName += ".";
             joinedModName += ast->packages[i];
@@ -1080,7 +1080,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
     }
 
     std::string absoluteModuleFilePath;
-    icu::UnicodeString moduleFullName = makeFullModuleName(module.packagePath, module.name);
+    ustring moduleFullName = makeFullModuleName(module.packagePath, module.name);
     if (!builtinModule) {
         if (!module.resolvedPath.empty()) {
             absoluteModuleFilePath = module.resolvedPath.string();
@@ -1309,7 +1309,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
     const auto& importingModuleType = asFunction(asFuncScope(funcScope())->function)->moduleType;
     auto& importingModuleVars = asModuleType(importingModuleType)->vars;
 
-    std::vector<icu::UnicodeString> importComponents;
+    std::vector<ustring> importComponents;
     if (module.isProto || module.isIdl) {
         // split packagePath on '/'
         std::string pkg = toUTF8StdString(module.packagePath);
@@ -1325,9 +1325,9 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
     }
 
     Value parentModuleVal { Value::nilVal() };
-    icu::UnicodeString packagePath;
+    ustring packagePath;
     for(size_t i=0; i+1 < importComponents.size(); ++i) {
-        icu::UnicodeString pkgName { importComponents[i] };
+        ustring pkgName { importComponents[i] };
         ModuleInfo pkgInfo;
         pkgInfo.modulePathRoot = module.modulePathRoot;
         pkgInfo.packagePath = packagePath;
@@ -1345,7 +1345,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
         }
 
         ObjModuleType* pkgModule = asModuleType(pkgModuleVal);
-        icu::UnicodeString pkgFullName = makeFullModuleName(pkgInfo.packagePath, pkgName);
+        ustring pkgFullName = makeFullModuleName(pkgInfo.packagePath, pkgName);
         pkgModule->fullName = pkgFullName;
 
         if (parentModuleVal.isObj()) {
@@ -1372,7 +1372,7 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
 
     // For non-nested imports expose the module directly in the importing module
     if (importComponents.size() <= 1) {
-        icu::UnicodeString moduleName { module.name };
+        ustring moduleName { module.name };
         importingModuleVars.store(moduleName, importedModuleType);
         ObjModuleType* importingModule = asModuleType(importingModuleType);
         importingModule->registerModuleAlias(moduleName, moduleFullName);
@@ -1609,7 +1609,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
         // own enterLocalScope/exitLocalScope dance doesn't touch it. The
         // parent's NestedType emission loop pops both the runtime value (via
         // OpCode::NestedType) and this locals[] entry (manually).
-        addLocal(UnicodeString("__nested_anchor_") + ast->name);
+        addLocal(ustring("__nested_anchor_") + ast->name);
         asFuncScope(funcScope())->locals.back().depth =
             asFuncScope(funcScope())->scopeDepth;
     }
@@ -1665,7 +1665,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     // sibling` — but `parent`'s NESTED_TYPE attachment to grandparent runs after
     // the body finishes, so the chain fails at runtime.
     enterLocalScope();
-    addLocal(UnicodeString("__selfType_") + ast->name);
+    addLocal(ustring("__selfType_") + ast->name);
     defineVariable(0);
     asTypeScope(typeScope())->inFlightStackSlot =
         static_cast<int16_t>(asFuncScope(funcScope())->locals.size() - 1);
@@ -1738,7 +1738,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
                 {prop->access, ast->name, /*isConst=*/false, prop->varType};
 
             auto emitAbstractAccessor =
-                [&](const icu::UnicodeString& accName, bool isSetter) {
+                [&](const ustring& accName, bool isSetter) {
                     asTypeScope(typeScope())->propertyNames[accName] =
                         {prop->access, ast->name, /*isConst=*/false};
                     uint16_t methodNameConstant = identifierConstant(accName);
@@ -1778,8 +1778,8 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
                                     + toUTF8StdString(accName));
                 };
 
-            emitAbstractAccessor(UnicodeString("__get_") + prop->name, /*isSetter=*/false);
-            emitAbstractAccessor(UnicodeString("__set_") + prop->name, /*isSetter=*/true);
+            emitAbstractAccessor(ustring("__get_") + prop->name, /*isSetter=*/false);
+            emitAbstractAccessor(ustring("__set_") + prop->name, /*isSetter=*/true);
 
             continue;
         }
@@ -1910,7 +1910,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
         if (!isInterface) {
             // Step 1: Create implicit backing field _<name>
-            icu::UnicodeString backingFieldName = UnicodeString("_") + propAccessor->name;
+            ustring backingFieldName = ustring("_") + propAccessor->name;
             uint16_t backingFieldConstant = identifierConstant(backingFieldName);
 
             // Register backing field as private property
@@ -1959,7 +1959,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
         // Compile getter method: func __get_<name>() -> <type>: <getter body>
         if (propAccessor->getter.has_value()) {
-            icu::UnicodeString getterName = UnicodeString("__get_") + propAccessor->name;
+            ustring getterName = ustring("__get_") + propAccessor->name;
             asTypeScope(typeScope())->propertyNames[getterName] = {propAccessor->access, ast->name, /*isConst=*/false};
             uint16_t methodNameConstant = identifierConstant(getterName);
 
@@ -2014,7 +2014,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
         // Compile setter method: proc __set_<name>(value: <type>): <setter body>
         if (propAccessor->setter.has_value()) {
-            icu::UnicodeString setterName = UnicodeString("__set_") + propAccessor->name;
+            ustring setterName = ustring("__set_") + propAccessor->name;
             asTypeScope(typeScope())->propertyNames[setterName] = {propAccessor->access, ast->name, /*isConst=*/false};
             uint16_t methodNameConstant = identifierConstant(setterName);
 
@@ -2075,20 +2075,20 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     // Validate and remap operator method names before compilation
     {
         // Collect operator method info for cross-checks
-        static const std::set<icu::UnicodeString> comparisonOps = {
-            UnicodeString("=="), UnicodeString("!="),
-            UnicodeString("<"), UnicodeString(">"),
-            UnicodeString("<="), UnicodeString(">=")
+        static const std::set<ustring> comparisonOps = {
+            ustring("=="), ustring("!="),
+            ustring("<"), ustring(">"),
+            ustring("<="), ustring(">=")
         };
-        static const std::set<icu::UnicodeString> arithmeticOps = {
-            UnicodeString("+"), UnicodeString("-"),
-            UnicodeString("*"), UnicodeString("/"), UnicodeString("%")
+        static const std::set<ustring> arithmeticOps = {
+            ustring("+"), ustring("-"),
+            ustring("*"), ustring("/"), ustring("%")
         };
 
         // Track which operator symbols have which forms defined
-        std::map<icu::UnicodeString, bool> hasOp;   // "operator<sym>" defined
-        std::map<icu::UnicodeString, bool> hasLop;   // "loperator<sym>" defined
-        std::map<icu::UnicodeString, bool> hasRop;   // "roperator<sym>" defined
+        std::map<ustring, bool> hasOp;   // "operator<sym>" defined
+        std::map<ustring, bool> hasLop;   // "loperator<sym>" defined
+        std::map<ustring, bool> hasRop;   // "roperator<sym>" defined
 
         for (auto& func : ast->methods) {
             if (!func->name.has_value()) continue;
@@ -2098,7 +2098,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             // Conversion operators: "operator->string", "operator->int", etc.
             bool isConversion = name.startsWith("operator->");
             if (isConversion) {
-                icu::UnicodeString targetType = name.tempSubString(10); // after "operator->"
+                ustring targetType = name.tempSubString(10); // after "operator->"
 
                 if (func->isProc)
                     error("Conversion operator '"+nameUtf8+"' must be 'func', not 'proc'.");
@@ -2147,7 +2147,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
                 continue;
 
             // Extract the symbol part
-            icu::UnicodeString symbol;
+            ustring symbol;
             if (isLoperator) symbol = name.tempSubString(9); // after "loperator"
             else if (isRoperator) symbol = name.tempSubString(9); // after "roperator"
             else symbol = name.tempSubString(8); // after "operator"
@@ -2174,9 +2174,10 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
 
             // Arity checks and unary negation remap
             size_t paramCount = func->params.size();
-            if (isOperator && symbol == "-" && paramCount == 0) {
+            const bool isUnaryNegation = isOperator && symbol == "-" && paramCount == 0;
+            if (isUnaryNegation) {
                 // Unary negation: remap name to "uoperator-"
-                func->name = UnicodeString("uoperator-");
+                func->name = ustring("uoperator-");
             } else if (isLoperator || isRoperator) {
                 if (paramCount != 1)
                     error("Operator method '"+nameUtf8+"' must have exactly 1 parameter.");
@@ -2187,7 +2188,10 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
             }
 
             // Track for cross-checks
-            if (isOperator) hasOp[symbol] = true;
+            // Unary `operator-()` is intentionally compatible with the
+            // loperator-/roperator- binary pair.  Only a binary
+            // `operator-(rhs)` competes with that convention.
+            if (isOperator && !isUnaryNegation) hasOp[symbol] = true;
             else if (isLoperator) hasLop[symbol] = true;
             else if (isRoperator) hasRop[symbol] = true;
         }
@@ -2379,12 +2383,12 @@ std::any RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
                 if (ast->func->params.size() != 1)
                     error("@suffix function must accept exactly one parameter");
                 else {
-                    icu::UnicodeString suffixStr = s->str;
+                    ustring suffixStr = s->str;
                     // '%' is reserved as a standalone one-char suffix. Any other
                     // suffix that contains '%' is rejected at registration.
                     const char* clashBase = suffixShadowedByNumericBase(toUTF8StdString(suffixStr));
-                    if (suffixStr.indexOf((UChar)'%') >= 0
-                            && suffixStr != icu::UnicodeString("%")) {
+                    if (suffixStr.indexOf(u'%') >= 0
+                            && suffixStr != ustring("%")) {
                         error("@suffix string may not contain '%' (the '%' suffix is reserved as a standalone single-character form)");
                     } else if (clashBase) {
                         // e.g. @suffix("x1F"): '0x1F' lexes as a hex literal, not as
@@ -2397,8 +2401,8 @@ std::any RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
                               " Choose a suffix that is not 'x'/'o'/'b'/'e' followed only by"
                               " digits.");
                     } else {
-                        icu::UnicodeString funcName = ast->func->name.value_or(toUnicodeString(""));
-                        icu::UnicodeString modName;
+                        ustring funcName = ast->func->name.value_or(toUnicodeString(""));
+                        ustring modName;
                         if (inModuleScope())
                             modName = asModuleScope(moduleScope())->name;
                         registerSuffix(suffixStr, funcName, modName);
@@ -2637,7 +2641,7 @@ CallSpec RoxalCompiler::buildCallSpec(const ptr<ast::Call>& ast)
     callSpec.allPositional = false;
     callSpec.argCount = ast->args.size();
 #ifdef DEBUG_BUILD
-    std::map<UnicodeString,uint16_t> hashes {};
+    std::map<ustring,uint16_t> hashes {};
 #endif
     for(const auto& arg : ast->args) {
         CallSpec::ArgSpec aspec {};
@@ -3061,9 +3065,9 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
     enterLocalScope();
 
     // declare locals for the iterable, its length, and the loop index
-    icu::UnicodeString iterableName = "__iterable__";
-    icu::UnicodeString lenName = "__len__";
-    icu::UnicodeString iname = "__index__";
+    ustring iterableName = "__iterable__";
+    ustring lenName = "__len__";
+    ustring iname = "__index__";
 
     declareVariable(iterableName);
     emitByte(OpCode::ConstNil);
@@ -3078,7 +3082,7 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
     defineVariable();
 
     // declare local vars for each for target
-    std::vector<icu::UnicodeString> targetVarNames {};
+    std::vector<ustring> targetVarNames {};
     std::vector<std::optional<VarTypeSpec>> targetVarTypes {};
 
     uint8_t numTargets = ast->targetList.size();
@@ -3285,7 +3289,7 @@ std::any RoxalCompiler::visit(ptr<ast::WhenStatement> ast)
     funcType->func->isProc = true;
 
     auto enclosingModuleScope { asModuleScope(moduleScope()) };
-    icu::UnicodeString funcName = icu::UnicodeString::fromUTF8("__when_" + std::to_string(ast->interval.first.line) + "_" + std::to_string(ast->interval.first.pos));
+    ustring funcName = ustring::fromUTF8("__when_" + std::to_string(ast->interval.first.line) + "_" + std::to_string(ast->interval.first.pos));
 
     enterFuncScope(enclosingModuleScope->moduleType, funcName, FunctionType::Function, funcType);
     enterLocalScope();
@@ -3343,7 +3347,7 @@ std::any RoxalCompiler::visit(ptr<ast::UntilStatement> ast)
     enterLocalScope();
 
     // store condition expression (event) in temporary local
-    icu::UnicodeString tmpName = "__until_event";
+    ustring tmpName = "__until_event";
     declareVariable(tmpName);
     ast->condition->accept(*this);          // [event]
     defineVariable();                       // local = event
@@ -3464,7 +3468,7 @@ std::any RoxalCompiler::visit(ptr<ast::TryStatement> ast)
         }
 
         enterLocalScope();
-        icu::UnicodeString excVar = ec.name.value_or(toUnicodeString("$exception"));
+        ustring excVar = ec.name.value_or(toUnicodeString("$exception"));
         declareVariable(excVar);
         defineVariable(0);
         exceptionVarStack.push_back(excVar);
@@ -3662,7 +3666,7 @@ std::any RoxalCompiler::visit(ptr<ast::WithStatement> ast)
     enterLocalScope();
 
     // Add a hidden local to hold the context value (which is already on the stack)
-    icu::UnicodeString contextVarName = UnicodeString("__with_ctx__");
+    ustring contextVarName = ustring("__with_ctx__");
     addLocal(contextVarName);
 
     // Mark the local as initialized (value is already on stack from contextExpr evaluation)
@@ -3765,11 +3769,11 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
 
     auto enclosingModuleScope { asModuleScope(moduleScope()) };
 
-    icu::UnicodeString funcName;
+    ustring funcName;
     if (ast->name.has_value())
         funcName = ast->name.value();
     else { // lambda func? create unique name using module name and source line position
-        funcName = icu::UnicodeString::fromUTF8("__func_" + toUTF8StdString(enclosingModuleScope->moduleName)
+        funcName = ustring::fromUTF8("__func_" + toUTF8StdString(enclosingModuleScope->moduleName)
                     +"_"+std::to_string(ast->interval.first.line)
                     +"_"+std::to_string(ast->interval.first.pos));
     }
@@ -3861,7 +3865,7 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
                 m.initializer = pa->initializer;
                 // Accessor properties: write to the synthetic `_<name>`
                 // backing field, bypassing the user-defined setter.
-                m.storageName = icu::UnicodeString("_") + pa->name;
+                m.storageName = ustring("_") + pa->name;
                 m.isConst = pa->isConst;
                 ordered.emplace_back(pa->interval.first, std::move(m));
             }
@@ -4174,7 +4178,7 @@ void RoxalCompiler::emitStarInitPrologue(const std::vector<StarInitMember>& memb
     //    this, GetLocal paramSlot, [type-conversion], SetProp). For
     //    accessor-equipped properties `storageName` is `_<name>` (writes the
     //    synthetic backing field directly, bypassing any user setter).
-    int16_t thisSlot = resolveLocal(funcScope(), UnicodeString("this"));
+    int16_t thisSlot = resolveLocal(funcScope(), ustring("this"));
     if (thisSlot < 0) {
         error("internal: cannot resolve 'this' local for `proc init(*)` prologue");
         return;
@@ -4400,7 +4404,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
                 propType = info.propType;
 
                 // Check if property has a setter
-                icu::UnicodeString setterMethodName = UnicodeString("__set_") + accessor->member.value();
+                ustring setterMethodName = ustring("__set_") + accessor->member.value();
                 if (typeScopePtr->propertyNames.find(setterMethodName) != typeScopePtr->propertyNames.end()) {
                     useSetter = true;
                 }
@@ -4425,7 +4429,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             // Stack has: [receiver, value]
             // Invoke expects: [receiver, arg1, arg2, ...] and will peek(argCount) to get receiver
             // For 1 argument: peek(1) gets receiver, peek(0) gets arg1
-            icu::UnicodeString setterName = UnicodeString("__set_") + accessor->member.value();
+            ustring setterName = ustring("__set_") + accessor->member.value();
             uint16_t setterConstant = identifierConstant(setterName);
             // Emit: [OpCode::Invoke] [method_name_constant] [CallSpec_bytes]
             emitOpArgsBytes(OpCode::Invoke, setterConstant);
@@ -4669,7 +4673,7 @@ std::any RoxalCompiler::visit(ptr<ast::UnaryOp> ast)
 
             if (isa<Variable>(ast->arg) && as<Variable>(ast->arg)->name == "this" && inTypeScope()) {
                 // First check if this property has a getter in the current type being compiled
-                icu::UnicodeString getterMethodName = UnicodeString("__get_") + ast->member.value();
+                ustring getterMethodName = ustring("__get_") + ast->member.value();
                 auto typeScopePtr = asTypeScope(typeScope());
                 if (typeScopePtr->propertyNames.find(getterMethodName) != typeScopePtr->propertyNames.end()) {
                     useGetter = true;
@@ -4693,7 +4697,7 @@ std::any RoxalCompiler::visit(ptr<ast::UnaryOp> ast)
                 // Call __get_<property>() instead of GetProp
                 // Stack has: [this]
                 // Invoke will look up the method and call it with 'this' as receiver
-                icu::UnicodeString getterName = UnicodeString("__get_") + ast->member.value();
+                ustring getterName = ustring("__get_") + ast->member.value();
                 uint16_t getterConstant = identifierConstant(getterName);
                 // Emit: [OpCode::Invoke] [method_name_constant] [CallSpec_bytes]
                 emitOpArgsBytes(OpCode::Invoke, getterConstant);
@@ -4760,7 +4764,7 @@ std::any RoxalCompiler::visit(ptr<ast::Call> ast)
                 // Implicit property access: move(prop) inside a method → this.prop move
                 if (asFuncScope(funcScope())->functionType == FunctionType::Method ||
                     asFuncScope(funcScope())->functionType == FunctionType::Initializer) {
-                    int16_t thisLocal = resolveLocal(funcScope(), UnicodeString("this"));
+                    int16_t thisLocal = resolveLocal(funcScope(), ustring("this"));
                     if (thisLocal != -1 && inTypeScope()) {
                         auto itMem = asTypeScope(typeScope())->propertyNames.find(varArg->name);
                         if (itMem != asTypeScope(typeScope())->propertyNames.end()) {
@@ -5047,7 +5051,7 @@ std::any RoxalCompiler::visit(ptr<ast::Call> ast)
 
             // Get the object type's public properties only
             auto& objType = argType->obj.value();
-            std::vector<icu::UnicodeString> publicProps;
+            std::vector<ustring> publicProps;
 
             // Look up the type in the property registry to check access levels
             auto typeIt = typePropertyRegistry.find(objType.name);
@@ -5274,7 +5278,7 @@ std::any RoxalCompiler::visit(ptr<ast::SuffixedNum> ast)
 // literal's value.  Split into callee/call halves because the callee has to be
 // pushed before the argument, and for an interpolated suffixed string the
 // argument takes many instructions to build.
-bool RoxalCompiler::emitSuffixCallee(const icu::UnicodeString& suffix)
+bool RoxalCompiler::emitSuffixCallee(const ustring& suffix)
 {
     auto* reg = lookupSuffix(suffix);
     if (!reg) {
@@ -5344,7 +5348,7 @@ std::any RoxalCompiler::visit(ptr<ast::StrInterp> ast)
     }
 
     if (ast->parts.empty())
-        emitConstant(Value::stringVal(icu::UnicodeString()));
+        emitConstant(Value::stringVal(ustring()));
     else if (onStack > 1)
         emitBytes(OpCode::Concat, uint8_t(onStack));
     // onStack == 1: the single part is already a string on top of the stack
@@ -5435,7 +5439,7 @@ static bool isModuleFolder(const std::filesystem::path& dir)
     }
 }
 
-RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<icu::UnicodeString>& components) const
+RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<ustring>& components) const
 {
     bool endsWithProtoExt = components.size() >= 2 && (components.back() == toUnicodeString("proto"));
     bool endsWithIdlExt = components.size() >= 2 && (components.back() == toUnicodeString("idl"));
@@ -5589,13 +5593,13 @@ RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<icu::Unico
             module.filename += "/init.rox";
         } else {
             module.invalidFolder = true;
-            module.name = icu::UnicodeString();
+            module.name = ustring();
             return module;
         }
     }
 
     // join components to build packagePath (exclude file component)
-    icu::UnicodeString pkgPath;
+    ustring pkgPath;
     size_t limit = components.size();
     if ((endsWithProtoExt || endsWithIdlExt) && limit >= 2)
         limit -= 2; // drop basename and 'proto'
@@ -5836,9 +5840,9 @@ void RoxalCompiler::outputScopes()
 
 
 
-void RoxalCompiler::enterModuleScope(const icu::UnicodeString& packageName,
-                                    const icu::UnicodeString& moduleName,
-                                    const icu::UnicodeString& sourceName,
+void RoxalCompiler::enterModuleScope(const ustring& packageName,
+                                    const ustring& moduleName,
+                                    const ustring& sourceName,
                                     Value existingModule)
 {
     ptr<ModuleScope> moduleScope { make_ptr<ModuleScope>(packageName, moduleName,
@@ -5901,7 +5905,7 @@ void RoxalCompiler::exitModuleScope()
 }
 
 
-void RoxalCompiler::enterTypeScope(const icu::UnicodeString& typeName)
+void RoxalCompiler::enterTypeScope(const ustring& typeName)
 {
     lexicalScopes.push_back(make_ptr<TypeScope>(typeName));
 
@@ -5931,7 +5935,7 @@ void RoxalCompiler::exitTypeScope()
 }
 
 
-void RoxalCompiler::enterFuncScope(Value moduleType, const icu::UnicodeString& funcName, FunctionType funcType, ptr<type::Type> type)
+void RoxalCompiler::enterFuncScope(Value moduleType, const ustring& funcName, FunctionType funcType, ptr<type::Type> type)
 {
     // function scopes only valid in a module
     auto modScope { asModuleScope(moduleScope()) };
@@ -6343,7 +6347,7 @@ uint16_t RoxalCompiler::makeConstant(const Value& value)
 }
 
 
-uint16_t RoxalCompiler::identifierConstant(const icu::UnicodeString& ident)
+uint16_t RoxalCompiler::identifierConstant(const ustring& ident)
 {
     // search for existing identifier string constant to re-use first
     bool found { false };
@@ -6366,7 +6370,7 @@ uint16_t RoxalCompiler::identifierConstant(const icu::UnicodeString& ident)
 }
 
 
-void RoxalCompiler::addLocal(const icu::UnicodeString& name, std::optional<VarTypeSpec> type)
+void RoxalCompiler::addLocal(const ustring& name, std::optional<VarTypeSpec> type)
 {
     //std::cout << (&(*state()) - &(*states.begin())) << " addLocal(" << toUTF8StdString(name) << ")" << std::endl;
     if (asFuncScope(funcScope())->locals.size() == 255) {
@@ -6387,7 +6391,7 @@ void RoxalCompiler::addLocal(const icu::UnicodeString& name, std::optional<VarTy
 }
 
 
-int16_t RoxalCompiler::resolveLocal(Scope scopeState, const icu::UnicodeString& name)
+int16_t RoxalCompiler::resolveLocal(Scope scopeState, const ustring& name)
 {
     #ifdef DEBUG_BUILD
     if (!(*scopeState)->isFuncOrModule())
@@ -6450,7 +6454,7 @@ int RoxalCompiler::addUpvalue(Scope scopeState, uint8_t index, bool isLocal)
 }
 
 
-int16_t RoxalCompiler::resolveUpvalue(Scope scopeState, const icu::UnicodeString& name)
+int16_t RoxalCompiler::resolveUpvalue(Scope scopeState, const ustring& name)
 {
     //std::cout << (&(*scopeState) - &(*states.begin())) << " resolveUpvalue(" << toUTF8StdString(name) << ")" << std::endl;
     //std::string sname { toUTF8StdString(name) };
@@ -6494,7 +6498,7 @@ int16_t RoxalCompiler::resolveUpvalue(Scope scopeState, const icu::UnicodeString
 
 
 
-bool RoxalCompiler::constExistsInCurrentScope(const icu::UnicodeString& name) const
+bool RoxalCompiler::constExistsInCurrentScope(const ustring& name) const
 {
     for (auto it = lexicalScopes.crbegin(); it != lexicalScopes.crend(); ++it) {
         if (!(*it)->isFuncOrModule())
@@ -6510,7 +6514,7 @@ bool RoxalCompiler::constExistsInCurrentScope(const icu::UnicodeString& name) co
     return false;
 }
 
-bool RoxalCompiler::moduleConstExists(const icu::UnicodeString& name) const
+bool RoxalCompiler::moduleConstExists(const ustring& name) const
 {
     for (auto it = lexicalScopes.crbegin(); it != lexicalScopes.crend(); ++it) {
         if ((*it)->scopeType != LexicalScope::ScopeType::Module)
@@ -6523,7 +6527,7 @@ bool RoxalCompiler::moduleConstExists(const icu::UnicodeString& name) const
     return false;
 }
 
-const RoxalCompiler::FunctionScope::ConstBinding* RoxalCompiler::lookupConstBinding(const icu::UnicodeString& name) const
+const RoxalCompiler::FunctionScope::ConstBinding* RoxalCompiler::lookupConstBinding(const ustring& name) const
 {
     for (auto it = lexicalScopes.crbegin(); it != lexicalScopes.crend(); ++it) {
         if (!(*it)->isFuncOrModule())
@@ -6541,7 +6545,7 @@ const RoxalCompiler::FunctionScope::ConstBinding* RoxalCompiler::lookupConstBind
 }
 
 
-void RoxalCompiler::declareVariable(const icu::UnicodeString& name, std::optional<VarTypeSpec> type)
+void RoxalCompiler::declareVariable(const ustring& name, std::optional<VarTypeSpec> type)
 {
     if (asFuncScope(funcScope())->scopeDepth == 0) {
         auto module = asModuleScope(moduleScope());
@@ -6576,7 +6580,7 @@ void RoxalCompiler::declareVariable(const icu::UnicodeString& name, std::optiona
     addLocal(name, type);
 }
 
-std::optional<RoxalCompiler::VarTypeSpec> RoxalCompiler::localVarType(const icu::UnicodeString& name)
+std::optional<RoxalCompiler::VarTypeSpec> RoxalCompiler::localVarType(const ustring& name)
 {
     auto& locals { asFuncScope(funcScope())->locals };
     if (!locals.empty()) {
@@ -6591,7 +6595,7 @@ std::optional<RoxalCompiler::VarTypeSpec> RoxalCompiler::localVarType(const icu:
     return {};
 }
 
-void RoxalCompiler::declareConstant(const icu::UnicodeString& name, const Value& value, std::optional<VarTypeSpec> type)
+void RoxalCompiler::declareConstant(const ustring& name, const Value& value, std::optional<VarTypeSpec> type)
 {
     auto func = asFuncScope(funcScope());
     if (func->scopeDepth == 0) {
@@ -6717,7 +6721,7 @@ Value RoxalCompiler::evaluateConstExpression(ptr<ast::Expression> expr, bool str
     return Value::nilVal(); // unreachable, suppress compiler warning
 }
 
-std::optional<RoxalCompiler::VarTypeSpec> RoxalCompiler::moduleVarType(const icu::UnicodeString& name)
+std::optional<RoxalCompiler::VarTypeSpec> RoxalCompiler::moduleVarType(const ustring& name)
 {
     auto module = asModuleScope(moduleScope());
     auto it = module->moduleVarTypes.find(name);
@@ -6741,7 +6745,7 @@ void RoxalCompiler::defineVariable(uint16_t moduleVar, bool isConst)
 }
 
 
-bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, bool asSignal)
+bool RoxalCompiler::namedVariable(const ustring& name, bool assign, bool asSignal)
 {
     //std::cout << (&(*state()) - &(*states.begin())) << " namedVariable(" << toUTF8StdString(name) << ")" << std::endl;
     //std::cout << toUTF8StdString(funcScope()->function->name) << " namedVariable(" << toUTF8StdString(name) << ")" << std::endl;
@@ -6950,7 +6954,7 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
         // to allow implicit property access, check for 'this' method context as fallback
         if (asFuncScope(funcScope())->functionType == FunctionType::Method ||
             asFuncScope(funcScope())->functionType == FunctionType::Initializer) {
-            int16_t thisLocal = resolveLocal(funcScope(), UnicodeString("this"));
+            int16_t thisLocal = resolveLocal(funcScope(), ustring("this"));
             auto itMem = asTypeScope(typeScope())->propertyNames.find(name);
             if (thisLocal != -1 && itMem != asTypeScope(typeScope())->propertyNames.end()) {
                 const auto& info = itMem->second;
@@ -6960,8 +6964,8 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
                     error("Cannot assign to const property '"+toUTF8StdString(name)+"'");
                 // treat as property access
                 // Check if this is a property accessor (has getter/setter methods)
-                icu::UnicodeString getterName = UnicodeString("__get_") + name;
-                icu::UnicodeString setterName = UnicodeString("__set_") + name;
+                ustring getterName = ustring("__get_") + name;
+                ustring setterName = ustring("__set_") + name;
                 auto getterIt = asTypeScope(typeScope())->propertyNames.find(getterName);
                 auto setterIt = asTypeScope(typeScope())->propertyNames.find(setterName);
                 bool hasGetter = getterIt != asTypeScope(typeScope())->propertyNames.end();
@@ -6969,7 +6973,7 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
 
                 if (!assign && hasGetter && !asSignal) {
                     // Use getter method instead of GetProp
-                    namedVariable(UnicodeString("this"), false);
+                    namedVariable(ustring("this"), false);
                     uint16_t getterConstant = identifierConstant(getterName);
                     emitOpArgsBytes(OpCode::Invoke, getterConstant);
                     CallSpec callSpec{0}; // 0 args
@@ -6980,14 +6984,14 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
                 } else if (!assign && (hasGetter || hasSetter) && asSignal) {
                     // For 'when X changes:' on a property with accessors,
                     // access the backing field's signal instead of invoking the getter
-                    icu::UnicodeString backingName = UnicodeString("_") + name;
+                    ustring backingName = ustring("_") + name;
                     uint16_t backingArg = identifierConstant(backingName);
-                    namedVariable(UnicodeString("this"), false);
+                    namedVariable(ustring("this"), false);
                     emitOpArgsBytes(OpCode::GetPropSignal, backingArg, toUTF8StdString(backingName));
                 } else if (assign && hasSetter) {
                     // Use setter method instead of SetProp
                     // Stack has: [value]
-                    namedVariable(UnicodeString("this"), false); // Stack: [value, this]
+                    namedVariable(ustring("this"), false); // Stack: [value, this]
                     emitByte(OpCode::Swap); // Stack: [this, value]
                     uint16_t setterConstant = identifierConstant(setterName);
                     emitOpArgsBytes(OpCode::Invoke, setterConstant);
@@ -6999,13 +7003,13 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
                 } else {
                     // Regular property access (no getter/setter)
                     if (!assign) {
-                        namedVariable(UnicodeString("this"), false);
+                        namedVariable(ustring("this"), false);
                         if (asSignal)
                             emitOpArgsBytes(OpCode::GetPropSignal, arg, toUTF8StdString(name));
                         else
                             emitOpArgsBytes(OpCode::GetProp, arg);
                     } else {
-                        namedVariable(UnicodeString("this"), false);
+                        namedVariable(ustring("this"), false);
                         emitByte(OpCode::Swap);
                         emitOpArgsBytes(OpCode::SetProp, arg);
                     }
@@ -7021,7 +7025,7 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
         if (inTypeScope()) {
             auto itMem = asTypeScope(typeScope())->propertyNames.find(name);
             int16_t thisUpvalue = (itMem != asTypeScope(typeScope())->propertyNames.end())
-                ? resolveUpvalue(funcScope(), UnicodeString("this"))
+                ? resolveUpvalue(funcScope(), ustring("this"))
                 : -1;
             if (thisUpvalue != -1 && itMem != asTypeScope(typeScope())->propertyNames.end()) {
                 const auto& info = itMem->second;
@@ -7061,7 +7065,7 @@ bool RoxalCompiler::namedVariable(const icu::UnicodeString& name, bool assign, b
 }
 
 
-void RoxalCompiler::namedModuleVariable(const icu::UnicodeString& name, bool assign)
+void RoxalCompiler::namedModuleVariable(const ustring& name, bool assign)
 {
     OpCode getOp, setOp;
 

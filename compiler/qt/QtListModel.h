@@ -70,7 +70,7 @@ private:
     struct RoleInfo {
         int role;
         QByteArray name;
-        icu::UnicodeString uname;
+        ustring uname;
         int32_t nameHash;
         bool editable;
     };

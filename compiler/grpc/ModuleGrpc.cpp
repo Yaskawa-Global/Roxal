@@ -209,7 +209,7 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
                 throw std::invalid_argument("init expects service instance");
             ActorInstance* self = asActorInstance(args[0]);
 
-            auto setProp = [&](const icu::UnicodeString& name, const Value& v) {
+            auto setProp = [&](const ustring& name, const Value& v) {
                 self->assignProperty(name.hashCode(), v);
             };
 
@@ -284,7 +284,7 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
             if (args.size() < 1 || !isActorInstance(args[0]))
                 throw std::invalid_argument("close expects service instance");
             ActorInstance* self = asActorInstance(args[0]);
-            auto clearProp = [&](const icu::UnicodeString& name) {
+            auto clearProp = [&](const ustring& name) {
                 auto hit = self->findProperty(name.hashCode());
                 if (hit)
                     hit->assign(Value::nilVal());

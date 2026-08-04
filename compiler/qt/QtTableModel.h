@@ -72,7 +72,7 @@ public:
 
 private:
     struct ColumnInfo {
-        icu::UnicodeString prop;   // property name (for getProperty)
+        ustring           prop;    // property name (for getProperty)
         int32_t           propHash;// for propertySlot
         QByteArray        propUtf8;// for matching column identifiers from Roxal
         QString           header;  // header text

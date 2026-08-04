@@ -245,7 +245,7 @@ std::any ASTEditor::visit(ptr<ast::SingleInput> ast)
 
 std::any ASTEditor::visit(ptr<ast::Annotation> ast)
 {
-    //icu::UnicodeString name;
+    //ustring name;
     //std::vector<ArgNameExpr> args;
     //handle ArgNameExpr
     return {};
@@ -253,8 +253,8 @@ std::any ASTEditor::visit(ptr<ast::Annotation> ast)
 
 std::any ASTEditor::visit(ptr<ast::TypeDecl> ast)
 {
-    //std::optional<icu::UnicodeString> extends;
-    //std::vector<icu::UnicodeString> implements;
+    //std::optional<ustring> extends;
+    //std::vector<ustring> implements;
 
     //for all suites in all methods
     //std::vector<ptr<Function>> methods;
@@ -279,9 +279,9 @@ std::any ASTEditor::visit(ptr<ast::FuncDecl> ast)
 
 std::any ASTEditor::visit(ptr<ast::VarDecl> ast)
 {
-    //icu::UnicodeString name;
+    //ustring name;
     //std::optional<ptr<Expression>> initializer;
-    //std::optional<std::variant<BuiltinType,icu::UnicodeString>> varType;
+    //std::optional<std::variant<BuiltinType,ustring>> varType;
     /*
      if(ast->initializer.has_value())
         ast->initializer.value();
@@ -422,9 +422,9 @@ std::any ASTEditor::visit(ptr<ast::RaiseStatement> ast)
 
 std::any ASTEditor::visit(ptr<ast::Function> ast)
 {
-    //icu::UnicodeString name;
+    //ustring name;
     //std::vector<ptr<Parameter>> params;
-    //std::optional<std::variant<BuiltinType,icu::UnicodeString>> returnType;
+    //std::optional<std::variant<BuiltinType,ustring>> returnType;
     //ptr<Suite> body;
 
     //insert into suite
@@ -444,8 +444,8 @@ std::any ASTEditor::visit(ptr<ast::Function> ast)
 
 std::any ASTEditor::visit(ptr<ast::Parameter> ast)
 {
-    //icu::UnicodeString name;
-    //std::optional<std::variant<BuiltinType,icu::UnicodeString>> type;
+    //ustring name;
+    //std::optional<std::variant<BuiltinType,ustring>> type;
     //std::optional<ptr<Expression>> defaultValue;
     return {};
 }
@@ -468,14 +468,14 @@ std::any ASTEditor::visit(ptr<ast::BinaryOp> ast)
 std::any ASTEditor::visit(ptr<ast::UnaryOp> ast)
 {
     //Op op;
-    //std::optional<icu::UnicodeString> member;
+    //std::optional<ustring> member;
     //ptr<Expression> arg;
     return {};
 }
 
 std::any ASTEditor::visit(ptr<ast::Variable> ast)
 {
-    //icu::UnicodeString name;
+    //ustring name;
     return {};
 }
 
@@ -521,13 +521,13 @@ std::any ASTEditor::visit(ptr<ast::Bool> ast)
 
 std::any ASTEditor::visit(ptr<ast::Str> ast)
 {
-    //icu::UnicodeString str;
+    //ustring str;
     return {};
 }
 
 std::any ASTEditor::visit(ptr<ast::StrInterp> ast)
 {
-    //std::vector<StrInterpPart> parts; icu::UnicodeString suffix;
+    //std::vector<StrInterpPart> parts; ustring suffix;
     return {};
 }
 

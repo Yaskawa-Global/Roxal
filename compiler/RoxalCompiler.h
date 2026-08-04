@@ -95,8 +95,8 @@ public:
 
     struct ModuleInfo {
         std::string modulePathRoot; // which module search path root is the module in? (from moduleRootPaths)
-        icu::UnicodeString packagePath; // package path of the module
-        icu::UnicodeString name;    // name of the module
+        ustring packagePath; // package path of the module
+        ustring name;    // name of the module
         bool isPackage;
         std::string filename;       // filename of the module (e.g. with .rox extension)
         bool invalidFolder{false};  // folder existed but didn't contain init.rox
@@ -158,18 +158,18 @@ protected:
 
     // Literal suffix registry: maps suffix string -> function name
     struct SuffixRegistration {
-        icu::UnicodeString suffix;
-        icu::UnicodeString functionName;
-        icu::UnicodeString moduleName;  // for error messages
+        ustring suffix;
+        ustring functionName;
+        ustring moduleName;  // for error messages
     };
-    std::unordered_map<icu::UnicodeString, SuffixRegistration> suffixRegistry;
-    void registerSuffix(const icu::UnicodeString& suffix, const icu::UnicodeString& funcName,
-                        const icu::UnicodeString& moduleName);
-    const SuffixRegistration* lookupSuffix(const icu::UnicodeString& suffix) const;
+    std::unordered_map<ustring, SuffixRegistration> suffixRegistry;
+    void registerSuffix(const ustring& suffix, const ustring& funcName,
+                        const ustring& moduleName);
+    const SuffixRegistration* lookupSuffix(const ustring& suffix) const;
 
     // suffix codegen, split so an interpolated suffixed string can build its
     // argument between the two halves (see visit(ptr<ast::StrInterp>))
-    bool emitSuffixCallee(const icu::UnicodeString& suffix);
+    bool emitSuffixCallee(const ustring& suffix);
     void emitSuffixCall();
 
     std::map<ModuleInfo,Value> importedModules;  // allowed-raw: rooted by importedModulesRoot
@@ -187,16 +187,16 @@ protected:
 
     // given the components of an import, such as "package.subpackage.module", return
     //  information about the module, including the file that should be executed
-    ModuleInfo findImport(const std::vector<icu::UnicodeString>& components) const;
+    ModuleInfo findImport(const std::vector<ustring>& components) const;
 
     struct Local {
-        Local(const icu::UnicodeString& _name, int scopeDepth,
+        Local(const ustring& _name, int scopeDepth,
                std::optional<VarTypeSpec> t = std::nullopt, bool _isConst = false,
                bool _isTypeConst = false)
             : name(_name), depth(scopeDepth), isCaptured(false), isConst(_isConst),
               isTypeConst(_isTypeConst), type(t) {}
 
-        icu::UnicodeString name;
+        ustring name;
         int depth;
         bool isCaptured;
         bool isConst;
@@ -224,11 +224,11 @@ protected:
             Scope // scope: for .. : etc.
         };
 
-        LexicalScope(ScopeType st, const icu::UnicodeString& n) : scopeType(st), name(n) {}
+        LexicalScope(ScopeType st, const ustring& n) : scopeType(st), name(n) {}
         virtual ~LexicalScope() {}
 
         ScopeType scopeType;
-        icu::UnicodeString name;
+        ustring name;
 
         bool strict;
 
@@ -275,16 +275,16 @@ protected:
     TracedRef<std::map<ModuleInfo,Value>> importedModulesRoot { importedModules };
     void outputScopes();
 
-    void enterModuleScope(const icu::UnicodeString& packageName,
-                          const icu::UnicodeString& moduleName,
-                          const icu::UnicodeString& sourceName,
+    void enterModuleScope(const ustring& packageName,
+                          const ustring& moduleName,
+                          const ustring& sourceName,
                           Value existingModule = Value::nilVal());
     void exitModuleScope();
 
-    void enterTypeScope(const icu::UnicodeString& typeName);
+    void enterTypeScope(const ustring& typeName);
     void exitTypeScope();
 
-    void enterFuncScope(Value moduleType, const icu::UnicodeString& funcName, FunctionType funcType, ptr<type::Type> type);
+    void enterFuncScope(Value moduleType, const ustring& funcName, FunctionType funcType, ptr<type::Type> type);
     void exitFuncScope();
 
     void enterLocalScope();
@@ -318,9 +318,9 @@ protected:
     // stack new states when we enter new functions to compile
     struct FunctionScope : public LexicalScope
     {
-        FunctionScope(const icu::UnicodeString& packageName, const icu::UnicodeString& moduleName,
-                      const icu::UnicodeString& sourceName,
-                      const icu::UnicodeString& funcName, FunctionType funcType, ptr<type::Type> t)
+        FunctionScope(const ustring& packageName, const ustring& moduleName,
+                      const ustring& sourceName,
+                      const ustring& funcName, FunctionType funcType, ptr<type::Type> t)
             : LexicalScope(ScopeType::Func, funcName), scopeDepth(0), functionType(funcType), type(t)
         {
             strict = true;
@@ -329,7 +329,7 @@ protected:
             funcObj->funcType = type; // store type for runtime
             funcObj->strict = strict;
             funcObj->fnType = funcType;
-            UnicodeString localName { (funcType==FunctionType::Method || funcType==FunctionType::Initializer) ?
+            ustring localName { (funcType==FunctionType::Method || funcType==FunctionType::Initializer) ?
                                         "this" : "" };
             locals.push_back(Local(localName,0));
             constBindings.emplace_back();
@@ -343,7 +343,7 @@ protected:
             Value value;   // allowed-raw: traced via FunctionScope::traceValues
             ast::LinePos line;
         };
-        std::vector<std::unordered_map<icu::UnicodeString, ConstBinding>> constBindings;
+        std::vector<std::unordered_map<ustring, ConstBinding>> constBindings;
 
         void traceValues(ValueVisitor& visitor) const override {
             if (function.isObj())
@@ -370,15 +370,15 @@ protected:
         // DefineLocalOverload accordingly. Each new FuncType is appended to
         // localOverloadCandidates as the FuncDecl is processed; visit(Call)
         // consults this for compile-time resolution.
-        std::unordered_map<icu::UnicodeString, int> localFuncDeclCounts;
-        std::unordered_map<icu::UnicodeString, int16_t> localOverloadSlots;
-        std::unordered_map<icu::UnicodeString,
+        std::unordered_map<ustring, int> localFuncDeclCounts;
+        std::unordered_map<ustring, int16_t> localOverloadSlots;
+        std::unordered_map<ustring,
                            std::vector<ptr<type::Type>>> localOverloadCandidates;
 
         // ---- 'jump'/'label' bookkeeping (confined to a single function body) ----
         // A defined 'label <name>' marker.
         struct LabelInfo {
-            icu::UnicodeString name;
+            ustring name;
             size_t offset;            // bytecode offset of the label (jump target)
             size_t liveLocalCount;    // locals.size() at the label = slot keep-count for jumps here
             int scopeDepth;
@@ -387,7 +387,7 @@ protected:
         };
         // A 'jump <name>' whose label has not yet been seen (forward reference).
         struct PendingJump {
-            icu::UnicodeString name;
+            ustring name;
             size_t popArgOffset;      // offset of the PopToCount 2-byte arg to patch
             size_t jumpArgOffset;     // offset of the Jump 2-byte arg to patch
             std::vector<int> liveLocalDepths; // depths of live locals at the jump (non-decreasing)
@@ -408,7 +408,7 @@ protected:
 
     struct TypeScope : public LexicalScope
     {
-        TypeScope(const icu::UnicodeString& typeName)
+        TypeScope(const ustring& typeName)
           : LexicalScope(ScopeType::Type, typeName), hasSuperType(false) {}
 
         ast::TypeName superTypeName;
@@ -425,13 +425,13 @@ protected:
         int16_t inFlightStackSlot { -1 };
         struct MemberInfo {
             ast::Access access { ast::Access::Public };
-            icu::UnicodeString owner;
+            ustring owner;
             bool isConst { false };
             std::optional<VarTypeSpec> propType;
         };
         // Insertion order preserved so callers (notably `proc init(*)` and
         // dict(obj)/to_json) can walk properties in declaration order.
-        ordered_map<icu::UnicodeString, MemberInfo> propertyNames;
+        ordered_map<ustring, MemberInfo> propertyNames;
 
         // Weak handle on the enclosing TypeDecl AST. Used by `proc init(*)`
         // synthesis to walk the type's own properties in declaration order.
@@ -446,15 +446,15 @@ protected:
 
     // map type name -> registered member names (properties and methods);
     // inner map preserves declaration order.
-    std::unordered_map<icu::UnicodeString,
-                       ordered_map<icu::UnicodeString, TypeScope::MemberInfo>> typePropertyRegistry;
+    std::unordered_map<ustring,
+                       ordered_map<ustring, TypeScope::MemberInfo>> typePropertyRegistry;
 
 
     struct ModuleScope : public FunctionScope
     {
-        ModuleScope(const icu::UnicodeString& packageName_,
-                    const icu::UnicodeString& moduleName_,
-                    const icu::UnicodeString& sourceName_,
+        ModuleScope(const ustring& packageName_,
+                    const ustring& moduleName_,
+                    const ustring& sourceName_,
                     Value existing = Value::nilVal())
             : FunctionScope(packageName_, moduleName_, sourceName_, moduleName_,
                             FunctionType::Module,
@@ -494,22 +494,22 @@ protected:
                 visitor.visit(moduleType);
         }
 
-        icu::UnicodeString packageName;
-        icu::UnicodeString moduleName;
-        icu::UnicodeString sourceName;
+        ustring packageName;
+        ustring moduleName;
+        ustring sourceName;
         Value moduleType;  // allowed-raw: traced via traceValues (ObjModuleType)
-        std::unordered_map<icu::UnicodeString, VarTypeSpec> moduleVarTypes;
-        std::unordered_set<icu::UnicodeString> moduleVarTypeConst; // vars declared as var x: const T
-        std::unordered_map<icu::UnicodeString, ast::LinePos> moduleVarLines;
-        std::unordered_map<icu::UnicodeString, ast::LinePos> moduleConstLines;
+        std::unordered_map<ustring, VarTypeSpec> moduleVarTypes;
+        std::unordered_set<ustring> moduleVarTypeConst; // vars declared as var x: const T
+        std::unordered_map<ustring, ast::LinePos> moduleVarLines;
+        std::unordered_map<ustring, ast::LinePos> moduleConstLines;
 
         // Module-level function overload tracking. Populated by a pre-pass in
         // visit(File) over the file's top-level FuncDecls. A name with count > 1
         // will bind to an OverloadSet via DefineModuleOverload. Each new FuncType
         // is appended to moduleOverloadCandidates as the FuncDecl is processed;
         // visit(Call) consults this for compile-time resolution.
-        std::unordered_map<icu::UnicodeString, int> moduleFuncDeclCounts;
-        std::unordered_map<icu::UnicodeString,
+        std::unordered_map<ustring, int> moduleFuncDeclCounts;
+        std::unordered_map<ustring,
                            std::vector<ptr<type::Type>>> moduleOverloadCandidates;
     };
 
@@ -522,7 +522,7 @@ protected:
     std::vector<std::string> moduleRootPaths {};  // filesystem paths of top-level for package directories & module files
 
     // stack of current exception variable names for nested try/except blocks
-    std::vector<icu::UnicodeString> exceptionVarStack {};
+    std::vector<ustring> exceptionVarStack {};
 
     // Stack of with contexts for name resolution
     struct WithContext {
@@ -612,17 +612,17 @@ protected:
     uint16_t makeConstant(const Value& value);
 
     // keep track of which chunk string constants table entires are for identifiers and re-use them
-    uint16_t identifierConstant(const icu::UnicodeString& ident);
+    uint16_t identifierConstant(const ustring& ident);
 
-    void addLocal(const icu::UnicodeString& name, std::optional<VarTypeSpec> type = std::nullopt);
-    int16_t resolveLocal(Scope scopeState, const icu::UnicodeString& name);
+    void addLocal(const ustring& name, std::optional<VarTypeSpec> type = std::nullopt);
+    int16_t resolveLocal(Scope scopeState, const ustring& name);
     int addUpvalue(Scope scopeState, uint8_t index, bool isLocal);
-    int16_t resolveUpvalue(Scope scopeState, const icu::UnicodeString& name);
-    void declareVariable(const icu::UnicodeString& name, std::optional<VarTypeSpec> type = std::nullopt);
-    void declareConstant(const icu::UnicodeString& name, const Value& value, std::optional<VarTypeSpec> type = std::nullopt);
+    int16_t resolveUpvalue(Scope scopeState, const ustring& name);
+    void declareVariable(const ustring& name, std::optional<VarTypeSpec> type = std::nullopt);
+    void declareConstant(const ustring& name, const Value& value, std::optional<VarTypeSpec> type = std::nullopt);
     void defineVariable(uint16_t moduleVar = 0, bool isConst = false); // moduleVar unused if defining a local
-    bool namedVariable(const icu::UnicodeString& name, bool assign=false, bool asSignal=false);
-    void namedModuleVariable(const icu::UnicodeString& name, bool assign=false);
+    bool namedVariable(const ustring& name, bool assign=false, bool asSignal=false);
+    void namedModuleVariable(const ustring& name, bool assign=false);
     CallSpec buildCallSpec(const ptr<ast::Call>& ast);
     bool isRemoteActorConstructorCall(const ptr<ast::Expression>& expr) const;
     void emitRemoteActorConstructorCall(const ptr<ast::Call>& callAst, const ptr<ast::Expression>& hostExpr);
@@ -632,14 +632,14 @@ protected:
     // prologue iterates members in source-declaration order regardless of
     // which AST list they came from.
     struct StarInitMember {
-        icu::UnicodeString name;
+        ustring name;
         std::optional<ast::VarType> declaredType;
         std::optional<ptr<ast::Expression>> initializer;
         // The actual property name written by the SetProp opcode. Equals
         // `name` for plain data props; `_<name>` for accessor-equipped props
         // (writes go directly to the synthetic backing field, bypassing the
         // user setter).
-        icu::UnicodeString storageName;
+        ustring storageName;
         bool isConst { false };
     };
 
@@ -653,11 +653,11 @@ protected:
     // `this.<storageName> = <param>` for each.
     void emitStarInitPrologue(const std::vector<StarInitMember>& members);
 
-    std::optional<VarTypeSpec> localVarType(const icu::UnicodeString& name);
-    std::optional<VarTypeSpec> moduleVarType(const icu::UnicodeString& name);
-    const FunctionScope::ConstBinding* lookupConstBinding(const icu::UnicodeString& name) const;
-    bool constExistsInCurrentScope(const icu::UnicodeString& name) const;
-    bool moduleConstExists(const icu::UnicodeString& name) const;
+    std::optional<VarTypeSpec> localVarType(const ustring& name);
+    std::optional<VarTypeSpec> moduleVarType(const ustring& name);
+    const FunctionScope::ConstBinding* lookupConstBinding(const ustring& name) const;
+    bool constExistsInCurrentScope(const ustring& name) const;
+    bool moduleConstExists(const ustring& name) const;
     Value evaluateConstExpression(ptr<ast::Expression> expr, bool strictContext);
     Value applyConstType(Value value, std::optional<VarTypeSpec> type, bool strictContext);
 

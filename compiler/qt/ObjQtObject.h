@@ -29,9 +29,9 @@ struct ObjQtObject : public Obj {
     // Every override calls this first, except the `valid` intrinsic.
     QObject* deref(const char* op) const;
 
-    bool tryGetDynamicProperty(const Value& self, const icu::UnicodeString& name, Value& out) override;
-    bool trySetDynamicProperty(const icu::UnicodeString& name, const Value& value) override;
-    bool tryInvokeDynamicMethod(const icu::UnicodeString& name, const Value* args, int argCount, Value& out) override;
+    bool tryGetDynamicProperty(const Value& self, const ustring& name, Value& out) override;
+    bool trySetDynamicProperty(const ustring& name, const Value& value) override;
+    bool tryInvokeDynamicMethod(const ustring& name, const Value* args, int argCount, Value& out) override;
 
     // No Roxal Value refs held; share-on-clone (a handle copy); not serializable.
     void trace(ValueVisitor& visitor) const override { (void)visitor; }

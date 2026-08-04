@@ -197,10 +197,10 @@ public:
 protected:
     void setSourceInfo(ptr<ast::AST> ast, antlr4::ParserRuleContext* context);
     void setSourceInfo(ptr<ast::AST> ast, antlr4::tree::TerminalNode* terminal);
-    icu::UnicodeString normalizeIdentifier(const std::string& text);
-    icu::UnicodeString identifierFromTerminal(antlr4::tree::TerminalNode* terminal);
-    icu::UnicodeString identifierFromContext(antlr4::ParserRuleContext* context);
-    icu::UnicodeString operatorNameFromContext(RoxalParser::Operator_nameContext* context);
+    ustring normalizeIdentifier(const std::string& text);
+    ustring identifierFromTerminal(antlr4::tree::TerminalNode* terminal);
+    ustring identifierFromContext(antlr4::ParserRuleContext* context);
+    ustring operatorNameFromContext(RoxalParser::Operator_nameContext* context);
 
     // ---- string interpolation ----------------------------------------------
     // One piece of a scanned interpolated string: a run of literal text (with
@@ -228,7 +228,7 @@ protected:
     ptr<ast::Expression> buildInterpolation(const std::string& content, size_t quoteLen,
                                             antlr4::Token* token,
                                             antlr4::ParserRuleContext* context,
-                                            const icu::UnicodeString& suffix);
+                                            const ustring& suffix);
 
     // True when a string token's content has a placeholder that would make it a
     // StrInterp rather than a plain Str.  Cheap pre-check.

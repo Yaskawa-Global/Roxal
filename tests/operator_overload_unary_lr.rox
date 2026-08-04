@@ -1,0 +1,21 @@
+// Unary negation is independent from the loperator/roperator binary pair.
+
+type Offset object:
+  var value :int = 0
+
+  proc init(value :int):
+    this.value = value
+
+  func operator-() -> Offset:
+    return Offset(-value)
+
+  func loperator-(other :int) -> Offset:
+    return Offset(value - other)
+
+  func roperator-(other :int) -> Offset:
+    return Offset(other - value)
+
+var offset = Offset(7)
+print((-offset).value)
+print((offset - 3).value)
+print((10 - offset).value)

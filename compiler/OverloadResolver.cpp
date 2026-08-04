@@ -41,14 +41,14 @@ enum class ArgRank : uint8_t {
 // (single-arg init) whose first param's type matches expectedParamBuiltin
 // (and expectedParamObjName when non-empty).
 //
-// `expectedParamObjName` is passed by value (UnicodeString is a string
+// `expectedParamObjName` is passed by value (ustring is a string
 // handle, cheap to copy) — empty means "don't constrain by name" for
 // non-object-typed sources. This avoids needing a nullable ObjectType
 // pointer parameter.
 static bool hasImplicitMethod(const ObjectType&         obj,
-                              const icu::UnicodeString& methodName,
+                              const ustring& methodName,
                               bool                      checkArity1Init,
-                              const icu::UnicodeString& expectedParamObjName,
+                              const ustring& expectedParamObjName,
                               type::BuiltinType         expectedParamBuiltin)
 {
     for (const auto& mi : obj.methods) {
@@ -108,27 +108,27 @@ static bool userDefinedImplicitConvFeasible(const ptr<type::Type>& srcType,
 
     // Source-side check: src has `implicit operator->{dst}()`?
     if (srcIsObj) {
-        icu::UnicodeString convNameTarget;
+        ustring convNameTarget;
         if (dstIsObj) {
             convNameTarget = dstType->obj.value().name;
         } else {
             std::string s = type::to_string(dstType->builtin);
-            convNameTarget = icu::UnicodeString::fromUTF8(icu::StringPiece(s.data(), (int)s.size()));
+            convNameTarget = toUnicodeString(s);
         }
-        icu::UnicodeString operatorConvName = icu::UnicodeString("operator->") + convNameTarget;
+        ustring operatorConvName = ustring("operator->") + convNameTarget;
         if (hasImplicitMethod(srcType->obj.value(), operatorConvName,
                               /*checkArity1Init=*/false,
-                              icu::UnicodeString(), type::BuiltinType::Nil))
+                              ustring(), type::BuiltinType::Nil))
             return true;
     }
 
     // Target-side check: dst has `implicit init(src)`?
     if (dstIsObj) {
-        icu::UnicodeString srcObjName = (srcIsObj && srcType->obj.has_value())
+        ustring srcObjName = (srcIsObj && srcType->obj.has_value())
                                         ? srcType->obj.value().name
-                                        : icu::UnicodeString();
+                                        : ustring();
         if (hasImplicitMethod(dstType->obj.value(),
-                              icu::UnicodeString("init"),
+                              ustring("init"),
                               /*checkArity1Init=*/true,
                               srcObjName, srcType->builtin))
             return true;
@@ -140,7 +140,7 @@ static bool userDefinedImplicitConvFeasible(const ptr<type::Type>& srcType,
 
 
 // Walk the extends/implements chain of an object type looking for a name match.
-static bool objectTypeChainContains(const ObjectType& sub, const icu::UnicodeString& targetName)
+static bool objectTypeChainContains(const ObjectType& sub, const ustring& targetName)
 {
     if (sub.name == targetName)
         return true;
@@ -421,7 +421,7 @@ OverloadResolver::resolve(const std::vector<Candidate>& candidates,
 
 
 std::string OverloadResolver::ambiguityDiagnostic(
-    const icu::UnicodeString&     callName,
+    const ustring&     callName,
     const std::vector<Candidate>& candidates,
     const std::vector<uint16_t>&  tied,
     const std::vector<ArgInfo>&   args)
@@ -441,7 +441,7 @@ std::string OverloadResolver::ambiguityDiagnostic(
 
 
 std::string OverloadResolver::noMatchDiagnostic(
-    const icu::UnicodeString&     callName,
+    const ustring&     callName,
     const std::vector<Candidate>& candidates,
     const std::vector<ArgInfo>&   args)
 {
@@ -594,7 +594,7 @@ bool OverloadResolver::signatureCompatibleForOverride(const ptr<type::Type>& abs
 }
 
 
-std::string OverloadResolver::signatureToString(const icu::UnicodeString& name,
+std::string OverloadResolver::signatureToString(const ustring& name,
                                                 const ptr<type::Type>&    funcType)
 {
     std::ostringstream os;

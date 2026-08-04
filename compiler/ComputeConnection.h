@@ -76,7 +76,7 @@ public:
     // Send a method call to a remote actor and block until the result arrives.
     // Called by the remote-actor proxy thread (Thread::act) instead of local dispatch.
     Value callRemoteMethod(int64_t remoteActorId,
-                           const icu::UnicodeString& methodName,
+                           const ustring& methodName,
                            const std::vector<Value>& args,
                            const CallSpec& callSpec,
                            Value* gcRootedResultSlot = nullptr);
@@ -119,7 +119,7 @@ public:
     // Handle an incoming CALL_METHOD for a locally-registered actor.
     // Public so server-side code can delegate back-channel calls.
     void handleIncomingCall(uint64_t callId, int64_t actorId,
-                            const icu::UnicodeString& method,
+                            const ustring& method,
                             const std::vector<Value>& args,
                             const CallSpec& callSpec);
 

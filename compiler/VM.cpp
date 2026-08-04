@@ -91,7 +91,7 @@ using namespace roxal;
 
 // Static thread_local definitions for native call timing instrumentation
 thread_local TimePoint VM::nativeCallDeadline_ { TimePoint::max() };
-thread_local UnicodeString VM::nativeCallContext_;
+thread_local ustring VM::nativeCallContext_;
 thread_local std::string VM::nativeCallOverrun_;
 thread_local bool VM::onDataflowThread_ { false };
 #ifdef ROXAL_COMPUTE_SERVER
@@ -315,6 +315,9 @@ std::string VM::versionString()
 std::vector<std::string> VM::featureStrings()
 {
     std::vector<std::string> features;
+#ifdef ROXAL_UNICODE_BACKEND_ICU
+    features.push_back("icu");
+#endif
 #ifdef ROXAL_ENABLE_FILEIO
     features.push_back("fileio");
 #endif
@@ -1212,14 +1215,14 @@ VM::VM()
         counter.store(0, std::memory_order_relaxed);
 
     thread = nullptr;
-    initString = Value::stringVal(UnicodeString("init"));
+    initString = Value::stringVal(ustring("init"));
 
     // Pre-hash operator method names for fast dispatch
     auto makeOpHashes = [](const char* sym) -> OperatorHashes {
         return {
-            (UnicodeString("operator") + sym).hashCode(),
-            (UnicodeString("loperator") + sym).hashCode(),
-            (UnicodeString("roperator") + sym).hashCode()
+            (ustring("operator") + sym).hashCode(),
+            (ustring("loperator") + sym).hashCode(),
+            (ustring("roperator") + sym).hashCode()
         };
     };
     opHashAdd = makeOpHashes("+");
@@ -1233,8 +1236,8 @@ VM::VM()
     opHashGt  = makeOpHashes(">");
     opHashLe  = makeOpHashes("<=");
     opHashGe  = makeOpHashes(">=");
-    opHashNeg = UnicodeString("uoperator-").hashCode();
-    opHashConvString = UnicodeString("operator->string").hashCode();
+    opHashNeg = ustring("uoperator-").hashCode();
+    opHashConvString = ustring("operator->string").hashCode();
 
     // Eagerly load sys & math modules
     registerBuiltinModule(make_ptr<ModuleSys>());
@@ -1867,7 +1870,7 @@ ExecutionStatus VM::setup(std::istream& source, const std::string& name,
     Value existingModule = Value::nilVal();
     if (!imports.empty()) {
         std::filesystem::path namePath(name);
-        icu::UnicodeString moduleName = toUnicodeString(
+        ustring moduleName = toUnicodeString(
             namePath.stem().filename().string());
         auto modObj = newModuleTypeObj(moduleName);
         ObjModuleType* modPtr = modObj.get();
@@ -1985,7 +1988,7 @@ ExecutionStatus VM::setup(std::istream& source, const std::string& name,
     return ExecutionStatus::OK;
 }
 
-void VM::addScriptPrelude(const Value& receiver, const icu::UnicodeString& method)
+void VM::addScriptPrelude(const Value& receiver, const ustring& method)
 {
     scriptPreludes_.emplace_back(receiver, method);
 }
@@ -2285,7 +2288,7 @@ void VM::importModuleVarsInto(ObjModuleType* target,
         isModuleType(replModuleValue) &&
         asModuleType(replModuleValue) == target;
 
-    auto storeImported = [&](int32_t hash, const icu::UnicodeString& name,
+    auto storeImported = [&](int32_t hash, const ustring& name,
                              const Value& v) {
         if (v.isObj() && isOverloadSet(v)) {
             auto cloneObj = newOverloadSetObj(name);
@@ -3349,7 +3352,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                         Value instType = isObjectInstance(arg)
                             ? asObjectInstance(arg)->instanceType
                             : asActorInstance(arg)->instanceType;
-                        UnicodeString convName = UnicodeString("operator->") + type->name;
+                        ustring convName = ustring("operator->") + type->name;
                         int32_t convHash = convName.hashCode();
                         Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/false);
                         if (!closure.isNil()) {
@@ -3487,7 +3490,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                 int32_t hash = keyStr->hash;
 
                                 // First check if there's a setter method for this property
-                                icu::UnicodeString setterName = UnicodeString("__set_") + keyStr->s;
+                                ustring setterName = ustring("__set_") + keyStr->s;
                                 Value setterNameValue = Value::stringVal(setterName);
                                 ObjString* setterNameStr = asStringObj(setterNameValue);
                                 // __set_<prop> is a synthetic name — never overloaded.
@@ -3569,7 +3572,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                             // Track property assignments: key -> (value, property_name, has_setter)
                             struct PropertyAssignment {
                                 Value value;
-                                icu::UnicodeString propertyName;
+                                ustring propertyName;
                                 bool callSetter;
                             };
                             std::unordered_map<int32_t, PropertyAssignment> assignedValues;
@@ -3661,7 +3664,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                             // Named parameter didn't match a public property.
                                             // Check if it matches a property with a setter method.
                                             // Search through all methods for one matching "__set_<name>" where <name> hash matches parameter hash
-                                            icu::UnicodeString propertyName;
+                                            ustring propertyName;
                                             bool foundSetter = false;
                                             int32_t setterMethodHash = 0;
 
@@ -3671,12 +3674,12 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                                 if (methodPair.second.overloads.empty()) continue;
                                                 const auto& method = methodPair.second.overloads[0];
                                                 ObjFunction* func = asFunction(asClosure(method.closure)->function);
-                                                icu::UnicodeString methodName = func->name;
+                                                ustring methodName = func->name;
 
                                                 // Check if method name starts with "__set_"
                                                 if (methodName.startsWith("__set_")) {
                                                     // Extract property name by removing "__set_" prefix
-                                                    icu::UnicodeString propName = methodName.tempSubString(6); // Skip "__set_"
+                                                    ustring propName = methodName.tempSubString(6); // Skip "__set_"
 
                                                     // Compute hash of property name
                                                     ObjString* propNameStr = asStringObj(Value::stringVal(propName));
@@ -3734,7 +3737,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 
                                 if (assignment.callSetter) {
                                     // Property has a setter - prepare to call it
-                                    icu::UnicodeString setterName = UnicodeString("__set_") + assignment.propertyName;
+                                    ustring setterName = ustring("__set_") + assignment.propertyName;
                                     Value setterNameValue = Value::stringVal(setterName);
                                     ObjString* setterNameStr = asStringObj(setterNameValue);
                                     auto* setterMethod = type->findUniqueMethod(setterNameStr->hash);
@@ -3926,7 +3929,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                 ObjNative* nativeObj = asNative(callee);
                 NativeFn native = nativeObj->function;
                 if (nativeCallTimingEnabled_)
-                    nativeCallContext_ = UnicodeString("native");
+                    nativeCallContext_ = ustring("native");
                 return callNativeFn(native, nativeObj->funcType,
                                     nativeObj->defaultValues, callSpec,
                                     false, Value::nilVal(), Value::nilVal(),
@@ -3948,7 +3951,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                     if (isFunction(bound->declFunction))
                         nativeCallContext_ = asFunction(bound->declFunction)->name;
                     else
-                        nativeCallContext_ = UnicodeString("bound-native");
+                        nativeCallContext_ = ustring("bound-native");
                 }
 
                 if (!isActorInstance(bound->receiver)) {
@@ -4093,7 +4096,7 @@ std::pair<ExecutionStatus,Value> VM::invokeClosure(ObjClosure* closure,
 }
 
 std::pair<ExecutionStatus,Value> VM::invokeMethod(const Value& receiver,
-                                                  const icu::UnicodeString& methodName,
+                                                  const ustring& methodName,
                                                   const std::vector<Value>& args,
                                                   TimePoint deadline)
 {
@@ -4272,7 +4275,7 @@ bool VM::canConvertToType(const Value& val, const Value& targetTypeSpec, bool im
             Value instType = isObjectInstance(val)
                 ? asObjectInstance(val)->instanceType
                 : asActorInstance(val)->instanceType;
-            UnicodeString convName = UnicodeString("operator->") + toUnicodeString(to_string(ts->typeValue));
+            ustring convName = ustring("operator->") + toUnicodeString(to_string(ts->typeValue));
             int32_t convHash = convName.hashCode();
             Value closure = const_cast<VM*>(this)->findConversionMethod(instType, convHash, implicitCall);
             if (!closure.isNil())
@@ -4316,7 +4319,7 @@ bool VM::canConvertToType(const Value& val, const Value& targetTypeSpec, bool im
             Value instType = isObjectInstance(val)
                 ? asObjectInstance(val)->instanceType
                 : asActorInstance(val)->instanceType;
-            UnicodeString convName = UnicodeString("operator->") + targetType->name;
+            ustring convName = ustring("operator->") + targetType->name;
             int32_t convHash = convName.hashCode();
             Value closure = const_cast<VM*>(this)->findConversionMethod(instType, convHash, implicitCall);
             if (!closure.isNil())
@@ -4397,11 +4400,11 @@ VM::ConversionOutcome VM::tryConvertValue(
             : asActorInstance(val)->instanceType;
         // For object/actor targets, use the specific type name (e.g. "operator->Quantity");
         // for builtin targets, use the ValueType name (e.g. "operator->string")
-        UnicodeString convName;
+        ustring convName;
         if (ts && (targetVT == ValueType::Object || targetVT == ValueType::Actor))
-            convName = UnicodeString("operator->") + asObjectType(targetTypeSpec)->name;
+            convName = ustring("operator->") + asObjectType(targetTypeSpec)->name;
         else
-            convName = UnicodeString("operator->") + toUnicodeString(to_string(targetVT));
+            convName = ustring("operator->") + toUnicodeString(to_string(targetVT));
         int32_t convHash = convName.hashCode();
 
         // Recursion guard
@@ -5473,7 +5476,7 @@ void VM::defineProperty(ObjString* name)
                 std::string base;
                 size_t count = 0;
                 if (parseCTypeArray(spec, base, count) && !isBuiltinCTypeName(base)) {
-                    auto ubase = icu::UnicodeString::fromUTF8(base);
+                    auto ubase = ustring::fromUTF8(base);
                     auto found = moduleVars().load(ubase.hashCode());
                     if (!found.has_value() || !isObjectType(found.value()))
                         throw std::runtime_error("ctype '" + spec + "' on member '"
@@ -5634,8 +5637,8 @@ void VM::defineMethod(ObjString* name)
 
 std::string VM::checkInterfaceConformance(ObjObjectType* impl, ObjObjectType* iface)
 {
-    static const icu::UnicodeString getPrefix("__get_");
-    static const icu::UnicodeString setPrefix("__set_");
+    static const ustring getPrefix("__get_");
+    static const ustring setPrefix("__set_");
 
     auto isAbstract = [](const ObjObjectType::Method& m) {
         return ast::hasModifier(m.methodModifiers, ast::MethodModifier::Abstract);
@@ -5706,7 +5709,7 @@ std::string VM::checkInterfaceConformance(ObjObjectType* impl, ObjObjectType* if
                 // property X on the impl chain satisfies the abstract.
                 if (m.name.startsWith(getPrefix) || m.name.startsWith(setPrefix)) {
                     if (findAnyConcreteMethod(kv.first)) continue;
-                    icu::UnicodeString plain = m.name.tempSubString(6);
+                    ustring plain = m.name.tempSubString(6);
                     bool propIsConst = false;
                     if (findProperty(plain.hashCode(), &propIsConst)) {
                         if (m.name.startsWith(setPrefix) && propIsConst) {
@@ -5790,7 +5793,7 @@ void VM::defineNative(const std::string& name, NativeFn function,
                       std::vector<Value> defaults,
                       uint32_t resolveArgMask)
 {
-    UnicodeString uname { toUnicodeString(name) };
+    ustring uname { toUnicodeString(name) };
     Value funcVal { Value::nativeVal(function, nullptr, funcType, defaults) };
     if (resolveArgMask)
         asNative(funcVal)->resolveArgMask = resolveArgMask;
@@ -6299,8 +6302,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     }
                 }
                 if (pending.kind == Thread::PendingConversion::Kind::Concat) {
-                    UnicodeString lhs = asUString(pending.savedLHS);
-                    UnicodeString rhs = isString(converted)
+                    ustring lhs = asUString(pending.savedLHS);
+                    ustring rhs = isString(converted)
                         ? asUString(converted)
                         : toUnicodeString(toString(converted));
                     push(Value::stringVal(lhs + rhs));
@@ -6836,7 +6839,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     // Optimization: skip accessor search for properties starting with '_'
                     // (backing fields cannot have accessors)
                     if (!name->s.startsWith("_")) {
-                        icu::UnicodeString getterName = UnicodeString("__get_") + name->s;
+                        ustring getterName = ustring("__get_") + name->s;
                         Value getterNameValue = Value::stringVal(getterName);
                         ObjString* getterNameStr = asStringObj(getterNameValue);
                         auto getterIt = asObjectType(objInst->instanceType)->methods.find(getterNameStr->hash);
@@ -7214,7 +7217,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                         break;
                     } else {
                         // Check if this property has a getter method
-                        icu::UnicodeString getterName = UnicodeString("__get_") + name->s;
+                        ustring getterName = ustring("__get_") + name->s;
                         Value getterNameValue = Value::stringVal(getterName);
                         ObjString* getterNameStr = asStringObj(getterNameValue);
                         auto getterIt = t->methods.find(getterNameStr->hash);
@@ -7504,7 +7507,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     // Optimization: skip accessor search for properties starting with '_'
                     // (backing fields cannot have accessors)
                     if (!name->s.startsWith("_")) {
-                        icu::UnicodeString setterName = UnicodeString("__set_") + name->s;
+                        ustring setterName = ustring("__set_") + name->s;
                         Value setterNameValue = Value::stringVal(setterName);
                         ObjString* setterNameStr = asStringObj(setterNameValue);
                         auto setterIt = t->methods.find(setterNameStr->hash);
@@ -7703,7 +7706,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     ObjObjectType* t = asObjectType(objInst->instanceType);
 
                     // Check if this property has a setter method
-                    icu::UnicodeString setterName = UnicodeString("__set_") + name->s;
+                    ustring setterName = ustring("__set_") + name->s;
                     Value setterNameValue = Value::stringVal(setterName);
                     ObjString* setterNameStr = asStringObj(setterNameValue);
                     auto setterIt = t->methods.find(setterNameStr->hash);
@@ -8245,7 +8248,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     auto outcome = tryConvertValue(v, Value::typeVal(ValueType::String),
                                                    false, /*implicitCall=*/true,
                                                    Thread::PendingConversion::Kind::Concat,
-                                                   Value::stringVal(icu::UnicodeString()));
+                                                   Value::stringVal(ustring()));
                     if (outcome.result == ConversionResult::NeedsAsyncFrame) {
                         frame = thread->frames.end() - 1;
                         break;
@@ -8274,7 +8277,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 for(int i=0; i<n; i++)
                     total += asUString(peek(i)).length();
 
-                icu::UnicodeString out(total, 0, 0);   // preallocate, length 0
+                ustring out(total, 0, 0);              // preallocate, length 0
                 for(int i=n-1; i>=0; i--)              // deepest operand is leftmost
                     out.append(asUString(peek(i)));
 
@@ -9182,7 +9185,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 Value& slotRef = frame->slots[slot];
                 if (&topRef == &slotRef) {
                     // First decl: wrap the closure at slot/top in place.
-                    auto setObj = newOverloadSetObj(icu::UnicodeString());
+                    auto setObj = newOverloadSetObj(ustring());
                     setObj->add(slotRef);
                     slotRef = Value::objRef(setObj.release());
                 } else {
@@ -10041,7 +10044,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                         isModuleType(replModuleValue) &&
                         asModuleType(replModuleValue) == toModuleType;
 
-                    auto storeImported = [&](int32_t hash, const icu::UnicodeString& name, const Value& v) {
+                    auto storeImported = [&](int32_t hash, const ustring& name, const Value& v) {
                         if (v.isObj() && isOverloadSet(v)) {
                             auto cloneObj = newOverloadSetObj(name);
                             auto* src = asOverloadSet(v);
@@ -11142,7 +11145,7 @@ bool VM::needsAsyncConversion(const Value& val, ptr<type::Type> paramType, bool 
         Value instType = isObjectInstance(val)
             ? asObjectInstance(val)->instanceType
             : asActorInstance(val)->instanceType;
-        UnicodeString convName = UnicodeString("operator->") + toUnicodeString(to_string(vt.value()));
+        ustring convName = ustring("operator->") + toUnicodeString(to_string(vt.value()));
         int32_t convHash = convName.hashCode();
         Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/true);
         return !closure.isNil();
@@ -11161,7 +11164,7 @@ bool VM::pushParamConversionFrame(const Value& val, ptr<type::Type> paramType, b
         Value instType = isObjectInstance(val)
             ? asObjectInstance(val)->instanceType
             : asActorInstance(val)->instanceType;
-        UnicodeString convName = UnicodeString("operator->") + toUnicodeString(to_string(vt.value()));
+        ustring convName = ustring("operator->") + toUnicodeString(to_string(vt.value()));
         int32_t convHash = convName.hashCode();
         Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/true);
         if (!closure.isNil()) {
@@ -11230,7 +11233,7 @@ bool VM::pushParamConversionFrame(const Value& val, ptr<type::Type> paramType, b
                     Value instType = isObjectInstance(val)
                         ? asObjectInstance(val)->instanceType
                         : asActorInstance(val)->instanceType;
-                    UnicodeString convName = UnicodeString("operator->") + targetType->name;
+                    ustring convName = ustring("operator->") + targetType->name;
                     int32_t convHash = convName.hashCode();
                     Value closure = findConversionMethod(instType, convHash, /*implicitCall=*/true);
                     if (!closure.isNil()) {
@@ -11672,8 +11675,8 @@ void VM::concatenate()
     Value rhs { peek(0) };
     Value lhs { peek(1) };
 
-    UnicodeString lhsString { asUString(lhs) };
-    UnicodeString rhsString {};
+    ustring lhsString { asUString(lhs) };
+    ustring rhsString {};
 
     if (!isString(rhs)) {
         // convert RHS to a string
@@ -11684,7 +11687,7 @@ void VM::concatenate()
     else
         rhsString = asUString(rhs);
 
-    UnicodeString combined { lhsString + rhsString };
+    ustring combined { lhsString + rhsString };
     pop();
     pop();
     push( Value::stringVal(combined) );
@@ -11749,9 +11752,9 @@ void VM::runtimeError(const std::string& format, ...)
         int ln = c->getLine(instr);
         int cl = c->getColumn(instr);
         std::string fn = toUTF8StdString(c->sourceName);
-        UnicodeString funcName = asFunction(asClosure(f.closure)->function)->name;
+        ustring funcName = asFunction(asClosure(f.closure)->function)->name;
         if (funcName.isEmpty())
-            funcName = UnicodeString("<script>");
+            funcName = ustring("<script>");
         if (!fn.empty())
             fprintf(stderr, "%s:%d:%d: in %s\n", fn.c_str(), ln, cl,
                     toUTF8StdString(funcName).c_str());
@@ -12242,11 +12245,11 @@ Value VM::captureStacktrace()
         const CallFrame& frame { *it };
         Value frameDict { Value::dictVal() };
 
-        UnicodeString funcName = asFunction(asClosure(frame.closure)->function)->name;
+        ustring funcName = asFunction(asClosure(frame.closure)->function)->name;
         if (funcName.isEmpty())
-            funcName = UnicodeString("<script>");
+            funcName = ustring("<script>");
 
-        asDict(frameDict)->store(Value::stringVal(UnicodeString("function")),
+        asDict(frameDict)->store(Value::stringVal(ustring("function")),
                                  Value::stringVal(funcName));
 
         auto chunk = asFunction(asClosure(frame.closure)->function)->chunk;
@@ -12256,10 +12259,10 @@ Value VM::captureStacktrace()
         int line = chunk->getLine(instruction);
         int col  = chunk->getColumn(instruction);
 
-        asDict(frameDict)->store(Value::stringVal(UnicodeString("line")), Value::intVal(line));
-        asDict(frameDict)->store(Value::stringVal(UnicodeString("col")), Value::intVal(col));
+        asDict(frameDict)->store(Value::stringVal(ustring("line")), Value::intVal(line));
+        asDict(frameDict)->store(Value::stringVal(ustring("col")), Value::intVal(col));
 
-        asDict(frameDict)->store(Value::stringVal(UnicodeString("filename")),
+        asDict(frameDict)->store(Value::stringVal(ustring("filename")),
                                  Value::stringVal(chunk->sourceName));
 
         asList(framesList)->append(frameDict);
@@ -13336,7 +13339,7 @@ Value VM::string_upper_builtin(ArgsView args)
 {
     if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("upper expects a single string argument");
-    UnicodeString result(asStringObj(args[0])->s);
+    ustring result(asStringObj(args[0])->s);
     result.toUpper();
     return Value::stringVal(result);
 }
@@ -13345,7 +13348,7 @@ Value VM::string_lower_builtin(ArgsView args)
 {
     if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("lower expects a single string argument");
-    UnicodeString result(asStringObj(args[0])->s);
+    ustring result(asStringObj(args[0])->s);
     result.toLower();
     return Value::stringVal(result);
 }
@@ -13354,16 +13357,16 @@ Value VM::string_capitalize_builtin(ArgsView args)
 {
     if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("capitalize expects a single string argument");
-    UnicodeString result(asStringObj(args[0])->s);
+    ustring result(asStringObj(args[0])->s);
     result.toLower();
     if (result.isEmpty())
         return Value::stringVal(result);
     // First code point may be a surrogate pair — split on code-point boundary.
-    UChar32 firstCp = result.char32At(0);
-    int32_t firstLen = U16_LENGTH(firstCp);
-    UnicodeString head(result, 0, firstLen);
+    code_point firstCp = result.char32At(0);
+    int32_t firstLen = utf16_code_unit_count(firstCp);
+    ustring head(result, 0, firstLen);
     head.toUpper();
-    UnicodeString tail(result, firstLen);
+    ustring tail(result, firstLen);
     head.append(tail);
     return Value::stringVal(head);
 }
@@ -13372,9 +13375,9 @@ Value VM::string_title_builtin(ArgsView args)
 {
     if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("title expects a single string argument");
-    UnicodeString result(asStringObj(args[0])->s);
-    // nullptr → ICU creates a default word-break iterator for the root locale.
-    result.toTitle(nullptr);
+    ustring result(asStringObj(args[0])->s);
+    // The backend uses root-locale word boundaries where it supports title casing.
+    result.toTitle();
     return Value::stringVal(result);
 }
 
@@ -13795,7 +13798,7 @@ Value VM::ffi_native(ArgsView args)
 
 
 
-ptr<BuiltinModule> VM::getBuiltinModule(const icu::UnicodeString& name)
+ptr<BuiltinModule> VM::getBuiltinModule(const ustring& name)
 {
     // Check eagerly-loaded modules first (e.g., sys)
     for (auto& m : builtinModules) {
@@ -13810,7 +13813,7 @@ ptr<BuiltinModule> VM::getBuiltinModule(const icu::UnicodeString& name)
     return lazyModuleRegistry.ensureLoaded(name, *this);
 }
 
-Value VM::getBuiltinModuleType(const icu::UnicodeString& name)
+Value VM::getBuiltinModuleType(const ustring& name)
 {
     // Check eagerly-loaded modules first
     for (auto& m : builtinModules) {
@@ -13950,7 +13953,7 @@ void VM::registerBuiltinModule(ptr<BuiltinModule> module)
     }
 }
 
-std::optional<Value> VM::lookupUserModule(const icu::UnicodeString& qualifiedName)
+std::optional<Value> VM::lookupUserModule(const ustring& qualifiedName)
 {
     std::lock_guard<std::mutex> guard(userModuleRegistryMutex);
     auto it = userModuleRegistry.find(qualifiedName);
@@ -13959,7 +13962,7 @@ std::optional<Value> VM::lookupUserModule(const icu::UnicodeString& qualifiedNam
     return it->second;
 }
 
-void VM::registerUserModule(const icu::UnicodeString& qualifiedName, const Value& moduleType)
+void VM::registerUserModule(const ustring& qualifiedName, const Value& moduleType)
 {
     std::lock_guard<std::mutex> guard(userModuleRegistryMutex);
     // Insert-only; never overwrite.  If two compilations race past the

@@ -15,8 +15,7 @@
 #include <typeinfo>
 
 
-// ICU
-#include <unicode/unistr.h>
+#include <core/ustring.h>
 
 //#define DEBUG_OUTPUT_LEXER_TOKENS
 //#define DEBUG_OUTPUT_PARSE_TREE
@@ -66,17 +65,17 @@ inline std::string format(const char* fmt, ...)
 #undef _CRT_NO_VA_START_VALIDATION
 
 bool startsWith(const std::string& str, const std::string& prefix);
-bool startsWith(const icu::UnicodeString& str, const icu::UnicodeString& prefix);
+bool startsWith(const ustring& str, const ustring& prefix);
 
-inline std::string toUTF8StdString(const icu::UnicodeString& us) {
+inline std::string toUTF8StdString(const ustring& us) {
     std::string s {};
     us.toUTF8String(s);
     return s;
 }
 
 // assumes UTF8 encoded std::string
-inline icu::UnicodeString toUnicodeString(const std::string& s) {
-    return icu::UnicodeString::fromUTF8(s);
+inline ustring toUnicodeString(const std::string& s) {
+    return ustring::fromUTF8(s);
 }
 
 
@@ -109,10 +108,10 @@ std::string insertStringLinesAtInterval(const std::string& s, const std::string&
 
 std::string join(const std::vector<std::string>& strings, const std::string& separator = ", ");
 
-icu::UnicodeString join(const std::vector<icu::UnicodeString>& strings, const std::string& separator = ",");
+ustring join(const std::vector<ustring>& strings, const std::string& separator = ",");
 
 std::string trim(const std::string& s);
-icu::UnicodeString trim(const icu::UnicodeString& s);
+ustring trim(const ustring& s);
 
 
 
@@ -154,9 +153,9 @@ inline void assert_msg_impl(bool        expr,
 
 namespace std {
     template<>
-    struct hash<icu::UnicodeString>
+    struct hash<roxal::ustring>
     {
-        size_t operator()(const icu::UnicodeString& s) const noexcept {
+        size_t operator()(const roxal::ustring& s) const noexcept {
             return static_cast<size_t>(s.hashCode());
         }
     };

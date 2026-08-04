@@ -2,7 +2,6 @@
 
 #include <core/common.h>
 #include <core/memory.h>
-#include <unicode/unistr.h>
 
 #include <functional>
 #include <mutex>
@@ -33,15 +32,15 @@ public:
     void registerFactory(const std::string& moduleName, ModuleFactory factory);
 
     // Check if a module name is registered (even if not loaded yet)
-    bool isRegistered(const icu::UnicodeString& name) const;
+    bool isRegistered(const ustring& name) const;
 
     // Ensure module is fully loaded; thread-safe, idempotent.
     // Returns the loaded module or nullptr if not registered.
     // Loading performs: instantiate, parse .rox, registerBuiltins(), onModuleLoaded()
-    ptr<BuiltinModule> ensureLoaded(const icu::UnicodeString& name, VM& vm);
+    ptr<BuiltinModule> ensureLoaded(const ustring& name, VM& vm);
 
     // Get already-loaded module (returns nullptr if not loaded yet)
-    ptr<BuiltinModule> getLoadedModule(const icu::UnicodeString& name) const;
+    ptr<BuiltinModule> getLoadedModule(const ustring& name) const;
 
     // Clear all loaded modules (for VM shutdown)
     // Note: Does NOT call onModuleUnloading() - caller should do that first

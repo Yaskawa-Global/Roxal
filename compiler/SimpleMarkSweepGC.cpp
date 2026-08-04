@@ -1725,7 +1725,7 @@ std::pair<std::uintptr_t, const char16_t*> makeBorrowedAuxCase(std::uintptr_t en
     // buffer confuses GCC's -Wstringop-overflow under IPA constprop.
     std::string content("scanner-borrowed-aux-");
     content.append(160, 'x');
-    Value v = Value::stringVal(icu::UnicodeString::fromUTF8(content));
+    Value v = Value::stringVal(ustring::fromUTF8(content));
     ObjString* so = asStringObj(v);
     const std::uintptr_t ctrlEnc =
         reinterpret_cast<std::uintptr_t>(static_cast<const void*>(so->control)) ^ enc;
@@ -1772,7 +1772,7 @@ bool SimpleMarkSweepGC::runScannerRecallSelfTest()
         safepoint(*VM::thread);
     };
     auto makeLeakedUnrooted = [](const char* tag) -> std::pair<Obj*, const void*> {
-        Value v = Value::stringVal(icu::UnicodeString::fromUTF8(
+        Value v = Value::stringVal(ustring::fromUTF8(
             std::string("scanner-recall-") + tag));
         Obj* obj = v.asObj();
         new Value(v);  // leaked strong ref: alive when v dies, yet unrooted
@@ -1899,7 +1899,7 @@ bool SimpleMarkSweepGC::runCoordinationSelfTest(std::chrono::milliseconds durati
             if (GCYieldScope gcs{}; gcs) {
                 rtEntries.fetch_add(1, std::memory_order_relaxed);
                 if ((i & 7) == 0) {
-                    Value v = Value::stringVal(icu::UnicodeString::fromUTF8(
+                    Value v = Value::stringVal(ustring::fromUTF8(
                         "st-rt-" + std::to_string(idx) + "-" + std::to_string(i)));
                     (void)v;
                     allocs.fetch_add(1, std::memory_order_relaxed);
@@ -1925,7 +1925,7 @@ bool SimpleMarkSweepGC::runCoordinationSelfTest(std::chrono::milliseconds durati
             participant.pollSafepointIfRequested();
             polls.fetch_add(1, std::memory_order_relaxed);
             {
-                Value v = Value::stringVal(icu::UnicodeString::fromUTF8(
+                Value v = Value::stringVal(ustring::fromUTF8(
                     "st-p" + std::to_string(idx) + "-" + std::to_string(i & 63)));
                 (void)v;
                 allocs.fetch_add(1, std::memory_order_relaxed);

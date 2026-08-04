@@ -255,7 +255,7 @@ public:
     //  Use strongRef() if needing a new Value from an existing weakRef() Value (it will return nilVal() if the object is gone).
     static Value objRef(Obj* o);
 
-    static Value stringVal(const icu::UnicodeString& s); // ObjString
+    static Value stringVal(const ustring& s); // ObjString
 
     static Value rangeVal();  // ObjRange
     static Value rangeVal(const Value& start, const Value& stop, const Value& step, bool closed);
@@ -299,10 +299,10 @@ public:
                               Value stackTrace = Value::nilVal(),
                               Value detail = Value::nilVal()); // ObjException
 
-    static Value functionVal(const icu::UnicodeString& name,
-                             const icu::UnicodeString& packageName,
-                             const icu::UnicodeString& moduleName,
-                             const icu::UnicodeString& sourceName); // ObjFunction
+    static Value functionVal(const ustring& name,
+                             const ustring& packageName,
+                             const ustring& moduleName,
+                             const ustring& sourceName); // ObjFunction
 
     static Value upvalueVal(Value* v); // ObjUpvalue
 
@@ -317,9 +317,9 @@ public:
 
     static Value typeSpecVal(ValueType t); // primitive ObjTypeSpec
 
-    static Value objectTypeVal(const icu::UnicodeString& typeName, bool isActor, bool isInterface = false, bool isEnumeration = false); // ObjObjectType
+    static Value objectTypeVal(const ustring& typeName, bool isActor, bool isInterface = false, bool isEnumeration = false); // ObjObjectType
 
-    static Value moduleTypeVal(const icu::UnicodeString& typeName); // ObjModuleType
+    static Value moduleTypeVal(const ustring& typeName); // ObjModuleType
 
     static Value objectInstanceVal(const Value& objectType); // ObjectInstance
 
@@ -765,7 +765,7 @@ public:
         Value signal;
     };
 
-    typedef std::pair<icu::UnicodeString, Value> NameValue;
+    typedef std::pair<ustring, Value> NameValue;
 
     void clearGlobals()
     {
@@ -798,7 +798,7 @@ public:
     }
 
     // module or global exists?
-    bool exists(const icu::UnicodeString& name) const
+    bool exists(const ustring& name) const
       { return exists(name.hashCode()); }
 
     // global only exists?
@@ -808,7 +808,7 @@ public:
         return (it != globals.end());
     }
 
-    bool existsGlobal(const icu::UnicodeString& name) const
+    bool existsGlobal(const ustring& name) const
       { return existsGlobal(name.hashCode()); }
 
 
@@ -835,7 +835,7 @@ public:
     }
 
     // return either module or global var, or nothing if not found
-    std::optional<Value> load(const icu::UnicodeString& name) const
+    std::optional<Value> load(const ustring& name) const
       { return load(name.hashCode()); }
 
 
@@ -845,14 +845,14 @@ public:
         return vars.find(nameHash) != vars.end();
     }
 
-    bool isModuleVar(const icu::UnicodeString& name) const
+    bool isModuleVar(const ustring& name) const
       { return isModuleVar(name.hashCode()); }
 
 
     // store value as var
     //  (module vars only, can't update global builtins)
     // return: was stored (e.g. if exists and overwrite=false, returns false)
-    bool store(int32_t nameHash, const icu::UnicodeString& name, const Value& value, bool overwrite=false)
+    bool store(int32_t nameHash, const ustring& name, const Value& value, bool overwrite=false)
     {
         std::lock_guard lock(varsLock);
         auto it = vars.find(nameHash);
@@ -870,7 +870,7 @@ public:
         return true;
     }
 
-    bool store(const icu::UnicodeString& name, const Value& value, bool overwrite=false)
+    bool store(const ustring& name, const Value& value, bool overwrite=false)
     { return store(name.hashCode(), name, value, overwrite); }
 
     bool store(const NameValue& nameValue, bool overwrite=false)
@@ -878,7 +878,7 @@ public:
 
     // only store if module var already exists
     // returns if stored (i.e. exists).  globals not considered
-    bool storeIfExists(int32_t nameHash, const icu::UnicodeString& name, const Value& value)
+    bool storeIfExists(int32_t nameHash, const ustring& name, const Value& value)
     {
         std::lock_guard lock(varsLock);
         auto it = vars.find(nameHash);
@@ -890,7 +890,7 @@ public:
 
 
     // store global var value (will overwrite, module vars not considered)
-    void storeGlobal(const icu::UnicodeString& name, const Value& value)
+    void storeGlobal(const ustring& name, const Value& value)
     {
         std::lock_guard lock(globalsLock);
         auto it = globals.find(name.hashCode());
@@ -906,7 +906,7 @@ public:
     }
 
     // ensure there is a change signal for a module or global variable
-    Value ensureSignal(int32_t nameHash, const icu::UnicodeString& name,
+    Value ensureSignal(int32_t nameHash, const ustring& name,
                        const std::string& signalName)
     {
         {
@@ -932,7 +932,7 @@ public:
         return Value::nilVal();
     }
 
-    Value ensureSignal(const icu::UnicodeString& name, const std::string& signalName)
+    Value ensureSignal(const ustring& name, const std::string& signalName)
     {
         return ensureSignal(name.hashCode(), name, signalName);
     }
@@ -1005,10 +1005,10 @@ public:
     // participant-covered during a collection), not from these locks.
 
     // list of module variable names (globals not considered)
-    std::vector<icu::UnicodeString> variableNames() const
+    std::vector<ustring> variableNames() const
     {
         std::lock_guard lock(varsLock);
-        std::vector<icu::UnicodeString> keys;
+        std::vector<ustring> keys;
         for(const auto& entry : vars)
             keys.push_back(entry.second.first);
         return keys;
@@ -1016,8 +1016,8 @@ public:
 
 protected:
     // map from name ObjString.hash to <name, value> pair
-    // TODO: use something other than UnicodeString?? (ObjString* or Value??)
-    typedef std::unordered_map<int32_t, std::pair<icu::UnicodeString, MonitoredValue>> VarsMap;
+    // TODO: use something other than ustring?? (ObjString* or Value??)
+    typedef std::unordered_map<int32_t, std::pair<ustring, MonitoredValue>> VarsMap;
 
     mutable SpinLock varsLock;
     VarsMap vars;

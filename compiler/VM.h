@@ -187,10 +187,10 @@ public:
     void enableOpcodeProfiling(std::string filePath = {});
     void writeOpcodeProfile();
 
-    ptr<BuiltinModule> getBuiltinModule(const icu::UnicodeString& name);
-    Value getBuiltinModuleType(const icu::UnicodeString& name);
-    std::optional<Value> loadGlobal(const icu::UnicodeString& name) { return globals.load(name); }
-    void storeGlobal(const icu::UnicodeString& name, const Value& value) { globals.storeGlobal(name, value); }
+    ptr<BuiltinModule> getBuiltinModule(const ustring& name);
+    Value getBuiltinModuleType(const ustring& name);
+    std::optional<Value> loadGlobal(const ustring& name) { return globals.load(name); }
+    void storeGlobal(const ustring& name, const Value& value) { globals.storeGlobal(name, value); }
     void registerBuiltinModule(ptr<BuiltinModule> module);
 
     // Cross-compiler user-module canonicalisation.  Each RoxalCompiler
@@ -209,8 +209,8 @@ public:
     // body runs, so a circular import (A's body imports B, B's body
     // re-imports A) sees A's already-registered (partially-populated)
     // module rather than infinitely recursing.
-    std::optional<Value> lookupUserModule(const icu::UnicodeString& qualifiedName);
-    void registerUserModule(const icu::UnicodeString& qualifiedName, const Value& moduleType);
+    std::optional<Value> lookupUserModule(const ustring& qualifiedName);
+    void registerUserModule(const ustring& qualifiedName, const Value& moduleType);
 
     // REPL-only: drop all cached user-module entries so the next `import X.*`
     // re-runs each module's body, picking up source edits.  Does NOT reset
@@ -291,7 +291,7 @@ public:
     /// `receiver` must stay reachable (a GC root) between registration and
     /// the next run()/runWithImports(); in practice it is, being held by a
     /// module var passed through `imports`.
-    void addScriptPrelude(const Value& receiver, const icu::UnicodeString& method);
+    void addScriptPrelude(const Value& receiver, const ustring& method);
 
     /// Execute for up to the given duration, then yield.
     /// Returns: {OK, returnValue} if completed, {Yielded, nil} if budget exhausted or blocked,
@@ -449,7 +449,7 @@ public:
     /// execute()), so callers must be re-entrancy-safe (e.g. not hold VM-internal
     /// references across the call).
     std::pair<ExecutionStatus,Value> invokeMethod(const Value& receiver,
-                                                  const icu::UnicodeString& methodName,
+                                                  const ustring& methodName,
                                                   const std::vector<Value>& args,
                                                   TimePoint deadline = TimePoint::max());
     bool indexValue(const Value& indexable, int subscriptCount);
@@ -681,7 +681,7 @@ protected:
     // so this is not an additional retention path in practice).  Mutex
     // serialises concurrent registrations from multi-threaded
     // compilation paths and from compile-vs-reconcile races.
-    std::unordered_map<icu::UnicodeString, Value> userModuleRegistry;
+    std::unordered_map<ustring, Value> userModuleRegistry;
     std::mutex userModuleRegistryMutex;
     // gRPC / DDS module back-pointers.  Declared UNCONDITIONALLY so the size
     // and field offsets of `class VM` are identical whether or not a TU is
@@ -726,7 +726,7 @@ protected:
     // Host-registered prelude invocations (see addScriptPrelude). Run once,
     // on the script thread, before the body's frame — then cleared. Empty in
     // the default build, so behaviour is unchanged.
-    std::vector<std::pair<Value, icu::UnicodeString>> scriptPreludes_;
+    std::vector<std::pair<Value, ustring>> scriptPreludes_;
 
     // Host UI event-loop integration (e.g. Qt). When set (serviced on the main
     // thread only), the dispatch loop pumps the host loop while busy and blocks
@@ -752,7 +752,7 @@ protected:
     // multiple threads (RT main thread + non-RT actor threads).
     bool nativeCallTimingEnabled_ { false };
     static thread_local TimePoint nativeCallDeadline_;
-    static thread_local UnicodeString nativeCallContext_;
+    static thread_local ustring nativeCallContext_;
     static thread_local std::string nativeCallOverrun_; // set by callNativeFn() on overrun
 #ifdef ROXAL_COMPUTE_SERVER
     static thread_local PrintTarget currentPrintTarget_;

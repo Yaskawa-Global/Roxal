@@ -134,14 +134,14 @@ static_assert(int(OpCode::_Last) < 128);
 class Chunk
 {
 public:
-    Chunk(const icu::UnicodeString& packageName_, const icu::UnicodeString& moduleName_,
-          const icu::UnicodeString& sourceName_ = icu::UnicodeString());
+    Chunk(const ustring& packageName_, const ustring& moduleName_,
+          const ustring& sourceName_ = ustring());
     virtual ~Chunk() {}
 
     // fully-qualified package & module name (e.g. p.q.mod)
     //  is prefix for all module-level(global) names
-    icu::UnicodeString packageName;
-    icu::UnicodeString moduleName;
+    ustring packageName;
+    ustring moduleName;
 
     typedef std::vector<uint8_t> CodeType;
 
@@ -161,7 +161,7 @@ public:
         int column;
     };
 
-    icu::UnicodeString sourceName; // name of source file
+    ustring sourceName; // name of source file
 
     void write(uint8_t byte, int line, int column, const std::string& comment = "");
     void write(OpCode byte, int line, int column, const std::string& comment = "") { write(uint8_t(byte), line, column, comment); }
@@ -173,7 +173,7 @@ public:
     int getLine(size_type offset) const;
     int getColumn(size_type offset) const;
 
-    void disassemble(const icu::UnicodeString& name);
+    void disassemble(const ustring& name);
     size_type disassembleInstruction(size_type offset);
 
     void serialize(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const;
@@ -229,7 +229,7 @@ struct CallSpec {
     bool allPositional;
     struct ArgSpec {
         bool positional;
-        uint16_t paramNameHash; // lower 15bits of UnicodeString::hashCode()
+        uint16_t paramNameHash; // lower 15bits of ustring::hashCode()
     };
     std::vector<ArgSpec> args; // only used if !allPositional
 

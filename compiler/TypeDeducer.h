@@ -15,7 +15,7 @@ struct VarInfo {
 
 struct ScopeInfo {
     bool strict { false };
-    std::map<icu::UnicodeString, VarInfo> symbols;
+    std::map<ustring, VarInfo> symbols;
 };
 
 class TypeDeducer : public ast::ASTVisitor
@@ -95,8 +95,8 @@ private:
     void pushScope(bool strict);
     void popScope();
     bool currentStrict() const;
-    void declareVar(const icu::UnicodeString& name, ptr<type::Type> type, bool explicitType);
-    std::optional<VarInfo> lookupVar(const icu::UnicodeString& name) const;
+    void declareVar(const ustring& name, ptr<type::Type> type, bool explicitType);
+    std::optional<VarInfo> lookupVar(const ustring& name) const;
 };
 
 

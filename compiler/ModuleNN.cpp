@@ -902,12 +902,12 @@ static TokenizerWrapper* getTokenizerWrapper(ObjectInstance* inst) {
 
 // Split a UTF-8 string into individual UTF-8 code point strings
 static std::vector<std::string> utf8_chars(const std::string& s) {
-    icu::UnicodeString us = toUnicodeString(s);
+    ustring us = toUnicodeString(s);
     std::vector<std::string> chars;
     int32_t i = 0;
     while (i < us.length()) {
-        UChar32 cp = us.char32At(i);
-        int32_t next = i + U16_LENGTH(cp);
+        code_point cp = us.char32At(i);
+        int32_t next = i + utf16_code_unit_count(cp);
         std::string ch;
         us.tempSubStringBetween(i, next).toUTF8String(ch);
         chars.push_back(std::move(ch));

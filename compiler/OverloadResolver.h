@@ -6,7 +6,6 @@
 
 #include <core/types.h>
 #include <core/common.h>
-#include <unicode/unistr.h>
 
 #include <compiler/Value.h>
 
@@ -114,12 +113,12 @@ public:
 
     // Build a human-readable diagnostic for an Ambiguous or NoMatch result.
     // callName is the user-facing name of the call ("foo", "obj.method").
-    std::string ambiguityDiagnostic(const icu::UnicodeString&     callName,
+    std::string ambiguityDiagnostic(const ustring&     callName,
                                     const std::vector<Candidate>& candidates,
                                     const std::vector<uint16_t>&  tied,
                                     const std::vector<ArgInfo>&   args);
 
-    std::string noMatchDiagnostic(const icu::UnicodeString&     callName,
+    std::string noMatchDiagnostic(const ustring&     callName,
                                   const std::vector<Candidate>& candidates,
                                   const std::vector<ArgInfo>&   args);
 
@@ -134,7 +133,7 @@ public:
 
     // Render a one-line description of a method signature, like
     // "f(x :int, y :string) -> bool", suitable for error messages.
-    static std::string signatureToString(const icu::UnicodeString& name,
+    static std::string signatureToString(const ustring& name,
                                          const ptr<type::Type>&    funcType);
 
 private:

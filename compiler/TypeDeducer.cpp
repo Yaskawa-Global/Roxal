@@ -38,14 +38,14 @@ bool TypeDeducer::currentStrict() const
     return scopes.back().strict;
 }
 
-void TypeDeducer::declareVar(const icu::UnicodeString& name, ptr<Type> type, bool explicitType)
+void TypeDeducer::declareVar(const ustring& name, ptr<Type> type, bool explicitType)
 {
     if (scopes.empty())
         return;
     scopes.back().symbols[name] = VarInfo{type, explicitType};
 }
 
-std::optional<VarInfo> TypeDeducer::lookupVar(const icu::UnicodeString& name) const
+std::optional<VarInfo> TypeDeducer::lookupVar(const ustring& name) const
 {
     for (auto it = scopes.rbegin(); it != scopes.rend(); ++it) {
         auto vit = it->symbols.find(name);
@@ -149,7 +149,7 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
         int32_t nextValue = 0;
         bool isByteEnum = underlyingType->builtin == BuiltinType::Byte;
 
-        std::vector<std::pair<icu::UnicodeString, int32_t>> enumValues;
+        std::vector<std::pair<ustring, int32_t>> enumValues;
 
         for(auto& enumLabel : ast->enumLabels) {
 
@@ -290,13 +290,13 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
                 // `proc init(*)` sugar: expand the single `*` param into one
                 // ParamType per public property of the enclosing type so the
                 // compile-time OverloadResolver sees the synthesized signature.
-                bool isStarInit = method->name.value() == icu::UnicodeString("init")
+                bool isStarInit = method->name.value() == ustring("init")
                                   && method->params.size() == 1
                                   && method->params[0]->isStar;
                 if (isStarInit) {
                     // Helper: convert an AST VarType into a runtime
                     // type::Type, matching RoxalCompiler::emitStarInitPrologue.
-                    auto pushParam = [&](const icu::UnicodeString& name,
+                    auto pushParam = [&](const ustring& name,
                                          bool hasDefault,
                                          const ast::VarType* declaredType) {
                         type::Type::FuncType::ParamType pt(name);
@@ -330,7 +330,7 @@ std::any TypeDeducer::visit(ptr<ast::TypeDecl> ast)
                     // the public surface.
                     struct Entry {
                         ast::LinePos pos;
-                        icu::UnicodeString name;
+                        ustring name;
                         const ast::VarType* declaredType;
                     };
                     std::vector<Entry> entries;

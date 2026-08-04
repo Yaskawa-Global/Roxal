@@ -644,7 +644,7 @@ std::vector<Value> DdsAdapter::allocateTypes(const std::string& idlFile,
         Value declVal = Value::objectTypeVal(toUnicodeString(shortName(e.fullName)), false, false, true);
         ObjObjectType* enumObj = asObjectType(declVal);
         for (const auto& val : e.values) {
-            icu::UnicodeString labelName = toUnicodeString(val.first);
+            ustring labelName = toUnicodeString(val.first);
             Value enumValue = Value::enumVal(static_cast<int16_t>(val.second), enumObj->enumTypeId);
             enumObj->enumLabelValues[labelName.hashCode()] = std::make_pair(labelName, enumValue);
         }

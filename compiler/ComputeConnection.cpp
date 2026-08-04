@@ -107,14 +107,14 @@ static std::pair<std::string,uint16_t> parseHostPort(const std::string& hostPort
     return { host, port };
 }
 
-std::string toUtf8StdString(const icu::UnicodeString& value)
+std::string toUtf8StdString(const ustring& value)
 {
     std::string utf8;
     value.toUTF8String(utf8);
     return utf8;
 }
 
-icu::UnicodeString lastQualifiedSegment(const icu::UnicodeString& value)
+ustring lastQualifiedSegment(const ustring& value)
 {
     int32_t dotIndex = value.lastIndexOf('.');
     return dotIndex >= 0 ? value.tempSubString(dotIndex + 1) : value;
@@ -125,8 +125,8 @@ Value rewrapLike(const Value& original, const Value& replacement)
     return original.isWeak() ? replacement.weakRef() : replacement.strongRef();
 }
 
-Value findCanonicalModuleValue(const icu::UnicodeString& fullName,
-                               const icu::UnicodeString& moduleName)
+Value findCanonicalModuleValue(const ustring& fullName,
+                               const ustring& moduleName)
 {
     auto matchModule = [&](const Value& moduleValue) -> Value {
         if (!isModuleType(moduleValue))
@@ -183,9 +183,9 @@ bool isBuiltinModuleValue(const Value& moduleValue)
 }
 
 Value resolveNamedTypeFromModule(const Value& moduleValue,
-                                 const icu::UnicodeString& typeName)
+                                 const ustring& typeName)
 {
-    auto tryLoadType = [](const Value& container, const icu::UnicodeString& symbol) -> Value {
+    auto tryLoadType = [](const Value& container, const ustring& symbol) -> Value {
         if (!isModuleType(container))
             return Value::nilVal();
         auto loaded = asModuleType(container)->vars.load(symbol);
@@ -202,11 +202,11 @@ Value resolveNamedTypeFromModule(const Value& moduleValue,
 
         int32_t dotIndex = typeName.lastIndexOf('.');
         if (dotIndex >= 0) {
-            icu::UnicodeString modulePart = typeName.tempSubString(0, dotIndex);
-            icu::UnicodeString symbolPart = typeName.tempSubString(dotIndex + 1);
+            ustring modulePart = typeName.tempSubString(0, dotIndex);
+            ustring symbolPart = typeName.tempSubString(dotIndex + 1);
 
             Value importedModule = Value::nilVal();
-            icu::UnicodeString aliasFull = asModuleType(strongModule)->moduleAliasFullName(modulePart);
+            ustring aliasFull = asModuleType(strongModule)->moduleAliasFullName(modulePart);
             if (!aliasFull.isEmpty())
                 importedModule = findCanonicalModuleValue(aliasFull, lastQualifiedSegment(aliasFull));
             if (importedModule.isNil()) {
@@ -231,13 +231,13 @@ Value resolveNamedTypeFromModule(const Value& moduleValue,
 }
 
 struct RemoteTypeDependency {
-    icu::UnicodeString moduleFullName;
-    icu::UnicodeString moduleName;
-    icu::UnicodeString symbolName;
+    ustring moduleFullName;
+    ustring moduleName;
+    ustring symbolName;
     Value typeValue;
 };
 
-std::optional<std::pair<icu::UnicodeString, icu::UnicodeString>> findOwningModuleForType(const Value& typeValue)
+std::optional<std::pair<ustring, ustring>> findOwningModuleForType(const Value& typeValue)
 {
     if (!isObjectType(typeValue))
         return std::nullopt;
@@ -251,7 +251,7 @@ std::optional<std::pair<icu::UnicodeString, icu::UnicodeString>> findOwningModul
                 continue;
 
             ObjModuleType* module = asModuleType(moduleValue);
-            icu::UnicodeString fullName = module->fullName.isEmpty() ? module->name : module->fullName;
+            ustring fullName = module->fullName.isEmpty() ? module->name : module->fullName;
             return std::make_pair(fullName, module->name);
         }
     }
@@ -814,7 +814,7 @@ Value ComputeConnection::spawnActor(const Value& actorTypeVal,
 // ---------------------------------------------------------------------------
 
 Value ComputeConnection::callRemoteMethod(int64_t remoteActorId,
-                                          const icu::UnicodeString& methodName,
+                                          const ustring& methodName,
                                           const std::vector<Value>& args,
                                           const CallSpec& callSpec,
                                           Value* gcRootedResultSlot)
@@ -909,7 +909,7 @@ void ComputeConnection::sendPrintOutput(uint64_t callId, const std::string& text
 // ---------------------------------------------------------------------------
 
 void ComputeConnection::handleIncomingCall(uint64_t callId, int64_t actorId,
-                                           const icu::UnicodeString& method,
+                                           const ustring& method,
                                            const std::vector<Value>& args,
                                            const CallSpec& callSpec)
 {
@@ -1133,7 +1133,7 @@ void ComputeConnection::readerLoop()
                 uint64_t callId  = readU64(p, end);
                 int64_t actorId = static_cast<int64_t>(readU64(p, end));
                 std::string methodUtf8 = readString(p, end);
-                icu::UnicodeString method = icu::UnicodeString::fromUTF8(methodUtf8);
+                ustring method = ustring::fromUTF8(methodUtf8);
 
                 std::uint32_t specLen = readU32(p, end);
                 if (p + specLen > end)

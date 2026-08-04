@@ -125,12 +125,12 @@ void RoxalPropertyMap::buildRoles()
     // __set_ (get-only → read-only). Own type only, matching the stored-property surface.
     std::unordered_set<int32_t> seen;
     for (const auto& r : roles_) seen.insert(r.nameHash);
-    const icu::UnicodeString kGet("__get_");
+    const ustring kGet("__get_");
     for (const auto& mentry : t->methods) {
         for (const auto& m : mentry.second.overloads) {
             if (m.access != ast::Access::Public || !m.name.startsWith(kGet))
                 continue;
-            icu::UnicodeString propName = m.name.tempSubString(kGet.length());  // strip "__get_"
+            ustring propName = m.name.tempSubString(kGet.length());  // strip "__get_"
             int32_t propHash = propName.hashCode();
             if (!seen.insert(propHash).second)
                 continue;   // already a stored property or duplicate getter overload
@@ -140,8 +140,8 @@ void RoxalPropertyMap::buildRoles()
             r.name        = QString::fromStdString(toUTF8StdString(propName));
             r.computed    = true;
             r.getterName  = m.name;                                    // "__get_<name>"
-            r.setterName  = icu::UnicodeString("__set_") + propName;   // "__set_<name>"
-            r.backingHash = (icu::UnicodeString("_") + propName).hashCode();
+            r.setterName  = ustring("__set_") + propName;              // "__set_<name>"
+            r.backingHash = (ustring("_") + propName).hashCode();
             ObjObjectType::Method* setter = t->findUniqueMethod(r.setterName.hashCode());
             r.editable    = (setter != nullptr && setter->access == ast::Access::Public);
             roles_.push_back(r);
@@ -167,7 +167,7 @@ void RoxalPropertyMap::buildMethods()
     if (!isObjectInstance(obj_)) return;
     ObjObjectType* t = asObjectType(asObjectInstance(obj_)->instanceType);
     if (!t) return;
-    const icu::UnicodeString kGet("__get_"), kSet("__set_"), kInit("init");
+    const ustring kGet("__get_"), kSet("__set_"), kInit("init");
     for (const auto& mentry : t->methods) {
         const auto& overloads = mentry.second.overloads;
         if (overloads.size() != 1) continue;          // VM::invokeMethod resolves a UNIQUE method
@@ -183,7 +183,7 @@ void RoxalPropertyMap::buildMethods()
 QVariant RoxalPropertyMap::callMethod(const QString& name, const QVariantList& args)
 {
     if (!isObjectInstance(obj_)) return QVariant();
-    icu::UnicodeString uname = icu::UnicodeString::fromUTF8(name.toUtf8().constData());
+    ustring uname = ustring::fromUTF8(name.toUtf8().constData());
     std::vector<Value> vmArgs;
     vmArgs.reserve(static_cast<size_t>(args.size()));
     for (const QVariant& a : args) {
@@ -252,8 +252,8 @@ void RoxalPropertyMap::hookSignals()
         // fields won't auto-fire — use qt.notify(obj, name) for those.
         Role role = r;   // capture by value
         const int32_t observeHash = role.computed ? role.backingHash : role.nameHash;
-        const icu::UnicodeString observeName =
-            role.computed ? (icu::UnicodeString("_") + role.uname) : role.uname;
+        const ustring observeName =
+            role.computed ? (ustring("_") + role.uname) : role.uname;
         inst->observePropertyChange(observeHash, toUTF8StdString(observeName),
             [alive, self, role](TimePoint, ptr<df::Signal>, const Value&) {
                 if (!alive->load()) return;   // wrapper destroyed → ignore

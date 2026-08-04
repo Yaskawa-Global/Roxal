@@ -33,7 +33,7 @@ QObject* ObjQtObject::deref(const char* op) const
     return o;
 }
 
-static QByteArray nameToUtf8(const icu::UnicodeString& name)
+static QByteArray nameToUtf8(const ustring& name)
 {
     return QByteArray::fromStdString(toUTF8StdString(name));
 }
@@ -92,7 +92,7 @@ static Value makeBoundMethod(const Value& self, std::string mname)
     });
 }
 
-bool ObjQtObject::tryGetDynamicProperty(const Value& self, const icu::UnicodeString& name, Value& out)
+bool ObjQtObject::tryGetDynamicProperty(const Value& self, const ustring& name, Value& out)
 {
     const std::string m = toUTF8StdString(name);
     ensureQtUiThread(m.c_str());   // reject actor/off-UI-thread reads
@@ -148,7 +148,7 @@ bool ObjQtObject::tryGetDynamicProperty(const Value& self, const icu::UnicodeStr
                              o->metaObject()->className());
 }
 
-bool ObjQtObject::trySetDynamicProperty(const icu::UnicodeString& name, const Value& value)
+bool ObjQtObject::trySetDynamicProperty(const ustring& name, const Value& value)
 {
     QObject* o = deref("property write");
     QByteArray nm = nameToUtf8(name);
@@ -217,7 +217,7 @@ static void invokeMetaMethod(QObject* o, const QMetaMethod& mm, const Value* arg
                                  mm.name().constData() + "' on " + o->metaObject()->className());
 }
 
-bool ObjQtObject::tryInvokeDynamicMethod(const icu::UnicodeString& name, const Value* args,
+bool ObjQtObject::tryInvokeDynamicMethod(const ustring& name, const Value* args,
                                          int argCount, Value& out)
 {
     const std::string m = toUTF8StdString(name);

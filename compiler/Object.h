@@ -9,7 +9,6 @@
 #include <condition_variable>
 #include <memory>
 #include <utility>
-#include <unicode/ustring.h>
 #include <ostream>
 #include <istream>
 #include <fstream>
@@ -73,8 +72,6 @@ void purgeDeadInternedStrings();
 
 
 namespace roxal {
-
-using icu::UnicodeString;
 
 struct UnreleasedObj; // forward declaration
 
@@ -155,9 +152,9 @@ struct Obj {
     // `self` is the receiver Value wrapping this Obj — needed so a getter can
     // return a bound callable for method-like names (Roxal methods are func-typed
     // members: `a.m(x)` looks up `a.m` then calls it).
-    virtual bool tryGetDynamicProperty(const Value& self, const icu::UnicodeString& name, Value& out) { (void)self; (void)name; (void)out; return false; }
-    virtual bool trySetDynamicProperty(const icu::UnicodeString& name, const Value& value) { (void)name; (void)value; return false; }
-    virtual bool tryInvokeDynamicMethod(const icu::UnicodeString& name, const Value* args, int argCount, Value& out) { (void)name; (void)args; (void)argCount; (void)out; return false; }
+    virtual bool tryGetDynamicProperty(const Value& self, const ustring& name, Value& out) { (void)self; (void)name; (void)out; return false; }
+    virtual bool trySetDynamicProperty(const ustring& name, const Value& value) { (void)name; (void)value; return false; }
+    virtual bool tryInvokeDynamicMethod(const ustring& name, const Value* args, int argCount, Value& out) { (void)name; (void)args; (void)argCount; (void)out; return false; }
 
     // MVCC: throws if this object is a frozen clone (const snapshot).
     // Call at the top of every mutation method to prevent const violations
@@ -475,10 +472,10 @@ inline unique_ptr<ObjPrimitive, UnreleasedObj> newTypeObj(ValueType t) {
 struct ObjString : public Obj
 {
     ObjString();
-    ObjString(const UnicodeString& us);
+    ObjString(const ustring& us);
     virtual ~ObjString();
 
-    UnicodeString s;
+    ustring s;
     // internKey is the value stored in the intern table; hash caches ICU hashCode().
     uint64_t internKey;
     int32_t hash;
@@ -503,14 +500,14 @@ struct ObjString : public Obj
 
 inline bool isString(const Value& v) { return isObjType(v, ObjType::String); }
 inline ObjString* asStringObj(const Value& v) { return static_cast<ObjString*>(v.asObj()); }
-inline UnicodeString asUString(const Value& v) { return asStringObj(v)->s; }
+inline ustring asUString(const Value& v) { return asStringObj(v)->s; }
 
 // allocate new ObjString on heap and copy s (or return existing interned string).
 // If wasInterned is non-null and the string was found in the intern table,
 // *wasInterned is set to true and the returned object has an extra strong ref
 // (via tryIncRef) that the caller must compensate for.
-unique_ptr<ObjString, UnreleasedObj> newObjString(const UnicodeString& s, bool* wasInterned = nullptr);
-void updateInternedString(ObjString* obj, const UnicodeString& newVal);
+unique_ptr<ObjString, UnreleasedObj> newObjString(const ustring& s, bool* wasInterned = nullptr);
+void updateInternedString(ObjString* obj, const ustring& newVal);
 
 std::string objStringToString(const ObjString* os);
 
@@ -1233,7 +1230,7 @@ unique_ptr<ObjChangeNotifier, UnreleasedObj> newChangeNotifierObj();
 
 struct ObjEventType : public Obj {
     struct PayloadProperty {
-        icu::UnicodeString name;
+        ustring name;
         Value type;
         Value initialValue;
     };
@@ -1244,10 +1241,10 @@ struct ObjEventType : public Obj {
         uint16_t hash15;
     };
 
-    explicit ObjEventType(const icu::UnicodeString& name);
+    explicit ObjEventType(const ustring& name);
     virtual ~ObjEventType() {}
 
-    icu::UnicodeString name;
+    ustring name;
     Value superType;
     std::vector<PayloadProperty> payloadProperties;
     std::unordered_map<int32_t, size_t> propertyLookup;
@@ -1290,7 +1287,7 @@ inline ObjEventType* asEventType(const Value& v) { return static_cast<ObjEventTy
 inline bool isEventInstance(const Value& v) { return isObjType(v, ObjType::EventInstance); }
 inline ObjEventInstance* asEventInstance(const Value& v) { return static_cast<ObjEventInstance*>(v.asObj()); }
 
-unique_ptr<ObjEventType, UnreleasedObj> newEventTypeObj(const icu::UnicodeString& name,
+unique_ptr<ObjEventType, UnreleasedObj> newEventTypeObj(const ustring& name,
                                                          Value superType = Value::nilVal());
 unique_ptr<ObjEventInstance, UnreleasedObj> newEventInstanceObj(const Value& eventType,
                                                                 std::unordered_map<int32_t, Value> payload = {});
@@ -1458,19 +1455,19 @@ struct BuiltinFuncInfo {
 
 struct ObjFunction : public Obj
 {
-    ObjFunction(const icu::UnicodeString& name,
-                const icu::UnicodeString& packageName,
-                const icu::UnicodeString& moduleName,
-                const icu::UnicodeString& sourceName);
+    ObjFunction(const ustring& name,
+                const ustring& packageName,
+                const ustring& moduleName,
+                const ustring& sourceName);
     virtual ~ObjFunction();
 
-    UnicodeString name;
+    ustring name;
     std::optional<ptr<roxal::type::Type>> funcType;
     int arity;
     int upvalueCount;
     ptr<Chunk> chunk;
     std::vector<ptr<ast::Annotation>> annotations;
-    icu::UnicodeString doc;
+    ustring doc;
     void* nativeSpec { nullptr }; // for ffi or other native info
     unique_ptr<BuiltinFuncInfo> builtinInfo;  // non-null when C++ impl attached via link()
 
@@ -1482,7 +1479,7 @@ struct ObjFunction : public Obj
     ast::MethodModifiers methodModifiers { 0 }; // bitset of MethodModifier flags
 
     // for parameters with default values that must be re-evaluated on each call
-    //  this is map from param name UnicodeString::hashCode() -> Value ObjFunction
+    //  this is map from param name ustring::hashCode() -> Value ObjFunction
     //  (where ObjFunction is a function that takes no params and returns the default value)
     std::map<int32_t, Value> paramDefaultFunc;
 
@@ -1506,10 +1503,10 @@ inline ObjFunction* asFunction(const Value& v) {
 }
 
 
-inline unique_ptr<ObjFunction, UnreleasedObj> newFunctionObj(const icu::UnicodeString& name,
-                                   const icu::UnicodeString& packageName,
-                                   const icu::UnicodeString& moduleName,
-                                   const icu::UnicodeString& sourceName) {
+inline unique_ptr<ObjFunction, UnreleasedObj> newFunctionObj(const ustring& name,
+                                   const ustring& packageName,
+                                   const ustring& moduleName,
+                                   const ustring& sourceName) {
     #ifdef DEBUG_BUILD
     return newObj<ObjFunction>(toUTF8StdString(name), __FILE__, __LINE__, name, packageName, moduleName, sourceName);
     #else
@@ -1831,7 +1828,7 @@ std::string objTypeSpecToString(const ObjTypeSpec* ots);
 
 struct ObjObjectType : public ObjTypeSpec
 {
-    ObjObjectType(const icu::UnicodeString& typeName, bool isactor = false, bool isinterface = false, bool isenumeration = false);
+    ObjObjectType(const ustring& typeName, bool isactor = false, bool isinterface = false, bool isenumeration = false);
 
     virtual ~ObjObjectType()
     {
@@ -1841,7 +1838,7 @@ struct ObjObjectType : public ObjTypeSpec
         }
     }
 
-    icu::UnicodeString name;
+    ustring name;
     bool isActor;
     bool isInterface;
     bool isEnumeration;
@@ -1859,13 +1856,13 @@ struct ObjObjectType : public ObjTypeSpec
 
     // name -> type, initial value
     struct Property {
-        icu::UnicodeString name;
+        ustring name;
         Value type;
         Value initialValue;
         ast::Access access { ast::Access::Public };
         bool isConst { false };
         Value ownerType { Value::nilVal() }; // weak ref to owning type
-        std::optional<icu::UnicodeString> ctype;
+        std::optional<ustring> ctype;
         // Resolved element type for a `SomeCStruct[N]` ctype. A Roxal list carries no
         // element type (unlike a C array), and the ctype is only text, so the base name
         // is resolved against the declaring module's namespace at declaration time --
@@ -1887,7 +1884,7 @@ struct ObjObjectType : public ObjTypeSpec
                                                                  bool& ambiguous) const;
 
     struct Method {
-        icu::UnicodeString name;
+        ustring name;
         Value closure;
         ast::Access access { ast::Access::Public };
         ast::MethodModifiers methodModifiers { 0 };
@@ -1938,11 +1935,11 @@ struct ObjObjectType : public ObjTypeSpec
     int32_t statementActionMethodHash { -1 };
 
     // name -> value
-    std::unordered_map<int32_t, std::pair<icu::UnicodeString, Value>> enumLabelValues;
+    std::unordered_map<int32_t, std::pair<ustring, Value>> enumLabelValues;
 
     // nested type declarations
     struct NestedType {
-        icu::UnicodeString name;
+        ustring name;
         Value type;
         ast::Access access { ast::Access::Public };
     };
@@ -1988,7 +1985,7 @@ inline bool isSubtypeOf(ObjObjectType* sourceType, ObjObjectType* targetType) {
 
 inline bool isEnumType(const Value& v) { return isObjType(v, ObjType::Type) && asTypeSpec(v)->typeValue == ValueType::Enum; }
 
-unique_ptr<ObjObjectType, UnreleasedObj> newObjectTypeObj(const icu::UnicodeString& typeName, bool isActor, bool isInterface = false, bool isEnumeration = false);
+unique_ptr<ObjObjectType, UnreleasedObj> newObjectTypeObj(const ustring& typeName, bool isActor, bool isInterface = false, bool isEnumeration = false);
 
 
 struct ObjPackageType : public ObjTypeSpec
@@ -2005,32 +2002,32 @@ struct ObjPackageType : public ObjTypeSpec
 
 struct ObjModuleType : public ObjTypeSpec
 {
-    ObjModuleType(const icu::UnicodeString& typeName);
+    ObjModuleType(const ustring& typeName);
 
     virtual ~ObjModuleType();
 
-    icu::UnicodeString name;
-    icu::UnicodeString fullName;
-    icu::UnicodeString sourcePath;
+    ustring name;
+    ustring fullName;
+    ustring sourcePath;
 
     // variables declared at runtime via VM OpCode::DefineModuleVar
     VariablesMap vars;
     std::unordered_set<int32_t> constVars;
 
-    void registerModuleAlias(const icu::UnicodeString& alias,
-                             const icu::UnicodeString& moduleFullName);
-    std::vector<std::pair<icu::UnicodeString, icu::UnicodeString>> moduleAliasSnapshot() const;
-    icu::UnicodeString moduleAliasFullName(const icu::UnicodeString& alias) const;
+    void registerModuleAlias(const ustring& alias,
+                             const ustring& moduleFullName);
+    std::vector<std::pair<ustring, ustring>> moduleAliasSnapshot() const;
+    ustring moduleAliasFullName(const ustring& alias) const;
     void clearModuleAliases();
 
     // Registered literal suffixes: suffix string -> function name
     // Populated during compilation of @suffix-annotated functions.
-    std::unordered_map<icu::UnicodeString, icu::UnicodeString> registeredSuffixes;
+    std::unordered_map<ustring, ustring> registeredSuffixes;
 
     // cstruct type annotations: type name hash -> arch (32 or 64)
     std::unordered_map<int32_t, int> cstructArch;
     // property ctype annotations: type name hash -> (prop name hash -> ctype)
-    std::unordered_map<int32_t, std::unordered_map<int32_t, icu::UnicodeString>> propertyCTypes;
+    std::unordered_map<int32_t, std::unordered_map<int32_t, ustring>> propertyCTypes;
 
     static atomic_vector<Value> allModules;
 
@@ -2043,13 +2040,13 @@ struct ObjModuleType : public ObjTypeSpec
     void dropReferences() override;
 
 private:
-    std::unordered_map<int32_t, std::pair<icu::UnicodeString, icu::UnicodeString>> moduleAliases;
+    std::unordered_map<int32_t, std::pair<ustring, ustring>> moduleAliases;
 };
 
 inline bool isModuleType(const Value& v) { return isObjType(v, ObjType::Type) && (asTypeSpec(v)->typeValue == ValueType::Module); }
 inline ObjModuleType* asModuleType(const Value& v) { return static_cast<ObjModuleType*>(v.asObj()); }
 
-unique_ptr<ObjModuleType, UnreleasedObj> newModuleTypeObj(const icu::UnicodeString& typeName);
+unique_ptr<ObjModuleType, UnreleasedObj> newModuleTypeObj(const ustring& typeName);
 
 
 
@@ -2089,15 +2086,15 @@ struct ObjectInstance : public Obj
     void clearProperties() { ensureUnique(); properties_->clear(); }
 
     // convenience methods for property access by name (e.g. for builtin method implementations)
-    Value getProperty(const icu::UnicodeString& name) const;
+    Value getProperty(const ustring& name) const;
     Value getProperty(const std::string& name) const { return getProperty(toUnicodeString(name)); }
     Value getProperty(const char* name) const { return getProperty(toUnicodeString(name)); }
-    void setProperty(const icu::UnicodeString& name, Value value);  // MVCC-guarded
+    void setProperty(const ustring& name, Value value);  // MVCC-guarded
     void setProperty(const std::string& name, Value value) { setProperty(toUnicodeString(name), value); }
     void setProperty(const char* name, Value value) { setProperty(toUnicodeString(name), value); }
 
     Value ensurePropertySignal(int32_t nameHash, const std::string& signalName);
-    Value ensurePropertySignal(const icu::UnicodeString& name, const std::string& signalName)
+    Value ensurePropertySignal(const ustring& name, const std::string& signalName)
       { return ensurePropertySignal(name.hashCode(), signalName); }
 
     // Register a C++ observer fired (synchronously, on assign) when property
@@ -2297,10 +2294,10 @@ inline unique_ptr<ObjBoundMethod, UnreleasedObj> newBoundMethodObj(const Value& 
 //
 struct ObjOverloadSet : public Obj
 {
-    ObjOverloadSet(const icu::UnicodeString& name);
+    ObjOverloadSet(const ustring& name);
     virtual ~ObjOverloadSet();
 
-    icu::UnicodeString name;
+    ustring name;
     std::vector<Value> closures;        // each entry is an ObjClosure*
     bool importedFromModule = false;    // true if populated by ImportModuleVars
 
@@ -2324,7 +2321,7 @@ struct ObjOverloadSet : public Obj
 inline bool isOverloadSet(const Value& v) { return isObjType(v, ObjType::OverloadSet); }
 inline ObjOverloadSet* asOverloadSet(const Value& v) { return static_cast<ObjOverloadSet*>(v.asObj()); }
 
-inline unique_ptr<ObjOverloadSet, UnreleasedObj> newOverloadSetObj(const icu::UnicodeString& name) {
+inline unique_ptr<ObjOverloadSet, UnreleasedObj> newOverloadSetObj(const ustring& name) {
 #ifdef DEBUG_BUILD
     return newObj<ObjOverloadSet>(__func__, __FILE__, __LINE__, name);
 #else

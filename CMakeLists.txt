@@ -54,6 +54,22 @@ endif()
 
 option(ROXAL_BUILD_MAIN "Build the roxal executable" ON)
 
+# Unicode text storage and operations provider.  Keep this as a backend selector
+# rather than a boolean: WebAssembly will eventually add a JS-hosted provider.
+set(ROXAL_UNICODE_BACKEND "icu" CACHE STRING
+    "Unicode backend: icu (full Unicode operations) or builtin (UTF-16 core only)")
+set_property(CACHE ROXAL_UNICODE_BACKEND PROPERTY STRINGS icu builtin)
+string(TOLOWER "${ROXAL_UNICODE_BACKEND}" ROXAL_UNICODE_BACKEND)
+if(ROXAL_UNICODE_BACKEND STREQUAL "icu")
+    add_compile_definitions(ROXAL_UNICODE_BACKEND_ICU)
+    set(ROXAL_UNICODE_LIBRARIES icuio icui18n icuuc icudata)
+elseif(ROXAL_UNICODE_BACKEND STREQUAL "builtin")
+    add_compile_definitions(ROXAL_UNICODE_BACKEND_BUILTIN)
+    set(ROXAL_UNICODE_LIBRARIES)
+else()
+    message(FATAL_ERROR "ROXAL_UNICODE_BACKEND must be 'icu' or 'builtin' (got '${ROXAL_UNICODE_BACKEND}')")
+endif()
+
 
 option(ROXAL_ENABLE_ALL "Enable all optional modules" OFF)
 option(ROXAL_ENABLE_FILEIO "Enable builtin file I/O module" ON)
@@ -494,10 +510,7 @@ add_library(roxalast STATIC ${ROXALAST_SOURCES} ${GENERATED_SOURCES})
 add_dependencies(roxalast generate_parser)
 target_link_libraries(roxalast PUBLIC
     antlr4-runtime
-    icuio
-    icui18n
-    icuuc
-    icudata
+    ${ROXAL_UNICODE_LIBRARIES}
     pthread
 )
 target_compile_options(roxalast PRIVATE
@@ -525,6 +538,11 @@ target_compile_definitions(roxalast PRIVATE
 # ROXAL_HAS_* exports, which silently omitted FILEIO/SOCKET/AI_NN and produced
 # ODR violations across the host<->libroxal boundary.
 set(ROXAL_ABI_DEFINITIONS "")
+if(ROXAL_UNICODE_BACKEND STREQUAL "icu")
+    list(APPEND ROXAL_ABI_DEFINITIONS ROXAL_UNICODE_BACKEND_ICU)
+else()
+    list(APPEND ROXAL_ABI_DEFINITIONS ROXAL_UNICODE_BACKEND_BUILTIN)
+endif()
 set(_roxal_features_on "")
 set(_roxal_features_off "")
 foreach(_roxal_feature FILEIO GRPC DDS REGEX XML SOCKET FFI ONNX AI_NN MEDIA QT)
@@ -592,6 +610,12 @@ target_link_libraries(roxal_abi INTERFACE
     $<$<BOOL:${ROXAL_ENABLE_XML}>:pugixml::pugixml>
 )
 
+# Backend-parity tests for the Roxal-owned text abstraction.  The same target
+# is compiled by each CMake backend configuration.
+add_executable(roxal_ustring_test core/ustring_test.cpp)
+target_link_libraries(roxal_ustring_test PRIVATE roxal_abi ${ROXAL_UNICODE_LIBRARIES})
+add_test(NAME RoxalUString COMMAND roxal_ustring_test)
+
 # Build the static library containing the core compiler and VM
 add_library(roxalcore STATIC ${CORE_SOURCES} ${COMPILER_SOURCES} ${GENERATED_SOURCES})
 set_target_properties(roxalcore PROPERTIES OUTPUT_NAME roxal)
@@ -603,10 +627,7 @@ target_link_libraries(roxalcore
     PUBLIC
         roxal_abi        # shared ABI definitions; PUBLIC so the roxal exe inherits them too
         antlr4-runtime
-        icuio
-        icui18n
-        icuuc
-        icudata
+        ${ROXAL_UNICODE_LIBRARIES}
         pthread
         dataflow
         dl

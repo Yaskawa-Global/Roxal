@@ -36,12 +36,12 @@ inline void setModifier(MethodModifiers& m, MethodModifier flag) {
 }
 
 // Qualified type name: ["Outer", "Inner"] for Outer.Inner, or ["Foo"] for simple Foo
-using TypeName = std::vector<icu::UnicodeString>;
+using TypeName = std::vector<ustring>;
 // Type reference: either a builtin type or a qualified user type name
 using VarType = std::variant<BuiltinType, TypeName>;
 
-inline icu::UnicodeString joinTypeName(const TypeName& components) {
-    icu::UnicodeString result = components[0];
+inline ustring joinTypeName(const TypeName& components) {
+    ustring result = components[0];
     for (size_t i = 1; i < components.size(); i++) {
         result += ".";
         result += components[i];
@@ -190,7 +190,7 @@ struct LinePos {
 };
 
 
-typedef std::pair<icu::UnicodeString, ptr<Expression>> ArgNameExpr;
+typedef std::pair<ustring, ptr<Expression>> ArgNameExpr;
 // start,stop,step,is-stop-inclusive
 typedef std::tuple<ptr<Expression>,ptr<Expression>,ptr<Expression>,bool> RangeExpr;
 typedef std::vector<std::any> Anys;
@@ -275,7 +275,7 @@ struct SingleInput : public AST {
 
 struct Annotation : public AST {
 
-    icu::UnicodeString name;
+    ustring name;
 
     std::vector<ArgNameExpr> args;
 
@@ -290,8 +290,8 @@ struct Annotation : public AST {
 
 struct Import : public AST {
 
-    std::vector<icu::UnicodeString> packages; // [[package.]package.]module
-    std::vector<icu::UnicodeString> symbols;  // empty, or ["*"] or list
+    std::vector<ustring> packages; // [[package.]package.]module
+    std::vector<ustring> symbols;  // empty, or ["*"] or list
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
@@ -406,7 +406,7 @@ struct ContinueStatement : public Statement {
 struct JumpStatement : public Statement {
     JumpStatement() : Statement(StmtType::Jump) {}
 
-    icu::UnicodeString name; // target label name
+    ustring name; // target label name
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
@@ -419,7 +419,7 @@ struct JumpStatement : public Statement {
 struct LabelStatement : public Statement {
     LabelStatement() : Statement(StmtType::Label) {}
 
-    icu::UnicodeString name; // label name
+    ustring name; // label name
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
@@ -473,7 +473,7 @@ struct WhenStatement : public Statement {
     WhenStatement() : Statement(StmtType::When) {}
 
     ptr<ast::Expression> trigger;
-    std::optional<icu::UnicodeString> binding;
+    std::optional<ustring> binding;
     std::optional<ptr<ast::Expression>> becomes;
     std::optional<ptr<ast::Expression>> targetFilter;  // RHS of: where <binding>.target == <expr>
     bool matchesBecomes { false };
@@ -531,7 +531,7 @@ struct TryStatement : public Statement {
     ptr<ast::Suite> body;
     struct ExceptClause {
         std::optional<ptr<ast::Expression>> type;
-        std::optional<icu::UnicodeString> name;
+        std::optional<ustring> name;
         ptr<ast::Suite> body;
     };
     std::vector<ExceptClause> exceptClauses;
@@ -603,7 +603,7 @@ struct WithStatement : public Statement {
 struct VarDecl : public Declaration {
     VarDecl() : Declaration(DeclType::Var) {}
 
-    icu::UnicodeString name;
+    ustring name;
     std::optional<ptr<Expression>> initializer;
     std::optional<VarType> varType;
     Access access { Access::Public };
@@ -620,7 +620,7 @@ struct VarDecl : public Declaration {
 
 
 struct PropertyAccessor : public AST {
-    icu::UnicodeString name;
+    ustring name;
     VarType propType;
     std::optional<ptr<Expression>> initializer;
     Access access { Access::Public };
@@ -654,7 +654,7 @@ struct FuncDecl : public Declaration {
 
 struct Function : public AST {
     bool isProc;
-    std::optional<icu::UnicodeString> name; // none if lambda func
+    std::optional<ustring> name; // none if lambda func
     std::vector<ptr<Parameter>> params;
     std::optional<std::vector<VarType>> returnTypes;
     std::vector<bool> returnTypeConst; // parallel to returnTypes: true if 'const' qualifier
@@ -671,7 +671,7 @@ struct Function : public AST {
 
 
 struct Parameter : public AST {
-    icu::UnicodeString name;
+    ustring name;
     std::optional<VarType> type;
     std::optional<ptr<Expression>> defaultValue;
     bool variadic = false;  // true if ...name syntax (collects remaining positional args)
@@ -692,7 +692,7 @@ struct TypeDecl : public Declaration {
     enum Kind { Object, Actor, Interface, Enumeration, Event };
     Kind kind;
 
-    icu::UnicodeString name;
+    ustring name;
     Access access { Access::Public }; // for nested type declarations
     std::optional<TypeName> extends;
     std::vector<TypeName> implements;
@@ -706,7 +706,7 @@ struct TypeDecl : public Declaration {
     std::vector<ptr<PropertyAccessor>> propertyAccessors;
 
     // only for enumerations
-    std::vector<std::pair<icu::UnicodeString, ptr<Expression>>> enumLabels;
+    std::vector<std::pair<ustring, ptr<Expression>>> enumLabels;
 
     // nested type declarations within object/actor types
     std::vector<ptr<TypeDecl>> nestedTypes;
@@ -777,7 +777,7 @@ struct UnaryOp : public Expression {
     Op op;
     std::string opString() const;
 
-    std::optional<icu::UnicodeString> member;
+    std::optional<ustring> member;
     ptr<Expression> arg;
 
     virtual std::any accept(ASTVisitor& v);
@@ -811,9 +811,9 @@ struct Assignment : public Expression {
 
 struct Variable : public Expression {
     Variable() : Expression(ExprType::Variable) {}
-    Variable(const icu::UnicodeString& s) : Expression(ExprType::Variable), name(s) {}
+    Variable(const ustring& s) : Expression(ExprType::Variable), name(s) {}
 
-    icu::UnicodeString name;
+    ustring name;
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
@@ -938,7 +938,7 @@ struct Num : public Literal {
 struct Str : public Literal {
     Str() { literalType = LiteralType::Str; }
 
-    icu::UnicodeString str;
+    ustring str;
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
@@ -952,10 +952,10 @@ struct Str : public Literal {
 // literal, `"x"` vs `"{'x'}"`, must not look alike to the visual editor.
 struct StrInterpPart {
     StrInterpPart() = default;
-    explicit StrInterpPart(const icu::UnicodeString& t) : text(t) {}
+    explicit StrInterpPart(const ustring& t) : text(t) {}
     explicit StrInterpPart(ptr<Expression> e) : expr(e) {}
 
-    icu::UnicodeString text;   // literal run; meaningful only when expr == nullptr
+    ustring text;              // literal run; meaningful only when expr == nullptr
     ptr<Expression> expr;      // placeholder expression; null for a literal run
 
     bool isLiteral() const { return expr == nullptr; }
@@ -968,7 +968,7 @@ struct StrInterp : public Literal {
     StrInterp() { literalType = LiteralType::StrInterp; }
 
     std::vector<StrInterpPart> parts;
-    icu::UnicodeString suffix;   // empty unless this was a suffixed literal ("{n} m"kg)
+    ustring suffix;   // empty unless this was a suffixed literal ("{n} m"kg)
 
     // number of parts that are placeholders (i.e. children a visitor will see)
     size_t exprCount() const {
@@ -988,7 +988,7 @@ struct SuffixedNum : public Literal {
     SuffixedNum() { literalType = LiteralType::SuffixedNum; }
 
     std::variant<int32_t,int64_t,double> num;
-    icu::UnicodeString suffix;  // raw suffix string: "m", "m/s", "kg·m/s²", etc.
+    ustring suffix;  // raw suffix string: "m", "m/s", "kg·m/s²", etc.
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;
@@ -997,8 +997,8 @@ struct SuffixedNum : public Literal {
 struct SuffixedStr : public Literal {
     SuffixedStr() { literalType = LiteralType::SuffixedStr; }
 
-    icu::UnicodeString str;
-    icu::UnicodeString suffix;
+    ustring str;
+    ustring suffix;
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;

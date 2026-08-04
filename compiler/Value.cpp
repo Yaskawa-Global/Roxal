@@ -282,7 +282,7 @@ std::string roxal::to_string(ValueType t)
 
 //
 // Reference type constructors
-Value Value::stringVal(const icu::UnicodeString& s)
+Value Value::stringVal(const ustring& s)
 {
     bool wasInterned = false;
     auto v = Value::objVal(newObjString(s, &wasInterned));
@@ -429,10 +429,10 @@ Value Value::exceptionVal(Value message, Value exType, Value stackTrace, Value d
     return Value::objVal(newExceptionObj(message, exType, stackTrace, detail));
 }
 
-Value Value::functionVal(const icu::UnicodeString& name,
-                         const icu::UnicodeString& packageName,
-                         const icu::UnicodeString& moduleName,
-                         const icu::UnicodeString& sourceName)
+Value Value::functionVal(const ustring& name,
+                         const ustring& packageName,
+                         const ustring& moduleName,
+                         const ustring& sourceName)
 {
     return Value::objVal(newFunctionObj(name, packageName, moduleName, sourceName));
 }
@@ -465,12 +465,12 @@ Value Value::typeSpecVal(ValueType t)
     return Value::objVal(newTypeSpecObj(t));
 }
 
-Value Value::objectTypeVal(const icu::UnicodeString& typeName, bool isActor, bool isInterface, bool isEnumeration)
+Value Value::objectTypeVal(const ustring& typeName, bool isActor, bool isInterface, bool isEnumeration)
 {
     return Value::objVal(newObjectTypeObj(typeName, isActor, isInterface, isEnumeration));
 }
 
-Value Value::moduleTypeVal(const icu::UnicodeString& typeName)
+Value Value::moduleTypeVal(const ustring& typeName)
 {
     return Value::objVal(newModuleTypeObj(typeName));
 }
@@ -1400,7 +1400,7 @@ std::vector<std::tuple<std::string,bool,std::string>> roxal::testValueSerializat
     roundTrip("byte_val", Value::byteVal(123));
     roundTrip("int_val", Value::intVal(-42));
     roundTrip("real_val", Value::realVal(3.5));
-    roundTrip("string_val", Value::stringVal(UnicodeString("hello")));
+    roundTrip("string_val", Value::stringVal(ustring("hello")));
     roundTrip("range_val", Value::rangeVal(Value::intVal(1), Value::intVal(3), Value::intVal(1), false));
 
     Value lst { Value::listVal() };
@@ -1642,7 +1642,7 @@ Value roxal::defaultValue(ValueType t)
         case ValueType::Decimal: throw std::runtime_error("decimal unimplemented");
         case ValueType::Enum: throw std::runtime_error("Can't create default enum value without type"); // shouldn't be called for this t
         case ValueType::Type: return Value::typeVal(ValueType::Nil);
-        case ValueType::String: return Value::stringVal(UnicodeString());
+        case ValueType::String: return Value::stringVal(ustring());
         case ValueType::Range: return Value::rangeVal();
         case ValueType::List: return Value::listVal();
         case ValueType::Dict: return Value::dictVal();
@@ -1707,10 +1707,10 @@ Value roxal::toType(ValueType t, Value v, bool strict)
                     return msg;
                 if (!msg.isNil())
                     return Value::stringVal(toUnicodeString(toString(msg)));
-                return Value::stringVal(UnicodeString());
+                return Value::stringVal(ustring());
             }
 
-            // TODO: use alternate 'non-debug' string conversion only utilizing UnicodeString
+            // TODO: use alternate 'non-debug' string conversion only utilizing ustring
             return Value::stringVal(toUnicodeString(toString(v)));
         } break;
         case ValueType::Range: {
@@ -3615,16 +3615,16 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
             ValueType tv = static_cast<ValueType>(subType);
             switch (tv) {
                 case ValueType::Object:
-                    owned = Value::objectTypeVal(icu::UnicodeString(), false, false, false);
+                    owned = Value::objectTypeVal(ustring(), false, false, false);
                     break;
                 case ValueType::Actor:
-                    owned = Value::objectTypeVal(icu::UnicodeString(), true, false, false);
+                    owned = Value::objectTypeVal(ustring(), true, false, false);
                     break;
                 case ValueType::Enum:
-                    owned = Value::objectTypeVal(icu::UnicodeString(), false, false, true);
+                    owned = Value::objectTypeVal(ustring(), false, false, true);
                     break;
                 case ValueType::Module:
-                    owned = Value::moduleTypeVal(icu::UnicodeString());
+                    owned = Value::moduleTypeVal(ustring());
                     break;
                 default:
                     owned = Value::typeSpecVal(tv);
@@ -3759,7 +3759,7 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
         }
         case ValueType::Function: {
             return readOwnedObject([&](){
-                return Value::functionVal(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString());
+                return Value::functionVal(ustring(), ustring(), ustring(), ustring());
             });
         }
         case ValueType::Closure: {
@@ -3785,9 +3785,9 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
 
             Value owned;
             if (typeTag == static_cast<uint8_t>(ObjType::OverloadSet)) {
-                owned = Value::objVal(newOverloadSetObj(icu::UnicodeString()));
+                owned = Value::objVal(newOverloadSetObj(ustring()));
             } else {
-                Value func { Value::functionVal(icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString(), icu::UnicodeString()) };
+                Value func { Value::functionVal(ustring(), ustring(), ustring(), ustring()) };
                 owned = Value::closureVal(func);
             }
             Obj* obj = owned.asObj();

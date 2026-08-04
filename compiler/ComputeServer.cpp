@@ -188,14 +188,14 @@ std::vector<Value> deserializeValueListForServer(const std::uint8_t*& p, const s
     return vals;
 }
 
-std::string toUtf8StdString(const icu::UnicodeString& value)
+std::string toUtf8StdString(const ustring& value)
 {
     std::string utf8;
     value.toUTF8String(utf8);
     return utf8;
 }
 
-icu::UnicodeString lastQualifiedSegment(const icu::UnicodeString& value)
+ustring lastQualifiedSegment(const ustring& value)
 {
     int32_t dotIndex = value.lastIndexOf('.');
     return dotIndex >= 0 ? value.tempSubString(dotIndex + 1) : value;
@@ -206,8 +206,8 @@ Value rewrapLike(const Value& original, const Value& replacement)
     return original.isWeak() ? replacement.weakRef() : replacement.strongRef();
 }
 
-Value findCanonicalModuleValue(const icu::UnicodeString& fullName,
-                               const icu::UnicodeString& moduleName)
+Value findCanonicalModuleValue(const ustring& fullName,
+                               const ustring& moduleName)
 {
     auto matchModule = [&](const Value& moduleValue) -> Value {
         if (!isModuleType(moduleValue))
@@ -255,14 +255,14 @@ Value findCanonicalModuleValue(const icu::UnicodeString& fullName,
     return Value::nilVal();
 }
 
-Value findOrCreateCanonicalModule(const icu::UnicodeString& fullName,
-                                  const icu::UnicodeString& moduleName)
+Value findOrCreateCanonicalModule(const ustring& fullName,
+                                  const ustring& moduleName)
 {
     Value existing = findCanonicalModuleValue(fullName, moduleName);
     if (existing.isNonNil())
         return existing.strongRef();
 
-    icu::UnicodeString localName = moduleName;
+    ustring localName = moduleName;
     if (localName.isEmpty())
         localName = lastQualifiedSegment(fullName);
     Value created = Value::moduleTypeVal(localName);
@@ -273,9 +273,9 @@ Value findOrCreateCanonicalModule(const icu::UnicodeString& fullName,
 }
 
 struct RemoteSpawnDependency {
-    icu::UnicodeString moduleFullName;
-    icu::UnicodeString moduleName;
-    icu::UnicodeString symbolName;
+    ustring moduleFullName;
+    ustring moduleName;
+    ustring symbolName;
     std::uint64_t fingerprint { 0 };
     Value deserializedValue;   // allowed-raw: traced via traceSpawnDependencies
     Value canonicalValue;      // allowed-raw: traced via traceSpawnDependencies
@@ -440,7 +440,7 @@ const ObjObjectType::Method* findMethodRecursive(ObjObjectType* type, int32_t na
     return nullptr;
 }
 
-Value bindActorMethodForServer(const Value& actorVal, const icu::UnicodeString& methodName)
+Value bindActorMethodForServer(const Value& actorVal, const ustring& methodName)
 {
     ObjObjectType* type = asObjectType(asActorInstance(actorVal)->instanceType);
     const auto* method = findMethodRecursive(type, methodName.hashCode());
@@ -480,7 +480,7 @@ Value spawnActorForServer(const Value& actorTypeVal, const std::vector<Value>& i
     asActorInstance(actorVal)->thread = newThread;
     newThread->act(actorVal);
 
-    const icu::UnicodeString initName = toUnicodeString("init");
+    const ustring initName = toUnicodeString("init");
     const auto* initMethod = findMethodRecursive(asObjectType(actorTypeVal), initName.hashCode());
     if (initMethod != nullptr) {
         Value boundInit = bindActorMethodForServer(actorVal, initName);
@@ -662,9 +662,9 @@ void ComputeServer::handleClient(int clientFd)
                 RemoteTypeCanonicalizer canonicalizer;
                 for (std::uint32_t i = 0; i < dependencyCount; ++i) {
                     RemoteSpawnDependency dependency {};
-                    dependency.moduleFullName = icu::UnicodeString::fromUTF8(readString(p, end));
-                    dependency.moduleName = icu::UnicodeString::fromUTF8(readString(p, end));
-                    dependency.symbolName = icu::UnicodeString::fromUTF8(readString(p, end));
+                    dependency.moduleFullName = ustring::fromUTF8(readString(p, end));
+                    dependency.moduleName = ustring::fromUTF8(readString(p, end));
+                    dependency.symbolName = ustring::fromUTF8(readString(p, end));
                     dependency.fingerprint = readU64(p, end);
 
                     Value canonicalModule = findOrCreateCanonicalModule(
@@ -699,9 +699,9 @@ void ComputeServer::handleClient(int clientFd)
                     dependencies.push_back(std::move(dependency));
                 }
 
-                icu::UnicodeString actorModuleFullName = icu::UnicodeString::fromUTF8(readString(p, end));
-                icu::UnicodeString actorModuleName = icu::UnicodeString::fromUTF8(readString(p, end));
-                icu::UnicodeString actorSymbolName = icu::UnicodeString::fromUTF8(readString(p, end));
+                ustring actorModuleFullName = ustring::fromUTF8(readString(p, end));
+                ustring actorModuleName = ustring::fromUTF8(readString(p, end));
+                ustring actorSymbolName = ustring::fromUTF8(readString(p, end));
                 std::uint64_t actorFingerprint = readU64(p, end);
 
                 actorOwnerModule = findOrCreateCanonicalModule(actorModuleFullName, actorModuleName);
@@ -762,7 +762,7 @@ void ComputeServer::handleClient(int clientFd)
                 uint64_t callId = readU64(p, end);
                 int64_t actorId = static_cast<int64_t>(readU64(p, end));
                 std::string methodUtf8 = readString(p, end);
-                icu::UnicodeString methodName = icu::UnicodeString::fromUTF8(methodUtf8);
+                ustring methodName = ustring::fromUTF8(methodUtf8);
                 Value actorVal = actors.lookupActor(actorId);
                 if (actorVal.isNil()) {
                     sendCallError(conn, callId, "unknown actor id " + std::to_string(actorId));

@@ -148,7 +148,7 @@ RoxalListModel* roxalListModelPtr(const Value& v)
     if (!isObjectInstance(v)) return nullptr;
     ObjectInstance* inst = asObjectInstance(v);
     if (!isObjectType(inst->instanceType)) return nullptr;
-    if (asObjectType(inst->instanceType)->name != icu::UnicodeString("ListModel")) return nullptr;
+    if (asObjectType(inst->instanceType)->name != ustring("ListModel")) return nullptr;
     Value nativeVal = inst->getProperty("_native");
     if (!isForeignPtr(nativeVal)) return nullptr;
     auto* handle = static_cast<QPointer<RoxalListModel>*>(asForeignPtr(nativeVal)->ptr);
@@ -180,7 +180,7 @@ RoxalTreeModel* roxalTreeModelPtr(const Value& v)
     if (!isObjectInstance(v)) return nullptr;
     ObjectInstance* inst = asObjectInstance(v);
     if (!isObjectType(inst->instanceType)) return nullptr;
-    if (asObjectType(inst->instanceType)->name != icu::UnicodeString("TreeModel")) return nullptr;
+    if (asObjectType(inst->instanceType)->name != ustring("TreeModel")) return nullptr;
     Value nativeVal = inst->getProperty("_native");
     if (!isForeignPtr(nativeVal)) return nullptr;
     auto* handle = static_cast<QPointer<RoxalTreeModel>*>(asForeignPtr(nativeVal)->ptr);
@@ -212,7 +212,7 @@ RoxalTableModel* roxalTableModelPtr(const Value& v)
     if (!isObjectInstance(v)) return nullptr;
     ObjectInstance* inst = asObjectInstance(v);
     if (!isObjectType(inst->instanceType)) return nullptr;
-    if (asObjectType(inst->instanceType)->name != icu::UnicodeString("TableModel")) return nullptr;
+    if (asObjectType(inst->instanceType)->name != ustring("TableModel")) return nullptr;
     Value nativeVal = inst->getProperty("_native");
     if (!isForeignPtr(nativeVal)) return nullptr;
     auto* handle = static_cast<QPointer<RoxalTableModel>*>(asForeignPtr(nativeVal)->ptr);
@@ -243,7 +243,7 @@ QSortFilterProxyModel* roxalSortFilterPtr(const Value& v)
     if (!isObjectInstance(v)) return nullptr;
     ObjectInstance* inst = asObjectInstance(v);
     if (!isObjectType(inst->instanceType)) return nullptr;
-    if (asObjectType(inst->instanceType)->name != icu::UnicodeString("SortFilterModel")) return nullptr;
+    if (asObjectType(inst->instanceType)->name != ustring("SortFilterModel")) return nullptr;
     Value nativeVal = inst->getProperty("_native");
     if (!isForeignPtr(nativeVal)) return nullptr;
     auto* handle = static_cast<QPointer<QSortFilterProxyModel>*>(asForeignPtr(nativeVal)->ptr);
@@ -1537,7 +1537,7 @@ Value ModuleQt::tablemodel_init_builtin(ArgsView args)
         if (!isList(columns))
             throw std::runtime_error("qt.TableModel: columns must be a list (or nil for all properties)");
         const auto props = rowType->orderedPublicProperties();
-        auto hasProp = [&](const icu::UnicodeString& name) {
+        auto hasProp = [&](const ustring& name) {
             for (const auto& pv : props)
                 if (pv.property->name == name) return true;
             return false;
@@ -1545,7 +1545,7 @@ Value ModuleQt::tablemodel_init_builtin(ArgsView args)
         ObjList* cl = asList(columns);
         for (int32_t i = 0; i < cl->length(); ++i) {
             Value e = cl->getElement(static_cast<size_t>(i));
-            icu::UnicodeString prop;
+            ustring prop;
             if (isString(e)) {
                 prop = asStringObj(e)->s;
             } else if (isList(e)) {

@@ -18,8 +18,6 @@
 using namespace roxal;
 using namespace roxal::ast;
 
-using icu::UnicodeString;
-
 
 class ParseTracer {
 public:
@@ -111,7 +109,7 @@ void ASTGenerator::setSourceInfo(ptr<AST> ast, antlr4::tree::TerminalNode* termi
 }
 
 
-UnicodeString ASTGenerator::normalizeIdentifier(const std::string& text)
+ustring ASTGenerator::normalizeIdentifier(const std::string& text)
 {
     std::string identText = text;
 
@@ -121,29 +119,29 @@ UnicodeString ASTGenerator::normalizeIdentifier(const std::string& text)
 
     boost::replace_all(identText, "``", "`");
 
-    return UnicodeString::fromUTF8(identText);
+    return ustring::fromUTF8(identText);
 }
 
-UnicodeString ASTGenerator::identifierFromTerminal(antlr4::tree::TerminalNode* terminal)
+ustring ASTGenerator::identifierFromTerminal(antlr4::tree::TerminalNode* terminal)
 {
     if (!terminal)
         return {};
     return normalizeIdentifier(terminal->getText());
 }
 
-UnicodeString ASTGenerator::identifierFromContext(antlr4::ParserRuleContext* context)
+ustring ASTGenerator::identifierFromContext(antlr4::ParserRuleContext* context)
 {
     if (!context)
         return {};
     return normalizeIdentifier(context->getText());
 }
 
-UnicodeString ASTGenerator::operatorNameFromContext(RoxalParser::Operator_nameContext* context)
+ustring ASTGenerator::operatorNameFromContext(RoxalParser::Operator_nameContext* context)
 {
     // Conversion operator: "operator->string", "operator->int", "operator->MyType", etc.
     if (context->conversion_target()) {
         auto ct = context->conversion_target();
-        UnicodeString target;
+        ustring target;
         if (ct->builtin_type())
             target = toUnicodeString(ct->builtin_type()->getText());
         else if (ct->type_name()) {
@@ -152,17 +150,17 @@ UnicodeString ASTGenerator::operatorNameFromContext(RoxalParser::Operator_nameCo
                 components.push_back(identifierFromTerminal(ident));
             target = joinTypeName(components);
         }
-        return UnicodeString("operator->") + target;
+        return ustring("operator->") + target;
     }
 
     // Build canonical operator method name: "operator+", "loperator*", "roperator/", etc.
-    UnicodeString prefix;
+    ustring prefix;
     if (context->OPERATOR()) prefix = "operator";
     else if (context->LOPERATOR()) prefix = "loperator";
     else if (context->ROPERATOR()) prefix = "roperator";
 
     auto sym = context->operator_symbol();
-    UnicodeString symbol;
+    ustring symbol;
     if (sym->PLUS()) symbol = "+";
     else if (sym->MINUS()) symbol = "-";
     else if (sym->STAR() || sym->MULT()) symbol = "*";
@@ -419,7 +417,7 @@ struct ArgsOrAccessorInfo {
     bool accessor;
     bool indexer;
     bool arguments; // if indexer: arguments? (or slices)
-    UnicodeString accessed; // for accessor (or annotation identifier)
+    ustring accessed; // for accessor (or annotation identifier)
     // calls can include param names, indexers cannot (empty string if no name given)
     typedef std::vector<ArgNameExpr> ArgNameExprVec;
     ptr<ArgNameExprVec> args;
@@ -520,7 +518,7 @@ std::any ASTGenerator::visitImport_stmt(RoxalParser::Import_stmtContext *context
     if (context->STAR())
         import->symbols.push_back("*");
     else if (context->identifier_list()) {
-        auto symbols = anyas<std::vector<UnicodeString>>(visitIdentifier_list(context->identifier_list()));
+        auto symbols = anyas<std::vector<ustring>>(visitIdentifier_list(context->identifier_list()));
         import->symbols = symbols;
     }
 
@@ -533,7 +531,7 @@ std::any ASTGenerator::visitIdentifier_list(RoxalParser::Identifier_listContext 
 {
     visitStart();
 
-    std::vector<UnicodeString> symbols {};
+    std::vector<ustring> symbols {};
     for(auto i=0; i<context->IDENTIFIER().size(); i++) {
         auto component { identifierFromTerminal(context->IDENTIFIER().at(i)) };
         symbols.push_back(component);
@@ -912,14 +910,14 @@ std::any ASTGenerator::visitFor_stmt(RoxalParser::For_stmtContext *context)
     for(int i=0; i<context->ident_opt_type().size();i++) {
         auto ident_opt_type_any = visitIdent_opt_type(context->ident_opt_type().at(i));
 
-        auto ident_opt_type = anyas<std::pair<icu::UnicodeString,std::variant<std::monostate,BuiltinType,icu::UnicodeString>>>(ident_opt_type_any);
+        auto ident_opt_type = anyas<std::pair<ustring,std::variant<std::monostate,BuiltinType,ustring>>>(ident_opt_type_any);
 
         ptr<VarDecl> vardecl = make_ptr<VarDecl>();
         vardecl->name = ident_opt_type.first;
         if (std::holds_alternative<BuiltinType>(ident_opt_type.second))
             vardecl->varType = std::get<BuiltinType>(ident_opt_type.second);
-        if (std::holds_alternative<icu::UnicodeString>(ident_opt_type.second))
-            vardecl->varType = TypeName{std::get<icu::UnicodeString>(ident_opt_type.second)};
+        if (std::holds_alternative<ustring>(ident_opt_type.second))
+            vardecl->varType = TypeName{std::get<ustring>(ident_opt_type.second)};
 
         forStmt->targetList.push_back(vardecl);
     }
@@ -1183,7 +1181,7 @@ std::any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
 {
     visitStart();
 
-    UnicodeString ident { identifierFromTerminal(context->IDENTIFIER()) };
+    ustring ident { identifierFromTerminal(context->IDENTIFIER()) };
 
     ptr<VarDecl> vardecl = make_ptr<VarDecl>();
     setSourceInfo(vardecl,context);
@@ -1245,18 +1243,18 @@ std::any ASTGenerator::visitIdent_opt_type(RoxalParser::Ident_opt_typeContext *c
 
     if (context->COLON()) { // type specified
         if (context->builtin_type())
-            return std::make_pair(ident, std::variant<std::monostate,BuiltinType,icu::UnicodeString>(anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()))));
+            return std::make_pair(ident, std::variant<std::monostate,BuiltinType,ustring>(anyas<BuiltinType>(visitBuiltin_type(context->builtin_type()))));
         else if (context->type_name()) {
             // For ident_opt_type, join dotted type name into single string
             // (consumed by visitFor_stmt which wraps it in TypeName)
             TypeName components;
             for (auto* id : context->type_name()->IDENTIFIER())
                 components.push_back(identifierFromTerminal(id));
-            return std::make_pair(ident, std::variant<std::monostate,BuiltinType,icu::UnicodeString>(joinTypeName(components)));
+            return std::make_pair(ident, std::variant<std::monostate,BuiltinType,ustring>(joinTypeName(components)));
         }
     }
     else
-        return std::make_pair(ident, std::variant<std::monostate,BuiltinType,icu::UnicodeString>(std::monostate{}));
+        return std::make_pair(ident, std::variant<std::monostate,BuiltinType,ustring>(std::monostate{}));
 
     visitEnd();
 }
@@ -1311,8 +1309,8 @@ std::any ASTGenerator::visitFunction(RoxalParser::FunctionContext *context)
                 if (auto str = dynamic_ptr_cast<Str>(exprStmt->expr)) {
                     str->str = trim(str->str);
                     ptr<Annotation> annot = make_ptr<Annotation>();
-                    annot->name = UnicodeString::fromUTF8("doc");
-                    annot->args.emplace_back(UnicodeString(), str);
+                    annot->name = ustring::fromUTF8("doc");
+                    annot->args.emplace_back(ustring(), str);
                     func->annotations.push_back(annot);
                     suite->declsOrStmts.erase(suite->declsOrStmts.begin());
                 }
@@ -1331,7 +1329,7 @@ std::any ASTGenerator::visitFunc_sig(RoxalParser::Func_sigContext *context)
 {
     visitStart();
 
-    icu::UnicodeString ident;
+    ustring ident;
     if (context->IDENTIFIER()) {
         ident = identifierFromTerminal(context->IDENTIFIER());
     } else if (context->operator_name()) {
@@ -1560,8 +1558,8 @@ std::any ASTGenerator::visitObject_type_decl(RoxalParser::Object_type_declContex
                 auto strVal = as<Str>(strAny);
                 strVal->str = trim(strVal->str);
                 ptr<Annotation> annotation = make_ptr<Annotation>();
-                annotation->name = UnicodeString::fromUTF8("doc");
-                annotation->args.emplace_back(UnicodeString(), strVal);
+                annotation->name = ustring::fromUTF8("doc");
+                annotation->args.emplace_back(ustring(), strVal);
                 typeDecl->annotations.push_back(annotation);
             }
         }
@@ -1617,7 +1615,7 @@ std::any ASTGenerator::visitEnum_type_decl(RoxalParser::Enum_type_declContext *c
         typeDecl->name = identifierFromTerminal(context->IDENTIFIER());
 
         if (context->EXTENDS()) {
-            icu::UnicodeString extendsName;
+            ustring extendsName;
             if (context->BYTE())
                 extendsName = "byte";
             else if (context->INT())
@@ -1630,12 +1628,12 @@ std::any ASTGenerator::visitEnum_type_decl(RoxalParser::Enum_type_declContext *c
             }
             typeDecl->extends = TypeName{extendsName};
 
-            if (extendsName != UnicodeString("byte") && extendsName != UnicodeString("int"))
+            if (extendsName != ustring("byte") && extendsName != ustring("int"))
                 throw std::runtime_error("Enum(eration) "+toUTF8StdString(typeDecl->name)+" can only extend byte or int");
         }
 
         for (auto* enumValueContext : context->enum_label()) {
-            auto enumLabelExpr = anyas<std::pair<icu::UnicodeString, ptr<Expression>>>(visitEnum_label(enumValueContext));
+            auto enumLabelExpr = anyas<std::pair<ustring, ptr<Expression>>>(visitEnum_label(enumValueContext));
             typeDecl->enumLabels.push_back(enumLabelExpr);
         }
 
@@ -1682,8 +1680,8 @@ std::any ASTGenerator::visitEvent_type_decl(RoxalParser::Event_type_declContext 
                 auto strVal = as<Str>(strAny);
                 strVal->str = trim(strVal->str);
                 ptr<Annotation> annotation = make_ptr<Annotation>();
-                annotation->name = UnicodeString::fromUTF8("doc");
-                annotation->args.emplace_back(UnicodeString(), strVal);
+                annotation->name = ustring::fromUTF8("doc");
+                annotation->args.emplace_back(ustring(), strVal);
                 typeDecl->annotations.push_back(annotation);
             }
         }
@@ -1730,8 +1728,8 @@ std::any ASTGenerator::visitMethod(RoxalParser::MethodContext *context)
                     if (auto str = dynamic_ptr_cast<Str>(exprStmt->expr)) {
                         str->str = trim(str->str);
                         ptr<Annotation> annot = make_ptr<Annotation>();
-                        annot->name = UnicodeString::fromUTF8("doc");
-                        annot->args.emplace_back(UnicodeString(), str);
+                        annot->name = ustring::fromUTF8("doc");
+                        annot->args.emplace_back(ustring(), str);
                         function->annotations.push_back(annot);
                         suite->declsOrStmts.erase(suite->declsOrStmts.begin());
                     }
@@ -1886,7 +1884,7 @@ std::any ASTGenerator::visitEnum_label(RoxalParser::Enum_labelContext *context)
 {
     visitStart();
 
-    UnicodeString labelName { identifierFromTerminal(context->IDENTIFIER()) };
+    ustring labelName { identifierFromTerminal(context->IDENTIFIER()) };
 
     ptr<Expression> expr = nullptr;
 
@@ -1959,7 +1957,7 @@ std::any ASTGenerator::visitAnnotation(RoxalParser::AnnotationContext *context)
 {
     visitStart();
 
-    UnicodeString annotName { identifierFromTerminal(context->IDENTIFIER()) };
+    ustring annotName { identifierFromTerminal(context->IDENTIFIER()) };
 
     ptr<ArgsOrAccessorInfo> info = make_ptr<ArgsOrAccessorInfo>();
     info->accessor = info->indexer = false;
@@ -1984,7 +1982,7 @@ std::any ASTGenerator::visitAnnot_argument(RoxalParser::Annot_argumentContext *c
 {
     visitStart();
 
-    UnicodeString argName { context->IDENTIFIER()? identifierFromTerminal(context->IDENTIFIER()) : UnicodeString() };
+    ustring argName { context->IDENTIFIER()? identifierFromTerminal(context->IDENTIFIER()) : ustring() };
     ptr<Expression> expr = as<Expression>(visitExpression(context->expression()));
 
     // Annotation arguments are compile-time metadata -- there is no scope to
@@ -2102,7 +2100,7 @@ std::any ASTGenerator::visitAssignment(RoxalParser::AssignmentContext *context)
 
         if (context->IDENTIFIER()) {  // property or variable set
 
-            icu::UnicodeString ident { identifierFromTerminal(context->IDENTIFIER()) };
+            ustring ident { identifierFromTerminal(context->IDENTIFIER()) };
 
             if (context->DOT()) { // property set
 
@@ -2618,15 +2616,15 @@ std::any ASTGenerator::visitArgs_or_index_or_accessor(RoxalParser::Args_or_index
     if (context->DOT()) { // accessor, possibly call
         info->accessor = true;
         info->arguments = false;
-        UnicodeString ident;
+        ustring ident;
         if (context->IDENTIFIER())
             ident = identifierFromTerminal(context->IDENTIFIER());
         else if (context->WHEN())
-            ident = UnicodeString("when");
+            ident = ustring("when");
         else if (context->EMIT())
-            ident = UnicodeString("emit");
+            ident = ustring("emit");
         else if (context->MATCH())
-            ident = UnicodeString("match");
+            ident = ustring("match");
         info->accessed = ident;
 
         if (context->OPEN_PAREN()) {
@@ -2654,7 +2652,7 @@ std::any ASTGenerator::visitArgs_or_index_or_accessor(RoxalParser::Args_or_index
                     arg = r->start;
             }
 
-            info->args->push_back(std::make_pair(icu::UnicodeString(),arg));
+            info->args->push_back(std::make_pair(ustring(),arg));
         }
         info->arguments = false;
     }
@@ -2753,7 +2751,7 @@ std::any ASTGenerator::visitOptional_expression(RoxalParser::Optional_expression
 }
 
 
-// returns ptr<std::vector<std::pair<UnicodeString,ptr<Expression>>> of argument expressions
+// returns ptr<std::vector<std::pair<ustring,ptr<Expression>>> of argument expressions
 //  string is param name or empty
 std::any ASTGenerator::visitArguments(RoxalParser::ArgumentsContext *context)
 {
@@ -2775,7 +2773,7 @@ std::any ASTGenerator::visitArgument(RoxalParser::ArgumentContext *context)
 {
     visitStart();
 
-    UnicodeString argName { context->identifier_word()? identifierFromContext(context->identifier_word()) : UnicodeString() };
+    ustring argName { context->identifier_word()? identifierFromContext(context->identifier_word()) : ustring() };
     ptr<Expression> expr = as<Expression>(visitExpression(context->expression()));
 
     return std::make_pair(argName, expr);
@@ -2786,7 +2784,7 @@ std::any ASTGenerator::visitIdentifier_word(RoxalParser::Identifier_wordContext 
 {
     visitStart();
 
-    UnicodeString ident { normalizeIdentifier(context->getText()) };
+    ustring ident { normalizeIdentifier(context->getText()) };
 
     return ident;
     visitEnd();
@@ -2821,7 +2819,7 @@ std::any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
         ptr<Variable> supervar = make_ptr<Variable>("super");
         setSourceInfo(supervar, context);
 
-        UnicodeString ident { identifierFromTerminal(context->IDENTIFIER()) };
+        ustring ident { identifierFromTerminal(context->IDENTIFIER()) };
 
         ptr<UnaryOp> access = make_ptr<UnaryOp>(UnaryOp::Accessor);
         setSourceInfo(access, context->DOT());
@@ -2831,7 +2829,7 @@ std::any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
         return typeValue(access);
     }
     else if (context->IDENTIFIER()) {
-        UnicodeString ident { identifierFromTerminal(context->IDENTIFIER()) };
+        ustring ident { identifierFromTerminal(context->IDENTIFIER()) };
         ptr<Variable> var = make_ptr<Variable>(ident);
         setSourceInfo(var, context);
         return typeValue(var);
@@ -2849,7 +2847,7 @@ std::any ASTGenerator::visitPrimary(RoxalParser::PrimaryContext *context)
 
         auto rangeExpr = as<Expression>(visitRange(context->range()));
 
-        call->args.push_back(std::make_pair(icu::UnicodeString(), rangeExpr));
+        call->args.push_back(std::make_pair(ustring(), rangeExpr));
 
         return typeValue(call);
     }
@@ -3335,10 +3333,10 @@ public:
 // Interpret backslash escapes in a literal run.  ICU signals a malformed
 // escape by returning an empty/bogus string, which used to silently delete the
 // run; surface it instead.
-bool unescapeLiteralRun(const std::string& raw, UnicodeString& out)
+bool unescapeLiteralRun(const std::string& raw, ustring& out)
 {
     if (raw.empty()) {
-        out = UnicodeString();
+        out = ustring();
         return true;
     }
     out = toUnicodeString(raw).unescape();
@@ -3578,7 +3576,7 @@ ptr<Expression> ASTGenerator::parseInterpolationExpression(const std::string& fr
 ptr<Expression> ASTGenerator::buildInterpolation(const std::string& content, size_t quoteLen,
                                                  antlr4::Token* token,
                                                  antlr4::ParserRuleContext* context,
-                                                 const UnicodeString& suffix)
+                                                 const ustring& suffix)
 {
     std::vector<InterpSegment> segments;
     if (!scanInterpolation(content, quoteLen, token, segments))
@@ -3593,7 +3591,7 @@ ptr<Expression> ASTGenerator::buildInterpolation(const std::string& content, siz
     if (!anyHole && suffix.isEmpty()) {
         std::string joined;
         for(auto& seg : segments) joined += seg.text;
-        UnicodeString text;
+        ustring text;
         if (!unescapeLiteralRun(joined, text)) {
             auto p = positionOf(content, 0, quoteLen, token);
             reportErrorAt(p.line, p.pos, "invalid escape sequence in string literal");
@@ -3611,7 +3609,7 @@ ptr<Expression> ASTGenerator::buildInterpolation(const std::string& content, siz
 
     for(auto& seg : segments) {
         if (!seg.isHole) {
-            UnicodeString text;
+            ustring text;
             if (!unescapeLiteralRun(seg.text, text)) {
                 auto p = positionOf(content, seg.offset, quoteLen, token);
                 reportErrorAt(p.line, p.pos, "invalid escape sequence in string literal");
@@ -3698,7 +3696,7 @@ std::any ASTGenerator::visitStr(RoxalParser::StrContext *context)
 
     if (interpolates && hasInterpolation(text)) {
         // may still come back a plain Str, e.g. when every brace was escaped
-        auto expr = buildInterpolation(text, quoteLen, token, context, UnicodeString());
+        auto expr = buildInterpolation(text, quoteLen, token, context, ustring());
         if (!expr) {
             ptr<Str> placeholder = make_ptr<Str>();   // reported; keep the tree walkable
             setSourceInfo(placeholder, context);

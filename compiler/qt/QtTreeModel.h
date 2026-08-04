@@ -69,7 +69,7 @@ private:
     struct RoleInfo {
         int role;
         QByteArray name;
-        icu::UnicodeString uname;
+        ustring uname;
         int32_t nameHash;
         bool editable;
     };
@@ -88,7 +88,7 @@ private:
 
     Value rowType_;                 // ObjObjectType
     Value roots_;                   // ObjList of top-level node instances (owned by this model)
-    icu::UnicodeString childrenName_;  // "children"
+    ustring childrenName_;  // "children"
     std::vector<RoleInfo> roles_;
     QHash<int, QByteArray> roleNames_;
     std::unordered_map<ObjectInstance*, Loc> loc_;

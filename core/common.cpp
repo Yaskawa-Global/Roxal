@@ -20,8 +20,8 @@ bool roxal::startsWith(const std::string& str, const std::string& prefix) {
     return str.size() >= prefix.size() && str.compare(0, prefix.size(), prefix) == 0;
 }
 
-// Function for icu::UnicodeString
-bool roxal::startsWith(const icu::UnicodeString& str, const icu::UnicodeString& prefix) {
+// Function for ustring
+bool roxal::startsWith(const ustring& str, const ustring& prefix) {
     return str.length() >= prefix.length() && str.startsWith(prefix);
 }
 
@@ -181,12 +181,12 @@ std::string roxal::join(const std::vector<std::string>& strings, const std::stri
 };
 
 
-icu::UnicodeString roxal::join(const std::vector<icu::UnicodeString>& strings, const std::string& separator)
+ustring roxal::join(const std::vector<ustring>& strings, const std::string& separator)
 {
-    if (strings.empty()) return icu::UnicodeString(); // Return an empty UnicodeString if the vector is empty
+    if (strings.empty()) return ustring(); // Return an empty ustring if the vector is empty
     auto usep = toUnicodeString(separator);
     return std::accumulate(strings.begin() + 1, strings.end(), strings[0],
-                            [&usep](const icu::UnicodeString& a, const icu::UnicodeString& b) {
+                            [&usep](const ustring& a, const ustring& b) {
                                 return a + usep + b;
                             });
 }
@@ -199,7 +199,7 @@ std::string roxal::trim(const std::string& s)
     return s.substr(start, end - start + 1);
 }
 
-icu::UnicodeString roxal::trim(const icu::UnicodeString& s)
+ustring roxal::trim(const ustring& s)
 {
     std::string tmp; s.toUTF8String(tmp);
     return toUnicodeString(trim(tmp));

@@ -12,14 +12,14 @@ void LazyModuleRegistry::registerFactory(const std::string& moduleName, ModuleFa
     entries_.emplace(moduleName, ModuleEntry(std::move(factory)));
 }
 
-bool LazyModuleRegistry::isRegistered(const icu::UnicodeString& name) const
+bool LazyModuleRegistry::isRegistered(const ustring& name) const
 {
     std::string nameStr = toUTF8StdString(name);
     std::lock_guard<std::mutex> lock(registryMutex_);
     return entries_.find(nameStr) != entries_.end();
 }
 
-ptr<BuiltinModule> LazyModuleRegistry::ensureLoaded(const icu::UnicodeString& name, VM& vm)
+ptr<BuiltinModule> LazyModuleRegistry::ensureLoaded(const ustring& name, VM& vm)
 {
     std::string nameStr = toUTF8StdString(name);
 
@@ -71,7 +71,7 @@ ptr<BuiltinModule> LazyModuleRegistry::ensureLoaded(const icu::UnicodeString& na
     return it->second.instance;
 }
 
-ptr<BuiltinModule> LazyModuleRegistry::getLoadedModule(const icu::UnicodeString& name) const
+ptr<BuiltinModule> LazyModuleRegistry::getLoadedModule(const ustring& name) const
 {
     std::string nameStr = toUTF8StdString(name);
     std::lock_guard<std::mutex> lock(registryMutex_);

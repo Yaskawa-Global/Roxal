@@ -102,7 +102,7 @@ private:
     PersistentRoot<Value> defaultParticipant {};
     void linkNativeFunctions();
     void registerNativeTypes();
-    static void setProperty(ObjectInstance* obj, const icu::UnicodeString& name, const Value& v);
+    static void setProperty(ObjectInstance* obj, const ustring& name, const Value& v);
     Value makeHandleValue(dds_entity_t ent);
     static std::string typeNameFromValue(const Value& v);
     static dds_entity_t entityFromValue(const Value& v, bool allowNil = false);

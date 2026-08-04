@@ -881,7 +881,7 @@ std::string defaultSpanString(ObjectInstance* inst)
 namespace qtyparse {
 
 struct NamedUnit {
-    icu::UnicodeString text;
+    ustring text;
     double scale;
     std::array<int32_t, 4> dims;
 };
@@ -940,7 +940,7 @@ const std::vector<NamedUnit>& siTable()
     return table;
 }
 
-int superscriptDigitValue(UChar32 c)
+int superscriptDigitValue(code_point c)
 {
     switch (c) {
         case 0x2070: return 0;  // ⁰
@@ -957,15 +957,15 @@ int superscriptDigitValue(UChar32 c)
     }
 }
 
-bool containsSuperscriptOrMinus(const icu::UnicodeString& s)
+bool containsSuperscriptOrMinus(const ustring& s)
 {
     int32_t i = 0;
     int32_t len = s.length();
     while (i < len) {
-        UChar32 c = s.char32At(i);
+        code_point c = s.char32At(i);
         if (superscriptDigitValue(c) >= 0 || c == 0x207B)
             return true;
-        i += U16_LENGTH(c);
+        i += utf16_code_unit_count(c);
     }
     return false;
 }
@@ -981,12 +981,12 @@ struct ExpResult {
 //   - Caret notation: ^[+-]?[0-9]+
 // Returns {value=1, consumed=0, present=false} if no exponent is present.
 // Throws on malformed exponent (e.g. lone '^', lone '⁻').
-ExpResult parseExponent(const icu::UnicodeString& s, int32_t p)
+ExpResult parseExponent(const ustring& s, int32_t p)
 {
     int32_t len = s.length();
     if (p >= len) return {1, 0, false};
 
-    UChar32 c = s.char32At(p);
+    code_point c = s.char32At(p);
 
     if (c == U'^') {
         int32_t i = p + 1;
@@ -998,7 +998,7 @@ ExpResult parseExponent(const icu::UnicodeString& s, int32_t p)
         int val = 0;
         int digits = 0;
         while (i < len) {
-            UChar32 d = s.char32At(i);
+            code_point d = s.char32At(i);
             if (d < U'0' || d > U'9') break;
             val = val * 10 + int(d - U'0');
             ++digits;
@@ -1018,12 +1018,12 @@ ExpResult parseExponent(const icu::UnicodeString& s, int32_t p)
     int val = 0;
     int digits = 0;
     while (i < len) {
-        UChar32 d = s.char32At(i);
+        code_point d = s.char32At(i);
         int dv = superscriptDigitValue(d);
         if (dv < 0) break;
         val = val * 10 + dv;
         ++digits;
-        i += U16_LENGTH(d);
+        i += utf16_code_unit_count(d);
     }
     if (digits == 0) {
         if (sign == -1)
@@ -1040,7 +1040,7 @@ struct PrefixMatch {
 
 // Find the longest named unit in `table` that is a prefix of s starting at p.
 PrefixMatch longestPrefix(const std::vector<NamedUnit>& table,
-                          const icu::UnicodeString& s, int32_t p)
+                          const ustring& s, int32_t p)
 {
     PrefixMatch best { nullptr, 0 };
     int32_t len = s.length();
@@ -1074,7 +1074,7 @@ void applyUnit(double& scale, std::array<int32_t,4>& dims,
 // separated by `·`, `*`, or whitespace, with at most one `/` that flips the
 // exponent sign of everything after it. Returns false (and leaves output
 // indeterminate) if parsing fails.
-bool parseUnitExpression(const icu::UnicodeString& s, int32_t start,
+bool parseUnitExpression(const ustring& s, int32_t start,
                          const std::vector<NamedUnit>& table,
                          double& outScale, std::array<int32_t,4>& outDims)
 {
@@ -1087,7 +1087,7 @@ bool parseUnitExpression(const icu::UnicodeString& s, int32_t start,
     bool any = false;
 
     while (i < len) {
-        UChar32 c = s.char32At(i);
+        code_point c = s.char32At(i);
         if (c == U' ' || c == U'\t' || c == 0x00B7 /* · */ || c == U'*') {
             ++i;
             continue;
@@ -2265,7 +2265,7 @@ Value ModuleSys::invoke_method_builtin(VM& vm, ArgsView args)
     if (args.size() < 2 || !isString(args[1]))
         throw std::invalid_argument("_invoke_method(obj, name, args=nil) expects an object and a string method name");
     const Value& receiver = args[0];
-    icu::UnicodeString name = asStringObj(args[1])->s;
+    ustring name = asStringObj(args[1])->s;
     std::vector<Value> callArgs;
     if (args.size() >= 3 && !args[2].isNil()) {
         if (!isList(args[2]))
@@ -2290,7 +2290,7 @@ Value ModuleSys::watch_property_builtin(VM& vm, ArgsView args)
     if (args.size() != 2 || !isObjectInstance(args[0]) || !isString(args[1]))
         throw std::invalid_argument("_watch_property(obj, name) expects an object and a property name");
     ObjectInstance* obj = asObjectInstance(args[0]);
-    icu::UnicodeString name = asStringObj(args[1])->s;
+    ustring name = asStringObj(args[1])->s;
 
     auto counter = std::make_shared<std::atomic<int>>(0);
     int32_t id = static_cast<int32_t>(s_watchCounters.size());
@@ -3215,7 +3215,7 @@ Value ModuleSys::list_repr_builtin(VM& vm, ArgsView args)
         v.resolveFuture();  // e.g. an async fileio.read result
     if (!isList(v))
         throw std::invalid_argument("_list_repr expects a single list argument");
-    return Value::stringVal(icu::UnicodeString(asList(v)->isPackedBytes() ? "packed" : "boxed"));
+    return Value::stringVal(ustring(asList(v)->isPackedBytes() ? "packed" : "boxed"));
 }
 
 Value ModuleSys::arity_builtin(VM& vm, ArgsView args)
@@ -4464,25 +4464,25 @@ Value ModuleSys::quantity_set_builtin(VM& vm, ArgsView args)
     if (!isString(args[1]))
         throw std::invalid_argument("quantity.set expects a string argument");
 
-    icu::UnicodeString raw = asStringObj(args[1])->s;
+    ustring raw = asStringObj(args[1])->s;
 
     // Trim leading/trailing ASCII whitespace.
     int32_t lo = 0;
     int32_t hi = raw.length();
     while (lo < hi) {
-        UChar32 c = raw.char32At(lo);
+        code_point c = raw.char32At(lo);
         if (c == U' ' || c == U'\t' || c == U'\n' || c == U'\r') ++lo;
         else break;
     }
     while (hi > lo) {
-        UChar32 c = raw.char32At(hi - 1);
+        code_point c = raw.char32At(hi - 1);
         if (c == U' ' || c == U'\t' || c == U'\n' || c == U'\r') --hi;
         else break;
     }
     if (lo >= hi)
         throw std::invalid_argument("quantity.set: empty string");
 
-    icu::UnicodeString trimmed = raw.tempSubString(lo, hi - lo);
+    ustring trimmed = raw.tempSubString(lo, hi - lo);
 
     // Parse the numeric prefix via strtod on a UTF-8 copy.
     std::string utf8;
@@ -4498,7 +4498,7 @@ Value ModuleSys::quantity_set_builtin(VM& vm, ArgsView args)
         ++endp;
 
     std::string suffixUtf8(endp);
-    icu::UnicodeString suffix = toUnicodeString(suffixUtf8);
+    ustring suffix = toUnicodeString(suffixUtf8);
 
     double scale = 1.0;
     std::array<int32_t, 4> dims = {0, 0, 0, 0};

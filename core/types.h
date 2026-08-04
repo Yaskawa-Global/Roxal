@@ -80,10 +80,10 @@ struct Type {
 
         struct ParamType {
             ParamType() {}
-            ParamType(const icu::UnicodeString& n) : name(n) {
+            ParamType(const ustring& n) : name(n) {
                 nameHashCode = name.hashCode();
             }
-            icu::UnicodeString name;
+            ustring name;
             int32_t nameHashCode; // hashCode() of above (for use at runtime)
             std::optional<ptr<Type>> type;
             bool hasDefault = false;
@@ -105,16 +105,16 @@ struct Type {
     };
 
     struct ObjectType { // Object or Actor type
-        icu::UnicodeString name;
+        ustring name;
         std::optional<ptr<Type>> extends;
         std::vector<ptr<Type>> implements;
 
        struct PropType {
             PropType() {}
-            PropType(const icu::UnicodeString& n) : name(n) {
+            PropType(const ustring& n) : name(n) {
                 nameHashCode = name.hashCode();
             }
-            icu::UnicodeString name;
+            ustring name;
             int32_t nameHashCode; // hashCode() of above (for use at runtime)
             std::optional<ptr<Type>> type;
             bool hasDefault;
@@ -134,9 +134,9 @@ struct Type {
         // circular dependency on AST.h. Populated by TypeDeducer.
         struct MethodInfo {
             MethodInfo() {}
-            MethodInfo(const icu::UnicodeString& n, ptr<FuncType> ft)
+            MethodInfo(const ustring& n, ptr<FuncType> ft)
               : name(n), funcType(std::move(ft)) {}
-            icu::UnicodeString name;
+            ustring name;
             ptr<FuncType>      funcType;
             uint8_t            methodModifiers = 0;
             Access             access = Access::Public;
@@ -147,9 +147,9 @@ struct Type {
     };
 
     struct EnumType {
-        icu::UnicodeString name;
+        ustring name;
         std::optional<ptr<Type>> extends;
-        std::vector<std::pair<icu::UnicodeString, int32_t>> values;
+        std::vector<std::pair<ustring, int32_t>> values;
     };
 
     BuiltinType builtin;
@@ -165,10 +165,10 @@ struct Type {
 
 struct LexicalScope {
     // func name for func scope, object/actor type name for object/actor type decl scope
-    icu::UnicodeString name;
+    ustring name;
 
     // symbols declared in this scope (and type if known)
-    std::map<icu::UnicodeString, std::optional<ptr<Type>>> symbols;
+    std::map<ustring, std::optional<ptr<Type>>> symbols;
 };
 
 

@@ -46,7 +46,7 @@ void demoteWorkerToNonRT()
 
 #ifdef ROXAL_COMPUTE_SERVER
 namespace {
-icu::UnicodeString remoteMethodNameForCall(const ActorInstance::MethodCallInfo& callInfo)
+ustring remoteMethodNameForCall(const ActorInstance::MethodCallInfo& callInfo)
 {
     if (isBoundMethod(callInfo.callee)) {
         auto* boundMethod = asBoundMethod(callInfo.callee);

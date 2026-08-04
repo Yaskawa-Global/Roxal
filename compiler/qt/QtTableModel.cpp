@@ -34,12 +34,12 @@ void RoxalTableModel::buildColumns(const Value& columns)
     const auto props = t->orderedPublicProperties();
 
     // Find a public property by name; reports its const-ness (→ editability).
-    auto findProp = [&](const icu::UnicodeString& name, bool& isConstOut) -> bool {
+    auto findProp = [&](const ustring& name, bool& isConstOut) -> bool {
         for (const auto& pv : props)
             if (pv.property->name == name) { isConstOut = pv.property->isConst; return true; }
         return false;
     };
-    auto addColumn = [&](const icu::UnicodeString& prop, const QString& header, bool editable) {
+    auto addColumn = [&](const ustring& prop, const QString& header, bool editable) {
         ColumnInfo ci;
         ci.prop     = prop;
         ci.propHash = prop.hashCode();
@@ -63,7 +63,7 @@ void RoxalTableModel::buildColumns(const Value& columns)
     ObjList* cl = asList(columns);
     for (int32_t i = 0; i < cl->length(); ++i) {
         Value e = cl->getElement(static_cast<size_t>(i));
-        icu::UnicodeString prop;
+        ustring prop;
         QString header;
         if (isString(e)) {
             prop   = asStringObj(e)->s;

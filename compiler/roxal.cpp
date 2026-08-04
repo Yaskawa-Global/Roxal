@@ -436,7 +436,7 @@ static int repl()
         } else if ((line == "quit" || line == "exit")
                    && !(vm.replModuleType()
                         && vm.replModuleType()->vars.exists(
-                               icu::UnicodeString::fromUTF8(line)))) {
+                               ustring::fromUTF8(line)))) {
             // Soft hint for Python/JS-habit users who type the bareword.
             // Only fires when `quit` / `exit` aren't bound in the REPL module
             // (or globals) — so `var quit = 5; quit` still works as plain

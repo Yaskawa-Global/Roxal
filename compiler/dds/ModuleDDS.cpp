@@ -247,7 +247,7 @@ Value ModuleDDS::getOrCreateNestedModule(Value topModuleVal, const std::vector<s
     Value current = topModuleVal;
     for (const auto& part : intermediateParts) {
         ObjModuleType* mod = asModuleType(current);
-        icu::UnicodeString uname = toUnicodeString(part);
+        ustring uname = toUnicodeString(part);
         auto existing = mod->vars.load(uname);
         if (existing.has_value() && isModuleType(existing.value())) {
             current = existing.value();
@@ -279,7 +279,7 @@ void ModuleDDS::storeAtScope(Value topModuleVal, const std::string& fullName, co
     // module.
     Value topVal = parts.size() == 1 ? topModuleVal : getOrCreateModule(parts[0]);
     ObjModuleType* topMod = asModuleType(topVal);
-    icu::UnicodeString shortName = toUnicodeString(parts.back());
+    ustring shortName = toUnicodeString(parts.back());
 
     // Single-level (Top::Leaf) or unscoped: store directly in the top module.
     if (parts.size() <= 2) {
@@ -429,7 +429,7 @@ void ModuleDDS::linkNativeFunctions()
     linkFn("reader_signal", &ModuleDDS::dds_reader_signal);
 }
 
-void ModuleDDS::setProperty(ObjectInstance* obj, const icu::UnicodeString& name, const Value& v)
+void ModuleDDS::setProperty(ObjectInstance* obj, const ustring& name, const Value& v)
 {
     auto h = name.hashCode();
     auto it = obj->findProperty(h);
@@ -1090,7 +1090,7 @@ Value ModuleDDS::dds_close_entity(VM&, ArgsView args)
         fp = asForeignPtr(target);
     } else if (isObjectInstance(target)) {
         ObjectInstance* inst = asObjectInstance(target);
-        icu::UnicodeString handleName = toUnicodeString("handle");
+        ustring handleName = toUnicodeString("handle");
         auto it = inst->findProperty(handleName.hashCode());
         if (it && isForeignPtr(it->value))
             fp = asForeignPtr(it->value);
@@ -1205,7 +1205,7 @@ dds_entity_t ModuleDDS::entityFromValue(const Value& v, bool allowNil)
         return static_cast<dds_entity_t>(reinterpret_cast<intptr_t>(asForeignPtr(v)->ptr));
     } else if (isObjectInstance(v)) {
         ObjectInstance* inst = asObjectInstance(v);
-        icu::UnicodeString handleName = toUnicodeString("handle");
+        ustring handleName = toUnicodeString("handle");
         auto it = inst->findProperty(handleName.hashCode());
         if (it && isForeignPtr(it->value))
             return static_cast<dds_entity_t>(reinterpret_cast<intptr_t>(asForeignPtr(it->value)->ptr));

@@ -203,7 +203,7 @@ std::vector<Value> ProtoAdapter::allocateObjectsFromFileDesc(const google::proto
 
         for (int v = 0; v < enumDesc->value_count(); ++v) {
             const auto* valueDesc = enumDesc->value(v);
-            icu::UnicodeString labelName = toUnicodeString(valueDesc->name());
+            ustring labelName = toUnicodeString(valueDesc->name());
             int number = valueDesc->number();
             if (number < std::numeric_limits<int16_t>::min() || number > std::numeric_limits<int16_t>::max()) {
                 throw std::runtime_error("Enum value '" + valueDesc->name() + "' in " + enumDesc->full_name() +

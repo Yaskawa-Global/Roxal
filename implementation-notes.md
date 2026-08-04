@@ -19,6 +19,37 @@ The grammar is contained in the Antlr4 `Roxal.g4` file.  This generates the pars
 
 The `ASTGenerator` parses the parse gree to create the AST (Abstract Syntax Tree) as represented by the core/AST classes.
 
+### Unicode strings
+
+`roxal::ustring` (declared in `core/ustring.h`) is Roxal's UTF-16 string value
+type.  It sits directly in `roxal`, alongside the other vocabulary types such as
+`Value` and `Obj`, rather than in a nested namespace: embedders routinely say
+`using namespace roxal;` from inside their own code, and a nested `roxal::core`
+would shadow the `::core` namespace such hosts commonly have of their own.
+Compiler, VM, AST, and runtime code use this abstraction rather than ICU types
+directly.  Select its
+implementation at configure time with `ROXAL_UNICODE_BACKEND=icu` (the default)
+or `ROXAL_UNICODE_BACKEND=builtin`.
+
+The ICU backend stores one `icu::UnicodeString` and provides Unicode case and
+title mapping.  The builtin backend stores `std::u16string`, has no ICU link
+dependency, and implements the core operations needed by Roxal: UTF-8
+conversion, UTF-16 indexing, code-point ordering, hashing, concatenation,
+substrings, and string-literal escape decoding.  Its `upper()`, `lower()`, and
+`title()` operations deliberately raise an unsupported-operation exception;
+they must not fall back to ASCII-only behavior.
+
+There is currently no normalization, canonicalization, collation, or
+case-folding API.  Equality and hashing operate on stored UTF-16 units, so
+canonically equivalent spellings are distinct.  Substrings are independent
+values in every backend: callers must never depend on ICU's temporary
+substring aliasing behavior.
+
+`roxal --version` reports `icu` when that backend is selected.  The Roxal test
+runner uses it to skip the two case-mapping tests in a builtin build; all other
+string behavior is expected to remain backend-independent.  `RoxalUString`
+is the native CTest parity test and must pass under both backend configurations.
+
 The `TypeDeducer` visits the AST and deduces types where possible.
 
 ### Compiler
@@ -283,7 +314,7 @@ Methods can carry zero or more compiler-recognised modifiers stored as a bitset
   Designates the method as the type's *statement-action handler* (see next
   section).
 
-The same bitset lives in three layers — AST (`core::ast::Function::methodModifiers`),
+The same bitset lives in three layers — AST (`roxal::ast::Function::methodModifiers`),
 the static type system (currently still pair-based in `core/types.h` with the
 modifier carried in the AST), and runtime metadata
 (`ObjObjectType::Method::methodModifiers` in `compiler/Object.h`). The runtime

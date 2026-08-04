@@ -8,8 +8,8 @@
 using namespace roxal;
 
 
-Chunk::Chunk(const icu::UnicodeString& packageName_, const icu::UnicodeString& moduleName_,
-             const icu::UnicodeString& sourceName_)
+Chunk::Chunk(const ustring& packageName_, const ustring& moduleName_,
+             const ustring& sourceName_)
     : packageName(packageName_), moduleName(moduleName_), sourceName(sourceName_)
 {
     code.reserve(8);
@@ -82,7 +82,7 @@ int Chunk::getColumn(size_type offset) const
 
 
 
-void Chunk::disassemble(const icu::UnicodeString& name)
+void Chunk::disassemble(const ustring& name)
 {
     std::cout << "== " << toUTF8StdString(name) << " ==" << std::endl;
     for(size_type offset=0; offset < code.size();) {
@@ -819,7 +819,7 @@ void CallSpec::testParamPositions()
     type->func.value().returnTypes.push_back(make_ptr<type::Type>(type::BuiltinType::Int));
     auto& params { type->func.value().params };
     for(int i=0; i<6; i++) {
-        auto param {type::Type::FuncType::ParamType{UnicodeString::fromUTF8("p"+std::to_string(i))}};
+        auto param {type::Type::FuncType::ParamType{ustring::fromUTF8("p"+std::to_string(i))}};
         if (i>=4)
             param.hasDefault=true;
         if (i==2 || i == 5)
@@ -905,7 +905,7 @@ void CallSpec::testParamPositions()
 
 void Chunk::serialize(std::ostream& out, roxal::ptr<SerializationContext> ctx) const
 {
-    auto writeUS = [&](const icu::UnicodeString& us) {
+    auto writeUS = [&](const ustring& us) {
         std::string s; us.toUTF8String(s);
         uint32_t len = s.size();
         out.write(reinterpret_cast<char*>(&len), 4);
@@ -944,7 +944,7 @@ void Chunk::deserialize(std::istream& in, roxal::ptr<SerializationContext> ctx)
         uint32_t len; in.read(reinterpret_cast<char*>(&len), 4);
         std::string s(len, '\0');
         if(len) in.read(s.data(), len);
-        return icu::UnicodeString::fromUTF8(s);
+        return ustring::fromUTF8(s);
     };
 
     packageName = readUS();
