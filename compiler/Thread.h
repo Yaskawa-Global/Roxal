@@ -15,11 +15,9 @@
 #include "Value.h"
 #include "Object.h"
 #include "ExecutionStatus.h"
+#include "CallFrame.h"
 
 namespace roxal {
-
-struct CallFrame;
-using CallFrames = std::vector<CallFrame>;
 
 class Thread
   : public enable_ptr_from_this<Thread> {

@@ -100,6 +100,9 @@ std::string stringInterval(const std::string s, size_t startLine, size_t startPo
 
 std::string replace(const std::string& str, const std::string& from, const std::string& to);
 
+// replaces every occurrence (replace() above substitutes only the first)
+std::string replaceAll(const std::string& str, const std::string& from, const std::string& to);
+
 //insert new lines (not substrings)
 std::string deleteStringLinesAtInterval(const std::string& s, size_t startLine, size_t startPos, size_t endLine, size_t endPos);
 

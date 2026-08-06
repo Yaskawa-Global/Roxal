@@ -1192,7 +1192,17 @@ size_t Value::hash() const {
                 break;
         }
     }
-    return size_t(val.load());
+    // On 32-bit targets (wasm32) size_t is too narrow for the NaN-boxed
+    // representation.  Fold the high half in rather than truncating: the type
+    // tag lives in the high bits, so a plain truncation would make every
+    // differently-typed value sharing a payload hash identically.  Folding
+    // keeps the hash contract (equal values hash equal) and retains tag
+    // entropy.  On 64-bit this is the identity it always was.
+    const uint64_t v = val.load();
+    if constexpr (sizeof(size_t) >= sizeof(uint64_t))
+        return size_t(v);
+    else
+        return size_t(v ^ (v >> 32));
 }
 
 

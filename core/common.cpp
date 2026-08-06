@@ -171,6 +171,24 @@ std::string roxal::replace(const std::string& str, const std::string& from, cons
     return ret;
 }
 
+std::string roxal::replaceAll(const std::string& str, const std::string& from, const std::string& to)
+{
+    if (from.empty())
+        return str;
+    std::string ret;
+    size_t pos = 0;
+    for (;;) {
+        const size_t next = str.find(from, pos);
+        if (next == std::string::npos) {
+            ret.append(str, pos, std::string::npos);
+            return ret;
+        }
+        ret.append(str, pos, next - pos);
+        ret.append(to);
+        pos = next + from.length();
+    }
+}
+
 
 std::string roxal::join(const std::vector<std::string>& strings, const std::string& separator)
 {

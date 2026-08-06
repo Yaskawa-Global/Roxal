@@ -6,7 +6,6 @@
 
 #include "ASTGenerator.h"
 
-#include <boost/algorithm/string/replace.hpp>
 #include <cctype>
 
 #include <core/common.h>
@@ -25,7 +24,7 @@ public:
     {
         #if defined(DEBUG_TRACE_PARSE)
         auto pair { std::make_pair(method,context->getText()) };
-        boost::replace_all(pair.second, "\n", "\\n");
+        pair.second = replaceAll(pair.second, "\n", "\\n");
         std::string spaces(parseStack.size(),' ');
         std::cout << spaces << std::to_string(context->start->getLine()) << ":" << pair.first << ":" << pair.second << std::endl;
         parseStack.push(pair);
@@ -117,7 +116,7 @@ ustring ASTGenerator::normalizeIdentifier(const std::string& text)
         identText = identText.substr(1, identText.size() - 2);
     }
 
-    boost::replace_all(identText, "``", "`");
+    identText = replaceAll(identText, "``", "`");
 
     return ustring::fromUTF8(identText);
 }

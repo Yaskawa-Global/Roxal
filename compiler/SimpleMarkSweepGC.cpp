@@ -1,6 +1,8 @@
 #include "SimpleMarkSweepGC.h"
 
+#ifdef ROXAL_ENABLE_FILEIO
 #include "AsyncIOManager.h"
+#endif
 #include "GCRoots.h"
 #include "ThreadManager.h"
 #include "Object.h"
@@ -1193,7 +1195,11 @@ void SimpleMarkSweepGC::shadowScanParkedStacks(std::uint64_t epoch) {
             return;  // already dying: not a retainable target
         }
         const auto start = reinterpret_cast<std::uintptr_t>(control);
-        oracle.push_back(Range { start, start + control->allocationSize, control });
+        // allocationSize is uint64_t while uintptr_t is 32-bit on wasm32, so the
+        // sum needs an explicit narrowing -- an allocation's end address is by
+        // construction representable as a pointer, so this cannot truncate.
+        const auto end = static_cast<std::uintptr_t>(start + control->allocationSize);
+        oracle.push_back(Range { start, end, control });
     });
     std::sort(oracle.begin(), oracle.end(),
               [](const Range& a, const Range& b) { return a.start < b.start; });
@@ -1625,8 +1631,13 @@ void SimpleMarkSweepGC::visitRoots(ValueVisitor& visitor) {
     // other reachable reference — a fire-and-forget fileio.write whose
     // future was discarded must not have its ObjFile swept out from under
     // the worker thread.
+    // AsyncIOManager.cpp is only compiled when the fileio module is enabled, so
+    // this root has to be gated the same way -- otherwise a FILEIO=OFF build
+    // fails to link on the two symbols below.
+    #ifdef ROXAL_ENABLE_FILEIO
     if (AsyncIOManager* aio = AsyncIOManager::instanceIfCreated())
         aio->tracePending(visitor);
+    #endif
 
     visitStrongValue(visitor, vm.conditionalInterruptClosure);
     visitStrongValue(visitor, vm.combinatorRelayFunction);

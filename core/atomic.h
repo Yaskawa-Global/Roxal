@@ -819,7 +819,7 @@ public:
 
     atomic_stack& operator=(const std::stack<T>& rhs)
     {
-        std::lock_guard<std::timed_mutex> lock(m_lock);
+        std::lock_guard<std::mutex> lock(m_lock);
         s = rhs;
         return *this;
     }

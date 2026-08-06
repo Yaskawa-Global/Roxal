@@ -13,6 +13,7 @@
 #include "core/atomic.h"
 #include "Chunk.h"
 #include "Value.h"
+#include "CallFrame.h"
 #include "ArgsView.h"
 #include "ExecutionStatus.h"
 #include "Thread.h"
@@ -40,7 +41,6 @@ namespace df { class DataflowEngine; }
 
 namespace roxal {
 
-struct CallFrame; // forward
 struct ActorInstance;
 class RoxalCompiler;
 // Forward-declared UNCONDITIONALLY so the grpcModule/ddsModule members below
@@ -49,43 +49,6 @@ class RoxalCompiler;
 // when the features are on; a forward declaration is all a pointer member needs.
 class ModuleGrpc;
 class ModuleDDS;
-
-
-typedef std::vector<CallFrame> CallFrames;
-
-struct CallFrame {
-    #ifdef DEBUG_BUILD
-    CallFrame() : closure(Value::nilVal()), slots(nullptr), strict(false), callerStrict(false), isEventHandler(false), isContinuationCallback(false) {}
-    #else
-    CallFrame() : closure(Value::nilVal()), strict(false), callerStrict(false), isEventHandler(false), isContinuationCallback(false) {}
-    #endif
-    Value closure; // ObjClosure
-    Chunk::iterator startIp;
-    Chunk::iterator ip;
-    Value* slots;
-
-    CallFrames::iterator parent;
-
-    bool strict; // whether current frame executes in strict mode
-    bool callerStrict; // caller's lexical strict setting (for parameter conversion context)
-
-    // on frame start, move argument Value (second) to end of the frame's
-    //  argument list (in existing stack arg placeholder slots)
-    std::vector<Value> tailArgValues;
-
-    // if not empty, used to reorder call arguments on the stack
-    std::vector<int8_t> reorderArgs; // reordering
-
-    struct ExceptionHandler {
-        Chunk::iterator handlerIp;
-        size_t stackDepth;
-        size_t frameDepth;
-    };
-    std::vector<ExceptionHandler> exceptionHandlers;
-
-    bool isEventHandler { false }; // true for event handler frames (pushed by processEventDispatch)
-    bool isContinuationCallback { false }; // true for native continuation callback frames (e.g., filter/map/reduce, native default params)
-};
 
 
 // GC coverage for host-thread code that touches GC state OUTSIDE execute():

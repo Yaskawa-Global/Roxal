@@ -574,10 +574,10 @@ public:
     bool operator==(const Value& rhs) const;
     bool is(const Value& rhs, bool strict = false) const;
 
-    static_assert(sizeof(size_t) >= sizeof(uint64_t), "size_t is not big enough for uint64_t val as hash");
-
     /// @brief Calculates the hash value of the value.
     /// @return The hash value.
+    /// @note On 32-bit targets (wasm32) size_t cannot hold the whole 64-bit
+    ///       NaN-boxed representation, so hash() folds it -- see Value.cpp.
     size_t hash() const;
 
     #ifdef DEBUG_BUILD
