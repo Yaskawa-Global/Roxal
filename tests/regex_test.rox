@@ -66,3 +66,11 @@ var reNamed = Regex('(?<year>\\d{4})-(?<month>\\d{2})')
 var mNamed = reNamed.exec('2024-03-15')
 print(mNamed['match'])
 print(mNamed['named'])
+
+// Indices are string indices, in the same units as len() and s[i] -- not
+// offsets into the UTF-8 encoding, which is what PCRE2 works on internally.
+// Both of these are 6 (the 'w'), not 7.
+var uni = 'héllo wörld'
+print(uni.search(Regex('wörld')))
+print(uni[uni.search(Regex('wörld'))])
+print(Regex('wörld').exec(uni)['index'])

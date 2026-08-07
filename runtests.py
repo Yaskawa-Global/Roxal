@@ -166,6 +166,9 @@ tests = [
     'star_init_no_initializer', 'star_init_body_len_iter',
     'closure', 'closure2', 'closure3', 'closure4', 'closure5', 'closure_many', 'lambda1', 'lambda2',
     'conversion1', 'string_interp', 'string_case',
+    # Deliberately NOT in regex_tests: split/search on literal text must behave
+    # identically with the regex engine on and off.
+    'string_split_plain',
     'string_interp_escape', 'string_interp_triple', 'string_interp_suffix', 'string_interp_many',
     'string_interp_err_unterm', 'string_interp_err_empty', 'string_interp_err_colon',
     'string_interp_err_comment', 'string_interp_err_junk', 'string_interp_err_assign',
@@ -291,6 +294,7 @@ tests = [
     'string_concat_roundtrip', 'actor_concat_stress',
     'help_doc', 'help_wait', 'help_time_wall_now', 'help_time_wall_now_instance', 'docstring_func',
     'builtin_object_methods', 'math_counter_signal', 'print_flush', 'sys_paths',
+    'sys_platform',
     'grpc_message_types', 'grpc_service_actor', 'grpc_int64_values', 'grpc_runtime_error', 'grpc_streaming', 'grpc_args',
     'rt_execution',
     'operator_conv_string', 'operator_conv_string_rettype', 'return_type_conv', 'return_type_conv_upcast',

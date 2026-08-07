@@ -37,6 +37,10 @@
 //
 // Changes are coalesced: a burst of writes in one turn produces one UI update.
 
+// For the Ide language service below. This makes web depend on the inspect
+// module; wasm builds have it on by default (ROXAL_ENABLE_INSPECT).
+import inspect
+
 @builtin
 proc expose(name:string, obj):
   """Publish `obj` (an object instance) to the UI under `name`. Its public
@@ -50,13 +54,100 @@ proc notify(name:string, property=nil):
   computed property derived from fields other than its own backing one."""
 
 @builtin
+proc _serve(seconds=nil):
+  """Native half of serve() -- parks the script in the dispatch loop."""
+
 proc serve(seconds=nil):
   """Keep the app alive, delivering UI events and publishing state changes, until
   web.stop() is called or `seconds` elapses. A UI script ends with this.
 
   Handlers and method calls only run while the script is alive, so a script that
-  exposes state and then finishes does nothing."""
+  exposes state and then finishes does nothing.
+
+  Also (re)publishes the "ide" language service before parking -- see Ide
+  below."""
+  _ensure_ide()
+  _serve(seconds)
 
 @builtin
 proc stop():
   """Make a running web.serve() return."""
+
+# ---------------------------------------------------------------------------
+# The IDE language service. Owned by this module so an editor never has to mix
+# service plumbing into the user's script: any app that calls web.serve() gets
+# an "ide" store for free, and the visible editor buffer stays the user's own
+# code with its own line numbers.
+#
+# An ACTOR, so a slow parse of a large buffer runs on the service's own thread
+# and stalls neither the store pump nor the running app. Recreated by every
+# serve() call rather than at module load: actor threads are joined when their
+# script ends, so a service from a previous run is dead by the time the next
+# run parks -- and module top-level only executes once per VM anyway.
+#
+# (Requires the inspect module; wasm builds compile it in by default.)
+
+type Ide actor:
+  # One parse per version of the buffer, shared by every query about it. All
+  # private -- actors admit no shared properties, so this store is methods-only.
+  private var checks :int = 0
+  private var seen_src :string = ""
+  private var seen :bool = false
+  private var seen_errors :list = []
+  private var seen_nodes :list = []
+
+  private func _parse(src :string):
+    if seen and src == seen_src:
+      return
+    var r = inspect.parse(src, "app.rox", true)
+    seen_src = src
+    seen_errors = r.errors
+    # Flattened once as well: walk() rebuilds the whole list, and on a large
+    # buffer that is the larger half of a hover. Only the flat list is kept.
+    var tree = r.tree
+    if tree == nil:
+      seen_nodes = []
+    else:
+      seen_nodes = inspect.walk(tree)
+    seen = true
+
+  # A tolerant parse yields diagnostics; the tree comes back partial but the
+  # error list is exactly what an editor's marker API wants.
+  func check(src :string) -> list:
+    checks = checks + 1
+    _parse(src)
+    var out = []
+    for e in seen_errors:
+      out.append({'line': e.line, 'col': e.col, 'message': e.message})
+    return out
+
+  # Innermost node containing (line, col). deduced_type is what makes this
+  # worth more than a tokenizer could ever give.
+  func describe(src :string, line :int, col :int) -> dict:
+    var out = {}
+    _parse(src)
+    if len(seen_nodes) == 0:
+      return out
+    var best = nil
+    var best_span = 1000000
+    for n in seen_nodes:
+      if n.start_line == 0:
+        continue
+      var after_start = n.start_line < line or (n.start_line == line and n.start_col <= col)
+      var before_end = n.end_line > line or (n.end_line == line and n.end_col >= col)
+      if after_start and before_end:
+        var span = (n.end_line - n.start_line) * 1000 + (n.end_col - n.start_col)
+        if span < best_span:
+          best_span = span
+          best = n
+    if best == nil:
+      return out
+    out.kind = best.kind()
+    out.line = best.start_line
+    out.col = best.start_col
+    if best.deduced_type != nil:
+      out['type'] = best.deduced_type      # 'type' is a keyword, so no dot form here
+    return out
+
+proc _ensure_ide():
+  expose("ide", Ide())

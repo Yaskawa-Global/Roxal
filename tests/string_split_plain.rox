@@ -1,0 +1,26 @@
+# split() and search() with a literal separator.
+#
+# These must give the SAME answers whether or not the build has the regex
+# engine: with regex on they go through PCRE2, with it off through a plain
+# text search. Every case here is regex-free text, which is the overlap the
+# two implementations are required to agree on.
+
+print("a,b,c".split(","))
+print("a,,b".split(","))          # an empty field is kept
+print("abc".split(","))           # no separator at all
+print("a,".split(","))            # a trailing separator adds no empty element
+print("".split(","))              # nothing to split
+print("a::b::c".split("::"))      # multi-character separator
+
+print("one two three".search("two"))
+print("one two three".search("one"))
+print("one two three".search("zzz"))
+
+# search() returns an index you can index the string WITH -- the same units as
+# len() and s[i], not an offset into some internal encoding.
+var u = "héllo wörld"
+var at = u.search("wörld")
+print(at)
+print(u[at])
+print(len(u))
+print("é,ü,ß".split(","))

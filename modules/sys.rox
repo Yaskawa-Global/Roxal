@@ -34,6 +34,22 @@ func join(id:int) -> bool:
 proc exit(ret:int=0):
   """Exit the program with specified exit code"""
 
+// Where and with what this VM is running. The initializers below are
+// placeholders: the host overwrites the values right after this module loads
+// (a real initializer cannot work here -- module top-level runs before the
+// @builtin funcs are linked, so nothing native is callable yet).
+//
+// Prefer `features` for capability checks ("regex" in sys.features); it ports
+// better than switching on the platform name.
+
+// One of "linux", "windows", "macos", "wasm"
+const platform :string = ""
+// Compiled-in feature names, e.g. ["fileio", "regex", ...]
+const features :list = []
+// True only when the embedding host runs the VM under a real-time scheduler
+// (declared by the host, not detected)
+const realtime :bool = false
+
 @builtin
 func stacktrace() -> list:
   """return the current call stack as a list"""

@@ -84,11 +84,10 @@ test('the VM survives a full move and stays responsive', async ({ page }) => {
 });
 
 test('the Monaco editor mounts and holds the Roxal source', async ({ page }) => {
-    // No language is registered (no highlighting, no IntelliSense) but the editor
-    // must be there and populated. Assert on the MODEL, not the DOM: Monaco
-    // virtualises and only renders the visible lines.
+    // Assert on the MODEL, not the DOM: Monaco virtualises and only renders the
+    // visible lines, so a DOM query would miss most of the file.
     await expect(page.locator('.monaco-editor')).toBeVisible();
-    const text = await page.evaluate(() => window.monaco.editor.getModels()[0].getValue());
+    const text = await page.evaluate(() => window.monaco.editor.getEditors()[0].getModel().getValue());
     expect(text).toContain('type Oven object');
     expect(text).toContain('web.expose("oven", oven)');
 });
@@ -103,7 +102,7 @@ test('an edited script can be re-run against the live VM', async ({ page }) => {
     // event and prove nothing. If preheat now targets 111, the edited script is
     // genuinely the one running.
     await page.evaluate(() => {
-        const m = window.monaco.editor.getModels()[0];
+        const m = window.monaco.editor.getEditors()[0].getModel();
         m.setValue(m.getValue().replace('setpoint.set(150.0)', 'setpoint.set(111.0)'));
     });
     await expect(page.locator('.dirty')).toBeVisible();
@@ -113,4 +112,83 @@ test('an edited script can be re-run against the live VM', async ({ page }) => {
     // Still live after the re-run, and running the EDITED network.
     await page.locator('.panel').getByRole('button', { name: 'preheat 150' }).click();
     await expect(page.locator('.v.big')).toHaveText('111.0°', { timeout: 25_000 });
+});
+
+// --- language service ------------------------------------------------------
+// These exercise the whole chain: Monaco -> store method call -> VM thread ->
+// inspect.parse -> back. A Monarch tokenizer could not produce any of it, so a
+// passing test here really does mean the compiler front end is answering.
+
+const markers = page => page.evaluate(
+    () => window.monaco.editor.getModelMarkers({ owner: 'roxal' })
+        .map(m => ({ message: m.message, line: m.startLineNumber, col: m.startColumn })));
+
+test('diagnostics come from the real compiler front end', async ({ page }) => {
+    await expect(page.locator('.monaco-editor')).toBeVisible();
+    await expect.poll(() => markers(page).then(m => m.length)).toBe(0);
+
+    await page.evaluate(() => window.monaco.editor.getEditors()[0].getModel()
+        .setValue('var x =\nproc oops(:\n'));
+
+    await expect.poll(() => markers(page).then(m => m.length), { timeout: 20_000 })
+        .toBeGreaterThan(0);
+    const found = await markers(page);
+
+    // ANTLR's phrasing, i.e. the parser really ran -- not a regex guess.
+    expect(found.some(m => /no viable alternative|extraneous|mismatched/.test(m.message))).toBe(true);
+    // The "expecting {...}" tail is trimmed for the gutter.
+    expect(found.every(m => !m.message.includes('expecting'))).toBe(true);
+    // Roxal columns are 0-based and Monaco's are 1-based; a 0 here means the
+    // conversion was dropped, which silently shifts every squiggle.
+    expect(found.every(m => m.col >= 1)).toBe(true);
+
+    // And they clear again -- a service that only ever adds markers is useless.
+    await page.evaluate(() => window.monaco.editor.getEditors()[0].getModel().setValue('var x :int = 1\n'));
+    await expect.poll(() => markers(page).then(m => m.length), { timeout: 20_000 }).toBe(0);
+});
+
+// Showing a hover is a one-shot: if the VM has not booted yet the provider
+// returns null and no widget appears, and nothing re-triggers it. So re-trigger
+// on every poll rather than triggering once and waiting on a locator.
+// Triggered once per call and then waited on patiently: describe() parses the
+// document and walks every node on the VM thread, which takes appreciably longer
+// than a hover normally does, and re-triggering mid-flight just restarts it.
+const hoverAt = (page, line, column) => page.evaluate(async ({ line, column }) => {
+    const ed = window.monaco.editor.getEditors()[0];
+    ed.focus();
+    // Always arrive from somewhere else: Monaco will not re-query the provider
+    // for a position it has already answered for, so a retry that stays put
+    // silently returns the first answer forever.
+    // A visible hover is NOT re-rendered for a new position -- showHover is a
+    // no-op while one is up, so without this the second lookup silently returns
+    // the first one's answer.
+    ed.trigger('test', 'editor.action.hideHover', {});
+    ed.setPosition({ lineNumber: line, column });
+
+    const shown = () => Array.from(document.querySelectorAll('.monaco-hover-content'))
+        .map(e => e.textContent ?? '').join(' ').trim();
+    ed.trigger('test', 'editor.action.showHover', {});
+    for (let i = 0; i < 50; i++) {
+        const text = shown();
+        if (text) return text;
+        await new Promise(r => setTimeout(r, 100));
+    }
+    return '';
+}, { line, column });
+
+test('hover reports the type the compiler deduced', async ({ page }) => {
+    await expect(page.locator('.monaco-editor')).toBeVisible();
+    // The panel only shows a value once the script has run, and that same script
+    // exposes the service -- so this is the "the service exists" signal.
+    await expect(page.locator('.v.big')).toHaveText('20.0°');
+
+    // `total` is real and `count` is int, and NEITHER is written down: both
+    // types are deduced. That is the whole point of going through the front end.
+    await page.evaluate(() => window.monaco.editor.getEditors()[0].getModel()
+        .setValue('var count = 41\nvar total = count * 2.5\n'));
+
+    await expect.poll(() => hoverAt(page, 2, 14), { timeout: 30_000 })   // in `count`
+        .toContain('int');
+    await expect.poll(() => hoverAt(page, 2, 6), { timeout: 30_000 })    // in `total`
+        .toContain('real');
 });

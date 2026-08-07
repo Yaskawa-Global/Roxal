@@ -97,11 +97,18 @@ public:
     static WebStoreHub& instance();
 
     // Expose `obj` under `name` (idempotent per name). Returns nullptr if obj is
-    // not an object instance.
+    // not an object or actor instance.
     RoxalStore* expose(const std::string& name, const Value& obj);
     RoxalStore* lookup(const std::string& name);
 
     void flushAll();     // push every store's pending changes
+
+    // Actor store calls resolve asynchronously: invoke() queues onto the
+    // actor's thread and parks the JS promise id here with the completion
+    // future; the host-loop pump polls until each settles. GC-traced.
+    void trackPendingCall(uint32_t callId, const Value& future, const std::string& method);
+    void pollPendingCalls();
+
     void shutdown();
 
 private:

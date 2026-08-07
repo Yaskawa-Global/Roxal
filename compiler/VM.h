@@ -530,6 +530,16 @@ public:
     static std::vector<std::string> featureStrings();
     static std::string featureString();
 
+    // Whether the embedding host runs the VM under a real-time scheduler (the
+    // setup()+runFor() pattern on an RT thread). The VM cannot detect this --
+    // it is a property of the host, so the host declares it, before scripts
+    // run. Surfaced to scripts as sys.realtime; defaults to false.
+    static void setRealtimeHost(bool rt) { realtimeHost_ = rt; }
+    static bool isRealtimeHost() { return realtimeHost_; }
+private:
+    inline static bool realtimeHost_ = false;   // set once by the host, then read-only
+public:
+
     // Source location of the currently executing instruction (the innermost
     // call frame's chunk line table).  Best effort: all-zero when no frame is
     // active (e.g. called off the VM thread).  Used to stamp creation
@@ -927,6 +937,14 @@ public:
     Value string_search_builtin(ArgsView args);
     Value string_replace_builtin(ArgsView args);
     Value string_split_builtin(ArgsView args);
+#else
+    // Literal-text stand-ins, so that split() and search() are part of the
+    // string type in every build. Only match() and replace() genuinely need a
+    // regex engine; splitting on "," and finding a substring do not, and making
+    // them disappear meant a script could work natively and fail in a build with
+    // regex off -- the wasm build, for one.
+    Value string_search_plain_builtin(ArgsView args);
+    Value string_split_plain_builtin(ArgsView args);
 #endif
 
     Value signal_run_builtin(ArgsView args);

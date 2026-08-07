@@ -214,9 +214,11 @@ Value ModuleRegex::regex_exec_builtin(ArgsView args)
     dict->store(Value::stringVal(toUnicodeString("match")),
               Value::stringVal(toUnicodeString(fullMatch)));
 
-    // Index
+    // Index. matchStart is a BYTE offset into the UTF-8 encoding, whereas Roxal
+    // string indices count UTF-16 units (len(), s[i]) -- so hand back something
+    // the caller can actually index the subject with.
     dict->store(Value::stringVal(toUnicodeString("index")),
-              Value::intVal(static_cast<int64_t>(matchStart)));
+              Value::intVal(toUnicodeString(subject.substr(0, matchStart)).length()));
 
     // Captured groups (excluding full match)
     Value groupsList = Value::listVal();

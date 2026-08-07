@@ -30,6 +30,10 @@ struct WebHostLoop : HostEventLoop {
             // flush again below to push whatever the handler just changed.
             WebStoreHub::instance().flushAll();
             drainInbound();
+            // Settle actor-store calls whose futures have landed. After the
+            // drain, so a call queued this turn that finishes instantly still
+            // resolves this turn rather than next.
+            WebStoreHub::instance().pollPendingCalls();
             WebStoreHub::instance().flushAll();
             flush();          // one proxied batch for everything above
         } catch (const std::exception& e) {

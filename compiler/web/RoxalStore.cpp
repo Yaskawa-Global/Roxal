@@ -8,11 +8,62 @@
 #include "dataflow/Signal.h"
 
 #include <algorithm>
+#include <chrono>
 #include <iostream>
 #include <unordered_set>
 
 using namespace roxal;
 using namespace roxal::web;
+
+namespace {
+
+// ObjectInstance and ActorInstance share the property-slot machinery but not a
+// base class. The store works on either; these are the only shape differences.
+ObjObjectType* instanceTypeOf(const Value& v)
+{
+    if (isObjectInstance(v)) return asObjectType(asObjectInstance(v)->instanceType);
+    if (isActorInstance(v))  return asObjectType(asActorInstance(v)->instanceType);
+    return nullptr;
+}
+
+bool isExposable(const Value& v)
+{
+    return isObjectInstance(v) || isActorInstance(v);
+}
+
+// The actor counterpart of bindActorMethodForServer (ComputeServer.cpp), which
+// is feature-gated out of the wasm build: resolve the method up the inheritance
+// chain and bind it to the instance, so queueCall can dispatch it on the
+// actor's own thread.
+Value bindActorMethod(const Value& actorVal, const ustring& methodName)
+{
+    ObjObjectType::Method* method = nullptr;
+    const int32_t hash = methodName.hashCode();
+    for (ObjObjectType* t = instanceTypeOf(actorVal); t != nullptr; ) {
+        method = t->findUniqueMethod(hash);
+        if (method != nullptr) break;
+        t = t->superType.isNil() ? nullptr : asObjectType(t->superType);
+    }
+    if (method == nullptr || !isClosure(method->closure))
+        return Value::nilVal();
+
+    ObjClosure* closure = asClosure(method->closure);
+    ObjFunction* function = asFunction(closure->function);
+    if (function->builtinInfo) {
+        const auto& info = *function->builtinInfo;
+        return Value::boundNativeVal(actorVal, info.function,
+                                     function->funcType.has_value() &&
+                                         function->funcType.value()->func.has_value()
+                                         ? function->funcType.value()->func->isProc
+                                         : false,
+                                     function->funcType.has_value() ? function->funcType.value() : nullptr,
+                                     info.defaultValues,
+                                     closure->function);
+    }
+    return Value::boundMethodVal(actorVal, method->closure);
+}
+
+} // namespace
 
 // ============================================================
 // RoxalStore
@@ -34,8 +85,7 @@ RoxalStore::~RoxalStore()
 void RoxalStore::buildRoles()
 {
     roles_.clear();
-    if (!isObjectInstance(obj_)) return;
-    ObjObjectType* t = asObjectType(asObjectInstance(obj_)->instanceType);
+    ObjObjectType* t = instanceTypeOf(obj_);
     if (!t) return;
 
     for (const auto& pv : t->orderedPublicProperties()) {
@@ -50,6 +100,12 @@ void RoxalStore::buildRoles()
     // Computed (accessor) properties are not in orderedPublicProperties -- they
     // exist as synthesized __get_<name> / __set_<name> methods. Expose each public
     // one: read via the getter, write via the setter (get-only -> read-only).
+    //
+    // NOT for actors: reading a computed property means EXECUTING its getter,
+    // and the store reads from the VM thread -- running actor code there would
+    // break the actor's single-thread guarantee. Stored and signal properties
+    // are plain slot reads and remain fine.
+    if (isActorInstance(obj_)) return;
     std::unordered_set<int32_t> seen;
     for (const auto& r : roles_) seen.insert(r.nameHash);
     const ustring kGet("__get_");
@@ -79,8 +135,7 @@ void RoxalStore::buildRoles()
 void RoxalStore::buildMethods()
 {
     methodNames_.clear();
-    if (!isObjectInstance(obj_)) return;
-    ObjObjectType* t = asObjectType(asObjectInstance(obj_)->instanceType);
+    ObjObjectType* t = instanceTypeOf(obj_);
     if (!t) return;
 
     const ustring kGet("__get_"), kSet("__set_"), kInit("init");
@@ -98,6 +153,11 @@ void RoxalStore::buildMethods()
 
 Value RoxalStore::readRole(const Role& role) const
 {
+    if (isActorInstance(obj_)) {
+        // Plain slot read; buildRoles admits no computed roles for actors.
+        auto* mv = asActorInstance(obj_)->findProperty(role.nameHash);
+        return mv ? mv->value : Value::nilVal();
+    }
     if (!isObjectInstance(obj_)) return Value::nilVal();
     if (role.computed) {
         auto [status, val] = VM::instance().invokeMethod(obj_, role.getterName, {});
@@ -108,8 +168,7 @@ Value RoxalStore::readRole(const Role& role) const
 
 void RoxalStore::hookChanges()
 {
-    if (!isObjectInstance(obj_)) return;
-    ObjectInstance* inst = asObjectInstance(obj_);
+    if (!isExposable(obj_)) return;
     std::shared_ptr<std::atomic<bool>> alive = alive_;
     RoxalStore* self = this;
 
@@ -122,11 +181,17 @@ void RoxalStore::hookChanges()
         Role role = r;
         const int32_t observeHash = role.computed ? role.backingHash : role.nameHash;
         const ustring observeName = role.computed ? (ustring("_") + role.uname) : role.uname;
-        inst->observePropertyChange(observeHash, toUTF8StdString(observeName),
-            [alive, self, role](TimePoint, ptr<df::Signal>, const Value&) {
-                if (!alive->load()) return;
-                self->onRoxalChange(role);
-            });
+        auto onChange = [alive, self, role](TimePoint, ptr<df::Signal>, const Value&) {
+            if (!alive->load()) return;
+            self->onRoxalChange(role);
+        };
+        // For an actor this callback arrives on the ACTOR's thread (writes happen
+        // there); onRoxalChange only records a hash under dirtyMutex_, which is
+        // the same contract the engine-thread signal callback below relies on.
+        if (isActorInstance(obj_))
+            asActorInstance(obj_)->observePropertyChange(observeHash, toUTF8StdString(observeName), onChange);
+        else
+            asObjectInstance(obj_)->observePropertyChange(observeHash, toUTF8StdString(observeName), onChange);
 
         // A signal-valued property needs a SECOND hook. The property slot holds the
         // same ObjSignal for the object's whole life -- the value changes inside the
@@ -231,7 +296,7 @@ void RoxalStore::flushDirty()
 void RoxalStore::applyWrite(const std::string& prop, const Value& value)
 {
     const Role* r = roleByName(prop);
-    if (!r || !isObjectInstance(obj_)) return;
+    if (!r || !isExposable(obj_)) return;
     if (!r->editable) {
         std::cerr << "web: ignoring write to read-only '" << name_ << "." << prop << "'"
                   << std::endl;
@@ -250,6 +315,8 @@ void RoxalStore::applyWrite(const std::string& prop, const Value& value)
         const Value current = readRole(*r);
         if (isSignal(current))
             asSignal(current)->signal->set(value);
+        else if (isActorInstance(obj_))
+            asActorInstance(obj_)->assignProperty(r->nameHash, value);   // MVCC-guarded
         else
             asObjectInstance(obj_)->propertySlot(r->nameHash).assign(value);
     }
@@ -267,10 +334,42 @@ void RoxalStore::invoke(const std::string& method, const std::vector<Value>& arg
     e.op(Op::StoreResolve);
     e.u32(callId);
 
-    if (!isObjectInstance(obj_)) {
+    if (!isExposable(obj_)) {
         e.tag(Tag::Nil);
         e.str(std::string("store '") + name_ + "' is not an object");
         defer(e);
+        return;
+    }
+
+    // An actor's method runs on the ACTOR's thread, not this one. Queue it and
+    // hand the completion future to the hub; the host-loop pump polls it and
+    // resolves the JS promise when the result lands. This is the entire point
+    // of exposing an actor: a slow method (a 500ms parse, say) no longer stalls
+    // the pump, the other stores, or the running app.
+    if (isActorInstance(obj_)) {
+        Value callee = bindActorMethod(obj_, ustring::fromUTF8(method));
+        if (callee.isNil()) {
+            e.tag(Tag::Nil);
+            e.str(std::string("no unique method '") + method + "' on actor store '" + name_ + "'");
+            defer(e);
+            return;
+        }
+        // queueCall copies the args out of [argTop-n, argTop) before returning,
+        // so a local vector is a valid stack image.
+        std::vector<Value> argsCopy = args;
+        Value* argTop = argsCopy.empty() ? nullptr : argsCopy.data() + argsCopy.size();
+        // forceCompletionFuture: procs return no value, but JS still holds a
+        // promise that must resolve on COMPLETION, not on enqueue.
+        Value completion = asActorInstance(obj_)->queueCall(
+            callee, CallSpec(static_cast<uint16_t>(argsCopy.size())), argTop,
+            /*forceCompletionFuture=*/true);
+        if (completion.isNil() || !isFuture(completion)) {
+            e.tag(Tag::Nil);
+            e.str(std::string("actor store '") + name_ + "' is not alive");
+            defer(e);
+            return;
+        }
+        WebStoreHub::instance().trackPendingCall(callId, completion, method);
         return;
     }
 
@@ -313,7 +412,52 @@ struct WebStoreHub::Impl {
     }
     TracedMember<std::vector<std::unique_ptr<RoxalStore>>> stores { &Impl::traceStores };
     std::unordered_map<std::string, RoxalStore*> byName;
+
+    // Actor store calls in flight: the JS promise id and the completion future
+    // the actor will resolve. Traced -- the future (and through it the result)
+    // must stay alive until the reply has crossed the bridge.
+    struct PendingCall {
+        uint32_t callId;
+        Value future;
+        std::string method;   // for the error message only
+    };
+    static void tracePending(ValueVisitor& visitor, const std::vector<PendingCall>& calls) {
+        for (auto& c : calls)
+            visitor.visit(c.future);
+    }
+    TracedMember<std::vector<PendingCall>> pending { &Impl::tracePending };
 };
+
+namespace {
+
+// Resolve one JS promise from a settled (or abandoned) actor call.
+void resolvePendingCall(uint32_t callId, const std::string& method,
+                        const Value* result, const char* error)
+{
+    Encoder e;
+    e.op(Op::StoreResolve);
+    e.u32(callId);
+    if (error != nullptr) {
+        e.tag(Tag::Nil);
+        e.str(std::string("Roxal method '") + method + "' " + error);
+    } else {
+        try {
+            e.value(*result);
+            e.tag(Tag::Nil);           // no error
+        } catch (const std::exception& ex) {
+            Encoder fresh;             // the partial value must not reach JS
+            fresh.op(Op::StoreResolve);
+            fresh.u32(callId);
+            fresh.tag(Tag::Nil);
+            fresh.str(std::string(ex.what()));
+            defer(fresh);
+            return;
+        }
+    }
+    defer(e);
+}
+
+} // namespace
 
 WebStoreHub::WebStoreHub() : impl_(std::make_unique<Impl>()) {}
 WebStoreHub::~WebStoreHub() { shutdown(); }
@@ -326,7 +470,7 @@ WebStoreHub& WebStoreHub::instance()
 
 RoxalStore* WebStoreHub::expose(const std::string& name, const Value& obj)
 {
-    if (!isObjectInstance(obj)) return nullptr;
+    if (!isExposable(obj)) return nullptr;
 
     auto it = impl_->byName.find(name);
     if (it != impl_->byName.end()) {
@@ -366,8 +510,51 @@ void WebStoreHub::flushAll()
         if (s) s->flushDirty();
 }
 
+void WebStoreHub::trackPendingCall(uint32_t callId, const Value& future, const std::string& method)
+{
+    impl_->pending->push_back({ callId, future, method });
+}
+
+void WebStoreHub::pollPendingCalls()
+{
+    auto& calls = *impl_->pending;
+    for (auto it = calls.begin(); it != calls.end(); ) {
+        auto& sf = asFuture(it->future)->future;
+        if (!sf.valid()) {
+            resolvePendingCall(it->callId, it->method, nullptr, "produced no result");
+            it = calls.erase(it);
+            continue;
+        }
+        if (sf.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+            ++it;
+            continue;
+        }
+        try {
+            // get() rethrows what the actor method threw -- including the broken
+            // promise a dying actor leaves behind. Either way the JS promise
+            // must settle; a swallowed error here would hang the caller forever.
+            const Value result = sf.get();
+            resolvePendingCall(it->callId, it->method, &result, nullptr);
+        } catch (const std::exception& ex) {
+            resolvePendingCall(it->callId, it->method, nullptr, ex.what());
+        } catch (...) {
+            resolvePendingCall(it->callId, it->method, nullptr, "failed");
+        }
+        it = calls.erase(it);
+    }
+}
+
 void WebStoreHub::shutdown()
 {
+    // Settle outstanding actor calls before the stores go: an unresolved id
+    // would leave the JS promise pending forever. flush() pushes the batch now
+    // -- after this the bridge may never pump again.
+    if (!impl_->pending->empty()) {
+        for (auto& c : *impl_->pending)
+            resolvePendingCall(c.callId, c.method, nullptr, "abandoned: VM shutting down");
+        impl_->pending->clear();
+        flush();
+    }
     impl_->byName.clear();
     impl_->stores->clear();
 }

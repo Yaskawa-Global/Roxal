@@ -2434,6 +2434,9 @@ The functions in the sys module are always globally available (- as if `import s
 
 #### Variables
 * `args` - list of command-line arguments passed to the script (not including the script filename)
+* `platform` - the host this VM is running on: `"linux"`, `"windows"`, `"macos"` or `"wasm"` (const)
+* `features` - list of compiled-in feature names, e.g. `["fileio", "regex", ...]` — the same list `roxal --version` prints (const). Prefer capability checks (`"regex" in sys.features`) over switching on `platform`; they port better.
+* `realtime` - `true` only when the embedding host runs the VM under a real-time scheduler. This is declared by the host (via `VM::setRealtimeHost(true)` before VM construction), not detected (const)
 
 #### Functions
 * `print(value='')` - print the string representation of `value` followed by a newline
@@ -2697,12 +2700,26 @@ print(mNamed['named'])  // {"year": "2024", "month": "03"}
 * `capitalize()` - return the string with the first character uppercased and the rest lowercased (Unicode-aware; matches Python `str.capitalize`)
 * `title()` - return the string with the first letter of each word uppercased and the rest lowercased (Unicode-aware word boundaries; matches Python `str.title`)
 
-When the regex module is enabled, strings additionally gain the following methods that accept either a `Regex` object or a plain string pattern (which is auto-compiled):
+Every build also has:
+
+* `search(text)` - return the index of the first occurrence of `text`, or `-1` if not found
+* `split(separator)` - split the string on `separator` and return a list
+
+When the regex module is enabled these two accept either a `Regex` object or a
+pattern string, and two more methods appear:
 
 * `match(pattern)` - find matches and return a list, or `nil` if no match
-* `search(pattern)` - return the index of the first match, or `-1` if not found
 * `replace(pattern, replacement)` - replace matches with `replacement` string
-* `split(pattern)` - split string by pattern and return a list
+
+Splitting on a comma and finding a substring are ordinary string operations, so
+they do not require the regex engine — a build with regex off (the wasm build,
+for one) still has them, working on literal text. The two implementations agree
+on every regex-free input, including the details: an empty field is kept
+(`"a,,b"` gives three elements), a trailing separator does not add an empty one
+(`"a,"` gives one), and splitting an empty string gives an empty list. Where they
+differ is patterns: with regex on, `"a.b".split(".")` treats `.` as *any
+character*; with it off, `.` is just a full stop. Pass a `Regex` object when you
+mean a pattern.
 
 ```php
 import regex.*

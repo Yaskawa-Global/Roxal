@@ -35,7 +35,9 @@ void ModuleWeb::registerBuiltins(VM& vm)
     // the nil, which is why serve()/notify() check before converting.
     link("expose", [this](VM&, ArgsView a) { return expose_builtin(a); });
     link("notify", [this](VM&, ArgsView a) { return notify_builtin(a); });
-    link("serve",  [this](VM&, ArgsView a) { return serve_builtin(a); });
+    // "_serve", not "serve": web.rox wraps the native park in a Roxal-level
+    // serve() that first (re)exposes the Ide language service.
+    link("_serve", [this](VM&, ArgsView a) { return serve_builtin(a); });
     link("stop",   [this](VM&, ArgsView a) { return stop_builtin(a); });
 }
 
@@ -83,8 +85,8 @@ Value ModuleWeb::expose_builtin(ArgsView args)
             "(the web module needs the wasm host, not a native build)");
 
     const std::string name = args.getString(0);
-    if (!args.has(1) || !isObjectInstance(args[1]))
-        throw std::runtime_error("web.expose: expected an object instance to expose");
+    if (!args.has(1) || !(isObjectInstance(args[1]) || isActorInstance(args[1])))
+        throw std::runtime_error("web.expose: expected an object or actor instance to expose");
 
     if (!WebStoreHub::instance().expose(name, args[1]))
         throw std::runtime_error("web.expose: '" + name + "' could not be exposed");

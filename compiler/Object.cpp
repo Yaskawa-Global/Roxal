@@ -6444,11 +6444,11 @@ Value ObjectInstance::ensurePropertySignal(int32_t nameHash, const std::string& 
     return it->second.ensureSignal(signalName);
 }
 
-void ObjectInstance::observePropertyChange(int32_t nameHash, const std::string& name,
-                                           ChangeNotifier::Callback callback)
+// Shared by ObjectInstance and ActorInstance: the observer machinery lives in
+// the MonitoredValue slot, which both kinds of instance use identically.
+static void installSlotObserver(VariablesMap::MonitoredValue& slot,
+                                ChangeNotifier::Callback callback)
 {
-    (void)name;
-    VariablesMap::MonitoredValue& slot = propertySlot(nameHash);  // MVCC-guarded, ensures the slot
     Value& sig = slot.signal;
     if (sig.isNil()) {
         // No signal yet — install a lightweight notifier (no dataflow engine involved).
@@ -6463,6 +6463,24 @@ void ObjectInstance::observePropertyChange(int32_t nameHash, const std::string& 
         if (s && s->signal)
             s->signal->addValueChangedCallback(std::move(callback));
     }
+}
+
+void ObjectInstance::observePropertyChange(int32_t nameHash, const std::string& name,
+                                           ChangeNotifier::Callback callback)
+{
+    (void)name;
+    installSlotObserver(propertySlot(nameHash), std::move(callback));  // MVCC-guarded, ensures the slot
+}
+
+void ActorInstance::observePropertyChange(int32_t nameHash, const std::string& name,
+                                          ChangeNotifier::Callback callback)
+{
+    (void)name;
+    // The callback fires on whichever thread performs the write -- for actor
+    // properties that is the ACTOR's thread, so observers must confine
+    // themselves to thread-safe work (the web store only records a dirty hash
+    // under its own mutex).
+    installSlotObserver(propertySlot(nameHash), std::move(callback));
 }
 
 

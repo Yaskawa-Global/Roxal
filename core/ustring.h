@@ -231,6 +231,18 @@ public:
 #endif
     }
 
+    int32_t indexOf(const ustring& needle, int32_t start) const noexcept
+    {
+        if (start < 0) start = 0;
+        if (start > length()) return -1;
+#ifdef ROXAL_UNICODE_BACKEND_ICU
+        return value_.indexOf(needle.value_, start);
+#else
+        const auto pos = value_.find(needle.value_, static_cast<size_t>(start));
+        return pos == std::u16string::npos ? -1 : static_cast<int32_t>(pos);
+#endif
+    }
+
     int32_t indexOf(char16_t needle) const noexcept
     {
 #ifdef ROXAL_UNICODE_BACKEND_ICU

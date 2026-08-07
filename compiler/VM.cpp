@@ -1314,6 +1314,38 @@ VM::VM()
                 globals.storeGlobal(toUnicodeString(name), maybeFunc.value());
             }
         }
+
+        // sys.platform / sys.features / sys.realtime. Injected here rather than
+        // initialized in sys.rox because the module's top level executes BEFORE
+        // its @builtin funcs are linked, so no builtin can be called from a
+        // module-level initializer. Stored both qualified (sys.platform) and
+        // bare (platform) to match how every other sys symbol is reachable.
+        {
+            auto defineSysConst = [&](const char* name, const Value& v) {
+                sysVars.store(toUnicodeString(name), v, /*overwrite=*/true);
+                globals.storeGlobal(toUnicodeString(name), v);
+            };
+#if defined(__EMSCRIPTEN__)
+            const char* platform = "wasm";
+#elif defined(_WIN32)
+            const char* platform = "windows";
+#elif defined(__APPLE__)
+            const char* platform = "macos";
+#else
+            const char* platform = "linux";
+#endif
+            defineSysConst("platform", Value::stringVal(toUnicodeString(platform)));
+
+            Value featuresVal = Value::listVal();
+            for (const auto& f : featureStrings())
+                asList(featuresVal)->append(Value::stringVal(toUnicodeString(f)));
+            defineSysConst("features", featuresVal);
+
+            // Latched at VM construction: an embedding host that runs the VM
+            // under an RT scheduler must call VM::setRealtimeHost(true) before
+            // constructing the instance.
+            defineSysConst("realtime", Value::boolVal(isRealtimeHost()));
+        }
         // Export suffix functions and types from sys to globals.
         // If registeredSuffixes is empty (module loaded from cache), rebuild
         // it by scanning function annotations for @suffix.
@@ -12071,6 +12103,12 @@ void VM::defineBuiltinMethods()
                         false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x3);
     defineBuiltinMethod(ValueType::String, "split", std::mem_fn(&VM::string_split_builtin),
                         false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x1);
+#else
+    // Same names, same shapes, literal text instead of patterns -- see VM.h.
+    defineBuiltinMethod(ValueType::String, "search", std::mem_fn(&VM::string_search_plain_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x1);
+    defineBuiltinMethod(ValueType::String, "split", std::mem_fn(&VM::string_split_plain_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true, /*noMutateArgs=*/0x1);
 #endif
 
     // Signal methods — run/stop/tick/set mutate self; freq is read-only
@@ -13529,7 +13567,12 @@ Value VM::string_search_builtin(ArgsView args)
     int64_t index = -1;
     if (rc >= 0) {
         PCRE2_SIZE* ovector = pcre2_get_ovector_pointer(matchData);
-        index = static_cast<int64_t>(ovector[0]);
+        // PCRE2 matches against the UTF-8 encoding, so ovector[0] is a BYTE
+        // offset -- but every other string index in Roxal (len(), s[i],
+        // indexOf) counts UTF-16 units, so returning the raw offset gave a
+        // number that could not be used to index the string it came from:
+        // "héllo wörld".search("wörld") was 7 where s[6] is the 'w'. Convert.
+        index = toUnicodeString(subject.substr(0, ovector[0])).length();
     }
 
     pcre2_match_data_free(matchData);
@@ -13681,6 +13724,57 @@ Value VM::string_split_builtin(ArgsView args)
     if (ownsWrapper) delete wrapper;
     return resultVal;
 }
+
+#else  // !ROXAL_ENABLE_REGEX
+
+// Literal-text search and split. These are not a reduced regex engine: the
+// argument is text to be found, never a pattern, so "a.b".split(".") yields
+// ["a", "b"] here where a regex build treats "." as "any character". Splitting
+// on a comma and locating a substring are ordinary string operations and should
+// not require linking PCRE2 -- the wasm build has regex off, and without these
+// perfectly reasonable code fails there and nowhere else.
+//
+// Everything else about them matches the regex versions, deliberately: the same
+// arity, the same -1 for "not found", and the same treatment of the tail (a
+// separator at the very end does not produce a trailing empty element).
+
+Value VM::string_search_plain_builtin(ArgsView args)
+{
+    if (args.size() != 2 || !isString(args[0]) || !isString(args[1]))
+        throw std::invalid_argument("string.search expects a string to search for");
+
+    // A character index, i.e. the same units as s[i] and len(s), so the result
+    // can be used to index the string. (The regex build returns a UTF-8 byte
+    // offset here, which differs for non-ASCII text.)
+    return Value::intVal(asStringObj(args[0])->s.indexOf(asStringObj(args[1])->s));
+}
+
+Value VM::string_split_plain_builtin(ArgsView args)
+{
+    if (args.size() != 2 || !isString(args[0]) || !isString(args[1]))
+        throw std::invalid_argument("string.split expects a separator string");
+
+    const ustring& subject = asStringObj(args[0])->s;
+    const ustring& sep = asStringObj(args[1])->s;
+    if (sep.isEmpty())
+        throw std::invalid_argument("string.split separator must not be empty");
+
+    Value resultVal = Value::listVal();
+    ObjList* result = asList(resultVal);
+
+    int32_t offset = 0;
+    while (offset < subject.length()) {
+        const int32_t at = subject.indexOf(sep, offset);
+        if (at < 0) {
+            result->append(Value::stringVal(subject.tempSubString(offset)));
+            break;
+        }
+        result->append(Value::stringVal(subject.tempSubString(offset, at - offset)));
+        offset = at + sep.length();
+    }
+    return resultVal;
+}
+
 #endif // ROXAL_ENABLE_REGEX
 
 Value VM::signal_run_builtin(ArgsView args)

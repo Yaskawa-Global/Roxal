@@ -508,6 +508,69 @@ intellisense), plain-assignment editing, `inspect.unparse`, and
 `inspect.compile`. The remaining work is the JS bridge plumbing and the
 React view itself.
 
+## The language service (done)
+
+The editor's squiggles and hover types come from the real compiler front end, not
+from a second approximate grammar. There is no new bridge machinery: the service
+is an ordinary Roxal object exposed through the state bridge.
+
+```roxal
+type Ide object:
+  func check(src :string) -> list:            # -> [{line, col, message}]
+  func describe(src, line, col) -> dict:      # -> {kind, line, col, type}
+web.expose("ide", Ide())
+```
+
+`check` is `inspect.parse(src, name, true)` — tolerant mode, so a mid-edit buffer
+still yields the error list Monaco's marker API wants. `describe` walks the tree
+for the innermost node containing the position and returns its `kind` and, where
+the deducer filled it in, `deduced_type`. The editor debounces `check` by 400 ms
+(each call is a round trip to the VM thread) and registers a hover provider for
+`describe`.
+
+Things that cost time and are easy to hit again:
+
+* **`editor.api.js` registers no contributions.** `registerHoverProvider`
+  resolves happily and nothing ever renders. `contrib/hover/browser/hoverContribution.js`
+  has to be imported explicitly; `editor.main.js` would work but drags in all
+  ~160 contributions and every language.
+* **Roxal columns are 0-based, Monaco's are 1-based.**
+* **The service arrives long after the editor mounts.** Without a re-check when
+  it does, a file that is already broken on load stays unmarked until the user
+  types. `rox.roxalStore(name)` also returns a *fresh* handle per call, so the
+  prop has to be memoised or the effect re-fires at the network's update rate.
+* In tests: `showHover` is a no-op while a hover is visible, so a second lookup
+  silently returns the first one's answer unless `hideHover` is triggered first.
+
+**The service is an actor** (`type Ide actor:`), and the bridge knows how to
+expose one: `web.expose` accepts an `ActorInstance`, `RoxalStore::invoke`
+queues the call onto the actor's thread (`ActorInstance::queueCall`,
+`forceCompletionFuture=true`) instead of running it synchronously, and the
+host-loop pump polls the pending futures and resolves each JS promise as its
+result lands. JS sees no difference — `store.call()` already returned a
+Promise. What changes is who waits: measured on the wasm build, a 912-line
+parse (269 ms) used to stall the pump for its full duration; as an actor call
+the oven store's max update gap stayed at 58 ms while the parse ran. The rules
+that come with actor stores: no public properties (the language forbids shared
+actor state, so they are methods-only), and no computed accessors (reading one
+executes its getter, and the store reads from the VM thread).
+
+**Known limitation, worth fixing before this is a real IDE:** the service lives in
+the *user's* script, so a script that fails to compile leaves no store — and the
+diagnostics vanish exactly when they matter. The fix is to stop conflating the
+two: a small harness script owns the service and runs the user's code through
+`inspect.compile`, so the service survives its failure. (Being an actor also
+positions it to outlive script re-runs once the harness exists.)
+
+**Open bug:** repeated large parses (~950 lines, 6+ in a row) crash the VM with
+`memory access out of bounds` / `unaligned access` — pre-existing, unchanged by
+the actor move (same code, different thread), reproducible in
+`actor-measure.js`-style node harnesses. Needs an `-sASSERTIONS=2
+-sSTACK_OVERFLOW_CHECK=2` build to name the culprit. Until then the editor's
+400 ms debounce keeps real-world exposure low. Related: the page has no worker
+`onerror` handler, so a VM crash currently looks like a silent freeze — the
+crash surfaces only in the browser console.
+
 ## Repo positioning: keep upstream out of the robotics domain
 
 This is the public upstream repo and it deliberately excludes the robot library,

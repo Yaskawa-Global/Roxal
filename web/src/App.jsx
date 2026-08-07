@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { startRoxal, runScript } from './roxal.js';
 import Editor from './Editor.jsx';
 import { useRoxal, useRoxalStore } from './roxal-react.js';
@@ -89,6 +89,11 @@ export default function App() {
     const [dirty, setDirty] = useState(false);
     const [running, setRunning] = useState(false);
     const [runError, setRunError] = useState(null);
+    // Memoised, not `rox && rox.roxalStore('ide')` inline: roxalStore returns a
+    // fresh handle each call, so an inline one would change identity on every
+    // render and re-trigger the editor's diagnostics effect at the network's
+    // update rate. Stable per VM; null until one exists.
+    const ide = useMemo(() => (rox ? rox.roxalStore('ide') : null), [rox]);
     // Remount the panel after a re-run so hooks re-read the replaced store.
     const [generation, setGeneration] = useState(0);
 
@@ -135,6 +140,7 @@ export default function App() {
                     </div>
                     <Editor value={APP_SRC}
                             onChange={src => { setSource(src); setDirty(true); }}
+                            service={ide}
                             height="100%" />
                 </section>
 

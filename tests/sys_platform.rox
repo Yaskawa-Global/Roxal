@@ -1,0 +1,14 @@
+# sys.platform / sys.features / sys.realtime -- host-injected constants.
+# Deliberately config-independent: the same expectations must hold on a native
+# linux build and under the wasm test runner, so assert set membership and
+# consistency rather than concrete values.
+import sys
+
+print(platform in ["linux", "windows", "macos", "wasm"])
+print(sys.platform == platform)
+
+print("definitely_not_a_feature" in features)
+print(sys.features == features)
+
+print(realtime == true or realtime == false)
+print(sys.realtime == realtime)

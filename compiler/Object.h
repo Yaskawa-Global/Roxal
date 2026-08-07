@@ -2179,6 +2179,12 @@ struct ActorInstance : public Obj
 
     Value ensurePropertySignal(int32_t nameHash, const std::string& signalName);
 
+    // Same contract as ObjectInstance::observePropertyChange, with one caveat:
+    // the callback fires on the writing thread, which for actor properties is
+    // the actor's own thread.
+    void observePropertyChange(int32_t nameHash, const std::string& name,
+                               ChangeNotifier::Callback callback);
+
     // Returns a future resolved with the queued method's result, or nil for proc methods
     Value queueCall(const Value& callee, const CallSpec& callSpec, Value* argsStackTop,
                     bool forceCompletionFuture = false);
