@@ -1,0 +1,26 @@
+// inspect: parse -> unparse -> parse fixpoint over representative sources
+import inspect
+import fileio
+
+var files = ['../tests/signal_cycle.rox', '../tests/string_interp.rox',
+             '../tests/list_methods.rox', '../tests/interface_layered.rox',
+             '../tests/suffix_basic.rox', '../tests/match_basic.rox',
+             '../tests/exception_typed.rox', '../tests/lambda1.rox']
+for f in files:
+  if not fileio.file_exists(f):
+    print("{f}: MISSING")
+    continue
+  var src = fileio.read_file(f)
+  var r1 = inspect.parse(src, tolerant=true)
+  if r1['tree'] == nil:
+    print("{f}: PARSE-FAIL")
+    continue
+  var s1 = inspect.unparse(r1['tree'])
+  var r2 = inspect.parse(s1, tolerant=true)
+  if r2['tree'] == nil:
+    print("{f}: REPARSE-FAIL")
+    continue
+  if inspect.unparse(r2['tree']) == s1:
+    print("{f}: OK")
+  else:
+    print("{f}: DIFF")

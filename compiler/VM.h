@@ -529,6 +529,13 @@ public:
     static std::string versionString();
     static std::vector<std::string> featureStrings();
     static std::string featureString();
+
+    // Source location of the currently executing instruction (the innermost
+    // call frame's chunk line table).  Best effort: all-zero when no frame is
+    // active (e.g. called off the VM thread).  Used to stamp creation
+    // provenance on dataflow signals/nodes for introspection.
+    struct SourceLocation { std::string name; size_t line = 0; size_t col = 0; };
+    SourceLocation currentSourceLocation() const;
 #ifdef ROXAL_COMPUTE_SERVER
     using PrintTarget = ActorInstance::MethodCallInfo::PrintTarget;
     struct ScopedPrintTarget {

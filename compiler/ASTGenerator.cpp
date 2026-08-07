@@ -3,6 +3,7 @@
 #include <vector>
 #include <charconv>
 #include <system_error>
+#include <algorithm>
 
 #include "ASTGenerator.h"
 
@@ -76,12 +77,56 @@ LinePos ASTGenerator::remapFragmentPos(const LinePos& p) const
 }
 
 
+// Line/col of a token's last character, for interval ends.  stringInterval()
+// slices inclusive of the end position, so a node's interval must point at the
+// final character of its last token, not that token's first column.
+// Synthetic zero-length tokens (EOF, INDENT/DEDENT) sit at the start of the
+// line AFTER the construct — walk back through the token stream to the last
+// real token so a block statement's interval ends at its actual content.
+// NEWLINE tokens (whose text may swallow the following line's indentation)
+// keep their start position: such nodes effectively end at the newline itself.
+LinePos ASTGenerator::tokenEndPos(antlr4::Token* tok) const
+{
+    if (tokenStream && tok->getStopIndex() < tok->getStartIndex()) {
+        for (long i = long(tok->getTokenIndex()) - 1; i >= 0; --i) {
+            antlr4::Token* prev = tokenStream->get(size_t(i));
+            if (prev->getChannel() != antlr4::Token::DEFAULT_CHANNEL)
+                continue;                                     // comments/whitespace
+            if (prev->getStopIndex() < prev->getStartIndex())
+                continue;                                     // another synthetic
+            tok = prev;
+            break;
+        }
+    }
+
+    size_t line = tok->getLine();
+    size_t col  = tok->getCharPositionInLine();
+
+    if (tok->getStopIndex() < tok->getStartIndex())  // synthetic, none real before it
+        return { line, col };
+
+    const std::string text = tok->getText();
+    size_t len = text.size();
+    while (len > 0 && (text[len-1] == '\n' || text[len-1] == '\r'))
+        len--;
+    if (len == 0 || text.front() == '\n' || text.front() == '\r')
+        return { line, col };
+
+    auto lastNewline = text.rfind('\n', len - 1);
+    if (lastNewline == std::string::npos)
+        return { line, col + len - 1 };
+
+    // multi-line token (e.g. a docstring): end is on a later line
+    size_t newlines = std::count(text.begin(), text.begin() + len, '\n');
+    return { line + newlines, len - lastNewline - 2 };
+}
+
 void ASTGenerator::setSourceInfo(ptr<AST> ast, antlr4::ParserRuleContext* context)
 {
     ast->source = source;
 
     LinePos start = remapFragmentPos({ context->start->getLine(), context->start->getCharPositionInLine() });
-    LinePos end   = remapFragmentPos({ context->stop->getLine(),  context->stop->getCharPositionInLine() });
+    LinePos end   = remapFragmentPos(tokenEndPos(context->stop));
 
     ast->interval = std::make_pair(start, end);
 
@@ -95,12 +140,11 @@ void ASTGenerator::setSourceInfo(ptr<AST> ast, antlr4::tree::TerminalNode* termi
     ast->source = source;
 
     auto symbol = terminal->getSymbol();
-    auto symbolLength = symbol->getStopIndex() - symbol->getStartIndex();
 
     LinePos start = remapFragmentPos({ size_t(symbol->getLine()), size_t(symbol->getCharPositionInLine()) });
+    LinePos end   = remapFragmentPos(tokenEndPos(symbol));
 
-    ast->interval = std::make_pair(start,
-                                   LinePos(start.line,  start.pos + symbolLength) );
+    ast->interval = std::make_pair(start, end);
 
     #ifdef DEBUG_BUILD
     ast->fullSource = stringInterval(*source,ast->interval.first.line, ast->interval.first.pos, ast->interval.second.line, ast->interval.second.pos);
@@ -292,7 +336,70 @@ ptr<T> as(const std::any& a) {
 
 
 
-ptr<AST> ASTGenerator::ast(std::istream& source, const std::string& name)
+namespace {
+
+// --- recovered-parse-tree pruning (tolerant mode) --------------------------
+// ANTLR error recovery yields a tree in which damaged regions carry rule
+// exceptions and ErrorNode leaves.  The AST visitors were written for
+// well-formed trees and dereference subcontexts unconditionally, so visiting
+// damage segfaults.  Rather than null-guard ~4k lines of visitor, prune: drop
+// any declaration/statement child of file_input or a suite whose subtree
+// still contains damage, recursively — the visit then only ever sees clean
+// contexts.  The partial AST contains every intact statement, which is what
+// an IDE needs while the user is mid-edit.
+
+bool subtreeClean(antlr4::tree::ParseTree* node);
+
+// prune damaged members of a declaration-list context (file_input / suite);
+// returns true if the context itself is clean after pruning
+bool pruneDeclarationList(antlr4::ParserRuleContext* ctx)
+{
+    auto& children = ctx->children;
+    for (size_t i = 0; i < children.size();) {
+        auto* child = children[i];
+        // stray tokens recovery skipped over ("extraneous input") land here
+        // as error leaves — they produce nothing in the visit, drop them
+        if (dynamic_cast<antlr4::tree::ErrorNode*>(child)) {
+            children.erase(children.begin() + long(i));
+            continue;
+        }
+        bool isDeclList = dynamic_cast<RoxalParser::DeclarationContext*>(child) != nullptr ||
+                          dynamic_cast<RoxalParser::Import_stmtContext*>(child) != nullptr;
+        if (isDeclList && !subtreeClean(child)) {
+            children.erase(children.begin() + long(i));
+            continue;
+        }
+        if (!isDeclList && !subtreeClean(child))
+            return false;   // damage outside a prunable slot
+        i++;
+    }
+    return ctx->exception == nullptr;
+}
+
+bool subtreeClean(antlr4::tree::ParseTree* node)
+{
+    if (dynamic_cast<antlr4::tree::ErrorNode*>(node))
+        return false;
+    auto* ctx = dynamic_cast<antlr4::ParserRuleContext*>(node);
+    if (!ctx)
+        return true;        // ordinary terminal
+    if (dynamic_cast<RoxalParser::File_inputContext*>(ctx) ||
+        dynamic_cast<RoxalParser::SuiteContext*>(ctx))
+        return pruneDeclarationList(ctx);
+    if (ctx->exception)
+        return false;
+    for (auto* child : ctx->children)
+        if (!subtreeClean(child))
+            return false;
+    return true;
+}
+
+} // namespace
+
+ptr<AST> ASTGenerator::ast(std::istream& source, const std::string& name,
+                           std::vector<CommentTok>* commentsOut,
+                           std::vector<ParseErr>* errorsOut,
+                           bool partialOnErrors)
 {
     hadError = false;
 
@@ -311,11 +418,17 @@ ptr<AST> ASTGenerator::ast(std::istream& source, const std::string& name)
     class ParserErrorListener : public antlr4::BaseErrorListener {
     public:
         bool hadError = false;
+        std::vector<ParseErr>* sink = nullptr;
         virtual void syntaxError(antlr4::Recognizer *recognizer,
                                  antlr4::Token *offendingSymbol,
                                  size_t line, size_t charPositionInLine,
                                  const std::string &msg, std::exception_ptr e) override
         {
+            if (sink) {
+                hadError = true;
+                sink->push_back({ line, charPositionInLine, msg });
+                return;
+            }
             if (!hadError) {
                 hadError = true;
                 compileError(std::to_string(line) + ":" +
@@ -323,6 +436,7 @@ ptr<AST> ASTGenerator::ast(std::istream& source, const std::string& name)
             }
         }
     } errorListener;
+    errorListener.sink = errorsOut;
 
     #if defined(DEBUG_OUTPUT_LEXER_TOKENS)
     std::cout << "== tokens ==" << std::endl;
@@ -342,13 +456,20 @@ ptr<AST> ASTGenerator::ast(std::istream& source, const std::string& name)
     lexer.addErrorListener(&errorListener);
     parser.addErrorListener(&errorListener);
 
+    this->tokenStream = &tokens;
+
     auto tree = parser.file_input();
 
-    if (errorListener.hadError) {
+    if (errorListener.hadError && !(errorsOut && partialOnErrors)) {
+        this->tokenStream = nullptr;
         this->source = nullptr;
         this->sourceName.clear();
         return nullptr;
     }
+    // With an error sink, fall through and attempt the visit on ANTLR's
+    // recovered parse tree — many errors are local, and a partial AST is what
+    // an IDE needs for intellisense on an in-progress buffer.  The visit is
+    // exception-guarded below; a failure downgrades to errors-only.
 
     #if defined(DEBUG_OUTPUT_PARSE_TREE)
     std::cout << "== parse tree ==" << std::endl << tree::Trees::toStringTree(tree,&parser,true) << std::endl;
@@ -356,7 +477,14 @@ ptr<AST> ASTGenerator::ast(std::istream& source, const std::string& name)
 
     ptr<File> ast = nullptr;
 
-    if (parser.getNumberOfSyntaxErrors() == 0) {
+    bool visitable = parser.getNumberOfSyntaxErrors() == 0 && !errorListener.hadError;
+    if (!visitable && errorsOut && partialOnErrors) {
+        // tolerant: prune damaged statements from the recovered tree (in
+        // place); visit only when the remainder is fully clean
+        visitable = subtreeClean(tree);
+    }
+
+    if (visitable) {
 
         try {
             auto file = visitFile_input(tree);
@@ -364,16 +492,39 @@ ptr<AST> ASTGenerator::ast(std::istream& source, const std::string& name)
             ast = as<File>(file);
 
         } catch (std::logic_error& e) {
-            compileError(e.what());
+            if (errorsOut)
+                errorsOut->push_back({ 0, 0, e.what() });
+            else
+                compileError(e.what());
             return nullptr;
         } catch (std::exception& e) {
+            if (errorsOut) {
+                errorsOut->push_back({ 0, 0, e.what() });
+                return nullptr;
+            }
             compileError(e.what());
             throw e;
         }
     }
 
-    if (hadError)
+    this->tokenStream = nullptr;
+
+    if (hadError && !(errorsOut && partialOnErrors))
         ast = nullptr;
+
+    // Harvest hidden-channel comments before the token stream dies with this
+    // frame.  SKIP_ matches one alternative per token, so a comment token's
+    // text starts exactly with '#' or '//'.
+    if (commentsOut && ast) {
+        for (auto* tok : tokens.getTokens()) {
+            if (tok->getChannel() != antlr4::Token::HIDDEN_CHANNEL)
+                continue;
+            const std::string text = tok->getText();
+            if (!text.empty() && (text[0] == '#' ||
+                                  (text.size() >= 2 && text[0] == '/' && text[1] == '/')))
+                commentsOut->push_back({ tok->getLine(), tok->getCharPositionInLine(), text });
+        }
+    }
 
     this->source = nullptr;
     this->sourceName.clear();
@@ -3534,6 +3685,217 @@ bool ASTGenerator::scanInterpolation(const std::string& content, size_t contentO
 }
 
 
+namespace {
+
+// Error listener for the module-facing fragment entries: records into a sink
+// when given, else falls back to compileError (first error only).
+class SinkErrorListener : public antlr4::BaseErrorListener {
+public:
+    bool hadError = false;
+    std::vector<ASTGenerator::ParseErr>* sink = nullptr;
+    void syntaxError(antlr4::Recognizer*, antlr4::Token*,
+                     size_t line, size_t charPositionInLine,
+                     const std::string& msg, std::exception_ptr) override
+    {
+        if (sink) {
+            hadError = true;
+            sink->push_back({ line, charPositionInLine, msg });
+            return;
+        }
+        if (!hadError) {
+            hadError = true;
+            compileError(std::to_string(line) + ":" +
+                         std::to_string(charPositionInLine) + " - " + msg);
+        }
+    }
+};
+
+} // namespace
+
+std::any ASTGenerator::visitFragment_expr(RoxalParser::Fragment_exprContext *context)
+{
+    return visitExpression(context->expression());
+}
+
+std::any ASTGenerator::visitFragment_stmt(RoxalParser::Fragment_stmtContext *context)
+{
+    return visitStatement(context->statement());
+}
+
+std::any ASTGenerator::visitFragment_decl(RoxalParser::Fragment_declContext *context)
+{
+    return visitDeclaration(context->declaration());
+}
+
+ptr<Expression> ASTGenerator::parseExpressionFragment(const std::string& text,
+                                                      std::vector<ParseErr>* errorsOut)
+{
+    using namespace antlr4;
+    hadError = false;
+    this->source = make_ptr<std::string>(text);
+    this->sourceName = "fragment";
+    setCompileContext(this->source, this->sourceName);
+
+    ANTLRInputStream input(text);
+    RoxalLexer lexer(&input);
+    CommonTokenStream tokens(&lexer);
+    RoxalParser parser(&tokens);
+
+    SinkErrorListener listener;
+    listener.sink = errorsOut;
+    lexer.removeErrorListeners();
+    parser.removeErrorListeners();
+    lexer.addErrorListener(&listener);
+    parser.addErrorListener(&listener);
+
+    auto* tree = parser.fragment_expr();
+
+    ptr<Expression> result;
+    if (!listener.hadError && parser.getNumberOfSyntaxErrors() == 0 && tree->expression()) {
+        tokenStream = &tokens;
+        try {
+            auto any = visitExpression(tree->expression());
+            if (any.has_value() && anyis<TypeValue>(any) && isa<Expression>(any))
+                result = as<Expression>(any);
+        } catch (std::exception& e) {
+            if (errorsOut)
+                errorsOut->push_back({ 0, 0, e.what() });
+            else
+                compileError(e.what());
+        }
+        tokenStream = nullptr;
+    }
+    if (hadError)
+        result = nullptr;
+    this->source = nullptr;
+    this->sourceName.clear();
+    return result;
+}
+
+ptr<Statement> ASTGenerator::parseStatementFragment(const std::string& text,
+                                                    std::vector<ParseErr>* errorsOut,
+                                                    std::vector<CommentTok>* commentsOut)
+{
+    using namespace antlr4;
+    hadError = false;
+    std::string src = text;
+    if (src.empty() || src.back() != '\n')
+        src += '\n';
+    this->source = make_ptr<std::string>(src);
+    this->sourceName = "fragment";
+    setCompileContext(this->source, this->sourceName);
+
+    ANTLRInputStream input(src);
+    RoxalIndentationLexer lexer(&input);
+    CommonTokenStream tokens(&lexer);
+    RoxalParser parser(&tokens);
+
+    SinkErrorListener listener;
+    listener.sink = errorsOut;
+    lexer.removeErrorListeners();
+    parser.removeErrorListeners();
+    lexer.addErrorListener(&listener);
+    parser.addErrorListener(&listener);
+
+    auto* tree = parser.fragment_stmt();
+
+    ptr<Statement> result;
+    if (!listener.hadError && parser.getNumberOfSyntaxErrors() == 0 && tree->statement()) {
+        tokenStream = &tokens;
+        try {
+            auto any = visitStatement(tree->statement());
+            if (any.has_value() && anyis<TypeValue>(any) && isa<Statement>(any))
+                result = as<Statement>(any);
+        } catch (std::exception& e) {
+            if (errorsOut)
+                errorsOut->push_back({ 0, 0, e.what() });
+            else
+                compileError(e.what());
+        }
+        tokenStream = nullptr;
+    }
+    if (hadError)
+        result = nullptr;
+    if (commentsOut && result) {
+        for (auto* tok : tokens.getTokens()) {
+            if (tok->getChannel() != antlr4::Token::HIDDEN_CHANNEL)
+                continue;
+            const std::string ctext = tok->getText();
+            if (!ctext.empty() && (ctext[0] == '#' ||
+                                   (ctext.size() >= 2 && ctext[0] == '/' && ctext[1] == '/')))
+                commentsOut->push_back({ tok->getLine(), tok->getCharPositionInLine(), ctext });
+        }
+    }
+    this->source = nullptr;
+    this->sourceName.clear();
+    return result;
+}
+
+ptr<AST> ASTGenerator::parseDeclarationFragment(const std::string& text,
+                                                std::vector<ParseErr>* errorsOut,
+                                                std::vector<CommentTok>* commentsOut)
+{
+    using namespace antlr4;
+    hadError = false;
+    std::string src = text;
+    if (src.empty() || src.back() != '\n')
+        src += '\n';
+    this->source = make_ptr<std::string>(src);
+    this->sourceName = "fragment";
+    setCompileContext(this->source, this->sourceName);
+
+    ANTLRInputStream input(src);
+    RoxalIndentationLexer lexer(&input);
+    CommonTokenStream tokens(&lexer);
+    RoxalParser parser(&tokens);
+
+    SinkErrorListener listener;
+    listener.sink = errorsOut;
+    lexer.removeErrorListeners();
+    parser.removeErrorListeners();
+    lexer.addErrorListener(&listener);
+    parser.addErrorListener(&listener);
+
+    auto* tree = parser.fragment_decl();
+
+    ptr<AST> result;
+    if (!listener.hadError && parser.getNumberOfSyntaxErrors() == 0 && tree->declaration()) {
+        tokenStream = &tokens;
+        try {
+            auto any = visitDeclaration(tree->declaration());
+            // the declaration rule also covers plain statements
+            if (any.has_value() && anyis<TypeValue>(any)) {
+                if (isa<Declaration>(any))
+                    result = as<Declaration>(any);
+                else if (isa<Statement>(any))
+                    result = as<Statement>(any);
+            }
+        } catch (std::exception& e) {
+            if (errorsOut)
+                errorsOut->push_back({ 0, 0, e.what() });
+            else
+                compileError(e.what());
+        }
+        tokenStream = nullptr;
+    }
+    if (hadError)
+        result = nullptr;
+    if (commentsOut && result) {
+        for (auto* tok : tokens.getTokens()) {
+            if (tok->getChannel() != antlr4::Token::HIDDEN_CHANNEL)
+                continue;
+            const std::string ctext = tok->getText();
+            if (!ctext.empty() && (ctext[0] == '#' ||
+                                   (ctext.size() >= 2 && ctext[0] == '/' && ctext[1] == '/')))
+                commentsOut->push_back({ tok->getLine(), tok->getCharPositionInLine(), ctext });
+        }
+    }
+    this->source = nullptr;
+    this->sourceName.clear();
+    return result;
+}
+
+
 ptr<Expression> ASTGenerator::parseInterpolationExpression(const std::string& fragment,
                                                            const LinePos& origin)
 {
@@ -3562,8 +3924,13 @@ ptr<Expression> ASTGenerator::parseInterpolationExpression(const std::string& fr
         return nullptr;
 
     // The lexer/parser (and so the tree's tokens) must outlive this visit.
+    // Swap in this fragment's token stream (token indices are fragment-local),
+    // restoring the enclosing parse's stream afterwards.
     FragmentScope scope(*this, origin);
+    antlr4::CommonTokenStream* outerStream = tokenStream;
+    tokenStream = &tokens;
     auto result = visitInterp_expr(tree);
+    tokenStream = outerStream;
     if (!result.has_value() || !anyis<TypeValue>(result) || !isa<Expression>(result)) {
         reportErrorAt(origin.line, origin.pos, "invalid expression in string placeholder");
         return nullptr;

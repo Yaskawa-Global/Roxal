@@ -50,6 +50,26 @@ public:
 
     ptr<Signal> rename(const std::string& newName) { m_name = newName; return ptr_from_this(); }
 
+    // Stable process-unique graph id (shared counter with FuncNode).  Names
+    // are neither unique nor immutable; introspection keys on this instead.
+    uint64_t id() const { return m_id; }
+
+    // Source location that created this signal (best effort; line 0 = unknown).
+    // Lets introspection correlate the live network back to the program text.
+    const std::string& srcName() const { return m_srcName; }
+    size_t srcLine() const { return m_srcLine; }
+    size_t srcCol() const { return m_srcCol; }
+    bool hasSrcOrigin() const { return m_srcLine != 0; }
+    void setSrcOrigin(const std::string& name, size_t line, size_t col)
+    {
+        m_srcName = name; m_srcLine = line; m_srcCol = col;
+    }
+
+    // The x[-1] delayed-signal relation (see indexedSignal)
+    bool derived() const { return isDerived; }
+    ptr<Signal> derivedBase() const { return baseSignal.lock(); }
+    int derivedIndex() const { return baseIndex; }
+
     void addValueChangedCallback(std::function<void(TimePoint, ptr<Signal>,const Value&)> callback);
 
     void trace(roxal::ValueVisitor& visitor) const;
@@ -201,6 +221,12 @@ private:
 
     bool m_internal = false;
 
+    uint64_t m_id;
+
+    std::string m_srcName;
+    size_t m_srcLine = 0;
+    size_t m_srcCol = 0;
+
     // When true, the first setValueAt() call will set the value but skip
     // invoking valueChangedCallbacks.  This ensures the initial value of a
     // FuncNode output signal is treated as initialization rather than a change
@@ -214,5 +240,9 @@ private:
 
 typedef std::vector<ptr<Signal>> Signals;
 
+
+// Next id from the process-wide graph-id counter shared by Signal and
+// FuncNode (introspection keys both node kinds in one id space).
+uint64_t nextGraphId();
 
 }

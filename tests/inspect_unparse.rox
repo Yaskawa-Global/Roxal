@@ -1,0 +1,17 @@
+// inspect.unparse: mirror tree -> canonical source, comments preserved
+import inspect
+
+var src = '# header\nvar x = 1 + 2 * 3   # math\n\nfunc add(a:int, b:int=2) -> int:\n  return a + b\n'
+var tree = inspect.parse(src)
+var s1 = inspect.unparse(tree)
+print(s1)
+print('---')
+// fixpoint: reparse of the render unparses identically
+var s2 = inspect.unparse(inspect.parse(s1))
+print(s1 == s2)
+// expressions render as expression text
+var e = tree.decls_or_stmts[0].initializer
+print(inspect.unparse(e))
+// precedence is preserved with parens where needed
+var t2 = inspect.parse('y = (1 + 2) * 3\n')
+print(inspect.unparse(t2.decls_or_stmts[0].expr.rhs))

@@ -1,0 +1,28 @@
+// inspect.parse tolerant mode: returns errors instead of raising
+import inspect
+
+// fully broken source: the damaged statement is pruned leaving an empty
+// tree; errors carry line/col/message
+var r = inspect.parse('func broken(:\n', tolerant=true)
+print(r['tree'] != nil)
+print(len(r['tree'].decls_or_stmts))
+print(len(r['errors']) > 0)
+var e0 = r['errors'][0]
+print("{e0['line']}:{e0['col']}")
+print(len(e0['message']) > 0)
+
+// valid source: tree present, errors empty
+var r2 = inspect.parse('var ok = 1\n', tolerant=true)
+print(r2['tree'].kind())
+print(len(r2['errors']))
+print(r2['tree'].decls_or_stmts[0].name)
+
+// partial tree: a damaged statement in the middle is pruned, the intact
+// ones survive with errors reported — what an IDE needs mid-edit
+var r3 = inspect.parse('var a = 1\nfunc broken(:\nvar b = 2\n', tolerant=true)
+print(r3['tree'] != nil)
+print(len(r3['errors']) > 0)
+var names = []
+for d in r3['tree'].decls_or_stmts:
+  names.append(d.name)
+print(names)

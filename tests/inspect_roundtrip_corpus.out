@@ -1,0 +1,8 @@
+../tests/signal_cycle.rox: OK
+../tests/string_interp.rox: OK
+../tests/list_methods.rox: OK
+../tests/interface_layered.rox: OK
+../tests/suffix_basic.rox: OK
+../tests/match_basic.rox: OK
+../tests/exception_typed.rox: OK
+../tests/lambda1.rox: OK

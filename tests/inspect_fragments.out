@@ -1,0 +1,12 @@
+BinaryOp + rhs=BinaryOp
+Assignment =
+WhileStatement body=2
+IfStatement inner=IfStatement
+VarDecl speed:real
+FuncDecl f
+TypeDecl P props=1
+ExpressionStatement
+a + b * 2
+while going:
+  step()
+  count = count + 1

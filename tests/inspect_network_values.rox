@@ -1,0 +1,28 @@
+// inspect: live values read through borrowed network signal references
+import inspect
+
+func scale(v, factor):
+  return v * factor
+
+var src = signal(0, 2.0, 'input')
+out = scale(src, 10.0)
+
+var net = src.network()
+var node = net.nodes[0]
+
+// initial evaluation already ran at lift time
+print(node.outputs[0].sig.value)
+
+// poke the source and tick; the borrowed reference observes the update
+src.set(7.0)
+_dataflow_tick()
+print(node.outputs[0].sig.value)
+print(out.value)
+
+// reading via a fresh snapshot agrees
+var net2 = src.network()
+print(net2.nodes[0].outputs[0].sig.value)
+
+// constant args are not ports; only the signal argument is
+print(len(node.inputs))
+print(node.inputs[0].name)

@@ -1,0 +1,5 @@
+// inspect.parse_expression raises on a syntax error
+import inspect
+
+inspect.parse_expression('a +')
+print('not reached')

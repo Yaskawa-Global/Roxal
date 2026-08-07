@@ -1,0 +1,25 @@
+// inspect.node_fields: machine-readable node schemas for structural editors
+import inspect
+
+var bs = inspect.node_fields('BinaryOp')
+print(len(bs))
+print("{bs[0]['name']} {bs[0]['kind']}")
+print("{bs[1]['name']} {bs[1]['kind']} {bs[1]['class']}")
+
+var fs = inspect.node_fields('Function')
+var names = []
+for f in fs:
+  names.append(f['name'])
+print(names)
+
+var ifs = inspect.node_fields('IfStatement')
+print("{ifs[0]['name']} {ifs[0]['kind']}")
+
+// schema exists for every kind that appears in a parse
+var t = inspect.parse('var x = 1 + 2\n')
+var ok = true
+for n in inspect.walk(t):
+  if n.kind() != 'Arg' and n.kind() != 'ExceptClause':
+    if inspect.node_fields(n.kind()) == nil:
+      ok = false
+print(ok)

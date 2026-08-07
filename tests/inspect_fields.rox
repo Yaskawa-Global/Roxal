@@ -1,0 +1,71 @@
+// inspect: every generated field-kind is exercised at least once
+import inspect
+
+// cond_suite_list + opt_node else
+var t = inspect.parse('if a > 1:\n  b = 1\nelseif a > 0:\n  b = 2\nelse:\n  b = 3\n')
+var ifs = t.decls_or_stmts[0]
+print("if branches={len(ifs.conditional_suites)} else={ifs.else_suite.kind()}")
+print("cond0={ifs.conditional_suites[0][0].op} suite0={ifs.conditional_suites[0][1].kind()}")
+
+// function: params, defaults, return types, body variant, arg_list on call
+t = inspect.parse('func add(a:int, b:int=2) -> int:\n  return a + b\nr = add(3, b=4)\n')
+var fn = t.decls_or_stmts[0].function
+print("func {fn.name} proc={fn.is_proc} params={len(fn.params)} ret={fn.return_types} body={fn.body.kind()}")
+var p1 = fn.params[1]
+print("param {p1.name}:{p1.param_type} default={p1.default_value.value} variadic={p1.variadic}")
+var call = t.decls_or_stmts[1].expr.rhs
+print("call args={len(call.args)} a0={call.args[0].name}/{call.args[0].value.kind()} a1={call.args[1].name}/{call.args[1].value.kind()}")
+
+// type declaration: kind, extends, properties, methods, enum labels
+t = inspect.parse('type Base object:\n  var n:int = 0\n\ntype Derived object extends Base:\n  func get() -> int:\n    return n\n\ntype Color enum:\n  Red = 1\n  Green = 2\n')
+var base = t.decls_or_stmts[0]
+var derived = t.decls_or_stmts[1]
+var color = t.decls_or_stmts[2]
+print("base kind={base.type_kind} props={len(base.properties)} extends={base.extends_type}")
+print("derived extends={derived.extends_type} methods={len(derived.methods)}")
+print("enum kind={color.type_kind} labels={len(color.enum_labels)} l0={color.enum_labels[0].name}={color.enum_labels[0].value.value}")
+
+// try/except/finally: except_clauses
+t = inspect.parse('try:\n  work()\nexcept e:\n  print(e)\nfinally:\n  done()\n')
+var ts = t.decls_or_stmts[0]
+print("try clauses={len(ts.except_clauses)} name={ts.except_clauses[0].name} finally={ts.finally_suite.kind()}")
+
+// match: case_list + default
+t = inspect.parse('match v:\n  case 1, 2:\n    a()\n  case 3:\n    b()\n  default:\n    c()\n')
+var ms = t.decls_or_stmts[0]
+print("match cases={len(ms.cases)} pats0={len(ms.cases[0][0])} default={ms.default_case.kind()}")
+
+// dict literal: pair_expr_list; list literal
+t = inspect.parse('d = {"a": 1}\nl = [1, 2, 3]\n')
+var dl = t.decls_or_stmts[0].expr.rhs
+var ll = t.decls_or_stmts[1].expr.rhs
+print("dict entries={len(dl.entries)} k={dl.entries[0][0].value} v={dl.entries[0][1].value}")
+print("list {ll.kind()} elems={len(ll.elements)}")
+
+// string interpolation parts (string | node)
+t = inspect.parse('s = "a {n} b"\n')
+var si = t.decls_or_stmts[0].expr.rhs
+print("interp {si.kind()} parts={len(si.parts)} p0={si.parts[0]} p1={si.parts[1].kind()}")
+
+// range + index + unary accessor + lambda
+t = inspect.parse('r = range(1..10)\nv = l[2]\nn = obj.prop\nf = func(x): x * 2\n')
+var rng = t.decls_or_stmts[0].expr.rhs.args[0].value
+print("range {rng.kind()} start={rng.start.value} stop={rng.stop.value} closed={rng.closed}")
+var ix = t.decls_or_stmts[1].expr.rhs
+print("index {ix.kind()} of={ix.indexable.kind()} args={len(ix.args)}")
+var acc = t.decls_or_stmts[2].expr.rhs
+print("accessor {acc.kind()} op={acc.op} member={acc.member} arg={acc.arg.kind()}")
+var lam = t.decls_or_stmts[3].expr.rhs
+print("lambda {lam.kind()} params={len(lam.function.params)} body={lam.function.body.kind()}")
+
+// annotations
+t = inspect.parse('@builtin\nfunc native():\n  "doc"\n')
+var af = t.decls_or_stmts[0]
+print("annotations={len(af.annotations)} a0={af.annotations[0].name}")
+
+// while / for / when-changes flags / until / break / continue / return / raise
+t = inspect.parse('while going:\n  step()\n')
+print("while cond={t.decls_or_stmts[0].condition.kind()} body={t.decls_or_stmts[0].body.kind()}")
+t = inspect.parse('when sig changes as evt:\n  use(evt)\n')
+var ws = t.decls_or_stmts[0]
+print("when trigger={ws.trigger.kind()} binding={ws.binding} becomes={ws.becomes_expr} sigchange={ws.requires_signal_change}")

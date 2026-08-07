@@ -1,0 +1,36 @@
+// inspect: parent back-references and node identity
+import inspect
+
+var t = inspect.parse('var x = 1 + 2\n')
+var decl = t.decls_or_stmts[0]
+var e = decl.initializer
+
+print(t.parent == nil)
+print(decl.parent == t)
+print(e.parent == decl)
+print(e.lhs.parent == e)
+print(e.rhs.parent == e)
+
+// identity: the same node reached by two paths is the same object
+print(t.decls_or_stmts[0] == decl)
+print(decl.initializer.lhs == e.lhs)
+print(e.lhs == e.rhs)
+
+// every walked node except the root has a parent that contains it
+var ok = true
+for n in inspect.walk(t):
+  if n.parent != nil:
+    var found = false
+    for c in n.parent.children():
+      if c == n:
+        found = true
+    if not found:
+      ok = false
+print(ok)
+
+// mutation through a function parameter works (parameters are immutable
+// bindings, but property mutation through the reference is fine)
+proc rename(node):
+  node.name = 'renamed'
+rename(decl)
+print(decl.name)

@@ -46,6 +46,9 @@
 #ifdef ROXAL_ENABLE_REGEX
 #include "ModuleRegex.h"
 #endif
+#ifdef ROXAL_ENABLE_INSPECT
+#include "ModuleInspect.h"
+#endif
 #ifdef ROXAL_ENABLE_SOCKET
 #include "ModuleSocket.h"
 #endif
@@ -354,6 +357,9 @@ std::vector<std::string> VM::featureStrings()
 #endif
 #ifdef ROXAL_ENABLE_QT
     features.push_back("qt");
+#endif
+#ifdef ROXAL_ENABLE_INSPECT
+    features.push_back("inspect");
 #endif
     return features;
 }
@@ -1259,6 +1265,9 @@ VM::VM()
     #endif
     #ifdef ROXAL_ENABLE_REGEX
     lazyModuleRegistry.registerFactory("regex", []{ return make_ptr<ModuleRegex>(); });
+    #endif
+    #ifdef ROXAL_ENABLE_INSPECT
+    lazyModuleRegistry.registerFactory("inspect", []{ return make_ptr<ModuleInspect>(); });
     #endif
     #ifdef ROXAL_ENABLE_SOCKET
     lazyModuleRegistry.registerFactory("socket", []{ return make_ptr<ModuleSocket>(); });
@@ -2940,7 +2949,13 @@ bool VM::call(ValueType builtinType, const CallSpec& callSpec)
             argEnd = thread->stackTop;
         }
 
-        *(thread->stackTop - callSpec.argCount - 1) = construct(builtinType, argBegin, argEnd);
+        Value constructed = construct(builtinType, argBegin, argEnd);
+        if (isSignal(constructed) && asSignal(constructed)->signal &&
+            !asSignal(constructed)->signal->hasSrcOrigin()) {
+            auto loc = currentSourceLocation();
+            asSignal(constructed)->signal->setSrcOrigin(loc.name, loc.line, loc.col);
+        }
+        *(thread->stackTop - callSpec.argCount - 1) = constructed;
         popN(callSpec.argCount);
         return true;
     } catch (std::exception& e) {
@@ -3002,8 +3017,16 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
         auto baseName = toUTF8StdString(functionObj->name);
         auto name = df::DataflowEngine::uniqueFuncName(baseName);
         ptr<df::FuncNode> node = roxal::make_ptr<df::FuncNode>(name, closureVal, constArgs, sigArgs);
+        // creation provenance: lets introspection correlate this node (and
+        // the output signals it mints) back to the lifting call site.  The
+        // ctor may have created output signals already, so stamp those too.
+        auto liftLoc = currentSourceLocation();
+        node->setSrcOrigin(liftLoc.name, liftLoc.line, liftLoc.col);
         node->addToEngine();
         auto outputs = node->outputs(); // creates output signals if they don't exist
+        for (auto& outSig : outputs)
+            if (outSig && !outSig->hasSrcOrigin())
+                outSig->setSrcOrigin(liftLoc.name, liftLoc.line, liftLoc.col);
         dataflowEngine->evaluate(); // Initialize signal values for new node
         popN(callSpec.argCount + 1);
         if (outputs.size() == 1) {
@@ -11721,6 +11744,22 @@ void VM::reportStackOverflow()
     runtimeError(message);
 }
 
+
+VM::SourceLocation VM::currentSourceLocation() const
+{
+    SourceLocation loc;
+    if (!thread || thread->frames.empty())
+        return loc;
+    const CallFrame& frame = thread->frames.back();
+    auto chunk = asFunction(asClosure(frame.closure)->function)->chunk;
+    size_t instruction = 0;
+    if (frame.ip > chunk->code.begin())
+        instruction = frame.ip - chunk->code.begin() - 1;
+    loc.line = size_t(std::max(0, chunk->getLine(instruction)));
+    loc.col  = size_t(std::max(0, chunk->getColumn(instruction)));
+    loc.name = toUTF8StdString(chunk->sourceName);
+    return loc;
+}
 
 void VM::runtimeError(const std::string& format, ...)
 {

@@ -1,0 +1,9 @@
+File
+VarDecl x const=false access=public
+BinaryOp +
+Num 1 2
+nil
+int
+y real const=true init=3.5
+Import ["sys", "rand"] []
+File 0

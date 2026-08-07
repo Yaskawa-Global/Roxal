@@ -1,0 +1,20 @@
+// inspect: node source positions (lines from 1, cols from 0, end inclusive)
+import inspect
+
+var t = inspect.parse('var x = 1 + 2\nvar yy = 10\n')
+var d0 = t.decls_or_stmts[0]
+var d1 = t.decls_or_stmts[1]
+var e = d0.initializer
+
+// '1 + 2' spans cols 8..12 on line 1; end col points at the LAST character
+print("{e.start_line}:{e.start_col}-{e.end_line}:{e.end_col}")
+// lhs '1' is a single char at col 8
+print("{e.lhs.start_line}:{e.lhs.start_col}-{e.lhs.end_line}:{e.lhs.end_col}")
+// second declaration is on line 2; initializer '10' ends at its last char
+print("{d1.start_line}:{d1.start_col}")
+print("{d1.initializer.start_col}-{d1.initializer.end_col}")
+
+// multi-line construct: the if statement spans both lines
+var t2 = inspect.parse('if a:\n  b = 1\n')
+var ifs = t2.decls_or_stmts[0]
+print("{ifs.start_line}-{ifs.end_line}")

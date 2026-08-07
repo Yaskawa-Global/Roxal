@@ -154,6 +154,47 @@ public:
 
     std::vector<IslandDebugInfo> islandDebugSnapshot();
 
+    // ---- introspection snapshots (the inspect module's stable surface) ----
+    // Plain-data copies of network structure taken under m_mutex; they hold
+    // strong ptr<Signal>/ptr<FuncNode> references (keeping the C++ objects
+    // alive) but deliberately no roxal::Value, so snapshots are GC-inert.
+
+    struct PortSnapshot {
+        std::string name;
+        ptr<Signal> signal;
+        int index { 0 };            // input latency (-1 = one period ago); 0 for outputs
+        bool hasDefault { false };
+    };
+
+    struct FuncSnapshot {
+        uint64_t id { 0 };
+        std::string name;
+        TimeDuration period { TimeDuration::zero() };
+        std::string srcName;        // creation provenance (line 0 = unknown)
+        size_t srcLine { 0 };
+        size_t srcCol { 0 };
+        std::vector<PortSnapshot> inputs;
+        std::vector<PortSnapshot> outputs;
+    };
+
+    struct NetworkSnapshot {
+        std::vector<ptr<Signal>> signals;
+        std::vector<FuncSnapshot> funcs;
+        TimeDuration tickPeriod { TimeDuration::zero() };
+        bool background { false };
+    };
+
+    // The island (connected subnetwork) containing the given signal, or
+    // nullopt if the signal is not part of any island.
+    std::optional<NetworkSnapshot> subnetworkContaining(const ptr<Signal>& signal);
+
+    // Every island of the current network.
+    std::vector<NetworkSnapshot> allSubnetworks();
+
+    // Every registered signal (deduplicated); internal (implicit
+    // variable-monitor) signals excluded unless requested.
+    std::vector<ptr<Signal>> allSignals(bool includeInternal = false);
+
     // remove a signal or func from the engine
     void removeSignal(const ptr<Signal>& signal, bool force = false);
     void removeFunc(ptr<FuncNode> func);

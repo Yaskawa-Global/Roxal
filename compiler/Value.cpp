@@ -399,6 +399,11 @@ Value Value::signalVal(roxal::ptr<df::Signal> s)
     return Value::objVal(newSignalObj(s));
 }
 
+Value Value::signalRefVal(roxal::ptr<df::Signal> s)
+{
+    return Value::objVal(newSignalObj(s, /*borrowed=*/true));
+}
+
 Value Value::eventVal()
 {
     return Value::objVal(newEventTypeObj(toUnicodeString("event")));

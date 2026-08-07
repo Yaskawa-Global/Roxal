@@ -1,0 +1,23 @@
+// inspect.walk / children(): preorder traversal covering nested structures
+import inspect
+
+var t = inspect.parse('func f(a):\n  if a:\n    return a + 1\n  return 0\n')
+var kinds = []
+for n in inspect.walk(t):
+  kinds.append(n.kind())
+print(kinds)
+
+// children order: annotations first, then fields in declaration order
+var t2 = inspect.parse('x = f(1, k=2)\n')
+var call = t2.decls_or_stmts[0].expr.rhs
+var ckinds = []
+for c in call.children():
+  ckinds.append(c.kind())
+print(ckinds)
+
+// walk visits Arg wrapper nodes and their values
+var names = []
+for n in inspect.walk(t2):
+  if n.kind() == 'Arg':
+    names.append(n.name)
+print(names)

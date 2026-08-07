@@ -6,6 +6,7 @@
 
 namespace antlr4 {
 class Token;
+class CommonTokenStream;
 }
 
 namespace roxal {
@@ -18,11 +19,63 @@ class ASTGenerator : public RoxalVisitor
 public:
     ASTGenerator() {}
 
-    ptr<ast::AST> ast(std::istream& source, const std::string& name);
+    // A comment harvested from the lexer's hidden channel during ast(): its
+    // start position and raw text (including the leading '#' or '//').
+    // Comments are single-line, so the end column is pos + text length - 1.
+    struct CommentTok {
+        size_t line;            // 1-based
+        size_t pos;             // 0-based column of the first character
+        std::string text;
+    };
+
+    // A syntax error captured during ast() when the caller supplies an error
+    // sink instead of the default report-to-compileError behavior.
+    struct ParseErr {
+        size_t line;            // 1-based
+        size_t pos;             // 0-based column
+        std::string message;
+    };
+
+    // Parse a whole translation unit.  When commentsOut is given and the parse
+    // succeeds, it receives every comment in source order — the token stream
+    // (and with it the hidden channel) dies when this returns, so this is the
+    // only chance to observe them.  When errorsOut is given, syntax errors are
+    // recorded there (all of them, not just the first) instead of being
+    // reported through compileError(); with partialOnErrors additionally set,
+    // damaged statements are pruned from the recovered parse tree and the
+    // intact remainder is visited into a PARTIAL AST (tolerant IDE parses) —
+    // callers that would discard a partial result should leave it false.
+    ptr<ast::AST> ast(std::istream& source, const std::string& name,
+                      std::vector<CommentTok>* commentsOut = nullptr,
+                      std::vector<ParseErr>* errorsOut = nullptr,
+                      bool partialOnErrors = false);
+
+    // Fragment parsing (the inspect module's parse_expression / parse_statement
+    // / parse_declaration).  Each drives the corresponding EOF-anchored grammar
+    // rule on a fresh lexer/parser: expressions use the plain lexer (the
+    // indentation lexer injects NEWLINE/INDENT that no expression rule can
+    // match), statements/declarations use the indentation lexer (suites need
+    // INDENT/DEDENT) and get a trailing newline appended when missing.
+    // Errors go to errorsOut when given (else compileError); returns nullptr
+    // on error.  parseDeclarationFragment returns a Declaration OR a Statement
+    // (the grammar's declaration rule covers both).
+    ptr<ast::Expression> parseExpressionFragment(const std::string& text,
+                                                 std::vector<ParseErr>* errorsOut = nullptr);
+    ptr<ast::Statement> parseStatementFragment(const std::string& text,
+                                               std::vector<ParseErr>* errorsOut = nullptr,
+                                               std::vector<CommentTok>* commentsOut = nullptr);
+    ptr<ast::AST> parseDeclarationFragment(const std::string& text,
+                                           std::vector<ParseErr>* errorsOut = nullptr,
+                                           std::vector<CommentTok>* commentsOut = nullptr);
 
     virtual std::any visitFile_input(RoxalParser::File_inputContext *context);
 
     virtual std::any visitSingle_input(RoxalParser::Single_inputContext *context);
+
+    // fragment entry rules (driven by the parse*Fragment methods)
+    virtual std::any visitFragment_expr(RoxalParser::Fragment_exprContext *context);
+    virtual std::any visitFragment_stmt(RoxalParser::Fragment_stmtContext *context);
+    virtual std::any visitFragment_decl(RoxalParser::Fragment_declContext *context);
 
     virtual std::any visitImport_stmt(RoxalParser::Import_stmtContext *context);
 
@@ -257,6 +310,14 @@ protected:
     antlr4::Token* currentToken;
     ptr<std::string> source;
     std::string sourceName;
+
+    // Token stream of the parse currently being visited (whole-file or
+    // fragment); lets interval ends walk back past synthetic tokens
+    // (DEDENT/EOF) to the last real token.  Valid only during a visit.
+    antlr4::CommonTokenStream* tokenStream { nullptr };
+
+    // Line/col of the last character covered by tok, for interval ends.
+    ast::LinePos tokenEndPos(antlr4::Token* tok) const;
 
 public:
     // used by the fragment error listener, which lives outside the class

@@ -65,7 +65,7 @@ FuncNode::FuncNode(const std::string& name,
                    const ConstArgMap& constArgs_,
                    const std::vector<ptr<Signal>>& signalArgs_,
                    const std::vector<ptr<Signal>>& outputSignals)
-  : m_name(name), m_operatorSignalsCalled(false), closure(closure_), constArgs(constArgs_), signalArgs(signalArgs_), m_overrideOutputSignals(outputSignals)
+  : m_name(name), m_operatorSignalsCalled(false), m_id(nextGraphId()), closure(closure_), constArgs(constArgs_), signalArgs(signalArgs_), m_overrideOutputSignals(outputSignals)
 {
     m_outputNames = {DataflowEngine::uniqueFuncName("result")};
     if (roxal::isClosure(closure) && asFunction(asClosure(closure)->function)->funcType.has_value()) {
@@ -132,7 +132,7 @@ FuncNode::FuncNode(const std::string& name,
                    const std::vector<ptr<Signal>>& signalArgs_,
                    const Names& outputNames_,
                    const std::vector<ptr<Signal>>& outputSignals)
-  : m_name(name), m_operatorSignalsCalled(false), closure(Value::nilVal()),
+  : m_name(name), m_operatorSignalsCalled(false), m_id(nextGraphId()), closure(Value::nilVal()),
     nativeFunc(nativeFunc_), constArgs(constArgs_), signalArgs(signalArgs_), m_overrideOutputSignals(outputSignals)
 {
     m_outputNames = outputNames_;
@@ -374,6 +374,8 @@ void FuncNode::createOutputSignals(double freq)
         for(size_t i=count;i<names.size();++i) {
             auto outputSignal = Signal::newSignal(freq, initialValueForOutput(i), names[i]);
             outputSignal->m_suppressInitialChange = true;
+            if (m_srcLine != 0)
+                outputSignal->setSrcOrigin(m_srcName, m_srcLine, m_srcCol);
             addOutput(names[i], outputSignal);
         }
         m_overrideOutputSignals.clear();
@@ -382,6 +384,8 @@ void FuncNode::createOutputSignals(double freq)
         for(size_t i=0;i<names.size();++i) {
             auto outputSignal = Signal::newSignal(freq, initialValueForOutput(i), names[i]);
             outputSignal->m_suppressInitialChange = true;
+            if (m_srcLine != 0)
+                outputSignal->setSrcOrigin(m_srcName, m_srcLine, m_srcCol);
             addOutput(names[i], outputSignal);
         }
     }

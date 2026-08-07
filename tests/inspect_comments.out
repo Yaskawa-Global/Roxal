@@ -1,0 +1,10 @@
+["# file header", "# second header line"]
+nil 0
+["# above b"]
+# beside b
+1
+["// slash comment above c"]
+2
+["# tail one", "# tail two"]
+["# inner note"]
+# header note

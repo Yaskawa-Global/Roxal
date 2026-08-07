@@ -1,0 +1,6 @@
+3
+op string
+lhs node Expression
+["is_proc", "name", "params", "return_types", "return_type_const", "body", "access", "modifiers"]
+conditional_suites list(pair)
+true

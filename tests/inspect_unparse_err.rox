@@ -1,0 +1,5 @@
+// inspect.unparse rejects values that are not mirror nodes
+import inspect
+
+inspect.unparse([1, 2, 3])
+print('not reached')

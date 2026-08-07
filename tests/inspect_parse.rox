@@ -1,0 +1,25 @@
+// inspect.parse: basic mirror-tree access — kinds, fields, literal values
+import inspect
+
+var tree = inspect.parse('var x = 1 + 2\n', name='t')
+print(tree.kind())
+var decl = tree.decls_or_stmts[0]
+print("{decl.kind()} {decl.name} const={decl.is_const} access={decl.access}")
+var e = decl.initializer
+print("{e.kind()} {e.op}")
+print("{e.lhs.kind()} {e.lhs.value} {e.rhs.value}")
+print(decl.var_type)
+print(decl.deduced_type)
+
+// typed + const declaration
+var t2 = inspect.parse('const y:real = 3.5\n')
+var d2 = t2.decls_or_stmts[0]
+print("{d2.name} {d2.var_type} const={d2.is_const} init={d2.initializer.value}")
+
+// import statement
+var t3 = inspect.parse('import sys.rand\n')
+print("{t3.imports[0].kind()} {t3.imports[0].packages} {t3.imports[0].symbols}")
+
+// a File parses to a File even when empty
+var t4 = inspect.parse('\n')
+print("{t4.kind()} {len(t4.decls_or_stmts)}")

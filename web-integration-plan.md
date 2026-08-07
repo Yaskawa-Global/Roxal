@@ -495,10 +495,18 @@ that will not ship an HTML editor either.
 debug facilities: **the output is not stable and not intended as an API.** Do not
 build a UI on them.
 
-The right route is the introspection module that also binds the AST generator:
-one deliberate surface covering AST access, passing an AST back to the compiler,
-and introspecting the live dataflow graph. A React Flow dataflow view — monitor
-or editor — waits for that.
+**The `inspect` module now exists and is that surface** (see the "Source &
+Dataflow Introspection" section of roxal-for-devs.md). For the React Flow
+dataflow view: `sig.network()` returns the island as `Network` →
+`DataflowNode` → `Port` objects with stable ids (React Flow node keys),
+port latency indices, and `src_name`/`src_line`/`src_col` provenance to
+correlate graph nodes back to the editor buffer; live values read through
+borrowed signal references (`port.sig.value`) that can never tear down
+network parts. Writes are AST edits: `inspect.parse` (tolerant mode returns
+partial trees for mid-edit buffers, plus positions/deduced types for
+intellisense), plain-assignment editing, `inspect.unparse`, and
+`inspect.compile`. The remaining work is the JS bridge plumbing and the
+React view itself.
 
 ## Repo positioning: keep upstream out of the robotics domain
 

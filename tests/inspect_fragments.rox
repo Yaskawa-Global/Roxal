@@ -1,0 +1,33 @@
+// inspect fragment parsing: expression / statement / declaration entries
+import inspect
+
+var e = inspect.parse_expression('a + b * 2')
+print("{e.kind()} {e.op} rhs={e.rhs.kind()}")
+
+// assignments are expressions
+var asn = inspect.parse_expression('x = 5')
+print("{asn.kind()} {asn.op}")
+
+// suite-bearing statement (needs the indentation lexer)
+var ws = inspect.parse_statement('while going:\n  step()\n  count = count + 1\n')
+print("{ws.kind()} body={len(ws.body.decls_or_stmts)}")
+
+// nested blocks
+var ifs = inspect.parse_statement('if a:\n  if b:\n    c()\n')
+print("{ifs.kind()} inner={ifs.conditional_suites[0][1].decls_or_stmts[0].kind()}")
+
+// declarations: var, func and type
+var vd = inspect.parse_declaration('var speed:real = 1.5')
+print("{vd.kind()} {vd.name}:{vd.var_type}")
+var fd = inspect.parse_declaration('func f(a) -> int:\n  return a\n')
+print("{fd.kind()} {fd.function.name}")
+var td = inspect.parse_declaration('type P object:\n  var x:int = 0\n')
+print("{td.kind()} {td.name} props={len(td.properties)}")
+
+// a plain statement is accepted by parse_declaration too
+var st = inspect.parse_declaration('print(1)')
+print(st.kind())
+
+// fragments unparse
+print(inspect.unparse(e))
+print(inspect.unparse(ws), '')

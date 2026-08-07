@@ -1,0 +1,10 @@
+var total = 1 * (z - 4)
+if x > 5:
+  print(1)
+  print(2)
+if x > 5:
+  print(1)
+  print(2)
+elseif x > 1:
+  print(3)
+n + 42

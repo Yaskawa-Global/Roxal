@@ -1173,11 +1173,18 @@ std::string objTensorToString(const ObjTensor* ot);
 // signal (dataflow signal wrapper)
 
 struct ObjSignal : public Obj {
-    ObjSignal(ptr<df::Signal> s);
+    ObjSignal(ptr<df::Signal> s, bool borrowed = false);
     virtual ~ObjSignal();
     ObjEventType* ensureChangeEventType();
     ptr<df::Signal> signal;
     df::DataflowEngine* engine;
+
+    // Borrowed (non-owning) wrapper: does not take part in the wrapper
+    // refcount, so dropping it can never trigger removeSignal / pipeline
+    // teardown.  Used by introspection (inspect module), which must be able
+    // to hand out signals — including previously-unwrapped internal ones —
+    // without becoming responsible for their lifecycle.
+    bool borrowed = false;
     // Lazily initialized `SignalChanged` event type shared by all emissions.
     Value changeEventType;
     weak_ptr<df::Signal> changeEventSignal;
@@ -1198,7 +1205,7 @@ struct ObjSignal : public Obj {
 inline bool isSignal(const Value& v) { return isObjType(v, ObjType::Signal); }
 inline ObjSignal* asSignal(const Value& v) { return static_cast<ObjSignal*>(v.asObj()); }
 
-unique_ptr<ObjSignal, UnreleasedObj> newSignalObj(ptr<df::Signal> s);
+unique_ptr<ObjSignal, UnreleasedObj> newSignalObj(ptr<df::Signal> s, bool borrowed = false);
 std::string objSignalToString(const ObjSignal* os);
 
 

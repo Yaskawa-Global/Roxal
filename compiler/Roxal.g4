@@ -406,6 +406,18 @@ expression
 interp_expr
  : logic_or EOF ;
 
+// Fragment entry rules for the inspect module (ASTGenerator drives them
+// directly; never reached from file_input).  The explicit EOF makes trailing
+// junk a syntax error rather than a silently truncated parse.
+fragment_expr
+ : expression EOF ;
+
+fragment_stmt
+ : NEWLINE* statement NEWLINE* EOF ;
+
+fragment_decl
+ : NEWLINE* declaration NEWLINE* EOF ;
+
 assignment
  : ( call DOT )? IDENTIFIER (EQUALS | COPYINTO) assignment at_clause?
  | call (EQUALS | COPYINTO) assignment at_clause?

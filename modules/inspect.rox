@@ -1,0 +1,1267 @@
+# inspect — source introspection for tools, editors and IDEs.
+#
+# Two surfaces:
+#   1. AST access: parse() turns Roxal source into a tree of mirror node
+#      objects (one class per AST node kind, generated below).  The tree is
+#      plain Roxal data — read it, edit it with ordinary assignment, walk it.
+#   2. Live dataflow-network introspection (network(), signals(), ...).
+#
+# Mirror nodes carry source positions (start_line/start_col/end_line/end_col;
+# lines from 1, columns from 0), a parent back-reference, and comment
+# decorations (leading_comments / trailing_comment / blank_lines_before) at
+# statement/declaration granularity, so editors can round-trip comments.
+# Positions describe the parse they came from; they go stale after edits.
+
+# ---- mirror-node base classes --------------------------------------------
+
+type Node object:
+  # base of every AST mirror node
+  var start_line:int = 0
+  var start_col:int = 0
+  var end_line:int = 0
+  var end_col:int = 0
+  var parent                     # enclosing node; nil at the File root
+  var deduced_type               # deduced type as a string, or nil
+  var annotations = []           # Annotation nodes (@foo(...))
+  var leading_comments = []      # comment lines directly above (list of string)
+  var trailing_comment           # same-line comment after the node, or nil
+  var blank_lines_before:int = 0 # blank lines directly above
+
+  proc init(*):
+    """construct a node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'Node'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    return cs
+
+
+type Arg object extends Node:
+  # one argument of a Call or Annotation (also used for enum labels):
+  # a name (nil when positional) and a value expression
+  var name
+  var value
+
+  proc init(*):
+    """construct an Arg, properties as named arguments"""
+
+  func kind() -> string:
+    return 'Arg'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    if value != nil:
+      cs.append(value)
+    return cs
+
+
+type ExceptClause object extends Node:
+  # one 'except' clause of a TryStatement
+  var type_expr    # exception type expression, or nil
+  var name         # binding name, or nil
+  var body         # Suite
+
+  proc init(*):
+    """construct an ExceptClause, properties as named arguments"""
+
+  func kind() -> string:
+    return 'ExceptClause'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    if type_expr != nil:
+      cs.append(type_expr)
+    if body != nil:
+      cs.append(body)
+    return cs
+
+
+# ---- module functions -----------------------------------------------------
+
+func walk(node) -> list:
+  """all nodes of the subtree rooted at node, preorder (node first)"""
+  var result = [node]
+  for c in node.children():
+    for d in walk(c):
+      result.append(d)
+  return result
+
+
+@builtin
+func parse(source:string, name:string='fragment', tolerant:bool=false):
+  """parse Roxal source into a mirror-node tree; returns the File node.
+  Raises on a syntax error unless tolerant=true, which instead returns a dict
+  with keys 'tree' and 'errors' (a list of dicts with keys 'line', 'col' and
+  'message').  On errors the tree is PARTIAL: damaged statements are pruned
+  and every intact one survives — nil only when nothing was recoverable"""
+
+@builtin
+func parse_file(path:string):
+  """parse the Roxal source file at path; returns the File node (raises on
+  a syntax error or unreadable file)"""
+
+@builtin
+func parse_expression(source:string):
+  """parse a source fragment as an expression; returns the expression node
+  (raises on a syntax error)"""
+
+@builtin
+func parse_statement(source:string):
+  """parse a source fragment as a statement; returns the statement node
+  (raises on a syntax error)"""
+
+@builtin
+func parse_declaration(source:string):
+  """parse a source fragment as a declaration (type/func/var, or a plain
+  statement); returns the node (raises on a syntax error)"""
+
+@builtin
+func compile(node, name:string='anonymous'):
+  """compile a File mirror tree; returns a callable that runs the program's
+  top level when invoked.  The tree is rendered with unparse() first, so
+  compile errors and positions refer to that canonical text"""
+
+@builtin
+func unparse(node):
+  """render a mirror-node tree back to canonical Roxal source text.
+  Formatting is normalized (2-space indents, ASCII operators); comment
+  decorations are re-emitted.  parse(unparse(t)) is structurally equal
+  to t.  Works on any node: a File renders as a full program, expressions
+  as expression text"""
+
+
+# ---- live dataflow-network introspection ----------------------------------
+# Read-only snapshots of the running signal network.  Signals are returned as
+# borrowed references: reading .value/.name is always safe, and dropping them
+# never tears down network parts.  Ids are stable process-unique keys shared
+# between signals and nodes; src_line/src_col are the source location that
+# created the node/signal (0 = unknown), correlating the graph back to code.
+
+type Port object:
+  # one input or output port of a DataflowNode
+  var name:string = ''
+  var index:int = 0          # input latency: -1 = one period ago; 0 otherwise
+  var has_default:bool = false
+  var sig                    # the connected signal ('signal' is a keyword)
+
+  proc init(*):
+    """construct a Port, properties as named arguments"""
+
+
+type DataflowNode object:
+  # one function node of the live dataflow network
+  var id:int = 0
+  var name:string = ''
+  var period_us:int = 0
+  var src_name:string = ''
+  var src_line:int = 0
+  var src_col:int = 0
+  var inputs = []            # list of Port
+  var outputs = []           # list of Port
+
+  proc init(*):
+    """construct a DataflowNode, properties as named arguments"""
+
+
+type Network object:
+  # a connected subnetwork (island) of the live dataflow graph
+  var nodes = []             # list of DataflowNode
+  var signals = []           # list of signal (borrowed references)
+  var tick_period_us:int = 0
+  var background:bool = false
+
+  proc init(*):
+    """construct a Network, properties as named arguments"""
+
+
+# Per-signal queries are SIGNAL METHODS (importing inspect adds them):
+# any plain function taking a signal argument would be lifted into a dataflow
+# node by the engine, so they cannot be module functions.
+#   sig.network() -> Network|nil   the island containing sig
+#   sig.info()    -> dict          id, name, freq, domain, source/clock/
+#                                  running/event_driven/internal/derived,
+#                                  base + base_index (derived signals), and
+#                                  src_name/src_line/src_col provenance
+
+@builtin
+func networks():
+  """all connected subnetworks (islands) of the live dataflow graph"""
+
+@builtin
+func signals(include_internal:bool=false):
+  """all registered signals (borrowed references); implicit variable-monitor
+  signals are excluded unless include_internal=true"""
+
+
+# ==== BEGIN GENERATED (tools/inspect-gen/generate.py) — do not edit by hand ====
+
+type Declaration object extends Node:
+
+  proc init(*):
+    """construct a Declaration node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'Declaration'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    return cs
+
+
+type Statement object extends Node:
+
+  proc init(*):
+    """construct a Statement node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'Statement'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    return cs
+
+
+type Expression object extends Node:
+
+  proc init(*):
+    """construct a Expression node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'Expression'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    return cs
+
+
+type File object extends Node:
+  var imports = []
+  var decls_or_stmts = []
+  var end_comments = []   # list of string — comments after the last statement
+
+  proc init(*):
+    """construct a File node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'File'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    for x in imports:
+      cs.append(x)
+    for x in decls_or_stmts:
+      cs.append(x)
+    return cs
+
+
+type SingleInput object extends Node:
+  var stmt
+
+  proc init(*):
+    """construct a SingleInput node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'SingleInput'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    if stmt != nil:
+      cs.append(stmt)
+    return cs
+
+
+type Annotation object extends Node:
+  var name:string = ''
+  var args = []
+
+  proc init(*):
+    """construct a Annotation node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'Annotation'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    for x in args:
+      cs.append(x)
+    return cs
+
+
+type Import object extends Node:
+  var packages = []
+  var symbols = []
+
+  proc init(*):
+    """construct a Import node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'Import'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    return cs
+
+
+type Suite object extends Statement:
+  var decls_or_stmts = []
+
+  proc init(*):
+    """construct a Suite node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'Suite'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    for x in decls_or_stmts:
+      cs.append(x)
+    return cs
+
+
+type ExpressionStatement object extends Statement:
+  var expr
+  var at_host
+
+  proc init(*):
+    """construct a ExpressionStatement node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'ExpressionStatement'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    if expr != nil:
+      cs.append(expr)
+    if at_host != nil:
+      cs.append(at_host)
+    return cs
+
+
+type ReturnStatement object extends Statement:
+  var expr
+
+  proc init(*):
+    """construct a ReturnStatement node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'ReturnStatement'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    if expr != nil:
+      cs.append(expr)
+    return cs
+
+
+type BreakStatement object extends Statement:
+
+  proc init(*):
+    """construct a BreakStatement node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'BreakStatement'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    return cs
+
+
+type ContinueStatement object extends Statement:
+
+  proc init(*):
+    """construct a ContinueStatement node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'ContinueStatement'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    return cs
+
+
+type JumpStatement object extends Statement:
+  var name:string = ''
+
+  proc init(*):
+    """construct a JumpStatement node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'JumpStatement'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    return cs
+
+
+type LabelStatement object extends Statement:
+  var name:string = ''
+
+  proc init(*):
+    """construct a LabelStatement node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'LabelStatement'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    return cs
+
+
+type IfStatement object extends Statement:
+  var conditional_suites = []
+  var else_suite
+
+  proc init(*):
+    """construct a IfStatement node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'IfStatement'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    for p in conditional_suites:
+      cs.append(p[0])
+      cs.append(p[1])
+    if else_suite != nil:
+      cs.append(else_suite)
+    return cs
+
+
+type WhileStatement object extends Statement:
+  var condition
+  var body
+
+  proc init(*):
+    """construct a WhileStatement node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'WhileStatement'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    if condition != nil:
+      cs.append(condition)
+    if body != nil:
+      cs.append(body)
+    return cs
+
+
+type ForStatement object extends Statement:
+  var target_list = []
+  var iterable
+  var body
+
+  proc init(*):
+    """construct a ForStatement node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'ForStatement'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    for x in target_list:
+      cs.append(x)
+    if iterable != nil:
+      cs.append(iterable)
+    if body != nil:
+      cs.append(body)
+    return cs
+
+
+type WhenStatement object extends Statement:
+  var trigger
+  var binding
+  var becomes_expr
+  var target_filter
+  var matches_becomes:bool = false
+  var requires_signal_change:bool = false
+  var body
+
+  proc init(*):
+    """construct a WhenStatement node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'WhenStatement'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    if trigger != nil:
+      cs.append(trigger)
+    if becomes_expr != nil:
+      cs.append(becomes_expr)
+    if target_filter != nil:
+      cs.append(target_filter)
+    if body != nil:
+      cs.append(body)
+    return cs
+
+
+type UntilStatement object extends Statement:
+  var stmt
+  var condition
+
+  proc init(*):
+    """construct a UntilStatement node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'UntilStatement'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    if stmt != nil:
+      cs.append(stmt)
+    if condition != nil:
+      cs.append(condition)
+    return cs
+
+
+type AdheringIfStatement object extends Statement:
+  var stmt
+  var condition
+
+  proc init(*):
+    """construct a AdheringIfStatement node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'AdheringIfStatement'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    if stmt != nil:
+      cs.append(stmt)
+    if condition != nil:
+      cs.append(condition)
+    return cs
+
+
+type RaiseStatement object extends Statement:
+  var exception
+
+  proc init(*):
+    """construct a RaiseStatement node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'RaiseStatement'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    if exception != nil:
+      cs.append(exception)
+    return cs
+
+
+type TryStatement object extends Statement:
+  var body
+  var except_clauses = []
+  var finally_suite
+
+  proc init(*):
+    """construct a TryStatement node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'TryStatement'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    if body != nil:
+      cs.append(body)
+    for x in except_clauses:
+      cs.append(x)
+    if finally_suite != nil:
+      cs.append(finally_suite)
+    return cs
+
+
+type MatchStatement object extends Statement:
+  var match_expr
+  var cases = []
+  var default_case
+
+  proc init(*):
+    """construct a MatchStatement node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'MatchStatement'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    if match_expr != nil:
+      cs.append(match_expr)
+    for c in cases:
+      for pat in c[0]:
+        cs.append(pat)
+      cs.append(c[1])
+    if default_case != nil:
+      cs.append(default_case)
+    return cs
+
+
+type WithStatement object extends Statement:
+  var context_expr
+  var body
+
+  proc init(*):
+    """construct a WithStatement node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'WithStatement'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    if context_expr != nil:
+      cs.append(context_expr)
+    if body != nil:
+      cs.append(body)
+    return cs
+
+
+type VarDecl object extends Declaration:
+  var name:string = ''
+  var initializer
+  var var_type
+  var access:string = 'public'
+  var is_const:bool = false
+  var is_type_const:bool = false
+  var is_type_mutable:bool = false
+  var at_host
+
+  proc init(*):
+    """construct a VarDecl node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'VarDecl'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    if initializer != nil:
+      cs.append(initializer)
+    if at_host != nil:
+      cs.append(at_host)
+    return cs
+
+
+type PropertyAccessor object extends Node:
+  var name:string = ''
+  var prop_type:string = ''
+  var initializer
+  var access:string = 'public'
+  var is_const:bool = false
+  var getter
+  var getter_abstract:bool = false
+  var setter
+  var setter_abstract:bool = false
+
+  proc init(*):
+    """construct a PropertyAccessor node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'PropertyAccessor'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    if initializer != nil:
+      cs.append(initializer)
+    if getter != nil:
+      cs.append(getter)
+    if setter != nil:
+      cs.append(setter)
+    return cs
+
+
+type FuncDecl object extends Declaration:
+  var function
+
+  proc init(*):
+    """construct a FuncDecl node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'FuncDecl'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    if function != nil:
+      cs.append(function)
+    return cs
+
+
+type Function object extends Node:
+  var is_proc:bool = false
+  var name
+  var params = []
+  var return_types
+  var return_type_const = []
+  var body
+  var access:string = 'public'
+  var modifiers = []
+
+  proc init(*):
+    """construct a Function node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'Function'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    for x in params:
+      cs.append(x)
+    if body != nil:
+      cs.append(body)
+    return cs
+
+
+type Parameter object extends Node:
+  var name:string = ''
+  var param_type
+  var default_value
+  var variadic:bool = false
+  var is_const:bool = false
+  var is_mutable:bool = false
+  var is_star:bool = false
+
+  proc init(*):
+    """construct a Parameter node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'Parameter'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    if default_value != nil:
+      cs.append(default_value)
+    return cs
+
+
+type TypeDecl object extends Declaration:
+  var type_kind:string = 'object'
+  var name:string = ''
+  var access:string = 'public'
+  var extends_type
+  var implements_types = []
+  var methods = []
+  var properties = []
+  var property_accessors = []
+  var enum_labels = []
+  var nested_types = []
+
+  proc init(*):
+    """construct a TypeDecl node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'TypeDecl'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    for x in methods:
+      cs.append(x)
+    for x in properties:
+      cs.append(x)
+    for x in property_accessors:
+      cs.append(x)
+    for x in enum_labels:
+      cs.append(x)
+    for x in nested_types:
+      cs.append(x)
+    return cs
+
+
+type Assignment object extends Expression:
+  var op:string = ''
+  var lhs
+  var rhs
+  var at_host
+
+  proc init(*):
+    """construct a Assignment node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'Assignment'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    if lhs != nil:
+      cs.append(lhs)
+    if rhs != nil:
+      cs.append(rhs)
+    if at_host != nil:
+      cs.append(at_host)
+    return cs
+
+
+type BinaryOp object extends Expression:
+  var op:string = ''
+  var lhs
+  var rhs
+
+  proc init(*):
+    """construct a BinaryOp node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'BinaryOp'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    if lhs != nil:
+      cs.append(lhs)
+    if rhs != nil:
+      cs.append(rhs)
+    return cs
+
+
+type UnaryOp object extends Expression:
+  var op:string = ''
+  var member
+  var arg
+
+  proc init(*):
+    """construct a UnaryOp node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'UnaryOp'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    if arg != nil:
+      cs.append(arg)
+    return cs
+
+
+type Variable object extends Expression:
+  var name:string = ''
+
+  proc init(*):
+    """construct a Variable node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'Variable'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    return cs
+
+
+type Call object extends Expression:
+  var callable
+  var args = []
+
+  proc init(*):
+    """construct a Call node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'Call'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    if callable != nil:
+      cs.append(callable)
+    for x in args:
+      cs.append(x)
+    return cs
+
+
+type Range object extends Expression:
+  var start
+  var stop
+  var step
+  var closed:bool = false
+
+  proc init(*):
+    """construct a Range node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'Range'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    if start != nil:
+      cs.append(start)
+    if stop != nil:
+      cs.append(stop)
+    if step != nil:
+      cs.append(step)
+    return cs
+
+
+type Index object extends Expression:
+  var indexable
+  var args = []
+
+  proc init(*):
+    """construct a Index node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'Index'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    if indexable != nil:
+      cs.append(indexable)
+    for x in args:
+      cs.append(x)
+    return cs
+
+
+type LambdaFunc object extends Expression:
+  var function
+
+  proc init(*):
+    """construct a LambdaFunc node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'LambdaFunc'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    if function != nil:
+      cs.append(function)
+    return cs
+
+
+type Literal object extends Expression:
+
+  proc init(*):
+    """construct a Literal node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'Literal'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    return cs
+
+
+type Bool object extends Literal:
+  var value:bool = false
+
+  proc init(*):
+    """construct a Bool node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'Bool'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    return cs
+
+
+type Num object extends Literal:
+  var value
+
+  proc init(*):
+    """construct a Num node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'Num'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    return cs
+
+
+type Str object extends Literal:
+  var value:string = ''
+
+  proc init(*):
+    """construct a Str node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'Str'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    return cs
+
+
+type StrInterp object extends Literal:
+  var parts = []
+  var suffix:string = ''
+
+  proc init(*):
+    """construct a StrInterp node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'StrInterp'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    for p in parts:
+      if not (p is string):
+        cs.append(p)
+    return cs
+
+
+type SuffixedNum object extends Literal:
+  var value
+  var suffix:string = ''
+
+  proc init(*):
+    """construct a SuffixedNum node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'SuffixedNum'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    return cs
+
+
+type SuffixedStr object extends Literal:
+  var value:string = ''
+  var suffix:string = ''
+
+  proc init(*):
+    """construct a SuffixedStr node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'SuffixedStr'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    return cs
+
+
+type Type object extends Literal:
+  var value:string = ''
+
+  proc init(*):
+    """construct a Type node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'Type'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    return cs
+
+
+type List object extends Literal:
+  var elements = []
+
+  proc init(*):
+    """construct a List node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'List'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    for x in elements:
+      cs.append(x)
+    return cs
+
+
+type Vector object extends Literal:
+  var elements = []
+
+  proc init(*):
+    """construct a Vector node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'Vector'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    for x in elements:
+      cs.append(x)
+    return cs
+
+
+type Matrix object extends Literal:
+  var rows = []
+
+  proc init(*):
+    """construct a Matrix node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'Matrix'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    for x in rows:
+      cs.append(x)
+    return cs
+
+
+type Dict object extends Literal:
+  var entries = []
+
+  proc init(*):
+    """construct a Dict node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'Dict'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    for p in entries:
+      cs.append(p[0])
+      cs.append(p[1])
+    return cs
+
+
+# Machine-readable node schemas for structural editors:
+#   node_fields(kind) -> list of {'name':..., 'kind':..., 'class':...}
+var _node_fields = {}
+_node_fields['Declaration'] = []
+_node_fields['Statement'] = []
+_node_fields['Expression'] = []
+_node_fields['File'] = [{'name': 'imports', 'kind': 'list(node)', 'class': 'Import'}, {'name': 'decls_or_stmts', 'kind': 'list(node)'}, {'name': 'end_comments', 'kind': 'list(string)'}]
+_node_fields['SingleInput'] = [{'name': 'stmt', 'kind': 'node', 'class': 'Statement'}]
+_node_fields['Annotation'] = [{'name': 'name', 'kind': 'string'}, {'name': 'args', 'kind': 'list(arg)'}]
+_node_fields['Import'] = [{'name': 'packages', 'kind': 'list(string)'}, {'name': 'symbols', 'kind': 'list(string)'}]
+_node_fields['Suite'] = [{'name': 'decls_or_stmts', 'kind': 'list(node)'}]
+_node_fields['ExpressionStatement'] = [{'name': 'expr', 'kind': 'node', 'class': 'Expression'}, {'name': 'at_host', 'kind': 'node', 'class': 'Expression'}]
+_node_fields['ReturnStatement'] = [{'name': 'expr', 'kind': 'node', 'class': 'Expression'}]
+_node_fields['BreakStatement'] = []
+_node_fields['ContinueStatement'] = []
+_node_fields['JumpStatement'] = [{'name': 'name', 'kind': 'string'}]
+_node_fields['LabelStatement'] = [{'name': 'name', 'kind': 'string'}]
+_node_fields['IfStatement'] = [{'name': 'conditional_suites', 'kind': 'list(pair)'}, {'name': 'else_suite', 'kind': 'node', 'class': 'Suite'}]
+_node_fields['WhileStatement'] = [{'name': 'condition', 'kind': 'node', 'class': 'Expression'}, {'name': 'body', 'kind': 'node', 'class': 'Suite'}]
+_node_fields['ForStatement'] = [{'name': 'target_list', 'kind': 'list(node)', 'class': 'VarDecl'}, {'name': 'iterable', 'kind': 'node', 'class': 'Expression'}, {'name': 'body', 'kind': 'node', 'class': 'Suite'}]
+_node_fields['WhenStatement'] = [{'name': 'trigger', 'kind': 'node', 'class': 'Expression'}, {'name': 'binding', 'kind': 'string'}, {'name': 'becomes_expr', 'kind': 'node', 'class': 'Expression'}, {'name': 'target_filter', 'kind': 'node', 'class': 'Expression'}, {'name': 'matches_becomes', 'kind': 'bool'}, {'name': 'requires_signal_change', 'kind': 'bool'}, {'name': 'body', 'kind': 'node', 'class': 'Suite'}]
+_node_fields['UntilStatement'] = [{'name': 'stmt', 'kind': 'node', 'class': 'Statement'}, {'name': 'condition', 'kind': 'node', 'class': 'Expression'}]
+_node_fields['AdheringIfStatement'] = [{'name': 'stmt', 'kind': 'node', 'class': 'Statement'}, {'name': 'condition', 'kind': 'node', 'class': 'Expression'}]
+_node_fields['RaiseStatement'] = [{'name': 'exception', 'kind': 'node', 'class': 'Expression'}]
+_node_fields['TryStatement'] = [{'name': 'body', 'kind': 'node', 'class': 'Suite'}, {'name': 'except_clauses', 'kind': 'list(except_clause)'}, {'name': 'finally_suite', 'kind': 'node', 'class': 'Suite'}]
+_node_fields['MatchStatement'] = [{'name': 'match_expr', 'kind': 'node', 'class': 'Expression'}, {'name': 'cases', 'kind': 'list(case)'}, {'name': 'default_case', 'kind': 'node', 'class': 'Suite'}]
+_node_fields['WithStatement'] = [{'name': 'context_expr', 'kind': 'node', 'class': 'Expression'}, {'name': 'body', 'kind': 'node', 'class': 'Suite'}]
+_node_fields['VarDecl'] = [{'name': 'name', 'kind': 'string'}, {'name': 'initializer', 'kind': 'node', 'class': 'Expression'}, {'name': 'var_type', 'kind': 'string'}, {'name': 'access', 'kind': 'string'}, {'name': 'is_const', 'kind': 'bool'}, {'name': 'is_type_const', 'kind': 'bool'}, {'name': 'is_type_mutable', 'kind': 'bool'}, {'name': 'at_host', 'kind': 'node', 'class': 'Expression'}]
+_node_fields['PropertyAccessor'] = [{'name': 'name', 'kind': 'string'}, {'name': 'prop_type', 'kind': 'string'}, {'name': 'initializer', 'kind': 'node', 'class': 'Expression'}, {'name': 'access', 'kind': 'string'}, {'name': 'is_const', 'kind': 'bool'}, {'name': 'getter', 'kind': 'node'}, {'name': 'getter_abstract', 'kind': 'bool'}, {'name': 'setter', 'kind': 'node'}, {'name': 'setter_abstract', 'kind': 'bool'}]
+_node_fields['FuncDecl'] = [{'name': 'function', 'kind': 'node', 'class': 'Function'}]
+_node_fields['Function'] = [{'name': 'is_proc', 'kind': 'bool'}, {'name': 'name', 'kind': 'string'}, {'name': 'params', 'kind': 'list(node)', 'class': 'Parameter'}, {'name': 'return_types', 'kind': 'list(string)'}, {'name': 'return_type_const', 'kind': 'list(bool)'}, {'name': 'body', 'kind': 'node'}, {'name': 'access', 'kind': 'string'}, {'name': 'modifiers', 'kind': 'list(string)'}]
+_node_fields['Parameter'] = [{'name': 'name', 'kind': 'string'}, {'name': 'param_type', 'kind': 'string'}, {'name': 'default_value', 'kind': 'node', 'class': 'Expression'}, {'name': 'variadic', 'kind': 'bool'}, {'name': 'is_const', 'kind': 'bool'}, {'name': 'is_mutable', 'kind': 'bool'}, {'name': 'is_star', 'kind': 'bool'}]
+_node_fields['TypeDecl'] = [{'name': 'type_kind', 'kind': 'string'}, {'name': 'name', 'kind': 'string'}, {'name': 'access', 'kind': 'string'}, {'name': 'extends_type', 'kind': 'string'}, {'name': 'implements_types', 'kind': 'list(string)'}, {'name': 'methods', 'kind': 'list(node)', 'class': 'Function'}, {'name': 'properties', 'kind': 'list(node)', 'class': 'VarDecl'}, {'name': 'property_accessors', 'kind': 'list(node)', 'class': 'PropertyAccessor'}, {'name': 'enum_labels', 'kind': 'list(arg)'}, {'name': 'nested_types', 'kind': 'list(node)', 'class': 'TypeDecl'}]
+_node_fields['Assignment'] = [{'name': 'op', 'kind': 'string'}, {'name': 'lhs', 'kind': 'node', 'class': 'Expression'}, {'name': 'rhs', 'kind': 'node', 'class': 'Expression'}, {'name': 'at_host', 'kind': 'node', 'class': 'Expression'}]
+_node_fields['BinaryOp'] = [{'name': 'op', 'kind': 'string'}, {'name': 'lhs', 'kind': 'node', 'class': 'Expression'}, {'name': 'rhs', 'kind': 'node', 'class': 'Expression'}]
+_node_fields['UnaryOp'] = [{'name': 'op', 'kind': 'string'}, {'name': 'member', 'kind': 'string'}, {'name': 'arg', 'kind': 'node', 'class': 'Expression'}]
+_node_fields['Variable'] = [{'name': 'name', 'kind': 'string'}]
+_node_fields['Call'] = [{'name': 'callable', 'kind': 'node', 'class': 'Expression'}, {'name': 'args', 'kind': 'list(arg)'}]
+_node_fields['Range'] = [{'name': 'start', 'kind': 'node', 'class': 'Expression'}, {'name': 'stop', 'kind': 'node', 'class': 'Expression'}, {'name': 'step', 'kind': 'node', 'class': 'Expression'}, {'name': 'closed', 'kind': 'bool'}]
+_node_fields['Index'] = [{'name': 'indexable', 'kind': 'node', 'class': 'Expression'}, {'name': 'args', 'kind': 'list(node)', 'class': 'Expression'}]
+_node_fields['LambdaFunc'] = [{'name': 'function', 'kind': 'node', 'class': 'Function'}]
+_node_fields['Literal'] = []
+_node_fields['Bool'] = [{'name': 'value', 'kind': 'bool'}]
+_node_fields['Num'] = [{'name': 'value', 'kind': 'value'}]
+_node_fields['Str'] = [{'name': 'value', 'kind': 'string'}]
+_node_fields['StrInterp'] = [{'name': 'parts', 'kind': 'list(part)'}, {'name': 'suffix', 'kind': 'string'}]
+_node_fields['SuffixedNum'] = [{'name': 'value', 'kind': 'value'}, {'name': 'suffix', 'kind': 'string'}]
+_node_fields['SuffixedStr'] = [{'name': 'value', 'kind': 'string'}, {'name': 'suffix', 'kind': 'string'}]
+_node_fields['Type'] = [{'name': 'value', 'kind': 'string'}]
+_node_fields['List'] = [{'name': 'elements', 'kind': 'list(node)', 'class': 'Expression'}]
+_node_fields['Vector'] = [{'name': 'elements', 'kind': 'list(node)', 'class': 'Expression'}]
+_node_fields['Matrix'] = [{'name': 'rows', 'kind': 'list(node)', 'class': 'Vector'}]
+_node_fields['Dict'] = [{'name': 'entries', 'kind': 'list(pair)'}]
+
+func node_fields(kind:string) -> list:
+  """field schema for the given node kind: name, kind, and node class where applicable"""
+  return _node_fields[kind]
+
+# ==== END GENERATED ====

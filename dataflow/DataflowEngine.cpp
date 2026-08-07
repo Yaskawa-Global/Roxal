@@ -2206,6 +2206,92 @@ std::string DataflowEngine::graphDot(const std::string& title, std::map<std::str
 }
 
 
+namespace {
+
+DataflowEngine::FuncSnapshot snapshotFunc(const ptr<FuncNode>& func)
+{
+    DataflowEngine::FuncSnapshot fs;
+    fs.id = func->id();
+    fs.name = func->name();
+    fs.period = func->period();
+    fs.srcName = func->srcName();
+    fs.srcLine = func->srcLine();
+    fs.srcCol = func->srcCol();
+    for (const auto& ip : func->inputPorts())
+        fs.inputs.push_back({ ip.name, ip.signal, ip.index, ip.defaultValue.has_value() });
+    for (const auto& op : func->outputPorts())
+        fs.outputs.push_back({ op.name, op.signal, 0, false });
+    return fs;
+}
+
+} // namespace
+
+// Locking recipe (same as islandDebugSnapshot, proven from script-thread
+// NativeFns via sys._df_islands): rebuild the network cache if dirty, then
+// copy under m_mutex — no m_evalMutex, no Value reads, no parking under lock.
+std::optional<DataflowEngine::NetworkSnapshot> DataflowEngine::subnetworkContaining(const ptr<Signal>& signal)
+{
+    if (m_networkModified)
+        buildNetworkCacheData();
+
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+
+    for (const auto& island : m_networkIslands) {
+        bool found = false;
+        for (const auto& s : island.signals)
+            if (s == signal) { found = true; break; }
+        if (!found)
+            continue;
+
+        NetworkSnapshot ns;
+        ns.tickPeriod = island.tickPeriod;
+        ns.background = island.background;
+        ns.signals = island.signals;
+        ns.funcs.reserve(island.funcs.size());
+        for (const auto& f : island.funcs)
+            if (f) ns.funcs.push_back(snapshotFunc(f));
+        return ns;
+    }
+    return std::nullopt;
+}
+
+std::vector<DataflowEngine::NetworkSnapshot> DataflowEngine::allSubnetworks()
+{
+    if (m_networkModified)
+        buildNetworkCacheData();
+
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+
+    std::vector<NetworkSnapshot> result;
+    result.reserve(m_networkIslands.size());
+    for (const auto& island : m_networkIslands) {
+        NetworkSnapshot ns;
+        ns.tickPeriod = island.tickPeriod;
+        ns.background = island.background;
+        ns.signals = island.signals;
+        ns.funcs.reserve(island.funcs.size());
+        for (const auto& f : island.funcs)
+            if (f) ns.funcs.push_back(snapshotFunc(f));
+        result.push_back(std::move(ns));
+    }
+    return result;
+}
+
+std::vector<ptr<Signal>> DataflowEngine::allSignals(bool includeInternal)
+{
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+
+    std::vector<ptr<Signal>> result;
+    std::set<const Signal*> seen;
+    for (const auto& s : signals) {
+        if (!s || (!includeInternal && s->isInternal()))
+            continue;
+        if (seen.insert(s.get()).second)
+            result.push_back(s);
+    }
+    return result;
+}
+
 std::vector<DataflowEngine::IslandDebugInfo> DataflowEngine::islandDebugSnapshot()
 {
     if (m_networkModified)

@@ -5298,20 +5298,21 @@ std::string roxal::objTensorToString(const ObjTensor* ot)
 }
 
 
-ObjSignal::ObjSignal(ptr<df::Signal> s)
-    : signal(s), engine(nullptr), changeEventType(Value::nilVal())
+ObjSignal::ObjSignal(ptr<df::Signal> s, bool borrowed_)
+    : signal(s), engine(nullptr), borrowed(borrowed_), changeEventType(Value::nilVal())
 {
     type = ObjType::Signal;
     if (signal) {
         auto eng = df::DataflowEngine::instance();
         engine = eng.get();
-        engine->registerSignalWrapper(signal);
+        if (!borrowed)
+            engine->registerSignalWrapper(signal);
     }
 }
 
 ObjSignal::~ObjSignal()
 {
-    if (signal && engine) {
+    if (signal && engine && !borrowed) {
         size_t remaining = engine->unregisterSignalWrapper(signal);
         if (remaining == 0 && engine->consumerCount(signal) == 0)
             engine->removeSignal(signal, true);
@@ -5443,12 +5444,12 @@ ObjEventType* ObjSignal::ensureChangeEventType()
     return asEventType(changeEventType);
 }
 
-unique_ptr<ObjSignal, UnreleasedObj> roxal::newSignalObj(ptr<df::Signal> s)
+unique_ptr<ObjSignal, UnreleasedObj> roxal::newSignalObj(ptr<df::Signal> s, bool borrowed)
 {
     #ifdef DEBUG_BUILD
-    return newObj<ObjSignal>(__func__, __FILE__, __LINE__, s);
+    return newObj<ObjSignal>(__func__, __FILE__, __LINE__, s, borrowed);
     #else
-    return newObj<ObjSignal>(s);
+    return newObj<ObjSignal>(s, borrowed);
     #endif
 }
 

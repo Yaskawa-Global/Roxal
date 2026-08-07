@@ -1,0 +1,30 @@
+// inspect.signals(): enumeration with and without internal signals
+import inspect
+
+var a = signal(0, 1.0, 'alpha')
+var b = signal(0, 2.0, 'beta')
+
+var names = []
+for s in inspect.signals():
+  names.append(s.name)
+print('alpha' in names)
+print('beta' in names)
+
+// info() on a plain source signal
+var info = a.info()
+print(info['id'] > 0)
+print(info['name'])
+print("{info['source']} {info['clock']} {info['event_driven']} {info['derived']}")
+print(info['domain'])
+print(info['base'] == nil)
+
+// ids are unique
+print(a.info()['id'] != b.info()['id'])
+
+// derived-signal relation via a delayed clock signal
+var c = clock(freq=100, name='clk')
+var d = c[-1]
+var dinfo = d.info()
+print(dinfo['derived'])
+print(dinfo['base'].name)
+print(dinfo['base_index'])

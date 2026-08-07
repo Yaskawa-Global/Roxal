@@ -1,0 +1,20 @@
+if branches=2 else=Suite
+cond0=> suite0=Suite
+func add proc=false params=2 ret=["int"] body=Suite
+param b:int default=2 variadic=false
+call args=2 a0=nil/Num a1=b/Num
+base kind=object props=1 extends=nil
+derived extends=Base methods=1
+enum kind=enumeration labels=2 l0=Red=1
+try clauses=1 name=e finally=Suite
+match cases=2 pats0=2 default=Suite
+dict entries=1 k=a v=1
+list List elems=3
+interp StrInterp parts=3 p0=a  p1=Variable
+range Range start=1 stop=10 closed=true
+index Index of=Variable args=1
+accessor UnaryOp op=. member=prop arg=Variable
+lambda LambdaFunc params=1 body=BinaryOp
+annotations=1 a0=builtin
+while cond=Variable body=Suite
+when trigger=Variable binding=evt becomes=nil sigchange=true

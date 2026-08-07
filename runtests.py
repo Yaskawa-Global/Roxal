@@ -330,6 +330,16 @@ dds_tests = ['dds_bounded_ok', 'dds_bounded_fail', 'dds_complex_smoke', 'dds_arr
              'dds_ros_import', 'dds_ros_signal_roundtrip', 'dds_ros_camerainfo',
              'dds_signal_keepall', 'dds_signal_keeplast', 'dds_ros_signal_lift']
 regex_tests = ['regex_test']
+inspect_tests = [
+    'inspect_parse', 'inspect_fields', 'inspect_walk', 'inspect_parent',
+    'inspect_positions', 'inspect_comments', 'inspect_schema',
+    'inspect_tolerant', 'inspect_parse_err',
+    'inspect_network', 'inspect_network_values', 'inspect_signals_enum',
+    'inspect_network_lifecycle', 'inspect_network_provenance',
+    'inspect_unparse', 'inspect_edit', 'inspect_fragments',
+    'inspect_fragment_err', 'inspect_unparse_err', 'inspect_roundtrip_corpus',
+    'inspect_compile', 'inspect_compile_err',
+]
 xml_tests = [
     'xml_basic_compact', 'xml_basic_raw', 'xml_attrs', 'xml_mixed_raw',
     'xml_compact_lossy', 'xml_whitespace', 'xml_to_xml_compact',
@@ -418,6 +428,7 @@ compute_server_double_hop_tests = ['remote_actor_forwarded_type', 'remote_actor_
 # Add feature-specific tests to the full list; feature gating happens later.
 tests += dds_tests
 tests += regex_tests
+tests += inspect_tests
 tests += xml_tests
 tests += socket_tests
 tests += ffi_tests
@@ -577,6 +588,11 @@ if not has_xml:
     if any(test in tests for test in xml_tests):
         print("Skipping XML tests (feature not enabled).")
         tests = [t for t in tests if t not in xml_tests]
+has_inspect = 'inspect' in features
+if not has_inspect:
+    if any(test in tests for test in inspect_tests):
+        print("Skipping inspect tests (feature not enabled).")
+        tests = [t for t in tests if t not in inspect_tests]
 if not has_socket:
     if any(test in tests for test in socket_tests):
         print("Skipping socket tests (feature not enabled).")

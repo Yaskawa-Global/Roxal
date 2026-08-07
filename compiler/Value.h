@@ -288,6 +288,9 @@ public:
     static Value tensorVal(const std::vector<int64_t>& shape, const std::vector<double>& data, TensorDType dtype);
 
     static Value signalVal(roxal::ptr<df::Signal> s); // ObjSignal
+    // Borrowed (non-owning) signal wrapper: safe for introspection to hand
+    // out — dropping it never triggers wrapper-refcount pipeline teardown.
+    static Value signalRefVal(roxal::ptr<df::Signal> s);
 
     static Value eventVal(); // ObjEventType
     static Value eventInstanceVal(const Value& eventType, std::unordered_map<int32_t, Value> payload = {}); // ObjEventInstance

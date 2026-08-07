@@ -66,6 +66,22 @@ public:
 
     const std::string& name() const;
 
+    // Stable process-unique graph id (shared counter with Signal, see
+    // df::nextGraphId).  Node names embed a construction counter and are not
+    // durable; introspection keys on this instead.
+    uint64_t id() const { return m_id; }
+
+    // Source location of the call that lifted this node (best effort;
+    // line 0 = unknown).  Lets introspection correlate the live network back
+    // to the program text.
+    const std::string& srcName() const { return m_srcName; }
+    size_t srcLine() const { return m_srcLine; }
+    size_t srcCol() const { return m_srcCol; }
+    void setSrcOrigin(const std::string& name, size_t line, size_t col)
+    {
+        m_srcName = name; m_srcLine = line; m_srcCol = col;
+    }
+
     Names inputNames() const { return m_inputNames; }
     Names outputNames() const { return m_outputNames.empty() ? Names{"result"} : m_outputNames; }
     bool isPure() const { return true; }
@@ -103,10 +119,6 @@ public:
     // index of signal argument for each param (-1 if constant)
     std::vector<int> paramSignalIndex;
 
-protected:
-    std::string m_name;
-    bool m_operatorSignalsCalled; // true if operator(Signals) has been called
-
     // Structures to represent inputs and outputs with latency
     struct InputPort {
         std::string name;
@@ -121,6 +133,22 @@ protected:
         std::string name;
         ptr<Signal> signal;
     };
+
+    // read-only port access for introspection (engine holds its mutex)
+    const std::vector<InputPort>& inputPorts() const { return m_inputs; }
+    const std::vector<OutputPort>& outputPorts() const { return m_outputs; }
+
+    TimeDuration period() const { return m_period; }
+
+protected:
+    std::string m_name;
+    bool m_operatorSignalsCalled; // true if operator(Signals) has been called
+
+    uint64_t m_id;
+
+    std::string m_srcName;
+    size_t m_srcLine = 0;
+    size_t m_srcCol = 0;
 
     // Input and output ports
     std::vector<InputPort> m_inputs;

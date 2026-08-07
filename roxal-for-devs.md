@@ -2363,6 +2363,69 @@ features and matching, homography/affine estimation.
 `modules/opencv/README.md` (architecture and building). Examples:
 `examples/opencv-blobs.rox`, `examples/opencv-camera.rox`.
 
+## Advanced: Source & Dataflow Introspection (inspect)
+
+The `inspect` module is the stable surface for tools, editors and IDEs: it
+parses Roxal source into a tree of plain Roxal *mirror node* objects (one class
+per AST node kind, e.g. `inspect.BinaryOp`, `inspect.IfStatement`), lets you
+edit that tree with ordinary assignment, renders it back to source, compiles
+it, and inspects the live dataflow network.
+
+```roxal
+import inspect
+
+var tree = inspect.parse('var x = 1 + 2   # sum\n')
+var decl = tree.decls_or_stmts[0]        # VarDecl mirror node
+print(decl.name)                         # x
+print(decl.trailing_comment)             # '# sum'
+var e = decl.initializer                 # BinaryOp
+print("{e.op} {e.lhs.value} {e.rhs.value}")   # + 1 2
+
+e.op = '*'                               # edit: plain property assignment
+e.rhs = inspect.parse_expression('z - 4')     # splice a parsed fragment
+print(inspect.unparse(tree), '')         # var x = 1 * (z - 4)   # sum
+inspect.compile(tree, 'scratch')()       # compile the edited tree and run it
+```
+
+Every node carries source positions (`start_line`/`start_col`/`end_line`/
+`end_col`; lines from 1, columns from 0, end inclusive — stale after edits),
+a `parent` back-reference, `deduced_type` (best-effort), `kind()` and
+`children()`, and comment decorations at statement granularity
+(`leading_comments`, `trailing_comment`, `blank_lines_before`,
+`File.end_comments`) so editors round-trip comments. `inspect.walk(node)`
+returns the subtree preorder; `inspect.node_fields(kind)` returns a
+machine-readable field schema for structural editors. Nodes construct with
+named arguments: `inspect.BinaryOp(op='+', lhs=..., rhs=...)`.
+
+Parsing entry points: `parse(source, name, tolerant)` (whole program;
+`tolerant=true` returns `{tree, errors}` where the tree is *partial* — damaged
+statements pruned, intact ones kept — for in-progress buffers),
+`parse_file(path)`, and the fragment parsers `parse_expression` /
+`parse_statement` / `parse_declaration`. `unparse(node)` renders canonical
+source (normalized formatting, comments re-emitted; `parse(unparse(t))` is
+structurally equal to `t`). `compile(file_tree, name)` returns a callable that
+runs the program's top level.
+
+Live dataflow introspection is read-only and safe: `sig.network()` returns the
+connected subnetwork (`Network` → `DataflowNode` → `Port`) and `sig.info()`
+per-signal details — these are *signal methods* because a plain function call
+with a signal argument would itself be lifted into a dataflow node (for the
+same reason, avoid comparing signals while inspecting: `sig != nil` lifts a
+comparison node into the network). `inspect.networks()` and
+`inspect.signals()` enumerate. Nodes and signals carry stable `id`s and
+`src_name`/`src_line`/`src_col` creation provenance, correlating the live
+graph back to the program text. Signals returned by inspect are borrowed
+references: reading `.value`/`.name` is always safe and dropping them never
+tears down network parts.
+
+Mirror-field naming: C++ camelCase becomes snake_case; names that collide with
+grammar keywords are adjusted (`function` for `func`, `becomes_expr`,
+`extends_type`, `implements_types`, `Port.sig`).
+
+The mirror classes and converters are generated — after changing `core/AST.h`,
+run `python3 tools/inspect-gen/generate.py` (a strict verifier fails loudly on
+any drift; `--check` for CI-style diffing).
+
 ## Builtin Modules & Functions Reference
 
 The functions in the sys module are always globally available (- as if `import sys.*` were used).  See `sys.rox`.

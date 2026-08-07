@@ -1,0 +1,36 @@
+// inspect: dataflow subnetwork topology via sig.network()
+import inspect
+
+func double_it(v):
+  return v * 2.0
+
+var src = signal(0, 1.0, 'src')
+sum = double_it(src)
+
+var net = src.network()
+print(net != nil)
+print(len(net.nodes))
+var node = net.nodes[0]
+print(node.id > 0)
+print(len(node.inputs))
+print("{node.inputs[0].name} {node.inputs[0].index} {node.inputs[0].sig.name}")
+print(len(node.outputs))
+// NOTE: comparing a signal (sig != nil) would LIFT into a dataflow node and
+// mutate the network under inspection — read a property instead
+print(len(node.outputs[0].sig.name) > 0)
+print(len(net.signals) >= 2)
+print(net.background)
+
+// the output signal reaches the same island
+var net2 = sum.network()
+print(net2 != nil)
+print(len(net2.nodes))
+
+// a lone signal forms its own island with no nodes
+var lone = signal(0, 0.0, 'lone')
+var lonenet = lone.network()
+print(lonenet != nil)
+print(len(lonenet.nodes))
+
+// networks() lists at least the one island
+print(len(inspect.networks()) >= 1)

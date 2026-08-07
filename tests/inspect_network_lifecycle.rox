@@ -1,0 +1,38 @@
+// inspect: borrowed signal references must never tear down network parts.
+// Regression for the wrapper-refcount teardown path: dropping the LAST
+// ObjSignal wrapper of a signal with no consumers removes it from the engine
+// (that is how pipelines are reclaimed) — introspection wrappers are
+// borrowed and must not participate.
+import inspect
+
+func bump(v):
+  return v + 1.0
+
+var src = signal(0, 0.0, 'lifecycle_src')
+out = bump(src)
+
+// mint borrowed wrappers for EVERY signal (including internal ones and
+// intermediates that have never had a script wrapper), then drop them all
+proc touch_all():
+  var seen = []
+  for s in inspect.signals(include_internal=true):
+    seen.append(s.name)
+  var net = src.network()
+  for n in net.nodes:
+    for p in n.inputs:
+      seen.append(p.sig.name)
+    for p in n.outputs:
+      seen.append(p.sig.name)
+  print(len(seen) > 0)
+
+touch_all()
+gc()
+gc()
+
+// the network still exists and still evaluates
+var net = src.network()
+print(net != nil)
+print(len(net.nodes))
+src.set(41.0)
+_dataflow_tick()
+print(out.value)

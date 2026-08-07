@@ -1,0 +1,24 @@
+// inspect.compile: parse -> structural edit -> compile -> run
+import inspect
+
+var tree = inspect.parse('var a = 3\nvar b = 4\nprint(a + b)\n')
+var run = inspect.compile(tree, 'scratch')
+run()
+
+// flip the operator structurally and compile again
+tree.decls_or_stmts[2].expr.args[0].value.op = '*'
+var run2 = inspect.compile(tree, 'scratch2')
+run2()
+
+// the same tree compiles repeatedly
+var run3 = inspect.compile(tree, 'scratch3')
+run3()
+
+// a program assembled purely from nodes
+var f = inspect.File()
+f.decls_or_stmts.append(inspect.parse_statement("print('built from nodes')"))
+inspect.compile(f)()
+
+// functions defined by the compiled program are callable within it
+var t2 = inspect.parse('func mul(a, b):\n  return a * b\nprint(mul(6, 7))\n')
+inspect.compile(t2, 'm')()

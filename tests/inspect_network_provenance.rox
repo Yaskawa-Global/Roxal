@@ -1,0 +1,21 @@
+// inspect: creation provenance — nodes/signals point back at the source
+// line that created them.  Line numbers below are load-bearing.
+import inspect
+
+func work(v):
+  return v + 1.0
+
+var src = signal(0, 1.0, 'psrc')
+out = work(src)
+
+var sinfo = src.info()
+print(sinfo['src_line'])
+print(len(sinfo['src_name']) > 0)
+
+var net = src.network()
+var node = net.nodes[0]
+print(node.src_line)
+print(node.src_name == sinfo['src_name'])
+
+// output signals inherit the lifting node's origin
+print(node.outputs[0].sig.info()['src_line'])

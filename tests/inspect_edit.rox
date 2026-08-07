@@ -1,0 +1,31 @@
+// inspect: structural editing is plain Roxal mutation; unparse makes it real
+import inspect
+
+var tree = inspect.parse('var x = 1 + 2\nif x > 5:\n  print(1)\n')
+
+// scalar-field edit
+var e = tree.decls_or_stmts[0].initializer
+e.op = '*'
+// child replacement with a parsed fragment
+e.rhs = inspect.parse_expression('z - 4')
+// rename through the declaration
+tree.decls_or_stmts[0].name = 'total'
+print(inspect.unparse(tree.decls_or_stmts[0]), '')
+
+// statement-list edit: insert and remove in a suite
+var ifs = tree.decls_or_stmts[1]
+var suite = ifs.conditional_suites[0][1]
+suite.decls_or_stmts.append(inspect.parse_statement('print(2)'))
+print(inspect.unparse(ifs), '')
+
+// branch edit: add an elseif via the conditional_suites list; the branch
+// suite comes from a fragment statement's block
+var cond = inspect.parse_expression('x > 1')
+var branch = inspect.parse_statement('if dummy:\n  print(3)\n')
+ifs.conditional_suites.append([cond, branch.conditional_suites[0][1]])
+print(inspect.unparse(ifs), '')
+
+// node construction with named arguments
+var lit = inspect.Num(value=42)
+var bin = inspect.BinaryOp(op='+', lhs=inspect.Variable(name='n'), rhs=lit)
+print(inspect.unparse(bin))

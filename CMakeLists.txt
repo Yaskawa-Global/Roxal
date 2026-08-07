@@ -126,6 +126,7 @@ if(ROXAL_ENABLE_AI_NN)
 endif()
 option(ROXAL_ENABLE_MEDIA "Enable media module (PNG/JPEG image I/O)" OFF)
 option(ROXAL_ENABLE_QT "Enable qt module (QML/QtQuick UI, requires Qt6)" OFF)
+option(ROXAL_ENABLE_INSPECT "Enable inspect module (AST and dataflow introspection)" ON)
 if(ROXAL_ENABLE_ALL)
     set(ROXAL_ENABLE_FILEIO ON CACHE BOOL "Enabled by ROXAL_ENABLE_ALL" FORCE)
     set(ROXAL_ENABLE_GRPC ON CACHE BOOL "Enabled by ROXAL_ENABLE_ALL" FORCE)
@@ -442,6 +443,9 @@ endif()
 if(ROXAL_ENABLE_REGEX)
     list(APPEND COMPILER_SOURCES compiler/ModuleRegex.cpp)
 endif()
+if(ROXAL_ENABLE_INSPECT)
+    list(APPEND COMPILER_SOURCES compiler/ModuleInspect.cpp compiler/AstPrinter.cpp)
+endif()
 if(ROXAL_ENABLE_SOCKET)
     list(APPEND COMPILER_SOURCES compiler/ModuleSocket.cpp)
 endif()
@@ -540,6 +544,7 @@ set(ROXALAST_SOURCES
     core/common.cpp
     core/types.cpp
     compiler/ASTGenerator.cpp
+    compiler/AstPrinter.cpp
     compiler/RoxalIndentationLexer.cpp
 )
 add_library(roxalast STATIC ${ROXALAST_SOURCES} ${GENERATED_SOURCES})
@@ -581,7 +586,7 @@ else()
 endif()
 set(_roxal_features_on "")
 set(_roxal_features_off "")
-foreach(_roxal_feature FILEIO GRPC DDS REGEX XML SOCKET FFI ONNX AI_NN MEDIA QT)
+foreach(_roxal_feature FILEIO GRPC DDS REGEX XML SOCKET FFI ONNX AI_NN MEDIA QT INSPECT)
     string(TOLOWER "${_roxal_feature}" _roxal_feature_label)
     if(ROXAL_ENABLE_${_roxal_feature})
         list(APPEND ROXAL_ABI_DEFINITIONS ROXAL_ENABLE_${_roxal_feature})
@@ -830,6 +835,7 @@ file(WRITE "${CMAKE_BINARY_DIR}/roxal_features.cmake"
     "set(ROXAL_HAS_DDS ${ROXAL_ENABLE_DDS})\n"
     "set(ROXAL_HAS_ONNX ${ROXAL_ENABLE_ONNX})\n"
     "set(ROXAL_HAS_REGEX ${ROXAL_ENABLE_REGEX})\n"
+    "set(ROXAL_HAS_INSPECT ${ROXAL_ENABLE_INSPECT})\n"
     "set(ROXAL_HAS_FFI ${ROXAL_ENABLE_FFI})\n"
     "set(ROXAL_HAS_XML ${ROXAL_ENABLE_XML})\n"
     "set(ROXAL_HAS_MEDIA ${ROXAL_ENABLE_MEDIA})\n"

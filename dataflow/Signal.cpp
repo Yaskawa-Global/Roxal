@@ -1,5 +1,6 @@
 #include <time.h>
 #include <algorithm>
+#include <atomic>
 #include <numeric>
 #include <iterator>
 #include <cmath>
@@ -11,6 +12,13 @@
 #include <iostream>
 
 using namespace df;
+
+
+uint64_t df::nextGraphId()
+{
+    static std::atomic<uint64_t> counter { 1 };
+    return counter.fetch_add(1, std::memory_order_relaxed);
+}
 
 
 ptr<Signal> Signal::newClockSignal(double freq, std::optional<std::string> name)
@@ -68,7 +76,7 @@ ptr<Signal> Signal::newSourceSignalTemplate(double freq, Value initial, std::opt
 
 
 Signal::Signal(double freq, Value initial, std::optional<std::string> name)
-    : m_frequency(freq), m_maxHistoryPeriods(2)
+    : m_frequency(freq), m_maxHistoryPeriods(2), m_id(nextGraphId())
 {
     m_name = name.value_or("source_signal");
 
@@ -386,6 +394,7 @@ ptr<Signal> Signal::indexedSignal(int index)
     newSig->m_eventDriven = m_eventDriven;
     newSig->setInternal(isInternal());
     newSig->setMaxHistoryPeriods(std::max(m_maxHistoryPeriods, -index + 1));
+    newSig->setSrcOrigin(m_srcName, m_srcLine, m_srcCol);  // inherits the base's origin
     DataflowEngine::instance()->addSignal(newSig);
 
     return newSig;

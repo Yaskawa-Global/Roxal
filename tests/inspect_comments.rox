@@ -1,0 +1,37 @@
+// inspect: comment decorations — leading, trailing, blank lines, end comments
+import inspect
+
+var src = '# file header\n'
+src = src + '# second header line\n'
+src = src + 'var a = 1\n'
+src = src + '\n'
+src = src + '# above b\n'
+src = src + 'var b = 2   # beside b\n'
+src = src + '\n'
+src = src + '\n'
+src = src + '// slash comment above c\n'
+src = src + 'var c = 3\n'
+src = src + '# tail one\n'
+src = src + '# tail two\n'
+var t = inspect.parse(src)
+var da = t.decls_or_stmts[0]
+var db = t.decls_or_stmts[1]
+var dc = t.decls_or_stmts[2]
+
+print(da.leading_comments)
+print("{da.trailing_comment} {da.blank_lines_before}")
+print(db.leading_comments)
+print(db.trailing_comment)
+print(db.blank_lines_before)
+print(dc.leading_comments)
+print(dc.blank_lines_before)
+print(t.end_comments)
+
+// comments inside a suite attach to the inner statement
+var t2 = inspect.parse('func f():\n  # inner note\n  return 1\n')
+var ret = t2.decls_or_stmts[0].function.body.decls_or_stmts[0]
+print(ret.leading_comments)
+
+// trailing comment on a block header attaches to the block statement
+var t3 = inspect.parse('if a:   # header note\n  b = 1\n')
+print(t3.decls_or_stmts[0].trailing_comment)

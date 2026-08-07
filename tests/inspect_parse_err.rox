@@ -1,0 +1,5 @@
+// inspect.parse without tolerant=true raises a runtime error on bad syntax
+import inspect
+
+inspect.parse('func broken(:\n')
+print('not reached')

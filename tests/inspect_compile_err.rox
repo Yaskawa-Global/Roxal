@@ -1,0 +1,5 @@
+// inspect.compile requires a File mirror node
+import inspect
+
+inspect.compile(inspect.parse_expression('1 + 2'))
+print('not reached')
