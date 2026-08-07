@@ -301,6 +301,7 @@ ValueType Obj::valueType() const
         }
         case ObjType::Actor: return ValueType::Actor;
         case ObjType::QtObject: return ValueType::QtObject; // qt module (rare; kept low)
+        case ObjType::JsValue: return ValueType::JsValue;   // dom module (wasm only)
         default: return ValueType::Nil;
     }
 }

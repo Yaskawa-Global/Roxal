@@ -35,6 +35,8 @@
 
 # Build directories
 build/
+# build-wasm-mt, build-rel, build-lto, build-qt, ...
+build-*/
 compiler/cpp-gen/
 node_modules/
 

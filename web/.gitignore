@@ -1,0 +1,7 @@
+node_modules/
+dist/
+public/roxal.js
+public/roxal.wasm
+public/roxal.data
+test-results/
+playwright-report/

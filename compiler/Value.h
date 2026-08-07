@@ -89,6 +89,7 @@ enum class ValueType {
     Closure,
     Upvalue,
     QtObject,  // qt module: QObject handle (dynamic property/method dispatch)
+    JsValue,   // dom module (wasm): JS handle (dynamic property/method dispatch)
     Boxed = 0xff // not used with NAN tagging
 };
 
@@ -113,6 +114,9 @@ inline bool isNilAcceptableTargetType(ValueType t) {
         case ValueType::Closure:
         case ValueType::Tensor:
         case ValueType::Module:
+        // A JS handle is reference-identity, and "no handle" is routinely
+        // meaningful: document.get_element_by_id() of a missing id is null.
+        case ValueType::JsValue:
             return true;
         default:
             return false;

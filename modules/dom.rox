@@ -1,0 +1,83 @@
+// dom — drive a web page from Roxal (WebAssembly builds only).
+//
+// EXPERIMENTAL: new, not yet exercised by a real application; expect rough edges
+// and API changes.
+//
+// The VM runs on a Worker, so the page is reached by proxying each operation to
+// the browser's main thread. Native syntax works on any JS value:
+//
+//   import dom
+//   var out = dom.document.get_element_by_id("out")
+//   out.text_content = "hello from Roxal"
+//   dom.on(dom.document.get_element_by_id("btn"), "click", proc(e):
+//     out.text_content = "clicked at {e['x']},{e['y']}")
+//
+// Names map snake_case → camelCase (text_content → textContent). Use get/set/call
+// for names that are not valid Roxal identifiers, or when the name is computed.
+//
+// Cost model worth knowing: reads cross to the main thread and back, so each one
+// costs an event-loop turn. Property WRITES are batched and flushed automatically
+// before the next read — a write loop is cheap, a read loop is not.
+
+@builtin
+func global(name:string):
+  """Look up a JavaScript global by name (e.g. "navigator", "localStorage").
+  Returns nil if there is no such global."""
+
+@builtin
+func get(obj, name:string):
+  """Read property `name` from a JS value, using the exact name given (no
+  snake_case conversion). For names Roxal cannot spell natively."""
+
+@builtin
+func set(obj, name:string, value):
+  """Set property `name` on a JS value, using the exact name given."""
+
+@builtin
+func call(obj, name:string, args=nil):
+  """Invoke method `name` on a JS value with an optional list of arguments,
+  using the exact name given. Returns the result."""
+
+// `event` and `type` are Roxal keywords, hence `event_name`.
+@builtin
+func on(target, event_name:string, handler):
+  """Call `handler` whenever `event_name` fires on `target`. Declare the handler's
+  parameter as a dict — `proc(e :dict):` — since an untyped parameter cannot be
+  indexed. The handler receives a dict describing the event: 'type' and 'target' always, plus 'x'/'y' for mouse
+  events, 'key' for keyboard events, and 'value'/'checked' when the target has
+  them. Returns a listener handle for dom.off().
+
+  The handler runs on the VM thread, not the browser's, so it may block or take
+  its time without freezing the page. It cannot return a value to JavaScript."""
+
+@builtin
+func off(listener):
+  """Remove an event listener added by dom.on()."""
+
+@builtin
+proc run(seconds=nil):
+  """Keep the app alive, delivering events to their handlers, until dom.stop() is
+  called or `seconds` elapses. A UI script ends with this the way a qt script ends
+  with engine.run().
+
+  Handlers only run while the script is alive, so a script that installs listeners
+  and then finishes does nothing — call run() to hand control to the page."""
+
+@builtin
+proc stop():
+  """Make a running dom.run() return."""
+
+@builtin
+func flush():
+  """Push queued property writes to the page immediately. Reads flush
+  automatically, so this is only needed when a script writes and then waits
+  without reading anything back."""
+
+@builtin
+func _init():
+  """native initialization function called when module is imported"""
+
+
+// Populated on import.
+var document = nil
+var window = nil

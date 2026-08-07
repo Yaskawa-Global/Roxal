@@ -272,6 +272,7 @@ std::string roxal::to_string(ValueType t)
     case ValueType::Closure: return "closure"; break;
     case ValueType::Upvalue: return "upvalue"; break;
     case ValueType::QtObject: return "qt.object"; break;
+    case ValueType::JsValue: return "dom.value"; break;
     default:
         throw std::runtime_error("Unhandled type for to_string "+std::to_string(int(t)));
     }

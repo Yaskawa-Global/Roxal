@@ -52,7 +52,31 @@ if(ROXAL_ENABLE_ASAN)
     add_link_options(-fsanitize=address)
 endif()
 
-option(ROXAL_BUILD_MAIN "Build the roxal executable" ON)
+if(EMSCRIPTEN)
+    # -fwasm-exceptions and -pthread are ABI-level: they must match across the
+    # ANTLR4 runtime, libroxal and the host, and a mismatch is silent class-layout
+    # divergence rather than a link error.  Set them once here so a configure that
+    # forgets to pass them by hand cannot produce a subtly broken build.
+    #
+    # pthreads is not optional: SimpleMarkSweepGC's reclaimer and the dataflow
+    # engine actor are both created during VM construction, before any script
+    # runs.  See wasm/README.md.
+    add_compile_options(-fwasm-exceptions -pthread)
+    add_link_options(-fwasm-exceptions -pthread)
+endif()
+
+# The CLI entry point needs boost::program_options, a compiled Boost library we
+# would have to cross-build for wasm; a browser embedding has no argv anyway, so
+# the wasm host (wasm/CMakeLists.txt) provides its own entry point instead.
+if(EMSCRIPTEN)
+    set(_roxal_build_main_default OFF)
+else()
+    set(_roxal_build_main_default ON)
+endif()
+option(ROXAL_BUILD_MAIN "Build the roxal executable" ${_roxal_build_main_default})
+unset(_roxal_build_main_default)
+
+option(ROXAL_BUILD_WASM_HOST "Build the WebAssembly host (Emscripten builds only)" ON)
 
 # Unicode text storage and operations provider.  Keep this as a backend selector
 # rather than a boolean: WebAssembly will eventually add a JS-hosted provider.
@@ -384,6 +408,18 @@ list(APPEND COMPILER_SOURCES compiler/TestRefOrient.cpp)
 list(APPEND COMPILER_SOURCES compiler/LazyModuleRegistry.cpp)
 list(APPEND COMPILER_SOURCES compiler/RuntimeConfig.cpp)
 
+if(EMSCRIPTEN)
+    # The dom module has no native equivalent to gate behind a feature flag -- it
+    # exists exactly when there is a browser main thread to proxy operations to.
+    list(APPEND COMPILER_SOURCES
+        compiler/web/JsBridge.cpp
+        compiler/web/ObjJsValue.cpp
+        compiler/web/WebHostLoop.cpp
+        compiler/web/ModuleDom.cpp
+        compiler/web/RoxalStore.cpp
+        compiler/web/ModuleWeb.cpp
+    )
+endif()
 if(ROXAL_ENABLE_FILEIO)
     list(APPEND COMPILER_SOURCES compiler/ModuleFileIO.cpp)
     list(APPEND COMPILER_SOURCES compiler/AsyncIOManager.cpp)
@@ -810,3 +846,16 @@ add_custom_target(check
     COMMAND ${CMAKE_COMMAND} --build . --target all
     COMMAND ${CMAKE_CTEST_COMMAND}
 )
+
+
+# ---------------------------------------------------------------------------
+# WebAssembly host.  A child of this project rather than a standalone build so
+# the ABI-affecting definitions have ONE source of truth: the host links
+# roxalcore, which links roxal_abi PUBLIC, so the defines, include dirs, antlr4
+# and dataflow all arrive by inheritance.  (The previous standalone link script
+# scraped them back out of the generated roxal_features.cmake, which is the same
+# information travelling the long way round.)
+# ---------------------------------------------------------------------------
+if(EMSCRIPTEN AND ROXAL_BUILD_WASM_HOST)
+    add_subdirectory(wasm)
+endif()

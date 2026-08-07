@@ -1,0 +1,6 @@
+# The host now links through CMake into <build-dir>/dist (build-wasm-mt/dist by
+# convention), which the root .gitignore covers via build-*/. Nothing is written
+# into wasm/ itself any more; these remain for older working trees.
+dist/
+dist-mt/
+*.zip

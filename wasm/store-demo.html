@@ -1,0 +1,169 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Roxal state bridge — no framework</title>
+<style>
+  body { font: 14px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+         margin: 0; padding: 1.5rem; background: #14161a; color: #d8dee9; }
+  h1 { font-size: 15px; font-weight: 600; margin: 0 0 .3rem; color: #88c0d0; }
+  p.sub { margin: 0 0 1.2rem; color: #6b7280; }
+  #iso { padding: .4rem .6rem; border-radius: 4px; margin-bottom: 1rem; display: inline-block; }
+  .ok { background: #2e4a34; color: #a3d9a5; }
+  .bad { background: #4a2e2e; color: #e59b9b; }
+  .cols { display: flex; gap: 1.5rem; flex-wrap: wrap; }
+  .col { flex: 1 1 20rem; min-width: 0; }
+  h2 { font-size: 13px; font-weight: 600; color: #88c0d0; margin: 0 0 .5rem; }
+  .panel { background: #1c1f26; border: 1px solid #333844; border-radius: 4px; padding: 1rem; }
+  .row { display: flex; align-items: center; gap: .8rem; margin-bottom: .6rem; }
+  .label { color: #6b7280; width: 7rem; }
+  .value { font-size: 18px; color: #a3d9a5; }
+  button { padding: .35rem .9rem; background: #4c7899; color: #fff; border: 0;
+           border-radius: 4px; cursor: pointer; font: inherit; }
+  button:disabled { opacity: .5; cursor: default; }
+  input[type=range] { flex: 1; }
+  pre { background: #1c1f26; border: 1px solid #333844; border-radius: 4px;
+        padding: .6rem; white-space: pre-wrap; margin: 0; overflow-x: auto; font-size: 12px; }
+  .err { color: #e59b9b; }
+  code { color: #d8dee9; }
+</style>
+
+<h1>Roxal state bridge &mdash; no framework</h1>
+<p class="sub">Roxal owns the state. This page renders it with four DOM calls and no library at all &mdash;
+   the same contract a React or Svelte adapter consumes.<br>
+   <b>Drag the slider:</b> Roxal snaps the value to a multiple of 5 and rewrites the label, so one drag moves
+   two fields to a value the browser never sent. <b>Press burst:</b> five Roxal writes, one render.</p>
+<div id="iso"></div>
+
+<div class="cols">
+  <div class="col">
+    <h2>view</h2>
+    <div class="panel">
+      <div class="row"><span class="label">count</span><span class="value" id="count">–</span></div>
+      <div class="row"><span class="label">doubled</span><span class="value" id="doubled">–</span></div>
+      <div class="row"><span class="label">label</span><span class="value" id="label">–</span></div>
+      <div class="row">
+        <span class="label">target &rarr;</span>
+        <input type="range" id="target" min="0" max="100" value="0" disabled>
+        <span class="value" id="targetval">–</span>
+      </div>
+      <div class="row">
+        <button id="inc" disabled>bump(+1)</button>
+        <button id="burst" disabled>burst (5 writes, 1 render)</button>
+      </div>
+      <div class="row"><span class="label">renders</span><span class="value" id="renders">0</span></div>
+    </div>
+  </div>
+
+  <div class="col">
+    <h2>the Roxal side</h2>
+    <pre id="src"></pre>
+    <h2 style="margin-top:1rem">stdout</h2>
+    <pre id="out">loading…</pre>
+  </div>
+</div>
+
+<script src="coi-sw.js"></script>
+<script src="roxal.js"></script>
+<script>
+const APP_SRC = `import web
+
+type App object:
+  var count :int = 0
+  var label :string = "idle"
+
+  var doubled :int = 0:
+    get:
+      return count * 2
+
+  // The slider writes here. Roxal SNAPS the value to a multiple of 5 and
+  // rewrites the label -- so one drag moves two fields, to a value the browser
+  // never sent. That is the round trip made visible.
+  var target :real = 20:
+    get:
+      return _target
+    set:
+      _target = int(value / 5) * 5
+      label = "target snapped to " + _target
+
+  proc bump(amount :int):
+    count = count + amount
+    label = "bumped"
+    web.notify("app", "doubled")
+
+  // Five writes in ONE turn. The store coalesces them into ONE notification,
+  // so the view renders once -- watch the render counter.
+  proc burst():
+    count = count + 10
+    label = "a"
+    label = "b"
+    label = "burst!"
+    web.notify("app", "doubled")
+
+web.expose("app", App())
+print("app exposed; handing control to the page")
+web.serve()
+`;
+
+document.getElementById('src').textContent = APP_SRC;
+
+const isoEl = document.getElementById('iso');
+if (self.crossOriginIsolated) {
+  isoEl.className = 'ok';
+  isoEl.textContent = 'crossOriginIsolated: true';
+} else {
+  isoEl.className = 'bad';
+  isoEl.textContent = 'crossOriginIsolated: FALSE — serve via ./serve.py';
+}
+
+const outEl = document.getElementById('out');
+let buf = '';
+let renders = 0;
+
+// Status and script output are separate. Previously the status line was only
+// ever replaced by print() output, so a script that prints nothing looked stuck
+// on "starting…" while actually running perfectly.
+let status = 'loading the VM…';
+const paint = () => { outEl.textContent = status + (buf ? '\n\n' + buf : ''); };
+
+createRoxal({
+  print:    t => { buf += t + '\n'; paint(); },
+  printErr: t => { buf += '[stderr] ' + t + '\n'; paint(); },
+}).then(async rox => {
+  status = 'starting the Roxal app…'; paint();
+  rox.ccall('roxal_submit_source', null, ['string', 'string'], [APP_SRC, 'app.rox']);
+
+  // Wait for web.expose() to publish the store.
+  while (!rox.roxalStoreNames().includes('app'))
+    await new Promise(r => setTimeout(r, 20));
+
+  const store = rox.roxalStore('app');
+  status = 'running — store "app" published (' + store.methods.join(', ') + ').\n'
+         + 'web.serve() is parked, waiting for UI events.';
+  paint();
+
+  // ---- this is the whole "framework" ----
+  function render(s) {
+    document.getElementById('count').textContent   = s.count;
+    document.getElementById('doubled').textContent = s.doubled;
+    document.getElementById('label').textContent   = s.label;
+    document.getElementById('target').value        = s.target;
+    document.getElementById('targetval').textContent = s.target;
+    document.getElementById('renders').textContent = ++renders;
+  }
+  store.subscribe(render);
+  render(store.getSnapshot());
+  // ---------------------------------------
+
+  const inc = document.getElementById('inc');
+  const burst = document.getElementById('burst');
+  const target = document.getElementById('target');
+  inc.disabled = burst.disabled = target.disabled = false;
+
+  inc.onclick   = () => store.call('bump', 1);
+  burst.onclick = () => store.call('burst');
+  // Writing a property goes back into Roxal; the echo comes via the same store.
+  target.oninput = e => store.set('target', Number(e.target.value));
+}).catch(e => {
+  status = 'failed to load: ' + e;
+  outEl.innerHTML = '<span class="err">' + status + '</span>';
+});
+</script>

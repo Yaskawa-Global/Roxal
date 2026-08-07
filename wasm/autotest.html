@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>roxal wasm autotest</title>
+<!-- Headless verification that the coi-sw.js fallback really yields a working
+     VM: constructs the VM and runs a script, which is what actually exercises
+     pthreads (module load alone does not -- VM::instance() is lazy). -->
+<div id="iso">iso:pending</div>
+<div id="result">result:pending</div>
+<script src="coi-sw.js"></script>
+<script src="roxal.js"></script>
+<script>
+document.getElementById('iso').textContent = 'iso:' + (self.crossOriginIsolated ? 'TRUE' : 'FALSE');
+let buf = '';
+createRoxal({
+  noInitialRun: true,
+  print:    t => { buf += t + '\n'; },
+  printErr: t => { buf += '[err] ' + t + '\n'; },
+}).then(m => {
+  try { m.FS.chdir('/stdlib'); } catch (e) {}
+  let rc;
+  try {
+    rc = m.ccall('roxal_run_source', 'number', ['string', 'string'],
+                 ['for i in range(..<3):\n  print("tick " + i)\n', 'autotest.rox']);
+  } catch (e) {
+    buf += '[threw] ' + e + '\n';
+    rc = -1;
+  }
+  document.getElementById('result').textContent =
+      'result:rc=' + rc + '|' + buf.replace(/\n/g, '~');
+}).catch(e => {
+  document.getElementById('result').textContent = 'result:LOADFAIL:' + e;
+});
+</script>

@@ -1,0 +1,145 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Roxal in WebAssembly — DOM demo</title>
+<style>
+  body { font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+         margin: 0; padding: 1.5rem; background: #14161a; color: #d8dee9; }
+  h1 { font-size: 15px; font-weight: 600; margin: 0 0 1rem; color: #88c0d0; }
+  #iso { padding: .4rem .6rem; border-radius: 4px; margin-bottom: 1rem; display: inline-block; }
+  .ok { background: #2e4a34; color: #a3d9a5; }
+  .bad { background: #4a2e2e; color: #e59b9b; }
+  .cols { display: flex; gap: 1rem; flex-wrap: wrap; }
+  .col { flex: 1 1 22rem; min-width: 0; }
+  textarea { width: 100%; height: 16rem; background: #1c1f26; color: #d8dee9;
+             border: 1px solid #333844; border-radius: 4px; padding: .6rem;
+             font: inherit; box-sizing: border-box; }
+  button { margin: .7rem .4rem .7rem 0; padding: .45rem 1rem; background: #4c7899; color: #fff;
+           border: 0; border-radius: 4px; cursor: pointer; font: inherit; }
+  button:disabled { opacity: .5; cursor: default; }
+  pre { background: #1c1f26; border: 1px solid #333844; border-radius: 4px;
+        padding: .6rem; white-space: pre-wrap; min-height: 4rem; margin: 0; overflow-x: auto; }
+  .err { color: #e59b9b; }
+  #stage { border: 1px dashed #333844; border-radius: 4px; padding: 1rem; margin-bottom: .8rem; }
+  #out-target { font-size: 20px; color: #a3d9a5; min-height: 1.6em; }
+  #tick { color: #6b7280; }
+  h2 { font-size: 13px; font-weight: 600; color: #88c0d0; margin: 0 0 .5rem; }
+</style>
+
+<h1>Roxal VM &mdash; WebAssembly (VM on a Worker, DOM proxied)</h1>
+<div id="iso"></div>
+
+<div class="cols">
+  <div class="col">
+    <h2>script</h2>
+    <textarea id="src">import dom
+
+var target = dom.document.get_element_by_id("out-target")
+var count = 0
+
+target.text_content = "Roxal wrote this."
+
+dom.on(dom.document.get_element_by_id("stage-btn"), "click", proc(e :dict):
+  count = count + 1
+  target.text_content = "clicked {count} time(s) at {e['x']},{e['y']}"
+)
+
+dom.on(dom.document.get_element_by_id("stop-btn"), "click", proc(e :dict):
+  target.text_content = "stopped after {count} click(s)"
+  dom.stop()
+)
+
+// Hand control to the page. Handlers only run while this is active.
+dom.run()
+</textarea>
+    <br>
+    <button id="run" disabled>Run</button>
+    <button id="busy">Block the VM for 3s</button>
+    <span id="tick">ticks: 0</span>
+  </div>
+
+  <div class="col">
+    <h2>page (driven by the script)</h2>
+    <div id="stage">
+      <div id="out-target">&mdash;</div>
+      <button id="stage-btn">click me</button>
+      <button id="stop-btn">stop</button>
+    </div>
+    <h2>stdout</h2>
+    <pre id="out">loading…</pre>
+  </div>
+</div>
+
+<!-- Must come first: if the server did not send COOP/COEP, this registers a
+     service worker that supplies them and reloads once. No-op when the real
+     headers are already present. -->
+<script src="coi-sw.js"></script>
+
+<!-- roxal.js must load BEFORE the driver below: MODULARIZE defines the
+     createRoxal factory as a side effect of this script. -->
+<script src="roxal.js"></script>
+<script>
+const isoEl = document.getElementById('iso');
+const outEl = document.getElementById('out');
+const runEl = document.getElementById('run');
+const busyEl = document.getElementById('busy');
+const tickEl = document.getElementById('tick');
+
+// crossOriginIsolated is the single check that decides whether pthreads work.
+// Roxal spawns the GC reclaimer and the dataflow-engine actor thread during VM
+// construction, so without this the VM cannot even be constructed.
+if (self.crossOriginIsolated) {
+  isoEl.className = 'ok';
+  isoEl.textContent = 'crossOriginIsolated: true — SharedArrayBuffer available';
+} else {
+  isoEl.className = 'bad';
+  isoEl.textContent = 'crossOriginIsolated: FALSE — serve via ./serve.py, or pthreads will fail';
+}
+
+// This counter keeps running while a Roxal script holds the VM. That is the
+// whole point of PROXY_TO_PTHREAD: the VM is on a Worker, so a script that
+// blocks does not freeze the page. Watch it during "Block the VM for 3s".
+let ticks = 0;
+setInterval(() => { tickEl.textContent = 'ticks: ' + (++ticks); }, 100);
+
+let mod = null;
+let buf = '';
+
+// No noInitialRun: main() IS the VM thread. Calling the VM from this thread
+// instead would run Roxal on the browser main thread; the host refuses.
+createRoxal({
+  print:    t => { buf += t + '\n'; outEl.textContent = buf; },
+  printErr: t => { buf += '[stderr] ' + t + '\n'; outEl.textContent = buf; },
+}).then(m => {
+  mod = m;
+  outEl.textContent = 'ready';
+  runEl.disabled = false;
+}).catch(e => {
+  outEl.innerHTML = '<span class="err">failed to load: ' + e + '</span>';
+});
+
+// Submitting never blocks -- the browser main thread must never wait on the VM
+// (it cannot Atomics.wait). Poll for completion instead.
+async function submit(src, name) {
+  const before = mod.ccall('roxal_completed_count', 'number', [], []);
+  mod.ccall('roxal_submit_source', null, ['string', 'string'], [src, name]);
+  while (mod.ccall('roxal_completed_count', 'number', [], []) <= before)
+    await new Promise(r => setTimeout(r, 16));
+  return mod.ccall('roxal_last_result', 'number', [], []);
+}
+
+runEl.onclick = async () => {
+  buf = '';
+  runEl.disabled = true;
+  outEl.textContent = 'running… (the page stays live; click the buttons)';
+  const rc = await submit(document.getElementById('src').value, '<editor>');
+  outEl.textContent = buf + '\n(exit ' + rc + ')';
+  runEl.disabled = false;
+};
+
+busyEl.onclick = async () => {
+  const before = ticks;
+  await submit('var x = 0\nfor i in range(..<6000000):\n  x = x + i\nprint("busy loop done, x=" + x)\n', 'busy.rox');
+  buf += 'page ticked ' + (ticks - before) + ' times while the VM was busy\n';
+  outEl.textContent = buf;
+};
+</script>

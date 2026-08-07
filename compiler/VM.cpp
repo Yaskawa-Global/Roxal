@@ -55,6 +55,10 @@
 #ifdef ROXAL_ENABLE_MEDIA
 #include "ModuleMedia.h"
 #endif
+#ifdef __EMSCRIPTEN__
+#include "web/ModuleDom.h"
+#include "web/ModuleWeb.h"
+#endif
 #include "Object.h"
 #include "OverloadResolver.h"
 #ifdef ROXAL_COMPUTE_SERVER
@@ -1268,6 +1272,12 @@ VM::VM()
     #ifdef ROXAL_ENABLE_QT
     // qt is a dlopen'd plugin (libroxalqt.so), loaded on first import — not linked in.
     lazyModuleRegistry.registerFactory("qt", []{ return loadQtPluginModule(); });
+    #endif
+    #ifdef __EMSCRIPTEN__
+    // dom needs a browser main thread to proxy to, so it exists only in the
+    // wasm build; there is no native equivalent to gate with a feature flag.
+    lazyModuleRegistry.registerFactory("dom", []{ return make_ptr<ModuleDom>(); });
+    lazyModuleRegistry.registerFactory("web", []{ return make_ptr<ModuleWeb>(); });
     #endif
 
     std::vector<std::string> stagedModulePaths;

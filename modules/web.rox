@@ -1,0 +1,62 @@
+// web — expose Roxal state to a web UI (WebAssembly builds only).
+//
+// EXPERIMENTAL: new, not yet exercised by a real application; expect rough edges
+// and API changes.
+//
+// Roxal owns the state and the logic; the view layer (React, Svelte, plain DOM —
+// it does not matter) subscribes to it. This is the counterpart to `dom`: use
+// `dom` to poke at the page directly, use `web` when a UI framework should render
+// from your data.
+//
+//   import web
+//
+//   type App object:
+//     var temp :signal = signal(30, 0)
+//     var target :real = 20
+//
+//     proc set_target(v :real):
+//       self.target = v
+//
+//   web.expose("app", App())
+//   web.serve()
+//
+// On the JS side each exposed object becomes a store with subscribe/getSnapshot/
+// call — the shape React's useSyncExternalStore wants, and equally usable from
+// Svelte, Vue, or a hand-written render function.
+//
+// What crosses over:
+//   * public `var` properties, by value
+//   * computed properties (those with getters), read through the getter
+//   * public methods, callable from JS; each returns a Promise
+//   * a `signal` property crosses as its current value, and its changes are
+//     observed on the signal itself (the property slot never changes). A
+//     clock-driven signal updates the view at its clock rate — measured exactly
+//     10/s for a 10 Hz network — so you can compute at sensor rate and publish at
+//     display rate. A source signal poked with set() is NOT throttled by its
+//     declared frequency; it fires per set().
+//
+// Changes are coalesced: a burst of writes in one turn produces one UI update.
+
+@builtin
+proc expose(name:string, obj):
+  """Publish `obj` (an object instance) to the UI under `name`. Its public
+  properties become the store's snapshot and its public methods become callable.
+  Calling again with the same name is a no-op."""
+
+@builtin
+proc notify(name:string, property=nil):
+  """Re-read and republish `property` (or the whole object). Needed only when a
+  value changed without an assignment — mutating a list or dict in place, or a
+  computed property derived from fields other than its own backing one."""
+
+@builtin
+proc serve(seconds=nil):
+  """Keep the app alive, delivering UI events and publishing state changes, until
+  web.stop() is called or `seconds` elapses. A UI script ends with this.
+
+  Handlers and method calls only run while the script is alive, so a script that
+  exposes state and then finishes does nothing."""
+
+@builtin
+proc stop():
+  """Make a running web.serve() return."""

@@ -23,6 +23,16 @@ BUILD_TMP="/tmp/roxal-deps-build"
 CORE_TARGETS=(eigen antlr4)
 ALL_TARGETS=(eigen antlr4 cyclonedds grpc media pugixml onnxruntime opencv librealsense)
 
+# WebAssembly cross-build toolchain. Deliberately NOT part of 'all': these are a
+# cross toolchain rather than native libraries, and emsdk alone is ~1GB, so
+# pulling it into "build every native dep" would be a surprise. Use 'wasm'.
+WASM_TARGETS=(emsdk antlr4-wasm)
+KNOWN_TARGETS=("${ALL_TARGETS[@]}" "${WASM_TARGETS[@]}")
+
+# emsdk installs OUTSIDE deps/ -- it is a toolchain, not a library, and this is
+# the path wasm/build.sh already probes.
+EMSDK_DIR="${EMSDK:-$HOME/dev/emsdk}"
+
 # One-line description per target, shown by --help.
 declare -A TARGET_DESC=(
     [eigen]="Eigen 5.0.1 - header-only linear algebra (core)"
@@ -34,6 +44,8 @@ declare -A TARGET_DESC=(
     [onnxruntime]="ONNX Runtime 1.24.1 (ML inference; GPU default, --cpu-only)"
     [opencv]="OpenCV 5.0.0 (modules/opencv FFI binding; builds libcvxshim.so)"
     [librealsense]="librealsense 2.58.3 (modules/realsense FFI binding; builds librsshim.so)"
+    [emsdk]="Emscripten SDK (WebAssembly toolchain; installs to \$HOME/dev/emsdk)"
+    [antlr4-wasm]="ANTLR4 4.13.1 C++ runtime cross-built for wasm (needs emsdk)"
 )
 
 print_help() {
@@ -51,9 +63,14 @@ With no target, builds the core set: ${CORE_TARGETS[*]}
 Targets:
 EOF
     local t status
-    for t in "${ALL_TARGETS[@]}"; do
+    for t in "${KNOWN_TARGETS[@]}"; do
         if [ "$t" = media ]; then
             status="apt-only"
+        elif [ "$t" = emsdk ]; then
+            # A toolchain, not a deps/ library -- see EMSDK_DIR.
+            [ -f "$EMSDK_DIR/emsdk_env.sh" ] && status="installed" || status="missing"
+        elif [ "$t" = antlr4-wasm ]; then
+            [ -d "$DEPS_DIR/antlr4-wasm-mt" ] && status="installed" || status="missing"
         elif [ -d "$DEPS_DIR/$t" ]; then
             status="installed"
         else
@@ -80,6 +97,7 @@ Examples:
   install-deps.sh all                # everything (GPU ONNX)
   install-deps.sh all --cpu-only     # everything (CPU ONNX)
   install-deps.sh grpc cyclonedds    # just these two
+  install-deps.sh wasm               # WebAssembly toolchain (${WASM_TARGETS[*]})
 EOF
 }
 
@@ -99,6 +117,8 @@ set -- "${POSITIONAL[@]+"${POSITIONAL[@]}"}"
 if [ $# -gt 0 ]; then
     if [ "$1" = "all" ]; then
         TARGETS=("${ALL_TARGETS[@]}")
+    elif [ "$1" = "wasm" ]; then
+        TARGETS=("${WASM_TARGETS[@]}")
     else
         TARGETS=("$@")
     fi
@@ -107,11 +127,11 @@ else
 fi
 
 # Reject unknown target names up-front (a typo would otherwise silently
-# build nothing).  'all' and the default core set are already known-good.
-if [ $# -gt 0 ] && [ "$1" != "all" ]; then
+# build nothing).  'all'/'wasm' and the default core set are already known-good.
+if [ $# -gt 0 ] && [ "$1" != "all" ] && [ "$1" != "wasm" ]; then
     for _t in "${TARGETS[@]}"; do
-        if ! printf '%s\n' "${ALL_TARGETS[@]}" | grep -qx "$_t"; then
-            echo "ERROR: unknown target '$_t'. Valid targets: ${ALL_TARGETS[*]}" >&2
+        if ! printf '%s\n' "${KNOWN_TARGETS[@]}" | grep -qx "$_t"; then
+            echo "ERROR: unknown target '$_t'. Valid targets: ${KNOWN_TARGETS[*]}" >&2
             echo "Run '$(basename "$0") --help' to list targets and status." >&2
             exit 1
         fi
@@ -182,6 +202,44 @@ if should_build antlr4; then
     cmake --build antlr4/build -j"$JOBS"
     cmake --install antlr4/build
     echo "  -> installed to $DEPS_DIR/antlr4"
+fi
+
+# ---------- Emscripten SDK (WebAssembly toolchain) ----------
+if should_build emsdk; then
+    echo "=== Installing emsdk ==="
+    [ -d "$EMSDK_DIR" ] || git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$EMSDK_DIR"
+    "$EMSDK_DIR/emsdk" install latest
+    "$EMSDK_DIR/emsdk" activate latest
+    echo "  -> installed to $EMSDK_DIR"
+fi
+
+# ---------- ANTLR4 C++ runtime 4.13.1, cross-built for wasm ----------
+# A separate prefix from the native deps/antlr4 because -fwasm-exceptions and
+# -pthread are ABI-level: they must match libroxal.a and the wasm host exactly, or
+# class layouts diverge silently instead of failing to link.  The root CMakeLists
+# applies the same two flags to every EMSCRIPTEN build -- keep these in step.
+if should_build antlr4-wasm; then
+    echo "=== Building antlr4-runtime 4.13.1 for wasm ==="
+    [ -f "$EMSDK_DIR/emsdk_env.sh" ] || {
+        echo "ERROR: emsdk not found at $EMSDK_DIR -- run '$(basename "$0") emsdk' first" >&2; exit 1; }
+    # emsdk_env.sh trips over 'set -u'.
+    set +u; source "$EMSDK_DIR/emsdk_env.sh" >/dev/null 2>&1; set -u
+
+    cd "$BUILD_TMP"
+    # Same checkout the native antlr4 target uses, different build dir.
+    [ -d antlr4 ] || git clone --depth 1 --branch 4.13.1 https://github.com/antlr/antlr4.git
+    emcmake cmake -B antlr4/build-wasm-mt -S antlr4/runtime/Cpp \
+        -DCMAKE_INSTALL_PREFIX="$DEPS_DIR/antlr4-wasm-mt" \
+        -DCMAKE_INSTALL_LIBDIR=lib \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DANTLR4_INSTALL=ON \
+        -DWITH_DEMO=OFF \
+        -DANTLR_BUILD_CPP_TESTS=OFF \
+        -DANTLR_BUILD_SHARED=OFF \
+        -DCMAKE_CXX_FLAGS="-fwasm-exceptions -pthread"
+    cmake --build antlr4/build-wasm-mt -j"$JOBS"
+    cmake --install antlr4/build-wasm-mt
+    echo "  -> installed to $DEPS_DIR/antlr4-wasm-mt"
 fi
 
 # ---------- CycloneDDS (C library) + CycloneDDS-CXX ----------

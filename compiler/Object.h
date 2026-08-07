@@ -109,7 +109,8 @@ enum class ObjType {
     OverloadSet,
     Combinator,
     QtObject,        // qt module: QPointer<QObject> wrapper (defined in the qt module)
-    ChangeNotifier   // lightweight C++ property-change observer (no full dataflow signal)
+    ChangeNotifier,  // lightweight C++ property-change observer (no full dataflow signal)
+    JsValue          // dom module (wasm): handle into the browser main thread's JS table
 };
 
 /// Returns true if the object type is user-mutable and can hold Value references

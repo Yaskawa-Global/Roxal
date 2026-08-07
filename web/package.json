@@ -1,0 +1,24 @@
+{
+  "name": "@roxal/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "JavaScript side of Roxal's web integration: the store contract, framework adapters, and a reference React app.",
+  "scripts": {
+    "sync-wasm": "node scripts/sync-wasm.mjs",
+    "dev": "npm run sync-wasm && vite",
+    "build": "npm run sync-wasm && vite build",
+    "preview": "vite preview",
+    "test:browser": "playwright test"
+  },
+  "dependencies": {
+    "monaco-editor": "^0.56.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@vitejs/plugin-react": "^5.0.0",
+    "vite": "^7.0.0"
+  }
+}

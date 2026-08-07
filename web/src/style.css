@@ -1,0 +1,78 @@
+:root { color-scheme: dark; }
+body { margin: 0; background: #14161a; color: #d8dee9;
+       font: 14px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }
+/* Full-height workbench: editor on the left, app over output on the right. */
+html, body, #root { height: 100%; }
+main { height: 100%; display: flex; flex-direction: column;
+       padding: 1rem 1.2rem; box-sizing: border-box; }
+header { flex: 0 0 auto; }
+.workbench { flex: 1 1 auto; display: grid; grid-template-columns: 1fr 1fr;
+             gap: 1rem; min-height: 0; }
+.right-column { display: grid; grid-template-rows: 1fr minmax(8rem, 15rem);
+                gap: 1rem; min-height: 0; }
+.pane { display: flex; flex-direction: column; min-height: 0;
+        background: #1c1f26; border: 1px solid #333844; border-radius: 6px; }
+.pane-head { flex: 0 0 auto; display: flex; align-items: center; gap: .8rem;
+             padding: .5rem .8rem; border-bottom: 1px solid #333844; }
+.pane-head h2 { margin: 0; font-size: 12px; color: #88c0d0; flex: 0 0 auto; }
+.pane-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 1rem; }
+.editor-pane .editor { flex: 1 1 auto; min-height: 0; border: 0; border-radius: 0 0 6px 6px; }
+.out { margin: 0; font-size: 12px; white-space: pre-wrap; color: #a3d9a5;
+       background: none; border: 0; }
+
+@media (max-width: 60rem) {
+  .workbench { grid-template-columns: 1fr; }
+}
+h1 { font-size: 16px; color: #88c0d0; margin: 0 0 .3rem; }
+.sub { color: #6b7280; margin: 0 0 1.5rem; }
+code { color: #a3d9a5; }
+.loading, .error { padding: 1rem; background: #1c1f26; border: 1px solid #333844; border-radius: 6px; }
+.error { color: #e59b9b; white-space: pre-wrap; }
+
+.panel { background: none; border: 0; padding: 0; }
+.readout { display: flex; gap: 2rem; flex-wrap: wrap; margin-bottom: 1.2rem; }
+.field { display: flex; flex-direction: column; gap: .2rem; }
+.k { color: #6b7280; font-size: 12px; }
+.v { color: #a3d9a5; font-size: 18px; font-variant-numeric: tabular-nums; }
+.v.big { font-size: 30px; }
+.v.busy { color: #ebcb8b; }
+.v.calm { color: #6b7280; }
+
+.track { position: relative; height: 12px; background: #14161a; border: 1px solid #333844;
+         border-radius: 6px; margin: 0 0 1.2rem; }
+.track-pos, .track-target { position: absolute; top: -3px; width: 4px; height: 16px; border-radius: 2px;
+         transition: left 60ms linear; }
+.track-pos { background: #a3d9a5; }
+.track-target { background: #4c7899; width: 2px; }
+
+.slider { display: flex; align-items: center; gap: .8rem; margin-bottom: 1rem; }
+.slider span { color: #6b7280; width: 5rem; }
+.slider input { flex: 1; }
+.slider b { color: #a3d9a5; width: 3rem; text-align: right; font-variant-numeric: tabular-nums; }
+
+.actions { display: flex; gap: .5rem; flex-wrap: wrap; }
+button { padding: .4rem 1rem; background: #4c7899; color: #fff; border: 0; border-radius: 4px;
+         cursor: pointer; font: inherit; }
+button:hover { background: #5e8bad; }
+.log { color: #6b7280; margin: 1rem 0 0; }
+
+details { margin-top: 1.5rem; }
+summary { color: #88c0d0; cursor: pointer; font-size: 13px; }
+.src { background: #1c1f26; border: 1px solid #333844; border-radius: 6px; padding: .8rem;
+       overflow-x: auto; font-size: 12px; white-space: pre-wrap; }
+
+.editor-panel { margin-top: 1.5rem; }
+.editor-head { display: flex; align-items: center; gap: .8rem; margin-bottom: .5rem; }
+.editor-head h2 { font-size: 13px; color: #88c0d0; margin: 0; flex: 0 0 auto; }
+.run { padding: .3rem .9rem; }
+.run:disabled { opacity: .5; cursor: default; }
+.dirty { color: #ebcb8b; font-size: 12px; }
+.run-error { color: #e59b9b; font-size: 12px; }
+.editor { border: 1px solid #333844; border-radius: 6px; overflow: hidden; }
+h2 { font-size: 13px; color: #88c0d0; }
+
+.duty { display: flex; align-items: center; gap: .8rem; margin-bottom: 1rem; }
+.duty .k { width: 5rem; }
+.duty-track { flex: 1; height: 8px; background: #14161a; border: 1px solid #333844;
+              border-radius: 4px; overflow: hidden; }
+.duty-fill { height: 100%; background: #d08770; transition: width 60ms linear; }
