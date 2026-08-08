@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { startRoxal, runScript, scriptParked, ensureServices } from './roxal.js';
 import Editor, { disposeModel } from './Editor.jsx';
 import TanksPanel from './TanksPanel.jsx';
+import { lazy, Suspense } from 'react';
+const Tanks3D = lazy(() => import('./Tanks3D.jsx'));
 import { useRoxal, useRoxalStore } from './roxal-react.js';
 import OVEN_SRC from './oven.rox.js';
 import TANKS_SRC from './tanks.rox.js';
@@ -28,6 +30,7 @@ const DATA_DIR = '/data';
 const BOOTSTRAP = 'import web\nweb.serve()\n';
 const LAST_FILE_KEY = 'roxal-ide-last-file';
 const SOURCE_OPEN_KEY = 'roxal-ide-source-open';
+const TANKS_VIEW_KEY = 'roxal-ide-tanks-view';
 
 // Everything below is ordinary React. The only Roxal-aware lines are the two
 // hooks -- useRoxal for state, useRoxalStore for actions. No effects to wire, no
@@ -218,6 +221,15 @@ export default function App() {
         localStorage.setItem(SOURCE_OPEN_KEY, String(!v));
         return !v;
     });
+    // 2D or 3D for the tanks app -- same store either way; tanks.rox does not
+    // know which view it has, which is rather the point.
+    const [tanksView, setTanksView] = useState(
+        () => localStorage.getItem(TANKS_VIEW_KEY) || '3d');
+    const pickView = v => { localStorage.setItem(TANKS_VIEW_KEY, v); setTanksView(v); };
+    // Pauses the RENDERER, not the app: the network keeps running (it is the
+    // thing being demonstrated, and it is cheap); the WebGL loop is what spins
+    // a CPU/GPU. Deliberately not persisted -- a fresh page should play.
+    const [paused, setPaused] = useState(false);
     // Output length marker for REPL capture.
     const outputRef = useRef('');
     // True while THIS component is deliberately stopping/starting a script, so
@@ -491,11 +503,31 @@ export default function App() {
                 {/* right: the running app above, output and console below */}
                 <div className="right-column">
                     <section className="pane app-pane">
-                        <div className="pane-head"><h2>app</h2></div>
+                        <div className="pane-head">
+                            <h2>app</h2>
+                            {panel === 'tanks' &&
+                                <span className="view-toggle">
+                                    {tanksView === '3d' &&
+                                        <button className={'collapse' + (paused ? ' active' : '')}
+                                                title={paused ? 'resume rendering' : 'pause rendering (the app keeps running)'}
+                                                onClick={() => setPaused(p => !p)}>
+                                            {paused ? '▶' : '⏸'}
+                                        </button>}
+                                    {['2d', '3d'].map(v => (
+                                        <button key={v}
+                                                className={'collapse' + (tanksView === v ? ' active' : '')}
+                                                onClick={() => pickView(v)}>{v.toUpperCase()}</button>
+                                    ))}
+                                </span>}
+                        </div>
                         <div className="pane-body">
                             {error && <pre className="error">{error}</pre>}
                             {!rox && !error && <p className="loading">starting the Roxal VM…</p>}
-                            {rox && panel === 'tanks' && <TanksPanel key={generation} rox={rox} />}
+                            {rox && panel === 'tanks' && (tanksView === '3d'
+                                ? <Suspense fallback={<p className="loading">loading the 3D view…</p>}>
+                                      <Tanks3D key={generation} rox={rox} paused={paused} />
+                                  </Suspense>
+                                : <TanksPanel key={generation} rox={rox} />)}
                             {rox && panel === 'oven' && <OvenPanel key={generation} rox={rox} />}
                             {rox && !panel && !error &&
                                 <p className="loading">the running script exposes no known app store</p>}

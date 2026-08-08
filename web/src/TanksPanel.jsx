@@ -95,7 +95,20 @@ export default function TanksPanel({ rox }) {
                 </div>
             </div>
 
-            <div className="tanks-controls">
+            <TankControls t={t} store={store} />
+        </div>
+    );
+}
+
+/**
+ * The readouts, tap slider, mode buttons and phase line -- shared by the 2D
+ * panel and the Babylon 3D view, so the two views cannot drift apart in what
+ * they let you do. `t` is the store snapshot, `store` the store handle.
+ */
+export function TankControls({ t, store }) {
+    const inflow = t.inflow ?? 0;
+    return (
+        <div className="tanks-controls">
             <div className="readout tanks-readout">
                 <Field label="inflow" value={fmt(inflow)} unit="m³/s" />
                 <Field label="1 → 2" value={fmt(t.out1 ?? 0)} unit="m³/s" />
@@ -120,7 +133,6 @@ export default function TanksPanel({ rox }) {
             </div>
 
             <p className={'log' + (t.spilling ? ' alarm' : '')}>{t.phase}</p>
-            </div>
         </div>
     );
 }

@@ -223,3 +223,16 @@ h2 { font-size: 13px; color: #88c0d0; }
 .log.alarm { color: #fbbf24; font-weight: 600; }
 
 .unit { font-style: normal; font-size: 11px; color: #64748b; margin-left: 3px; }
+
+/* --- 3D view --------------------------------------------------------------- */
+/* The canvas takes whatever height the pane can give after the controls --
+   a FIXED height here re-creates the pane-overflow problem: clicking a
+   control scrolls the canvas top out of view. */
+.app-pane .pane-body { display: flex; flex-direction: column; }
+.app-pane .pane-body > .panel { flex: 1; min-height: 0; }
+.tanks3d-canvas { width: 100%; flex: 1 1 auto; min-height: 8rem; display: block;
+                  border-radius: 6px; outline: none; touch-action: none;
+                  background: #14161a; }
+.view-toggle { display: flex; gap: .25rem; margin-left: auto; }
+.view-toggle .collapse.active { background: #2e3440; color: #67e8f9;
+                                border-color: #4c566a; }
