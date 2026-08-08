@@ -245,6 +245,7 @@
     // the pushed value, so satisfying React satisfies everyone.
     const stores = new Map();
     let nextCallId = 1;
+    const CALL_TIMEOUT_MS = 20000;
     const pendingCalls = new Map();   // callId -> {resolve, reject}
 
     function storeRecord(name) {
@@ -289,7 +290,24 @@
             call(method, ...args) {
                 return new Promise((resolve, reject) => {
                     const id = nextCallId++;
-                    pendingCalls.set(id, { resolve, reject });
+                    // A store call is only serviced while a script is RUNNING or
+                    // PARKED: the host loop is pumped from the VM's dispatch
+                    // loop. If the last script ended, nothing pumps and this
+                    // promise would never settle -- a silently wedged UI, with
+                    // no way for the caller to tell "slow" from "dead". Reject
+                    // instead, generously enough not to catch a legitimately
+                    // slow method (a big parse is ~0.5s).
+                    const timer = setTimeout(() => {
+                        if (!pendingCalls.delete(id)) return;
+                        reject(new Error(
+                            `roxal store call ${name}.${method}() was never serviced ` +
+                            `(${CALL_TIMEOUT_MS}ms) — is a script still running? ` +
+                            `A script that ends without web.serve() leaves nothing to pump.`));
+                    }, CALL_TIMEOUT_MS);
+                    pendingCalls.set(id, {
+                        resolve: v => { clearTimeout(timer); resolve(v); },
+                        reject:  e => { clearTimeout(timer); reject(e); },
+                    });
                     const w = new Writer();
                     w.u8(TAG_LIST);
                     w.u32(args.length);
@@ -406,6 +424,10 @@
                 const rec = storeRecord(name);
                 rec.methods = Array.isArray(methods) ? methods : [];
                 rec.snapshot = Object.freeze(Object.assign({}, snapshot));
+                // Counts DEFINES, not lookups: a re-run re-exposes the same
+                // name, and this is how a harness tells the fresh store from
+                // the stale record the registry keeps across runs.
+                rec.generation = (rec.generation || 0) + 1;
                 notify(rec);
                 w.value(null);
                 return true;
@@ -461,4 +483,5 @@
     // Public API for app code and framework adapters.
     Module.roxalStore = storeHandle;
     Module.roxalStoreNames = () => Array.from(stores.keys());
+    Module.roxalStoreGeneration = name => stores.get(name)?.generation || 0;
 })();

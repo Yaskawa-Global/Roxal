@@ -821,8 +821,8 @@ file(WRITE "${CMAKE_BINARY_DIR}/roxal_features.cmake"
     # Thread::remoteComputeCallState, ObjTensor's storage union, ...), and a
     # mismatch is an ODR violation that silently corrupts memory rather than
     # failing to link.  Re-deriving the set from the ROXAL_HAS_* flags below is
-    # NOT equivalent -- those are spelled differently (HAS_ vs ENABLE_) and omit
-    # FILEIO/SOCKET/AI_NN entirely.  Apply with add_compile_definitions().
+    # NOT equivalent -- those are spelled differently (HAS_ vs ENABLE_).
+    # Apply with add_compile_definitions().
     "set(ROXAL_ABI_DEFINITIONS ${_roxal_abi_defs_export})\n"
     # Include dirs required to compile the roxal headers with the defines above.
     # Apply with include_directories() wherever ROXAL_ABI_DEFINITIONS is applied.
@@ -831,6 +831,9 @@ file(WRITE "${CMAKE_BINARY_DIR}/roxal_features.cmake"
     # lto-wrapper (serially, unless it passes -flto=auto).  Exported so hosts
     # can explain the resulting link times, or opt out.
     "set(ROXAL_HAS_LTO ${ROXAL_ENABLE_LTO})\n"
+    "set(ROXAL_HAS_FILEIO ${ROXAL_ENABLE_FILEIO})\n"
+    "set(ROXAL_HAS_SOCKET ${ROXAL_ENABLE_SOCKET})\n"
+    "set(ROXAL_HAS_AI_NN ${ROXAL_ENABLE_AI_NN})\n"
     "set(ROXAL_HAS_GRPC ${ROXAL_ENABLE_GRPC})\n"
     "set(ROXAL_HAS_DDS ${ROXAL_ENABLE_DDS})\n"
     "set(ROXAL_HAS_ONNX ${ROXAL_ENABLE_ONNX})\n"

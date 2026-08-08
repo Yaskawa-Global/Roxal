@@ -1,0 +1,17 @@
+# fileio.list_dir: sorted names, trailing '/' on directories, nil for non-dirs.
+import fileio
+
+fileio.create_dir("../tests/tmp_ld_t/sub", recurse=true)
+var f = fileio.open("../tests/tmp_ld_t/b.rox", write=true)
+fileio.write(f, "x")
+fileio.close(f)
+var g = fileio.open("../tests/tmp_ld_t/a.txt", write=true)
+fileio.write(g, "y")
+fileio.close(g)
+
+print(fileio.list_dir("../tests/tmp_ld_t"))
+print(fileio.list_dir("../tests/tmp_ld_t/missing"))
+print(fileio.list_dir("../tests/tmp_ld_t/a.txt"))
+
+fileio.delete_dir("../tests/tmp_ld_t", recurse=true)
+print(fileio.dir_exists("../tests/tmp_ld_t"))

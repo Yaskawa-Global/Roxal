@@ -51,6 +51,24 @@ if (process.argv[2] === '--one') {
                 try { m.FS.writeFile('/stdlib/' + f, fs.readFileSync(path.join(TESTS, f))); } catch (e) {}
             }
         }
+        // The tests also reference fixtures by host-relative path
+        // ('../tests/testfile.txt', package dirs, IDL includes). Mirror the
+        // whole tests tree at /tests so those paths resolve from the /stdlib
+        // cwd exactly as they do from a native build dir. Expected-output and
+        // cache files are noise, not fixtures (~550KB without them).
+        const stageTree = (hostDir, wasmDir) => {
+            try { m.FS.mkdir(wasmDir); } catch (e) {}
+            for (const entry of fs.readdirSync(hostDir, { withFileTypes: true })) {
+                if (entry.name.endsWith('.out') || entry.name.endsWith('.err')) continue;
+                if (entry.name.startsWith('.') && entry.name.endsWith('.roc')) continue;
+                const hostPath = path.join(hostDir, entry.name);
+                if (entry.isDirectory()) stageTree(hostPath, wasmDir + '/' + entry.name);
+                else if (entry.isFile()) {
+                    try { m.FS.writeFile(wasmDir + '/' + entry.name, fs.readFileSync(hostPath)); } catch (e) {}
+                }
+            }
+        };
+        stageTree(TESTS, '/tests');
         // Name WITH .rox: diagnostics embed it and .err regexes match on it.
         // Submitting never blocks; poll for completion rather than waiting on the
         // VM thread (this thread must stay free to service its proxied FS calls).

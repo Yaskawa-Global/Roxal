@@ -1393,6 +1393,15 @@ void ModuleSys::registerBuiltins(VM& vm)
             for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
             addSys("exit", [this](VM& vm, ArgsView a){ return exit_builtin(vm,a); }, t, defaults, 0x1);
         }
+        // Whether a name resolves as a global. The oracle a REPL or a
+        // generated program needs BEFORE running code that mentions the name:
+        // an unresolved global is a fatal runtime error, so there is no
+        // catching it afterwards.
+        addSys("defined", [](VM& vm, ArgsView a) {
+            if (a.size() != 1 || !isString(a[0]))
+                throw std::invalid_argument("sys.defined expects a name string");
+            return Value::boolVal(vm.loadGlobal(asStringObj(a[0])->s).has_value());
+        });
         addSys("stacktrace", [this](VM& vm, ArgsView a){ return stacktrace_builtin(vm,a); });
         addSys("_threadid", [this](VM& vm, ArgsView a){ return threadid_builtin(vm,a); });
         addSys("_stackdepth", [this](VM& vm, ArgsView a){ return stackdepth_builtin(vm,a); });

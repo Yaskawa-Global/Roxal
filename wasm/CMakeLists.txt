@@ -14,11 +14,18 @@
 #     -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH
 #   cmake --build build-wasm-mt -j4 --target roxal_wasm
 
+option(ROXAL_WASM_WASMFS "Use WASMFS (enables the OPFS persistence backend in browsers)" OFF)
+
 add_executable(roxal_wasm main.cpp)
 
 # roxalcore links roxal_abi PUBLIC, so the ABI defines, include dirs, the ANTLR4
 # runtime and dataflow all arrive transitively.  Nothing to restate here.
 target_link_libraries(roxal_wasm PRIVATE roxalcore)
+# main.cpp mounts the OPFS backend at /data only when WASMFS is linked in --
+# the wasmfs.h APIs do not exist otherwise.
+if(ROXAL_WASM_WASMFS)
+    target_compile_definitions(roxal_wasm PRIVATE ROXAL_WASM_WASMFS)
+endif()
 
 set_target_properties(roxal_wasm PROPERTIES
     OUTPUT_NAME roxal
@@ -85,6 +92,7 @@ target_link_options(roxal_wasm PRIVATE
     -sEXPORT_NAME=createRoxal
     -sENVIRONMENT=web,worker,node
     "--preload-file=${_wasm_stdlib_stage}@/stdlib"
+    $<$<BOOL:${ROXAL_WASM_WASMFS}>:-sWASMFS=1>
 )
 # --- page assets -------------------------------------------------------------
 # The demo pages and the COOP/COEP service worker have to sit NEXT TO roxal.js for

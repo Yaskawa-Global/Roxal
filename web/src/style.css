@@ -8,7 +8,7 @@ main { height: 100%; display: flex; flex-direction: column;
 header { flex: 0 0 auto; }
 .workbench { flex: 1 1 auto; display: grid; grid-template-columns: 1fr 1fr;
              gap: 1rem; min-height: 0; }
-.right-column { display: grid; grid-template-rows: 1fr minmax(8rem, 15rem);
+.right-column { display: grid; grid-template-rows: 1fr minmax(6rem, 11rem) minmax(9rem, 13rem);
                 gap: 1rem; min-height: 0; }
 .pane { display: flex; flex-direction: column; min-height: 0;
         background: #1c1f26; border: 1px solid #333844; border-radius: 6px; }
@@ -68,6 +68,7 @@ summary { color: #88c0d0; cursor: pointer; font-size: 13px; }
 .run:disabled { opacity: .5; cursor: default; }
 .dirty { color: #ebcb8b; font-size: 12px; }
 .run-error { color: #e59b9b; font-size: 12px; }
+.run-note { color: #a3be8c; font-size: 12px; }
 .editor { border: 1px solid #333844; border-radius: 6px; overflow: hidden; }
 h2 { font-size: 13px; color: #88c0d0; }
 
@@ -76,3 +77,43 @@ h2 { font-size: 13px; color: #88c0d0; }
 .duty-track { flex: 1; height: 8px; background: #14161a; border: 1px solid #333844;
               border-radius: 4px; overflow: hidden; }
 .duty-fill { height: 100%; background: #d08770; transition: width 60ms linear; }
+
+/* --- File menu ------------------------------------------------------------ */
+.menu { position: relative; }
+.menu summary { list-style: none; cursor: pointer; padding: .2rem .7rem;
+                border: 1px solid #333844; border-radius: 4px; color: #d8dee9;
+                font-size: .85rem; user-select: none; }
+.menu summary::-webkit-details-marker { display: none; }
+.menu[open] summary { background: #2e3440; }
+.menu-items { position: absolute; top: calc(100% + 4px); left: 0; z-index: 30;
+              min-width: 11rem; background: #1c1f26; border: 1px solid #333844;
+              border-radius: 6px; padding: .3rem; display: flex;
+              flex-direction: column; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+.menu-items button { background: none; border: 0; color: #d8dee9; text-align: left;
+                     padding: .35rem .6rem; border-radius: 4px; cursor: pointer;
+                     font: inherit; font-size: .85rem; }
+.menu-items button:hover { background: #2e3440; }
+.menu-sep { height: 1px; background: #333844; margin: .3rem .2rem; }
+.menu-note { color: #616e88; font-size: .8rem; padding: .2rem .6rem; }
+
+/* --- Tabs ------------------------------------------------------------------ */
+.tabs { display: flex; gap: .25rem; flex: 1; min-width: 0; overflow-x: auto;
+        margin: 0 .6rem; }
+.tab { padding: .2rem .6rem; border: 1px solid #333844; border-bottom: none;
+       border-radius: 6px 6px 0 0; font-size: .8rem; color: #9aa4b2;
+       cursor: pointer; white-space: nowrap; user-select: none; }
+.tab.active { color: #d8dee9; background: #1c1f26; border-color: #4c566a; }
+.tab-close { margin-left: .45rem; color: #616e88; font-weight: 400; }
+.tab-close:hover { color: #e59b9b; }
+
+/* --- REPL ------------------------------------------------------------------ */
+.repl-pane { display: flex; flex-direction: column; min-height: 9rem; }
+.repl { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.repl-log { flex: 1; overflow-y: auto; padding: .5rem .8rem;
+            font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.repl-in { color: #88c0d0; white-space: pre-wrap; }
+.repl-out { color: #d8dee9; white-space: pre-wrap; }
+.repl-input { border: 0; border-top: 1px solid #333844; background: #14161a;
+              color: #d8dee9; padding: .5rem .8rem; outline: none;
+              font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.repl-input:focus { background: #171a20; }

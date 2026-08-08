@@ -1,0 +1,28 @@
+# fileio async=true: the pre-M1 behaviour, now opt-in -- the call returns a
+# future immediately (pipelining / fire-and-forget from an RT loop), consumed
+# with wait(for=...). wait() passes non-futures through unchanged, so code
+# written this way also keeps working if a backend completes immediately.
+import fileio
+
+var path = "../tests/tmp_fileio_async_param.tmp"
+
+var f = fileio.open(path, write=true)
+var w1 = fileio.write(f, "one\n", async=true)
+var w2 = fileio.write(f, "two\n", async=true)
+# Both writes are in flight; the results arrive through the futures.
+print(wait(for=w1))
+print(wait(for=w2))
+print(wait(for=fileio.close(f, async=true)))
+
+var rf = fileio.read_file(path, async=true)
+print(wait(for=rf))
+
+# Mixing modes on one file: the sync flush is queued behind the async write,
+# so after it returns the write is durably visible to a fresh handle.
+var g = fileio.open(path, write=true)
+fileio.write(g, "three\n", async=true)
+fileio.flush(g)
+print(fileio.read_file(path))
+fileio.close(g)
+
+print(fileio.delete_file(path))

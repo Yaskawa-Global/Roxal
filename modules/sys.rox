@@ -51,6 +51,15 @@ const features :list = []
 const realtime :bool = false
 
 @builtin
+func defined(name:string) -> bool:
+  """return true if name resolves as a global (a builtin or native). A
+  script's own top-level declarations and imported module names are not
+  globals. This is the scope a separately compiled program gets, so it is
+  the check to make before running generated code that mentions a name: an
+  unresolved global is a fatal runtime error, not a catchable one, so it
+  cannot be handled after the fact"""
+
+@builtin
 func stacktrace() -> list:
   """return the current call stack as a list"""
 

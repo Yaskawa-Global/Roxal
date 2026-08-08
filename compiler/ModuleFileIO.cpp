@@ -3,6 +3,7 @@
 #include "VM.h"
 #include "Object.h"
 #include <sstream>
+#include <iostream>
 #include <fstream>
 #include <filesystem>
 #include <optional>
@@ -36,6 +37,7 @@ void ModuleFileIO::registerBuiltins(VM& vm)
     link("read_file", [this](VM&, ArgsView a){ return fileio_read_file_builtin(a); }, {}, 0x1);
     link("write", [this](VM&, ArgsView a){ return fileio_write_builtin(a); }, {}, 0x3);  // resolve file and data
     link("file_exists", [this](VM&, ArgsView a){ return fileio_file_exists_builtin(a); }, {}, 0x1);
+    link("list_dir", [this](VM&, ArgsView a){ return fileio_list_dir_builtin(a); }, {}, 0x1);
     link("delete_file", [this](VM&, ArgsView a){ return fileio_delete_file_builtin(a); }, {}, 0x1);
     link("create_dir", [this](VM&, ArgsView a){ return fileio_create_dir_builtin(a); }, {}, 0x1);
     link("dir_exists", [this](VM&, ArgsView a){ return fileio_dir_exists_builtin(a); }, {}, 0x1);
@@ -115,9 +117,50 @@ Value ModuleFileIO::fileio_open_builtin(ArgsView args)
     return Value::fileVal(f, binary);
 }
 
+// The async= convention, shared by every operation that goes through the I/O
+// worker: the op is ALWAYS submitted to the worker queue (one queue, FIFO, so
+// read-after-write ordering holds regardless of mode). async=false — the
+// default — then awaits the future inside the VM dispatcher, so the script
+// sees a plain synchronous call while the OS thread stays unblocked (an RT
+// runFor() returns immediately, a host UI loop keeps pumping). async=true
+// returns the future for explicit pipelining (fire-and-forget writes from an
+// RT loop), to be consumed with wait(for=...).
+static bool asyncArg(const ArgsView& args, size_t index)
+{
+    return args.size() > index && args[index].isBool() && args[index].asBool();
+}
+
+Value ModuleFileIO::awaitInVM(Value future)
+{
+    if (!isFuture(future))
+        return future;                        // completed immediately
+
+    Thread* thread = VM::thread.get();
+    if (!thread) {
+        // No dispatch context to suspend in (host-side call): block for real.
+        return asFuture(future)->asValue();
+    }
+
+    // Fast path: already resolved (or failed — tryResolveValue raised).
+    auto status = vm().tryResolveValue(future);
+    if (status == FutureStatus::Error)
+        return Value::nilVal();
+    if (status == FutureStatus::Resolved)
+        return future;                        // resolved in place
+
+    // Suspend exactly as sys.wait(for=...) does: the dispatch loop resolves
+    // pendingWaitFor and finalizeWaitSuspension() writes the value into this
+    // call's result slot.
+    thread->pendingWaitFor = future;
+    thread->waitSuspension.active = true;
+    thread->waitSuspension.resultMode = Thread::WaitSuspension::ResultMode::PendingWaitTarget;
+    thread->waitSuspension.storedValue = Value::nilVal();
+    return Value::nilVal();
+}
+
 Value ModuleFileIO::fileio_close_builtin(ArgsView args)
 {
-    if (args.size() != 1 || !isFile(args[0]))
+    if (args.size() < 1 || args.size() > 2 || !isFile(args[0]))
         throw std::invalid_argument("fileio.close expects file handle");
 
     const Value& fileValue = args[0];
@@ -134,7 +177,8 @@ Value ModuleFileIO::fileio_close_builtin(ArgsView args)
         op.fileValue = fileValue;
         // The pending future will be waited on by the async worker
         op.pendingFutures.push_back(asFuture(pendingFuture)->future);
-        return AsyncIOManager::instance().submit(std::move(op));
+        Value fut = AsyncIOManager::instance().submit(std::move(op));
+        return asyncArg(args, 1) ? fut : awaitInVM(fut);
     }
 
     // No pending operations - close synchronously
@@ -168,7 +212,7 @@ Value ModuleFileIO::fileio_more_data_builtin(ArgsView args)
 
 Value ModuleFileIO::fileio_read_builtin(ArgsView args)
 {
-    if (args.size() != 1 || !isFile(args[0]))
+    if (args.size() < 1 || args.size() > 2 || !isFile(args[0]))
         throw std::invalid_argument("fileio.read expects file handle");
     ObjFile* f = asFile(args[0]);
 
@@ -180,12 +224,13 @@ Value ModuleFileIO::fileio_read_builtin(ArgsView args)
     op.maxBytes = 4096;
     op.binary = f->binary;
 
-    return AsyncIOManager::instance().submit(std::move(op));
+    Value fut = AsyncIOManager::instance().submit(std::move(op));
+    return asyncArg(args, 1) ? fut : awaitInVM(fut);
 }
 
 Value ModuleFileIO::fileio_read_line_builtin(ArgsView args)
 {
-    if (args.size() != 1 || !isFile(args[0]))
+    if (args.size() < 1 || args.size() > 2 || !isFile(args[0]))
         throw std::invalid_argument("fileio.read_line expects file handle");
     ObjFile* f = asFile(args[0]);
 
@@ -205,15 +250,16 @@ Value ModuleFileIO::fileio_read_line_builtin(ArgsView args)
     op.fileValue = args[0];
     op.binary = false;
 
-    return AsyncIOManager::instance().submit(std::move(op));
+    Value fut = AsyncIOManager::instance().submit(std::move(op));
+    return asyncArg(args, 1) ? fut : awaitInVM(fut);
 }
 
 Value ModuleFileIO::fileio_read_file_builtin(ArgsView args)
 {
-    if (args.size() < 1 || args.size() > 2 || !isString(args[0]))
+    if (args.size() < 1 || args.size() > 3 || !isString(args[0]))
         throw std::invalid_argument("fileio.read_file expects path string and optional format");
     std::string format = "text";
-    if (args.size() == 2) {
+    if (args.size() >= 2) {
         if (!isString(args[1]))
             throw std::invalid_argument("fileio.read_file format must be 'text' or 'binary'");
         format = toUTF8StdString(asStringObj(args[1])->s);
@@ -229,12 +275,13 @@ Value ModuleFileIO::fileio_read_file_builtin(ArgsView args)
     op.path = path;
     op.binary = (format == "binary");
 
-    return AsyncIOManager::instance().submit(std::move(op));
+    Value fut = AsyncIOManager::instance().submit(std::move(op));
+    return asyncArg(args, 2) ? fut : awaitInVM(fut);
 }
 
 Value ModuleFileIO::fileio_write_builtin(ArgsView args)
 {
-    if (args.size() != 2 || !isFile(args[0]))
+    if (args.size() < 2 || args.size() > 3 || !isFile(args[0]))
         throw std::invalid_argument("fileio.write expects file handle and data");
     ObjFile* f = asFile(args[0]);
 
@@ -277,12 +324,13 @@ Value ModuleFileIO::fileio_write_builtin(ArgsView args)
     op.writeData = std::move(writeData);
     op.binary = f->binary;
 
-    return AsyncIOManager::instance().submit(std::move(op));
+    Value fut = AsyncIOManager::instance().submit(std::move(op));
+    return asyncArg(args, 2) ? fut : awaitInVM(fut);
 }
 
 Value ModuleFileIO::fileio_flush_builtin(ArgsView args)
 {
-    if (args.size() != 1 || !isFile(args[0]))
+    if (args.size() < 1 || args.size() > 2 || !isFile(args[0]))
         throw std::invalid_argument("fileio.flush expects file handle");
 
     const Value& fileValue = args[0];
@@ -299,7 +347,8 @@ Value ModuleFileIO::fileio_flush_builtin(ArgsView args)
         op.fileValue = fileValue;
         // The pending future will be waited on by the async worker
         op.pendingFutures.push_back(asFuture(pendingFuture)->future);
-        return AsyncIOManager::instance().submit(std::move(op));
+        Value fut = AsyncIOManager::instance().submit(std::move(op));
+        return asyncArg(args, 1) ? fut : awaitInVM(fut);
     }
 
     // No pending operations - flush synchronously
@@ -315,6 +364,34 @@ Value ModuleFileIO::fileio_file_exists_builtin(ArgsView args)
         throw std::invalid_argument("fileio.file_exists expects path string");
     std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
     return std::filesystem::exists(p) && std::filesystem::is_regular_file(p) ? Value::trueVal() : Value::falseVal();
+}
+
+Value ModuleFileIO::fileio_list_dir_builtin(ArgsView args)
+{
+    if (args.size() != 1 || !isString(args[0]))
+        throw std::invalid_argument("fileio.list_dir expects path string");
+    std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
+    std::error_code ec;
+    if (!std::filesystem::is_directory(p, ec))
+        return Value::nilVal();
+
+    // Names sorted for a deterministic listing (directory_iterator order is
+    // filesystem-dependent); directories get a trailing '/', so one list
+    // carries the shape of the directory without a second stat pass.
+    std::vector<std::string> names;
+    for (const auto& entry : std::filesystem::directory_iterator(p, ec)) {
+        std::string name = entry.path().filename().string();
+        if (entry.is_directory(ec))
+            name += "/";
+        names.push_back(std::move(name));
+    }
+    std::sort(names.begin(), names.end());
+
+    Value resultVal = Value::listVal();
+    ObjList* result = asList(resultVal);
+    for (const auto& n : names)
+        result->append(Value::stringVal(toUnicodeString(n)));
+    return resultVal;
 }
 
 Value ModuleFileIO::fileio_delete_file_builtin(ArgsView args)

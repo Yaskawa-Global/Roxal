@@ -1,0 +1,29 @@
+# fileio default (async=false): every call LOOKS synchronous -- no futures,
+# no awaits -- while the actual I/O still happens on the worker thread with
+# the VM parking only this script. The whole point is that this file reads
+# like plain blocking code and behaves like it.
+import fileio
+
+var path = "../tests/tmp_fileio_sync.tmp"
+
+var f = fileio.open(path, write=true)
+print(fileio.write(f, "alpha\n"))
+print(fileio.write(f, "beta\n"))
+print(fileio.flush(f))
+print(fileio.close(f))
+
+# Values, not futures: usable directly.
+print(fileio.read_file(path))
+
+var r = fileio.open(path)
+print(fileio.read_line(r))
+print(fileio.read_line(r))
+print(fileio.close(r))
+
+# Read-after-write ordering without any explicit synchronisation.
+var g = fileio.open(path, write=true)
+fileio.write(g, "gamma\n")
+fileio.close(g)
+print(fileio.read_file(path))
+
+print(fileio.delete_file(path))

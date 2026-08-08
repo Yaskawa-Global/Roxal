@@ -729,6 +729,38 @@ allows native functions to use futures internally for non-blocking IO while
 presenting a synchronous API to the user (e.g., file `close()`).
 
 
+### fileio's synchronous-by-default execution
+
+All fileio operations that touch a file handle run on `AsyncIOManager`'s
+dedicated worker thread (one global FIFO queue — which is what gives the
+per-handle ordering guarantee in both modes). The `async=` parameter only
+decides who consumes the future `submit()` returns:
+
+- `async=true`: the future goes back to the script, exactly the pre-0.8.34
+  behaviour.
+- `async=false` (default): `ModuleFileIO::awaitInVM()` awaits it **inside the
+  VM dispatcher** using `sys.wait(for=)`'s machinery — `thread->pendingWaitFor`
+  plus a `WaitSuspension` with `ResultMode::PendingWaitTarget`. The calling
+  Roxal thread parks; the OS thread does not. Under RT, `runFor()` returns
+  immediately while the I/O is in flight; under a host UI loop the pump keeps
+  running. `callNativeFn` captures the call's result slot when it sees the
+  active suspension, and `finalizeWaitSuspension()` later writes the resolved
+  value into it — the script observes a plain synchronous call.
+
+The suspension capture exists at BOTH native result-delivery sites. The second
+one (`processNativeDefaultParamDispatch`, the deferred-default-parameter
+continuation path) was added for this feature: previously a native that
+suspended after being invoked through that path left the suspension dangling,
+and it hijacked the *next* native call's result slot. Any `.rox`-declared
+builtin with a defaulted parameter would have hit it — fileio's
+`async:bool=false` default was merely the first. (Init methods are excluded
+from that capture: their result is the receiver by construction.)
+
+I/O errors resolve the future to the op's failure value (`false`/`nil`), same
+as the async path always did — the error-model question is deliberately
+unchanged. Worker shutdown drain semantics (bounded grace, loud abandonment)
+are in `AsyncIOManager::stop()`.
+
 ## Combinators: `sys.allof` / `sys.anyof`
 
 `sys.allof(...items)` and `sys.anyof(...items)` await multiple things at once.

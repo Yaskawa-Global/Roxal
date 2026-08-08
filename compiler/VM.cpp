@@ -10982,6 +10982,23 @@ bool VM::processNativeDefaultParamDispatch(Value defaultValue)
     // After processContinuationDispatch pops the closure result, the stack has the
     // receiver and original args. We need to replace them with the final result.
     size_t argCount = state.originalArgCount;
+
+    // Mirror of callNativeFn's wait-suspension capture: a native invoked through
+    // the deferred-default path can suspend too (fileio's async=false parks the
+    // thread on the I/O future). Without this, the suspension DANGLED — the
+    // native's placeholder return was stored as the call's result and the still-
+    // active suspension then hijacked the NEXT native call's result slot.
+    // Init methods are excluded: their result is the receiver by construction,
+    // which the deferred-result machinery cannot represent.
+    auto& waitSusp = thread->waitSuspension;
+    if (waitSusp.active && !waitSusp.resultSlot && !isInitMethod) {
+        waitSusp.resultSlot = &*(thread->stackTop - argCount - 1);
+        waitSusp.stackBase = thread->stackTop - argCount;
+        waitSusp.frameDepth = thread->frames.size();
+        thread->popNativeDefaultParam();
+        return true;
+    }
+
     // Stack: [receiver, <args>...] - write result to receiver slot, pop args
     *(thread->stackTop - argCount - 1) = finalResult;
     popN(argCount);

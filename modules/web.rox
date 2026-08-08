@@ -37,9 +37,11 @@
 //
 // Changes are coalesced: a burst of writes in one turn produces one UI update.
 
-// For the Ide language service below. This makes web depend on the inspect
-// module; wasm builds have it on by default (ROXAL_ENABLE_INSPECT).
+// For the Ide language service and Workspace file service below. This makes
+// web depend on the inspect and fileio modules; both are on by default
+// (ROXAL_ENABLE_INSPECT, ROXAL_ENABLE_FILEIO).
 import inspect
+import fileio
 
 @builtin
 proc expose(name:string, obj):
@@ -64,8 +66,8 @@ proc serve(seconds=nil):
   Handlers and method calls only run while the script is alive, so a script that
   exposes state and then finishes does nothing.
 
-  Also (re)publishes the "ide" language service before parking -- see Ide
-  below."""
+  Also (re)publishes the "ide" language service and "workspace" file/REPL
+  service before parking -- see Ide and Workspace below."""
   _ensure_ide()
   _serve(seconds)
 
@@ -149,5 +151,63 @@ type Ide actor:
       out['type'] = best.deduced_type      # 'type' is a keyword, so no dot form here
     return out
 
+# ---------------------------------------------------------------------------
+# IDE file service + REPL, a second actor so a slow language-service parse
+# never delays a file save (and vice versa). File operations use fileio --
+# the same API user scripts get -- against /data, which the wasm host backs
+# with OPFS in the browser (persistent across reloads) and a plain directory
+# elsewhere. All synchronous: they run on the actor's own thread.
+type Workspace actor:
+  func fs_list(dir :string) -> list:
+    var entries = fileio.list_dir(dir)
+    if entries == nil:
+      return []
+    return entries
+
+  func fs_read(path :string):
+    if not fileio.file_exists(path):
+      return nil
+    return fileio.read_file(path)
+
+  func fs_write(path :string, text :string) -> bool:
+    var f = fileio.open(path, write=true)
+    if f == false:
+      return false
+    fileio.write(f, text)
+    return fileio.close(f)
+
+  func fs_delete(path :string) -> bool:
+    return fileio.delete_file(path)
+
+  func fs_exists(path :string) -> bool:
+    return fileio.file_exists(path)
+
+  # One REPL entry. Expressions are print-wrapped so their value lands on
+  # stdout (a compiled program's top level has no return channel); statements
+  # and declarations run as written. Parse and compile errors come back as
+  # the result string; whatever the line prints arrives via stdout as usual.
+  func eval(src :string) -> string:
+    var text = src
+    try:
+      var expr = inspect.parse_expression(src)
+      # An unresolved name is a FATAL runtime error in Roxal, not a catchable
+      # one -- a typo would take the whole running app down, and no try/except
+      # here could stop it. So check the names an expression mentions BEFORE
+      # running it. Note a REPL line runs as its own program: it sees globals
+      # and builtins, not the running app's variables or its imports.
+      for n in inspect.walk(expr):
+        if n.kind() == "Variable" and not defined(n.name):
+          return "undefined: " + n.name
+      text = "print(" + inspect.unparse(expr) + ")"
+    except e:
+      text = src
+    try:
+      var prog = inspect.parse(text + "\n", "<repl>")
+      inspect.compile(prog, "<repl>")()
+      return ""
+    except e2:
+      return string(e2)
+
 proc _ensure_ide():
   expose("ide", Ide())
+  expose("workspace", Workspace())

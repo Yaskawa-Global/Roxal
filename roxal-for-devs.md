@@ -2446,6 +2446,7 @@ The functions in the sys module are always globally available (- as if `import s
 * `wait(duration=nil, s=0, ms=0, us=0, ns=0, for=nil)` - pause execution for the specified time and optionally await a single future afterwards. Prefer time quantities such as `250ms` or `1s`; numeric seconds such as `0.5` are also accepted. Named-unit arguments are also supported. The function returns `nil` for a pure delay, the resolved value for a future, or the supplied nonfuture value after any delay. Do not mix `duration` with `s/ms/us/ns`.
 * `allof(...items)` - returns a future that resolves when all input items resolve. Resolved value is a list of values in argument order. Each item may be a future, event type, or bool signal; arg can be a single awaitable or a list (flattened one level). Empty input resolves to `[]`.
 * `anyof(...items)` - returns a future that resolves when the first input resolves. Resolved value is a dict `{"index": i, "value": v}`. Same input rules as `allof`. Empty input raises.
+* `defined(name)` - true if `name` resolves as a global — a builtin or native. A script's own top-level declarations are *not* globals, and neither are imported module names. This is exactly the scope a separately compiled program gets, so it is the check to make before running generated code that mentions a name: an unresolved global is a fatal runtime error and cannot be caught afterwards
 * `stacktrace()` - return the current call stack as a list
 * `serialize(value, protocol='default')` - serialize `value` to a packed byte list. The stream carries a small header (magic byte + format version). The format is transient (like Python's `pickle`): it is meant for round-tripping within the same build, not long-term storage or cross-version exchange.
 * `deserialize(bytes, protocol='default')` - reconstruct a value from bytes produced by `serialize`. Requires the header and only accepts the current format version — a headerless or older-version stream is rejected with a clear error (it is not migrated).
@@ -2616,16 +2617,29 @@ Functions for read & writing files and managing files, directories & paths.
 Use `import fileio` or `import fileio.*`.  See `fileio.sys`.
 (only available when built with cmake option ROXAL_ENABLE_FILEIO is on)
 
+Calls are **synchronous by default**: `var text = fileio.read_file(p)` just
+works, and errors show up at the call site. A call in progress holds up only
+the script (or actor) that made it — everything else, including signals and
+other actors, keeps running. `read`, `read_line`, `read_file`, `write`,
+`flush` and `close` also take `async:bool=false`; passing `async=true` returns
+a **future** immediately instead, useful to overlap I/O with other work or for
+fire-and-forget writes — consume it with `wait(for=...)` (which passes
+non-futures through, so the same code works in either mode). Operations on one
+handle happen in call order in both modes; to make a write visible through a
+*different* handle (e.g. `read_file` by path), `flush` or `close` first, as
+with any buffered I/O.
+
 * `open(path, append=false, write=false, format='text')` - open a file and return handle (write access is enabled automatically when `append` is true)
-* `close(file)` - close a file handle
+* `close(file, async=false)` - close a file handle after pending writes complete
 * `is_open(file)` - true if handle is open
 * `more_data(file)` - true if more data can be read
-* `read(file)` - read available data from file
-* `read_line(file)` - read a line of text
-* `read_file(path, format='text')` - read entire file
-* `write(file, data)` - write data to file
-* `flush(file)` - flush buffered writes to the underlying file
+* `read(file, async=false)` - read available data from file
+* `read_line(file, async=false)` - read a line of text
+* `read_file(path, format='text', async=false)` - read entire file
+* `write(file, data, async=false)` - write data to file
+* `flush(file, async=false)` - flush buffered writes to the underlying file
 * `file_exists(path)` - true if file exists
+* `list_dir(path)` - sorted directory listing; directories carry a trailing `/`; nil if `path` is not a directory
 * `dir_exists(path)` - true if directory exists
 * `create_dir(path, recurse=false)` - create a directory (optionally creating parents)
 * `file_size(path)` - size of file in bytes

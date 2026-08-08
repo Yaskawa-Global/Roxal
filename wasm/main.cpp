@@ -12,6 +12,10 @@
 // the main thread instead; see web-integration-plan.md.
 
 #include <unistd.h>
+#include <sys/stat.h>
+#ifdef ROXAL_WASM_WASMFS
+#include <emscripten/wasmfs.h>
+#endif
 
 #include <atomic>
 #include <chrono>
@@ -214,6 +218,29 @@ int main(int argc, char** argv) {
     g_threadInfo.store(
         kInfoLatched | (emscripten_is_main_browser_thread() ? kInfoIsBrowserMain : 0),
         std::memory_order_release);
+
+    // /data is where scripts keep files that should outlive them. In a browser
+    // with WASMFS it is backed by OPFS -- the origin-private WHATWG File System
+    // store -- so fileio writes survive a page reload. Everywhere else (node,
+    // or a non-WASMFS build) it is an ordinary in-memory directory with the
+    // same path, so scripts never need to care which one they got.
+#ifdef ROXAL_WASM_WASMFS
+    const bool haveOpfs = EM_ASM_INT({
+        return (typeof navigator !== 'undefined'
+                && navigator.storage && navigator.storage.getDirectory) ? 1 : 0;
+    });
+    if (haveOpfs) {
+        backend_t opfs = wasmfs_create_opfs_backend();
+        if (!opfs || wasmfs_create_directory("/data", 0777, opfs) != 0) {
+            std::cerr << "roxal-wasm: OPFS mount failed; /data will not persist" << std::endl;
+            ::mkdir("/data", 0777);
+        }
+    } else {
+        ::mkdir("/data", 0777);
+    }
+#else
+    ::mkdir("/data", 0777);
+#endif
 
     // Builtin modules (sys.rox, math.rox, ...) are resolved relative to the
     // working directory, and VM::instance() loads them during construction --

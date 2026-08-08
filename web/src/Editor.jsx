@@ -46,8 +46,25 @@ const brief = msg => String(msg ?? '').split(' expecting')[0];
  *
  * `service` may be null -- the VM boots after first paint, and the editor is
  * fully usable without it.
+ *
+ * MULTI-FILE: one editor instance, one Monaco MODEL per file, switched with
+ * setModel on `path` change. Models carry each tab's undo history, cursor and
+ * markers for free -- recreating the editor per tab would lose all three.
+ * `content` seeds a model the FIRST time its path appears; after that the
+ * model is the source of truth and `content` is ignored.
  */
-export default function Editor({ value, onChange, service, height = '22rem' }) {
+const modelFor = (path, content) => {
+    const uri = monaco.Uri.parse('inmemory://roxal' + path);
+    return monaco.editor.getModel(uri)
+        || monaco.editor.createModel(content ?? '', LANGUAGE_ID, uri);
+};
+
+/** Drop a file's model (its undo history included) -- for File > Delete. */
+export function disposeModel(path) {
+    monaco.editor.getModel(monaco.Uri.parse('inmemory://roxal' + path))?.dispose();
+}
+
+export default function Editor({ path, content, onChange, service, height = '22rem' }) {
     const hostRef = useRef(null);
     const editorRef = useRef(null);
     const onChangeRef = useRef(onChange);
@@ -60,11 +77,13 @@ export default function Editor({ value, onChange, service, height = '22rem' }) {
     // re-creating the editor.
     const checkRef = useRef(null);
 
+    const pathRef = useRef(path);
+    pathRef.current = path;
+
     useEffect(() => {
         registerRoxal(monaco);
         const editor = monaco.editor.create(hostRef.current, {
-            value,
-            language: LANGUAGE_ID,
+            model: modelFor(path, content),
             theme: ROXAL_THEME,
             automaticLayout: true,
             minimap: { enabled: false },
@@ -106,7 +125,7 @@ export default function Editor({ value, onChange, service, height = '22rem' }) {
         checkRef.current = scheduleCheck;
 
         const sub = editor.onDidChangeModelContent(() => {
-            onChangeRef.current?.(editor.getValue());
+            onChangeRef.current?.(pathRef.current, editor.getValue());
             scheduleCheck();
         });
         scheduleCheck();
@@ -139,6 +158,19 @@ export default function Editor({ value, onChange, service, height = '22rem' }) {
     // check would be the one the user's next keystroke happens to trigger, so a
     // file that is already broken on load stays unmarked until it is touched.
     useEffect(() => { if (service) checkRef.current?.(); }, [service]);
+
+    // Tab switch: swap the model in, re-check the newly visible file.
+    useEffect(() => {
+        const editor = editorRef.current;
+        if (!editor) return;
+        const model = modelFor(path, content);
+        if (editor.getModel() !== model) {
+            editor.setModel(model);
+            checkRef.current?.();
+        }
+        // content is deliberately not a dependency: it only seeds NEW models.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [path]);
 
     return <div className="editor" style={{ height }} ref={hostRef} />;
 }

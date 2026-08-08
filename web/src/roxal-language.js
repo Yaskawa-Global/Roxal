@@ -58,6 +58,12 @@ export const roxalLanguage = {
             // Annotations: @builtin, @cfunc, @suffix(...)
             [/@[a-zA-Z_]\w*/, 'annotation'],
 
+            // Backtick-escaped identifiers: `type`, `event` -- the escape for
+            // using a keyword as a name (dict keys via d.`type`, etc.).
+            // Before the string rules so the backtick is never mistaken for
+            // an (unsupported) string delimiter.
+            [/`[^`\n]+`/, 'identifier'],
+
             // Identifiers, keywords, types, constants. Types are checked before
             // keywords so `int` colours as a type rather than a keyword.
             [/[a-zA-Z_]\w*/, {

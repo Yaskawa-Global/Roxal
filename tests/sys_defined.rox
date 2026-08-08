@@ -1,0 +1,14 @@
+# sys.defined: does a name resolve as a global?
+# The oracle for code that is about to be run rather than written by hand --
+# an unresolved global is a fatal runtime error, so it cannot be caught after
+# the fact (see the REPL in modules/web.rox).
+print(defined("print"))
+print(defined("len"))
+print(defined("definitely_not_a_global_name"))
+
+# A script's own top-level declarations are NOT globals -- they live in the
+# script's scope, which is why a separately compiled program (a REPL line)
+# cannot see them either. defined() answers for exactly the scope such a
+# program gets.
+var here = 1
+print(defined("here"))

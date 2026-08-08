@@ -93,10 +93,10 @@ test('the Monaco editor mounts and holds the Roxal source', async ({ page }) => 
 });
 
 test('an edited script can be re-run against the live VM', async ({ page }) => {
-    await expect(page.locator('.v.big')).toHaveText('0.00');
+    await expect(page.locator('.v.big')).toHaveText('20.0°');
 
     // Edit through the model, then Run. The parked app must stop, the new script
-    // must start, and re-exposing "arm" must REPLACE the old object -- otherwise
+    // must start, and re-exposing "oven" must REPLACE the old object -- otherwise
     // the edit is silently ignored, the worst failure mode a live editor has.
     // Change the LOGIC, not a string: a string could be overwritten by a startup
     // event and prove nothing. If preheat now targets 111, the edited script is
@@ -105,9 +105,15 @@ test('an edited script can be re-run against the live VM', async ({ page }) => {
         const m = window.monaco.editor.getEditors()[0].getModel();
         m.setValue(m.getValue().replace('setpoint.set(150.0)', 'setpoint.set(111.0)'));
     });
-    await expect(page.locator('.dirty')).toBeVisible();
+    await expect(page.locator('.tab.active')).toContainText('•');
 
     await page.getByRole('button', { name: 'Run' }).click();
+    // Wait for the re-run to FINISH. Clicking into the app while the restart is
+    // still in flight drives the old network, which the restart then discards --
+    // the assertion below would fail for a reason that has nothing to do with
+    // whether the edit took effect.
+    await expect(page.getByRole('button', { name: /Run|running/ }))
+        .toHaveText('Run', { timeout: 30_000 });
 
     // Still live after the re-run, and running the EDITED network.
     await page.locator('.panel').getByRole('button', { name: 'preheat 150' }).click();

@@ -3,12 +3,15 @@ func open(path:string, append:bool=false, format:string='text', write:bool=false
   """open file at path with optional append, format, and write access"""
 
 @builtin
-func close(file) -> bool:
-  """close file handle, waiting for pending writes to complete"""
+func close(file, async:bool=false) -> bool:
+  """close file handle after pending writes complete. Synchronous by default
+  (the VM parks this script, not the OS thread, so RT loops stay live);
+  async=true returns a future to wait(for=) instead"""
 
 @builtin
-func flush(file) -> bool:
-  """flush pending output for file handle"""
+func flush(file, async:bool=false) -> bool:
+  """flush pending output for file handle. Synchronous by default;
+  async=true returns a future instead"""
 
 @builtin
 func is_open(file) -> bool:
@@ -19,24 +22,35 @@ func more_data(file) -> bool:
   """return true if file has more data to read"""
 
 @builtin
-func read(file):
-  """read data from file"""
+func read(file, async:bool=false):
+  """read data from file. Synchronous by default; async=true returns a
+  future instead"""
 
 @builtin
-func read_line(file):
-  """read a line of text from file"""
+func read_line(file, async:bool=false):
+  """read a line of text from file. Synchronous by default; async=true
+  returns a future instead"""
 
 @builtin
-func read_file(path:string, format:string='text'):
-  """read entire file"""
+func read_file(path:string, format:string='text', async:bool=false):
+  """read entire file. Synchronous by default; async=true returns a future
+  instead"""
 
 @builtin
-proc write(file, data):
-  """write data to file"""
+func write(file, data, async:bool=false) -> bool:
+  """write data to file through the I/O worker. Synchronous by default;
+  async=true returns a future immediately (fire-and-forget from an RT loop:
+  ignore it, or wait(for=) it for the result). Writes are ordered: a later
+  read on the same file sees them in either mode"""
 
 @builtin
 func file_exists(path:string) -> bool:
   """return true if file exists"""
+
+@builtin
+func list_dir(path:string) -> list:
+  """list the entries of a directory, sorted; directories carry a trailing
+  '/'. Returns nil if path is not a directory"""
 
 @builtin
 func delete_file(path:string) -> bool:

@@ -571,6 +571,50 @@ the actor move (same code, different thread), reproducible in
 `onerror` handler, so a VM crash currently looks like a silent freeze — the
 crash surfaces only in the browser console.
 
+## The IDE shell (done)
+
+The editor is now a small IDE: a File menu (New/Open/Save/Save As/Delete), a
+tab strip, an output pane and a REPL console. Files live under `/data`, which
+the wasm host mounts on OPFS, so they survive a reload; the IDE reaches them
+through a `Workspace` actor in the web module whose operations are ordinary
+`fileio` calls, which means File > Open exercises exactly the API user scripts
+get. One Monaco *model* per file (keyed by URI, switched with `setModel`)
+gives each tab its own undo history, cursor and markers for free.
+
+Two things learned here are worth carrying forward:
+
+**The IDE must own a parked script.** The host event loop is pumped from the
+VM's dispatch loop, so it runs only while a script is running or parked. A
+user script that simply ENDS -- a batch script, or one that errors before
+`web.serve()` -- leaves nothing pumping, and every store call then hangs
+forever with no rejection: dead menus, a dead console, and a Run button that
+wedges on its own first call. The fix is an invariant rather than a patch:
+`scriptParked()` derives liveness exactly (submitted minus completed) and
+`ensureServices()` re-parks the IDE's own bootstrap before Run, before every
+File action, after a failed run, and from a watchdog. Store calls also carry
+a 20s timeout, because a promise that never settles is indistinguishable from
+a slow one. Generalises: any host embedding Roxal behind a UI needs its own
+always-parked script, separate from the program being edited.
+
+**A REPL line is its own program, and fatal errors are fatal.** `eval` parses
+the line, print-wraps an expression (a compiled program's top level has no
+return channel) and runs it via `inspect.compile`. Two consequences follow
+from the language, not from this code: a compiled line sees globals and
+builtins but NOT the running app's variables or its imports, so there is no
+inspecting live state from the console today; and an unresolved name is a
+*fatal, non-catchable* runtime error, so a typo like `sfsdfds` would take the
+whole app down and no `try/except` in `eval` could stop it. Hence
+`sys.defined(name)` and a pre-flight check of the names an expression
+mentions -- the console explains instead of crashing. Statements and
+declarations still run unchecked, so `var x = typo` remains fatal; the IDE
+recovers, but the app restarts.
+
+Making the console able to read live app state, and making unresolved names
+catchable, are both language-level questions rather than IDE ones. The first
+wants a REPL that compiles into the running program's scope; the second is a
+decision about Roxal's error model (most runtime errors are deliberately
+fatal). Neither is needed for the demo.
+
 ## Repo positioning: keep upstream out of the robotics domain
 
 This is the public upstream repo and it deliberately excludes the robot library,
