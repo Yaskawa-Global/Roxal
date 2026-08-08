@@ -101,7 +101,7 @@ type Ide actor:
   private func _parse(src :string):
     if seen and src == seen_src:
       return
-    var r = inspect.parse(src, "app.rox", true)
+    var r = inspect.parse(src, "<buffer>", true)
     seen_src = src
     seen_errors = r.errors
     # Flattened once as well: walk() rebuilds the whole list, and on a large

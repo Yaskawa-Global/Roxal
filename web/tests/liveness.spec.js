@@ -6,8 +6,15 @@ import { test, expect } from '@playwright/test';
 // the IDE permanently dead -- Run hung on its own first store call, and the
 // File menu stopped responding, surviving even a reload.
 test('the IDE survives a script that ends without parking', async ({ page }) => {
+    await page.addInitScript(() => {
+        // Only when unset: this runs on EVERY navigation, so assigning
+        // unconditionally would also override what the app itself remembered
+        // and make a reload reopen the wrong file.
+        if (!localStorage.getItem('roxal-ide-last-file'))
+            localStorage.setItem('roxal-ide-last-file', 'oven.rox');
+    });
     await page.goto('/');
-    await expect(page.locator('.tab.active')).toHaveText(/app\.rox/, { timeout: 90000 });
+    await expect(page.locator('.tab.active')).toHaveText(/oven\.rox/, { timeout: 90000 });
     await expect(page.locator('.v.big')).toHaveText('20.0°', { timeout: 60000 });
 
     await page.evaluate(() => window.monaco.editor.getEditors()[0].getModel()

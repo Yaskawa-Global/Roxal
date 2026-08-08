@@ -1,4 +1,5 @@
-// The Roxal side of the demo app, as a string so it ships with the bundle.
+// The reflow-oven example, as a string so it ships with the bundle and can
+// seed the IDE's /data on a first visit.
 //
 // Everything here is a SIGNAL NETWORK -- there is no update loop. Each line
 // builds a node in a dataflow graph that the engine evaluates on 20 Hz

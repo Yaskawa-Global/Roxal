@@ -1,8 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { startRoxal, runScript, scriptParked, ensureServices } from './roxal.js';
 import Editor, { disposeModel } from './Editor.jsx';
+import TanksPanel from './TanksPanel.jsx';
 import { useRoxal, useRoxalStore } from './roxal-react.js';
-import APP_SRC from './app.rox.js';
+import OVEN_SRC from './oven.rox.js';
+import TANKS_SRC from './tanks.rox.js';
+
+// The examples the IDE seeds on a first visit. Both are ordinary files
+// afterwards: edit, save, re-run, or open the other one from the File menu.
+// tanks.rox opens first for a visitor with no history -- it is the one that
+// shows what a signal network looks like at a glance.
+const EXAMPLES = { 'tanks.rox': TANKS_SRC, 'oven.rox': OVEN_SRC };
+// Which panel the app pane shows is decided by WHICH STORE the running script
+// exposed -- and by generation, not mere presence, because the JS registry
+// keeps a stale record for every store any previous run exposed.
+const PANELS = ['tanks', 'oven'];
+const pickPanel = rox =>
+    PANELS.map(n => ({ n, g: rox.roxalStoreGeneration?.(n) ?? 0 }))
+          .filter(x => x.g > 0)
+          .sort((a, b) => b.g - a.g)[0]?.n ?? null;
 
 // Files live under /data in the wasm FS, which the host backs with OPFS in the
 // browser -- they survive a reload. The IDE reaches them through the
@@ -11,6 +27,7 @@ import APP_SRC from './app.rox.js';
 const DATA_DIR = '/data';
 const BOOTSTRAP = 'import web\nweb.serve()\n';
 const LAST_FILE_KEY = 'roxal-ide-last-file';
+const SOURCE_OPEN_KEY = 'roxal-ide-source-open';
 
 // Everything below is ordinary React. The only Roxal-aware lines are the two
 // hooks -- useRoxal for state, useRoxalStore for actions. No effects to wire, no
@@ -191,6 +208,16 @@ export default function App() {
     const workspace = useMemo(() => (rox ? rox.roxalStore('workspace') : null), [rox]);
     // Remount the panel after a re-run so hooks re-read the replaced store.
     const [generation, setGeneration] = useState(0);
+    const [panel, setPanel] = useState(null);
+    // Collapsing the source pane hands the whole width to the running app --
+    // which is what a demo wants, and what a small screen needs. Remembered,
+    // because a preference that resets every reload is not a preference.
+    const [sourceOpen, setSourceOpen] = useState(
+        () => localStorage.getItem(SOURCE_OPEN_KEY) !== 'false');
+    const toggleSource = () => setSourceOpen(v => {
+        localStorage.setItem(SOURCE_OPEN_KEY, String(!v));
+        return !v;
+    });
     // Output length marker for REPL capture.
     const outputRef = useRef('');
     // True while THIS component is deliberately stopping/starting a script, so
@@ -241,16 +268,20 @@ export default function App() {
                 const ws = rox.roxalStore('workspace');
 
                 let list = await refreshFiles(ws);
-                if (!list.includes('app.rox')) {
-                    await ws.call('fs_write', filePath('app.rox'), APP_SRC);
-                    list = await refreshFiles(ws);
+                let seeded = false;
+                for (const [name, src] of Object.entries(EXAMPLES)) {
+                    if (list.includes(name)) continue;
+                    await ws.call('fs_write', filePath(name), src);
+                    seeded = true;
                 }
+                if (seeded) list = await refreshFiles(ws);
                 const last = localStorage.getItem(LAST_FILE_KEY);
-                const first = (last && list.includes(last)) ? last : 'app.rox';
+                const first = (last && list.includes(last)) ? last : 'tanks.rox';
                 await openFile(ws, first);
 
                 const text = await ws.call('fs_read', filePath(first));
-                await runScript(rox, text ?? '', { expectStore: 'workspace' });
+                await runScript(rox, text ?? '', { expectStore: 'workspace', name: first });
+                setPanel(pickPanel(rox));
                 setGeneration(g => g + 1);
             } catch (e) {
                 setError(String(e.message || e));
@@ -271,7 +302,8 @@ export default function App() {
             // has ended.
             await ensureServices(rox, BOOTSTRAP);
             await saveFile(workspace, active);        // Run implies Save
-            await runScript(rox, modelText(active), { expectStore: 'workspace' });
+            await runScript(rox, modelText(active), { expectStore: 'workspace', name: active });
+            setPanel(pickPanel(rox));
             setGeneration(g => g + 1);
         } catch (e) {
             setRunError(String(e.message || e));
@@ -299,6 +331,18 @@ export default function App() {
         }, 1000);
         return () => clearInterval(id);
     }, [rox, running]);
+
+    useEffect(() => {
+        const onKey = e => {
+            if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') {
+                e.preventDefault();
+                toggleSource();
+            }
+        };
+        window.addEventListener('keydown', onKey);
+        return () => window.removeEventListener('keydown', onKey);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     async function onMenu(action) {
         if (!workspace) return;
@@ -371,7 +415,8 @@ export default function App() {
                 // The watchdog may already have re-parked the bootstrap; if so
                 // this has to stop it first, or the app would queue behind it.
                 await runScript(rox, modelText(active),
-                                { expectStore: 'workspace', assumeStopped: !scriptParked(rox) });
+                                { expectStore: 'workspace', assumeStopped: !scriptParked(rox),
+                                  name: active });
                 setGeneration(g => g + 1);
                 note = '\n(fatal error — app restarted)';
             } catch (e2) {
@@ -398,17 +443,22 @@ export default function App() {
             <header>
                 <h1>Roxal + React</h1>
                 <p className="sub">
-                    A Roxal <b>signal network</b> drives the app; files persist in the browser's
+                    A Roxal <b>signal network</b> drives the app — open <code>tanks.rox</code> from
+                    the File menu for a second one; files persist in the browser's
                     origin-private file system via Roxal's own <code>fileio</code>; the console
                     evaluates through the compiler. React renders it all
                     through <code>useSyncExternalStore</code> and knows nothing else.
                 </p>
             </header>
 
-            <div className="workbench">
+            <div className={'workbench' + (sourceOpen ? '' : ' source-collapsed')}>
                 {/* left: the source */}
                 <section className="pane editor-pane">
                     <div className="pane-head">
+                        <button className="collapse" onClick={toggleSource}
+                                title={(sourceOpen ? 'hide' : 'show') + ' the source (Ctrl/⌘-B)'}>
+                            {sourceOpen ? '▾' : '▸'} source
+                        </button>
                         <FileMenu files={files} onAction={onMenu} />
                         <div className="tabs">
                             {tabs.map(name => (
@@ -445,7 +495,10 @@ export default function App() {
                         <div className="pane-body">
                             {error && <pre className="error">{error}</pre>}
                             {!rox && !error && <p className="loading">starting the Roxal VM…</p>}
-                            {rox && <OvenPanel key={generation} rox={rox} />}
+                            {rox && panel === 'tanks' && <TanksPanel key={generation} rox={rox} />}
+                            {rox && panel === 'oven' && <OvenPanel key={generation} rox={rox} />}
+                            {rox && !panel && !error &&
+                                <p className="loading">the running script exposes no known app store</p>}
                         </div>
                     </section>
 

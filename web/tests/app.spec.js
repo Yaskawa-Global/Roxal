@@ -4,6 +4,15 @@ import { test, expect } from '@playwright/test';
 // browser can tell us. Nothing here duplicates the node suites.
 
 test.beforeEach(async ({ page }) => {
+    // A fresh visitor now lands on tanks.rox; these tests are about the oven,
+    // so say which file to open before the app boots.
+    await page.addInitScript(() => {
+        // Only when unset: this runs on EVERY navigation, so assigning
+        // unconditionally would also override what the app itself remembered
+        // and make a reload reopen the wrong file.
+        if (!localStorage.getItem('roxal-ide-last-file'))
+            localStorage.setItem('roxal-ide-last-file', 'oven.rox');
+    });
     // Surface page errors in the test output. A dead inline script or a trapped
     // VM worker otherwise shows up only as "the UI never updated".
     page.on('pageerror', e => console.error('[pageerror]', e.message));

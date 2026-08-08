@@ -4,12 +4,19 @@ import { test, expect } from '@playwright/test';
 // One test rather than four because the stages build on each other and each
 // VM boot costs seconds.
 test('files persist in OPFS; the REPL evaluates through the compiler', async ({ page }) => {
+    await page.addInitScript(() => {
+        // Only when unset: this runs on EVERY navigation, so assigning
+        // unconditionally would also override what the app itself remembered
+        // and make a reload reopen the wrong file.
+        if (!localStorage.getItem('roxal-ide-last-file'))
+            localStorage.setItem('roxal-ide-last-file', 'oven.rox');
+    });
     const errors = [];
     page.on('pageerror', e => errors.push('pageerror: ' + e.message));
     page.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text().slice(0, 200)); });
     await page.goto('/');
     // Boot: tab appears, oven runs
-    await expect(page.locator('.tab.active')).toHaveText(/app\.rox/, { timeout: 90000 });
+    await expect(page.locator('.tab.active')).toHaveText(/oven\.rox/, { timeout: 90000 });
     await expect(page.locator('.v.big')).toHaveText('20.0°', { timeout: 60000 });
     console.log('BOOT ok');
 

@@ -1,0 +1,105 @@
+// The second demo: two cascading water tanks, as a Roxal SIGNAL NETWORK.
+//
+// Shipped as a string so it seeds the IDE's /data on a first visit; after that
+// it is an ordinary file you can edit, save and re-run.
+export default `import web
+import math
+
+// TWO TANKS, one draining into the other. There is no update loop below --
+// each line adds a node to a dataflow graph the engine evaluates 20 times a
+// second, and the two <- lines ARE the difference equations of the plant.
+
+const CAPACITY = 10.0        // metres of depth, per tank
+const DT       = 0.05        // 1/20 s -- the engine's tick
+
+// Torricelli's law: a tank drains faster the deeper it is, so an open tank
+// finds its own equilibrium. An ordinary func -- called with a signal it is
+// not invoked, it becomes a node that re-evaluates when its input changes.
+func drain(level :real) -> real:
+  if level <= 0.0:
+    return 0.0
+  return 1.6 * math.sqrt(level)
+
+// Tanks have a floor and a rim, and the level cannot leave them.
+func hold(level :real) -> real:
+  if level < 0.0:
+    return 0.0
+  if level > CAPACITY:
+    return CAPACITY
+  return level
+
+var inflow = signal(20, 3.0, "inflow")     // the tap, driven from the UI
+var level1 = signal(20, 0.0, "level1")
+var level2 = signal(20, 0.0, "level2")
+
+// NOTE the [-1]: each tank drains according to its PREVIOUS depth. Written as
+// drain(level1) instead, the graph would contain a genuine algebraic loop --
+// level1 needs out1, out1 needs level1, both on the same tick -- and the node
+// would simply stop updating, leaving tank 1 to fill forever. The delay tap is
+// what makes this an integrator rather than an unsolvable equation.
+var out1 = drain(level1[-1])
+var out2 = drain(level2[-1])
+
+// What flows in, minus what flows out, integrated over one tick.
+level1 <- hold(level1[-1] + (inflow - out1) * DT)
+level2 <- hold(level2[-1] + (out1  - out2) * DT)
+
+// Derived signals: graph nodes, not one-off calculations.
+var stored   = level1 + level2
+var spilling = level1 > 9.94
+var settled  = math.abs(inflow - out2) < 0.05
+
+type Tanks object:
+  // Signal properties need a placeholder at construction; they are connected
+  // to the network below.
+  var inflow   :signal = signal(20, 0.0)
+  var level1   :signal = signal(20, 0.0)
+  var level2   :signal = signal(20, 0.0)
+  var out1     :signal = signal(20, 0.0)
+  var out2     :signal = signal(20, 0.0)
+  var stored   :signal = signal(20, 0.0)
+  var spilling :signal = signal(20, false)
+  var settled  :signal = signal(20, false)
+  var capacity :real = CAPACITY
+  var phase :string = "tap open"
+
+  proc shut():
+    inflow.set(0.0)
+    phase = "tap shut"
+
+  proc trickle():
+    inflow.set(1.2)
+    phase = "trickle"
+
+  proc steady():
+    inflow.set(3.0)
+    phase = "steady flow"
+
+  proc surge():
+    inflow.set(5.5)
+    phase = "surge"
+
+var tanks = Tanks()
+tanks.inflow   = inflow
+tanks.level1   = level1
+tanks.level2   = level2
+tanks.out1     = out1
+tanks.out2     = out2
+tanks.stored   = stored
+tanks.spilling = spilling
+tanks.settled  = settled
+
+// Discrete moments are events on a derived signal; the continuous behaviour
+// stays in the network. That split is what the language is built around.
+when spilling becomes true:
+  tanks.phase = "tank 1 overflowing"
+
+when settled becomes true:
+  var a = int(level1.value * 100.0) / 100.0
+  var b = int(level2.value * 100.0) / 100.0
+  tanks.phase = "settled at {a}m / {b}m"
+
+print("two tanks, cascading; engine evaluating at 20 Hz")
+web.expose("tanks", tanks)
+web.serve()
+`;

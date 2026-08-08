@@ -32,7 +32,7 @@ function loadFactory() {
  *
  * @returns {Promise<{rox: object, output: () => string}>}
  */
-export async function startRoxal(source, { expectStore, onOutput } = {}) {
+export async function startRoxal(source, { expectStore, onOutput, name = '<script>' } = {}) {
     if (loading) return loading;
 
     loading = (async () => {
@@ -54,7 +54,7 @@ export async function startRoxal(source, { expectStore, onOutput } = {}) {
         });
 
         submitted++;
-        rox.ccall('roxal_submit_source', null, ['string', 'string'], [source, 'app.rox']);
+        rox.ccall('roxal_submit_source', null, ['string', 'string'], [source, name]);
 
         if (expectStore) {
             // Poll rather than await: submitting is deliberately fire-and-forget,
@@ -82,7 +82,7 @@ export async function startRoxal(source, { expectStore, onOutput } = {}) {
  * finish, then submit. Re-exposing the same store name replaces it, so the edited
  * object takes effect rather than the old one being silently reused.
  */
-export async function runScript(rox, source, { expectStore, assumeStopped } = {}) {
+export async function runScript(rox, source, { expectStore, assumeStopped, name = '<script>' } = {}) {
     if (!assumeStopped) {
         const before = rox.ccall('roxal_completed_count', 'number', [], []);
 
@@ -102,7 +102,7 @@ export async function runScript(rox, source, { expectStore, assumeStopped } = {}
     // serve().
     const genBefore = rox.roxalStoreGeneration?.(expectStore) ?? 0;
     submitted++;
-    rox.ccall('roxal_submit_source', null, ['string', 'string'], [source, 'app.rox']);
+    rox.ccall('roxal_submit_source', null, ['string', 'string'], [source, name]);
 
     // The new script parks in web.serve() rather than completing, so wait for the
     // store -- and treat completion as failure, since a script that COMPLETED

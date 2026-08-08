@@ -8,9 +8,25 @@ main { height: 100%; display: flex; flex-direction: column;
 header { flex: 0 0 auto; }
 .workbench { flex: 1 1 auto; display: grid; grid-template-columns: 1fr 1fr;
              gap: 1rem; min-height: 0; }
-.right-column { display: grid; grid-template-rows: 1fr minmax(6rem, 11rem) minmax(9rem, 13rem);
+/* Collapsed: the editor pane keeps ONLY its head bar, as a strip across the
+   top -- the File menu, the tabs and Run all stay reachable while the app
+   takes the full width. Hiding the pane outright would take them with it. */
+.workbench.source-collapsed { grid-template-columns: 1fr; grid-template-rows: auto 1fr;
+                              gap: .8rem; }
+.workbench.source-collapsed .editor-pane .editor { display: none; }
+.workbench.source-collapsed .editor-pane .pane-head { border-bottom: 0; }
+/* Collapsing is for watching the app run, so give it the height: output and
+   console pair off side by side underneath instead of stacking. */
+.workbench.source-collapsed .right-column { grid-template-columns: 1fr 1fr;
+                                            grid-template-rows: minmax(0, 1fr) minmax(6rem, 7rem); }
+.workbench.source-collapsed .app-pane { grid-column: 1 / -1; }
+.collapse { background: none; border: 1px solid #333844; color: #88c0d0;
+            border-radius: 4px; padding: .1rem .4rem; font-size: 11px;
+            cursor: pointer; line-height: 1.4; }
+.collapse:hover { background: #2e3440; }
+.right-column { display: grid; min-width: 0; grid-template-rows: minmax(0, 3.4fr) minmax(3.2rem, 5rem) minmax(6rem, 7.5rem);
                 gap: 1rem; min-height: 0; }
-.pane { display: flex; flex-direction: column; min-height: 0;
+.pane { display: flex; flex-direction: column; min-height: 0; min-width: 0;
         background: #1c1f26; border: 1px solid #333844; border-radius: 6px; }
 .pane-head { flex: 0 0 auto; display: flex; align-items: center; gap: .8rem;
              padding: .5rem .8rem; border-bottom: 1px solid #333844; }
@@ -24,7 +40,7 @@ header { flex: 0 0 auto; }
   .workbench { grid-template-columns: 1fr; }
 }
 h1 { font-size: 16px; color: #88c0d0; margin: 0 0 .3rem; }
-.sub { color: #6b7280; margin: 0 0 1.5rem; }
+.sub { color: #6b7280; margin: 0 0 .7rem; }
 code { color: #a3d9a5; }
 .loading, .error { padding: 1rem; background: #1c1f26; border: 1px solid #333844; border-radius: 6px; }
 .error { color: #e59b9b; white-space: pre-wrap; }
@@ -117,3 +133,93 @@ h2 { font-size: 13px; color: #88c0d0; }
               color: #d8dee9; padding: .5rem .8rem; outline: none;
               font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .repl-input:focus { background: #171a20; }
+
+/* --- Water tanks demo ------------------------------------------------------ */
+.tanks-panel { display: flex; flex-direction: column; gap: .45rem; align-items: stretch;
+               min-width: 0; }
+.tanks-controls { display: flex; flex-direction: column; gap: .4rem; flex: 1; min-width: 0; }
+.tanks-controls .actions { display: flex; gap: .35rem; flex-wrap: wrap; margin: 0; }
+.tanks-controls .actions button { padding: .3rem .55rem; font-size: 12px; }
+.tanks-controls .slider { margin: 0; }
+.tanks-controls .log { margin: 0; font-size: 12px; }
+/* Water runs downhill: each tank sits lower than the one feeding it, and every
+   inlet pours in from directly above -- the same order the two <- lines run in
+   tanks.rox. Laid out across rather than straight down so the controls below
+   stay in view without scrolling. */
+.rig { display: flex; align-items: flex-start; justify-content: center;
+       gap: .5rem; padding-top: .1rem; }
+.feed-label { line-height: 1.1; }
+.outlet { display: flex; flex-direction: column; align-items: center; gap: 2px;
+          margin-top: 84px; }
+.inlet { height: 18px; display: flex; align-items: stretch; justify-content: center; }
+.tank-unit.drop { margin-top: 30px; }
+
+.tank-unit { display: flex; flex-direction: column; align-items: center; gap: .1rem; }
+.tank { position: relative; width: 96px; height: 70px; overflow: hidden;
+        border: 2px solid rgba(125, 211, 252, .35); border-top-color: rgba(125,211,252,.18);
+        border-radius: 7px 7px 10px 10px;
+        background: linear-gradient(180deg, rgba(14,165,233,.05), rgba(2,6,23,.65));
+        box-shadow: inset 0 0 22px rgba(56,189,248,.10), 0 6px 18px rgba(0,0,0,.45); }
+.tank.spilling { border-color: rgba(251,191,36,.8);
+                 box-shadow: inset 0 0 26px rgba(251,191,36,.22), 0 0 22px rgba(251,191,36,.35); }
+.tick { position: absolute; left: 0; right: 0; height: 1px;
+        background: rgba(148,163,184,.18); }
+.gloss { position: absolute; inset: 0 auto 0 6px; width: 14px; border-radius: 8px;
+         background: linear-gradient(180deg, rgba(255,255,255,.16), rgba(255,255,255,0) 55%);
+         pointer-events: none; }
+
+.water { position: absolute; left: 0; right: 0; bottom: 0;
+         background: linear-gradient(180deg, #22d3ee 0%, #0ea5e9 38%, #1d4ed8 100%);
+         box-shadow: 0 -2px 14px rgba(34,211,238,.45);
+         transition: height 70ms linear; }
+.waves { position: absolute; left: 0; right: 0; top: -9px; height: 12px; overflow: hidden; }
+.wave { position: absolute; top: 0; left: 0; width: 200%; height: 12px; }
+.wave0 { animation: waveShift 2.6s linear infinite; opacity: .85; }
+.wave1 { animation: waveShift 4.1s linear infinite reverse; opacity: .45; }
+@keyframes waveShift { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+
+/* Bubbles belong IN the water: this layer is exactly the water body, so a
+   bubble that rises past the surface is clipped there rather than drifting on
+   into the empty air above it. */
+.bubbles { position: absolute; inset: 0; overflow: hidden; }
+.bubble { position: absolute; bottom: 4px; width: 5px; height: 5px; border-radius: 50%;
+          background: rgba(224, 252, 255, .85); animation: bubbleUp 2.4s linear infinite; }
+@keyframes bubbleUp {
+    0%   { transform: translateY(0) scale(.6); opacity: 0; }
+    15%  { opacity: .85; }
+    100% { transform: translateY(-56px) scale(1.1); opacity: 0; }
+}
+
+.spill-lip { position: absolute; top: 0; left: -4px; right: -4px; height: 8px;
+             background: linear-gradient(180deg, #fde68a, rgba(251,191,36,0));
+             animation: spillPulse .7s ease-in-out infinite alternate; }
+@keyframes spillPulse { from { opacity: .5; } to { opacity: 1; } }
+
+.stream { height: 18px; border-radius: 3px;
+          background-image: repeating-linear-gradient(180deg,
+              rgba(186,230,253,.95) 0 7px, rgba(56,189,248,.35) 7px 15px);
+          background-size: 100% 15px;
+          animation-name: streamFlow; animation-timing-function: linear;
+          animation-iteration-count: infinite;
+          box-shadow: 0 0 10px rgba(56,189,248,.55); position: relative; }
+.stream.tall { height: 34px; }
+.stream.dry { opacity: 0; }
+@keyframes streamFlow { from { background-position-y: 0; } to { background-position-y: 15px; } }
+.splash { position: absolute; bottom: -5px; left: 50%; width: 22px; height: 8px;
+          transform: translateX(-50%); border-radius: 50%;
+          background: radial-gradient(ellipse at center, rgba(186,230,253,.75), rgba(186,230,253,0) 70%);
+          animation: splashPulse .55s ease-in-out infinite alternate; }
+@keyframes splashPulse { from { transform: translateX(-50%) scale(.75); }
+                         to   { transform: translateX(-50%) scale(1.15); } }
+
+.tank-label { display: flex; align-items: baseline; gap: .45rem; line-height: 1.15; }
+.tank-label .v.big { color: #67e8f9; font-size: 15px; line-height: 1.2; }
+.tank-label .v.big em { font-style: normal; font-size: 12px; color: #7dd3fc; margin-left: 2px; }
+.tanks-readout { display: grid; grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr));
+                 gap: .15rem .7rem; margin-bottom: 0; }
+.tanks-readout .v { font-size: 14px; }
+.tanks-readout .field { flex-direction: row; align-items: baseline; gap: .5rem; white-space: nowrap; }
+.tanks-readout .k { min-width: 3.2rem; }
+.log.alarm { color: #fbbf24; font-weight: 600; }
+
+.unit { font-style: normal; font-size: 11px; color: #64748b; margin-left: 3px; }
