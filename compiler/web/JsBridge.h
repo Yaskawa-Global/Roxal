@@ -84,6 +84,14 @@ enum class Op : uint8_t {
     StorePatch   = 12,  // [Str name][Dict delta]                      -> (deferred)
     // Settle a JS-side promise for a method call or a rejected write.
     StoreResolve = 13,  // [u32 callId][value result][Str error]       -> (deferred)
+
+    // --- NN provider (ai.nn) ---
+    // Ask the host's NN provider (Module.roxalNN) to create/run/close an
+    // inference session. Deferred: the reply arrives as Inbound::NnResult
+    // carrying the same callId. kind: 0=create [Bytes model][Str device],
+    // 1=run [u32 session][u32 n]{[Str name][Str dtype][List shape][Bytes data]},
+    // 2=close [u32 session] (no reply).
+    NnRequest    = 14,  // [u32 callId][u8 kind][...]                  -> (deferred)
 };
 
 // Inbound work posted by the main thread, drained on the VM thread.
@@ -91,6 +99,7 @@ enum class Inbound : uint8_t {
     Callback   = 0,   // a dom.on() listener fired
     StoreCall  = 1,   // JS invoked an exposed method
     StoreWrite = 2,   // JS wrote an exposed property
+    NnResult   = 3,   // the NN provider settled an Op::NnRequest
 };
 
 // Handle 0 is always JS null/undefined, so a zero handle needs no special case.
@@ -104,7 +113,11 @@ constexpr uint32_t kNullHandle = 0;
 class Encoder {
 public:
     void op(Op o)             { raw(static_cast<uint8_t>(o)); }
+    void u8(uint8_t v)        { raw(v); }
     void u32(uint32_t v);
+    // Tag::Bytes + length + raw bytes. The JS half reads it as a Uint8Array
+    // view straight over the wasm heap -- no copy on the way out.
+    void bytesBlob(const void* data, size_t len);
     void tag(Tag t)           { raw(static_cast<uint8_t>(t)); }
     void str(const std::string& utf8);
     void str(const ustring& s);
@@ -187,6 +200,13 @@ using StoreWriteHandler = std::function<void(const std::string& store,
                                              const Value& value)>;
 void setStoreHandlers(StoreCallHandler onCall, StoreWriteHandler onWrite);
 
+// Installed by the NN bridge (compiler/web/NnBridge.cpp) so drainInbound can
+// route Inbound::NnResult without JsBridge depending on ai.nn. The shutdown
+// hook settles outstanding requests when the bridge tears down.
+using NnResultHandler   = std::function<void(uint32_t callId, const std::vector<Value>& args)>;
+using NnShutdownHandler = std::function<void()>;
+void setNnHandlers(NnResultHandler onResult, NnShutdownHandler onShutdown);
+
 // Register a Roxal callable so JS can invoke it, returning the callback id
 // embedded in Tag::Func. The callable is held as a GC root until
 // releaseCallback(). Invocations arrive on the VM thread via the inbound queue.
@@ -196,6 +216,13 @@ void releaseCallback(uint32_t id);
 // Drain work queued by the main thread, running each on the VM thread. Called
 // from the dispatch loop's host-event-loop hook.
 void drainInbound();
+
+// Drain ONLY inbound items of `kind`, leaving everything else queued, and
+// return how many were processed. For native code that must block for a
+// specific reply on the very thread that drains the queue (Model.init waiting
+// for the provider): processing just the awaited kind cannot re-enter the VM,
+// while a full drain could dispatch a store call mid-builtin.
+size_t drainInboundOnly(Inbound kind);
 
 // Release every handle and callback; used at module teardown.
 void shutdown();

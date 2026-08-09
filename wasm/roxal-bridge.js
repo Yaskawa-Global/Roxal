@@ -22,10 +22,11 @@
     const OP_GLOBAL = 0, OP_GET = 1, OP_SET = 2, OP_CALL = 3, OP_INDEX = 4,
           OP_SETINDEX = 5, OP_NEW = 6, OP_RELEASE = 7, OP_LISTEN = 8,
           OP_UNLISTEN = 9, OP_TYPEOF = 10,
-          OP_STORE_DEFINE = 11, OP_STORE_PATCH = 12, OP_STORE_RESOLVE = 13;
+          OP_STORE_DEFINE = 11, OP_STORE_PATCH = 12, OP_STORE_RESOLVE = 13,
+          OP_NN_REQUEST = 14;
 
     // Inbound kinds (must match roxal::web::Inbound).
-    const IN_CALLBACK = 0, IN_STORE_CALL = 1, IN_STORE_WRITE = 2;
+    const IN_CALLBACK = 0, IN_STORE_CALL = 1, IN_STORE_WRITE = 2, IN_NN_RESULT = 3;
 
     // -------------------------------------------------------- handle table
     // Index 0 is permanently null so a zero handle needs no special case on
@@ -141,6 +142,12 @@
                 // not subtle -- an event payload arriving as an opaque handle
                 // cannot be indexed, and a DOM node arriving as a dict would be
                 // a dead copy.
+                if (v instanceof Uint8Array) {
+                    this.u8(TAG_BYTES);
+                    this.u32(v.length);
+                    for (let i = 0; i < v.length; i++) this.bytes.push(v[i]);
+                    return;
+                }
                 if (Array.isArray(v)) {
                     this.u8(TAG_LIST);
                     this.u32(v.length);
@@ -244,6 +251,7 @@
     // useSyncExternalStore re-renders forever without it. Svelte and Vue only need
     // the pushed value, so satisfying React satisfies everyone.
     const stores = new Map();
+    let defineSeq = 0;                // monotonic across ALL stores (see OP_STORE_DEFINE)
     let nextCallId = 1;
     const CALL_TIMEOUT_MS = 20000;
     const pendingCalls = new Map();   // callId -> {resolve, reject}
@@ -321,6 +329,37 @@
                 postInbound(IN_STORE_WRITE, 0, name, prop, w.bytes);
             },
         };
+    }
+
+    // ------------------------------------------------------------- NN provider
+    // ai.nn delegates inference to Module.roxalNN, registered by the host:
+    //   create(modelBytes:Uint8Array, device) -> Promise<{id, device, inputs, outputs}>
+    //   run(id, [{name,dtype,shape,data:Uint8Array}]) -> Promise<[{dtype,shape,data:Uint8Array}]>
+    //   close(id)
+    // The browser host plugs in onnxruntime-web (WebGPU EP with wasm fallback),
+    // node plugs in the same package's wasm EP, an Electron host can plug in
+    // onnxruntime-node -- one Roxal module, best engine per host. Replies go
+    // back over the inbound queue as [ok, body]; a missing provider answers
+    // every request with an error so Model() raises cleanly instead of hanging.
+    function nnReply(callId, ok, body) {
+        const w = new Writer();
+        w.u8(TAG_LIST);
+        w.u32(2);
+        w.value(ok ? 1 : 0);
+        try { w.value(body); }
+        catch (e) { w.bytes.length = 0; w.u8(TAG_LIST); w.u32(2); w.value(0); w.value(String(e)); }
+        postInbound(IN_NN_RESULT, callId, null, null, w.bytes);
+    }
+    function nnDispatch(callId, fn) {
+        const p = Module.roxalNN;
+        if (!p) {
+            nnReply(callId, false,
+                    'this host provides no NN backend (Module.roxalNN is not registered)');
+            return;
+        }
+        Promise.resolve().then(() => fn(p)).then(
+            body => nnReply(callId, true, body),
+            err  => nnReply(callId, false, String((err && err.message) || err)));
     }
 
     // ---------------------------------------------------------------- ops
@@ -424,10 +463,14 @@
                 const rec = storeRecord(name);
                 rec.methods = Array.isArray(methods) ? methods : [];
                 rec.snapshot = Object.freeze(Object.assign({}, snapshot));
-                // Counts DEFINES, not lookups: a re-run re-exposes the same
-                // name, and this is how a harness tells the fresh store from
-                // the stale record the registry keeps across runs.
-                rec.generation = (rec.generation || 0) + 1;
+                // A GLOBAL define sequence, not a per-store count. Two things
+                // depend on it: a harness tells a fresh store from the stale
+                // record the registry keeps across runs (any increase does
+                // that), and a host picks the store the RUNNING script just
+                // exposed by taking the highest. Per-store counting broke the
+                // second one -- a store defined twice outranked one defined
+                // once no matter which script was live.
+                rec.generation = ++defineSeq;
                 notify(rec);
                 w.value(null);
                 return true;
@@ -448,6 +491,35 @@
                     else p.resolve(result);
                 }
                 return false;
+            }
+            case OP_NN_REQUEST: {
+                const callId = r.u32();
+                const kind = r.u8();
+                if (kind === 0) {                       // create
+                    // r.value() for TAG_BYTES is a VIEW over the wasm heap --
+                    // valid only during this synchronous op (the heap can grow
+                    // and move). Copy before anything async touches it.
+                    const model = new Uint8Array(r.value());
+                    const device = (r.u8(), r.str());
+                    nnDispatch(callId, p => p.create(model, device));
+                } else if (kind === 1) {                // run
+                    const session = r.u32();
+                    const n = r.u32();
+                    const feeds = [];
+                    for (let i = 0; i < n; i++) {
+                        const name = (r.u8(), r.str());
+                        const dtype = (r.u8(), r.str());
+                        const shape = r.value();
+                        const data = new Uint8Array(r.value());   // copy, as above
+                        feeds.push({ name, dtype, shape, data });
+                    }
+                    nnDispatch(callId, p => p.run(session, feeds));
+                } else {                                // close: fire-and-forget
+                    const session = r.u32();
+                    const p = Module.roxalNN;
+                    if (p) Promise.resolve().then(() => p.close(session)).catch(() => {});
+                }
+                return false;                           // reply arrives inbound
             }
             case OP_TYPEOF: {
                 const v = deref(r.u32());

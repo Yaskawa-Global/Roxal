@@ -43,14 +43,30 @@ set(_wasm_stdlib_stamp "${CMAKE_CURRENT_BINARY_DIR}/stdlib.stamp")
 # a newly added module silently misses the preload until someone reconfigures --
 # and the failure looks like "module not found" at runtime, not a build error.
 file(GLOB _wasm_stdlib_rox CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/modules/*.rox")
+# ai.nn lives in a SUBDIRECTORY (modules/ai/nn.rox), which the top-level glob
+# misses -- without this, `import ai.nn` cannot resolve in the wasm FS at all.
+set(_wasm_ai_nn_rox "${CMAKE_SOURCE_DIR}/modules/ai/nn.rox")
+# The small test/demo models (~40KB total). NOT the LFS-tracked dfine/phi3
+# files. Mounted at /models for scripts; the test runner mirrors them at
+# /modules/ai for the ../modules/ai/... paths the nn tests use.
+set(_wasm_models
+    "${CMAKE_SOURCE_DIR}/modules/ai/add-sub.onnx"
+    "${CMAKE_SOURCE_DIR}/modules/ai/identity-10.onnx"
+    "${CMAKE_SOURCE_DIR}/modules/ai/double-dynamic.onnx"
+    "${CMAKE_SOURCE_DIR}/modules/ai/mnist-8.onnx")
+set(_wasm_models_stage "${CMAKE_CURRENT_BINARY_DIR}/models")
 
 add_custom_command(
     OUTPUT "${_wasm_stdlib_stamp}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_wasm_stdlib_stage}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_wasm_stdlib_rox} "${_wasm_stdlib_stage}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${_wasm_stdlib_stage}/ai"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_wasm_ai_nn_rox}" "${_wasm_stdlib_stage}/ai"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${_wasm_models_stage}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_wasm_models} "${_wasm_models_stage}"
     COMMAND ${CMAKE_COMMAND} -E touch "${_wasm_stdlib_stamp}"
-    DEPENDS ${_wasm_stdlib_rox}
-    COMMENT "Staging .rox stdlib for the wasm preload"
+    DEPENDS ${_wasm_stdlib_rox} "${_wasm_ai_nn_rox}" ${_wasm_models}
+    COMMENT "Staging .rox stdlib + ai.nn + demo models for the wasm preload"
     VERBATIM
 )
 add_custom_target(roxal_wasm_stdlib DEPENDS "${_wasm_stdlib_stamp}")
@@ -92,6 +108,7 @@ target_link_options(roxal_wasm PRIVATE
     -sEXPORT_NAME=createRoxal
     -sENVIRONMENT=web,worker,node
     "--preload-file=${_wasm_stdlib_stage}@/stdlib"
+    "--preload-file=${_wasm_models_stage}@/models"
     $<$<BOOL:${ROXAL_WASM_WASMFS}>:-sWASMFS=1>
 )
 # --- page assets -------------------------------------------------------------

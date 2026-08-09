@@ -26,6 +26,14 @@
 #include "CudaRuntime.h"
 #endif
 
+#ifdef __EMSCRIPTEN__
+// The wasm build has no ONNX Runtime; inference is delegated to the host's
+// NN provider (onnxruntime-web in the browser, onnxruntime-node under
+// Electron) through the JS bridge. See compiler/web/NnBridge.h.
+#include "web/NnBridge.h"
+#include "web/WebHostLoop.h"
+#endif
+
 using namespace roxal;
 
 // ============================================================
@@ -115,26 +123,46 @@ class InferenceWorker {
         std::vector<Value> heldValues;  // prevent GC of input tensors
     };
     std::queue<Job> pendingJobs;
+    // The job currently executing, kept as a MEMBER (not a workerLoop local)
+    // so traceHeld() can reach its heldValues -- the conservative stack scan
+    // does not cover this thread. Same reasoning as AsyncIOManager's
+    // processingOps.
+    Job currentJob;
+    bool currentActive = false;
+
+    // Every live worker, so the GC root walk can find them. Without this the
+    // held input tensors were unreachable from any root: a fire-and-forget
+    // predict whose caller dropped its references could have its inputs swept
+    // MID-INFERENCE.
+    static std::mutex& workersMutex() { static std::mutex m; return m; }
+    static std::vector<InferenceWorker*>& workers() {
+        static std::vector<InferenceWorker*> w; return w;
+    }
 
     void workerLoop() {
         while (running) {
-            Job job;
             {
                 std::unique_lock<std::mutex> lock(queueMutex);
                 queueCV.wait(lock, [&]{ return !pendingJobs.empty() || !running; });
                 if (!running && pendingJobs.empty()) break;
-                job = std::move(pendingJobs.front());
+                currentJob = std::move(pendingJobs.front());
                 pendingJobs.pop();
+                currentActive = true;
             }
             try {
-                Value result = job.work();
-                job.promise->set_value(result);
+                Value result = currentJob.work();
+                currentJob.promise->set_value(result);
             } catch (const std::exception& e) {
                 std::cerr << "ai.nn InferenceWorker error: " << e.what() << std::endl;
-                job.promise->set_value(Value::nilVal());
+                currentJob.promise->set_value(Value::nilVal());
             } catch (...) {
                 std::cerr << "ai.nn InferenceWorker: unknown error" << std::endl;
-                job.promise->set_value(Value::nilVal());
+                currentJob.promise->set_value(Value::nilVal());
+            }
+            {
+                std::lock_guard<std::mutex> lock(queueMutex);
+                currentJob = Job{};
+                currentActive = false;
             }
         }
     }
@@ -158,19 +186,49 @@ public:
     void start() {
         running = true;
         workerThread = std::thread(&InferenceWorker::workerLoop, this);
+        std::lock_guard<std::mutex> lock(workersMutex());
+        workers().push_back(this);
     }
 
     void stop() {
+        {
+            std::lock_guard<std::mutex> lock(workersMutex());
+            auto& w = workers();
+            w.erase(std::remove(w.begin(), w.end(), this), w.end());
+        }
         running = false;
         queueCV.notify_all();
         if (workerThread.joinable())
             workerThread.join();
     }
 
+    // GC root hook: pin queued and in-flight jobs' held Values.
+    static void traceHeld(ValueVisitor& visitor) {
+        std::lock_guard<std::mutex> lock(workersMutex());
+        for (InferenceWorker* w : workers()) {
+            std::lock_guard<std::mutex> qlock(w->queueMutex);
+            std::queue<Job> copy = w->pendingJobs;   // std::queue: no iteration
+            while (!copy.empty()) {
+                for (const Value& v : copy.front().heldValues)
+                    visitor.visit(v);
+                copy.pop();
+            }
+            if (w->currentActive)
+                for (const Value& v : w->currentJob.heldValues)
+                    visitor.visit(v);
+        }
+    }
+
     ~InferenceWorker() {
         stop();
     }
 };
+
+// Free-function hook for SimpleMarkSweepGC (keeps InferenceWorker private).
+void roxal::nnTraceWorkers(ValueVisitor& visitor)
+{
+    InferenceWorker::traceHeld(visitor);
+}
 
 // ============================================================
 // ModelWrapper — per-model native state
@@ -179,6 +237,10 @@ public:
 struct ModelWrapper {
 #ifdef ROXAL_ENABLE_ONNX
     std::unique_ptr<Ort::Session> session;
+#endif
+#ifdef __EMSCRIPTEN__
+    uint32_t webSession = 0;                // id in the host provider's table
+    bool webSessionOpen = false;
 #endif
     std::vector<std::string> inputNames;
     std::vector<std::vector<int64_t>> inputShapes;
@@ -301,6 +363,26 @@ static Value runInferenceMulti(ModelWrapper* wrapper,
     for (auto& out : outputs)
         asList(list)->append(Value::objVal(newTensorObj(std::move(out))));
     return list;
+#elif defined(__EMSCRIPTEN__)
+    // Delegate to the host provider. Returns a FUTURE Value (unlike the
+    // native branch, which returns the result -- but this branch is only
+    // reached from init's warmup, which awaits it; predict's async path
+    // calls the bridge directly). Input bytes are copied into the request
+    // buffer by the encoder, so no lifetime coupling with the tensors.
+    if (wrapper->closed)
+        throw std::invalid_argument("ai.nn: Model session is closed");
+    std::vector<web::NnFeed> feeds;
+    feeds.reserve(inputTensors.size());
+    for (auto& [name, tensor] : inputTensors) {
+        web::NnFeed f;
+        f.name  = name;
+        f.dtype = to_string(tensor->dtype());
+        f.shape = tensor->shape();
+        f.data  = tensor->rawData();
+        f.len   = static_cast<size_t>(tensor->numel()) * tensorDTypeSize(tensor->dtype());
+        feeds.push_back(std::move(f));
+    }
+    return web::nnRun(wrapper->webSession, feeds, {});
 #else
     (void)wrapper; (void)inputTensors;
     throw std::runtime_error("ai.nn requires ONNX Runtime (build with -DROXAL_ENABLE_ONNX=ON)");
@@ -387,8 +469,11 @@ static Value safeRunInferenceFromValueAsync(VM& vm,
     try {
         if (wrapper->closed)
             throw std::invalid_argument("ai.nn: Model session is closed");
+#ifndef __EMSCRIPTEN__
+        // The wasm build has no worker thread; the host provider is the executor.
         if (!wrapper->inferenceWorker)
             throw std::runtime_error("ai.nn: Model inference worker not initialized");
+#endif
 
         // Build inputs vector (type validation — synchronous)
         std::vector<std::pair<std::string, ObjTensor*>> inputs;
@@ -440,8 +525,10 @@ static Value safeRunInferenceFromValueAsync(VM& vm,
 
         // Shape validation (synchronous — so errors are catchable by try/except)
         for (auto& [name, tensor] : inputs) {
+#ifdef ROXAL_ENABLE_ONNX
             if (!tensor->isOrtBacked())
                 throw std::runtime_error("ai.nn: input tensor '" + name + "' is not ORT-backed");
+#endif
             for (size_t i = 0; i < wrapper->inputNames.size(); ++i) {
                 if (wrapper->inputNames[i] == name) {
                     if (!isShapeCompatible(tensor->shape(), wrapper->inputShapes[i])) {
@@ -455,12 +542,31 @@ static Value safeRunInferenceFromValueAsync(VM& vm,
             }
         }
 
+#ifdef __EMSCRIPTEN__
+        // No worker thread in the wasm build: the provider itself is async.
+        // nnRun's future plugs into the same machinery the native worker's
+        // future does (FuncNode yield, resolveArgMask, resolve-on-index).
+        // The bridge registry pins heldValues until the reply lands.
+        std::vector<web::NnFeed> feeds;
+        feeds.reserve(inputs.size());
+        for (auto& [name, tensor] : inputs) {
+            web::NnFeed f;
+            f.name  = name;
+            f.dtype = to_string(tensor->dtype());
+            f.shape = tensor->shape();
+            f.data  = tensor->rawData();
+            f.len   = static_cast<size_t>(tensor->numel()) * tensorDTypeSize(tensor->dtype());
+            feeds.push_back(std::move(f));
+        }
+        return web::nnRun(wrapper->webSession, feeds, std::move(heldValues));
+#else
         // Submit to worker thread (returns future immediately).
         // Capture shared_ptr to keep model alive during inference.
         auto work = [wrapper, inputs]() -> Value {
             return runInferenceMulti(wrapper.get(), inputs);
         };
         return wrapper->inferenceWorker->submit(std::move(work), std::move(heldValues));
+#endif
 
     } catch (const std::invalid_argument& e) {
         Value msg = Value::stringVal(toUnicodeString(e.what()));
@@ -483,6 +589,15 @@ ModuleNN::~ModuleNN()
 {
     destroyModuleType(moduleTypeValue);
 }
+
+#ifdef __EMSCRIPTEN__
+void ModuleNN::onModuleLoaded(VM& vm)
+{
+    // Provider replies only reach the VM through the host loop's inbound
+    // drain; without it, awaiting a predict future would block forever.
+    web::installHostLoop(vm);
+}
+#endif
 
 void ModuleNN::registerBuiltins(VM& vm)
 {
@@ -533,6 +648,7 @@ Value ModuleNN::nn_model_init_builtin(ArgsView args)
         ? toUTF8StdString(asStringObj(args[2])->s) : "auto";
     bool doWarmup = (args.size() < 4) || args[3].asBool();
 
+#ifdef ROXAL_ENABLE_ONNX
     bool requestGpu;
     if (deviceArg == "auto")
         requestGpu = true;
@@ -543,7 +659,6 @@ Value ModuleNN::nn_model_init_builtin(ArgsView args)
     else
         throw std::invalid_argument("Model.init: device must be 'auto', 'cpu', or 'cuda'");
 
-#ifdef ROXAL_ENABLE_ONNX
     auto& ortEnv = OnnxEnvironment::instance();
     auto opts = ortEnv.createSessionOptions(requestGpu);
 
@@ -620,6 +735,107 @@ Value ModuleNN::nn_model_init_builtin(ArgsView args)
         }
     }
 
+#elif defined(__EMSCRIPTEN__)
+    // Web build: the host provider (onnxruntime-web / onnxruntime-node) owns
+    // the session. 'webgpu' is a first-class device here; 'cuda' is not a
+    // thing a browser has.
+    if (deviceArg != "auto" && deviceArg != "cpu" && deviceArg != "webgpu")
+        throw std::invalid_argument(
+            "Model.init: device must be 'auto', 'cpu', or 'webgpu' in the web build");
+
+    auto wrapper = std::make_shared<ModelWrapper>();
+
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+        throw std::invalid_argument("Model.init: cannot open '" + path + "'");
+    std::vector<uint8_t> modelBytes((std::istreambuf_iterator<char>(in)),
+                                    std::istreambuf_iterator<char>());
+
+    // Block until the provider compiled the model. Native init blocks the
+    // same way inside Ort::Session construction; a WebGPU shader compile can
+    // take a while on first load, hence the generous ceiling.
+    Value meta = web::nnAwaitBlocking(
+        web::nnCreate(std::move(modelBytes), deviceArg), 120000);
+    if (!isDict(meta))
+        throw std::invalid_argument("Model.init: malformed provider reply");
+    ObjDict* md = asDict(meta);
+    auto metaGet = [&](const char* key) {
+        const Value k = Value::stringVal(toUnicodeString(key));
+        if (!md->contains(k))
+            throw std::invalid_argument(
+                std::string("Model.init: provider reply missing '") + key + "'");
+        return md->at(k);
+    };
+
+    wrapper->webSession = static_cast<uint32_t>(metaGet("id").asInt());
+    wrapper->webSessionOpen = true;
+    {
+        const Value dv = metaGet("device");
+        wrapper->device = isString(dv) ? toUTF8StdString(asStringObj(dv)->s) : "wasm";
+    }
+    auto fillIO = [&](const char* key,
+                      std::vector<std::string>& names,
+                      std::vector<std::vector<int64_t>>& shapes,
+                      std::vector<std::string>& dtypes) {
+        const Value lv = metaGet(key);
+        if (!isList(lv)) return;
+        ObjList* l = asList(lv);
+        for (int i = 0; i < l->length(); ++i) {
+            const Value ev = l->getElement(i);
+            if (!isDict(ev)) continue;
+            ObjDict* ed = asDict(ev);
+            auto want = [&](const char* k) {
+                return ed->at(Value::stringVal(toUnicodeString(k)));
+            };
+            const Value nv = want("name");
+            names.push_back(isString(nv) ? toUTF8StdString(asStringObj(nv)->s) : "");
+            std::vector<int64_t> shape;
+            const Value sv = want("shape");
+            if (isList(sv)) {
+                ObjList* sl = asList(sv);
+                for (int d = 0; d < sl->length(); ++d) {
+                    const Value dim = sl->getElement(d);
+                    shape.push_back(dim.isInt() ? dim.asInt()
+                                                : static_cast<int64_t>(dim.asReal()));
+                }
+            }
+            shapes.push_back(std::move(shape));
+            const Value tv = want("dtype");
+            dtypes.push_back(isString(tv) ? toUTF8StdString(asStringObj(tv)->s) : "float32");
+        }
+    };
+    fillIO("inputs",  wrapper->inputNames,  wrapper->inputShapes,  wrapper->inputDtypes);
+    fillIO("outputs", wrapper->outputNames, wrapper->outputShapes, wrapper->outputDtypes);
+
+    // Warmup: same policy as native (skip when any non-batch dim is dynamic).
+    // runInferenceMulti returns a future in this build; await and ignore
+    // failure -- warmup is an optimization, not a contract.
+    if (doWarmup && !wrapper->inputShapes.empty()) {
+        bool dynamicNonBatch = false;
+        for (const auto& shape : wrapper->inputShapes)
+            for (size_t di = 1; di < shape.size(); ++di)
+                if (shape[di] < 0) dynamicNonBatch = true;
+        if (!dynamicNonBatch) {
+            std::vector<Value> warmupTensors;
+            std::vector<std::pair<std::string, ObjTensor*>> warmupInputs;
+            for (size_t i = 0; i < wrapper->inputShapes.size(); ++i) {
+                auto shape = wrapper->inputShapes[i];
+                if (!shape.empty() && shape[0] < 0)
+                    shape[0] = 1;
+                warmupTensors.push_back(
+                    Value::tensorVal(shape, tensorDTypeFromString(wrapper->inputDtypes[i])));
+                warmupInputs.emplace_back(wrapper->inputNames[i], asTensor(warmupTensors.back()));
+            }
+            try {
+                web::nnAwaitBlocking(runInferenceMulti(wrapper.get(), warmupInputs), 120000);
+            } catch (const std::exception&) {
+                // non-fatal
+            }
+        }
+    }
+#endif
+
+#if defined(ROXAL_ENABLE_ONNX) || defined(__EMSCRIPTEN__)
     // Store wrapper as foreignPtr on the instance
     auto* sharedWrapper = new std::shared_ptr<ModelWrapper>(wrapper);
     Value fp = Value::foreignPtrVal(sharedWrapper);
@@ -661,7 +877,7 @@ Value ModuleNN::nn_model_init_builtin(ArgsView args)
 
     return Value::nilVal();
 #else
-    (void)inst; (void)path;
+    (void)inst; (void)path; (void)doWarmup;
     throw std::runtime_error("Model.init requires ONNX Runtime (build with -DROXAL_ENABLE_ONNX=ON)");
 #endif
 }
@@ -766,6 +982,7 @@ Value ModuleNN::nn_memory_info_builtin(ArgsView args)
 
     Value dict = Value::objVal(newDictObj());
 
+#ifdef ROXAL_ENABLE_ONNX
     if (deviceArg != "cpu") {
         auto& ortEnv = OnnxEnvironment::instance();
         auto& cuda = CudaRuntime::instance();
@@ -786,6 +1003,10 @@ Value ModuleNN::nn_memory_info_builtin(ArgsView args)
         if (deviceArg == "cuda")
             throw std::invalid_argument("ai.nn.memory_info: CUDA not available");
     }
+#else
+    if (deviceArg == "cuda")
+        throw std::invalid_argument("ai.nn.memory_info: CUDA not available in this build");
+#endif
 
     asDict(dict)->store(Value::stringVal(toUnicodeString("device")),
                         Value::stringVal(toUnicodeString("cpu")));
@@ -832,6 +1053,12 @@ Value ModuleNN::nn_model_close_builtin(ArgsView args)
         wrapper->closed = true;
 #ifdef ROXAL_ENABLE_ONNX
         wrapper->session.reset();
+#endif
+#ifdef __EMSCRIPTEN__
+        if (wrapper->webSessionOpen) {
+            web::nnClose(wrapper->webSession);
+            wrapper->webSessionOpen = false;
+        }
 #endif
     }
     return Value::nilVal();

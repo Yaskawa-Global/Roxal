@@ -132,30 +132,9 @@ static bool asyncArg(const ArgsView& args, size_t index)
 
 Value ModuleFileIO::awaitInVM(Value future)
 {
-    if (!isFuture(future))
-        return future;                        // completed immediately
-
-    Thread* thread = VM::thread.get();
-    if (!thread) {
-        // No dispatch context to suspend in (host-side call): block for real.
-        return asFuture(future)->asValue();
-    }
-
-    // Fast path: already resolved (or failed — tryResolveValue raised).
-    auto status = vm().tryResolveValue(future);
-    if (status == FutureStatus::Error)
-        return Value::nilVal();
-    if (status == FutureStatus::Resolved)
-        return future;                        // resolved in place
-
-    // Suspend exactly as sys.wait(for=...) does: the dispatch loop resolves
-    // pendingWaitFor and finalizeWaitSuspension() writes the value into this
-    // call's result slot.
-    thread->pendingWaitFor = future;
-    thread->waitSuspension.active = true;
-    thread->waitSuspension.resultMode = Thread::WaitSuspension::ResultMode::PendingWaitTarget;
-    thread->waitSuspension.storedValue = Value::nilVal();
-    return Value::nilVal();
+    // Hoisted to VM::awaitFutureInVM so other builtins (ai.nn's Model.init)
+    // can use the same synchronous-looking-await machinery.
+    return vm().awaitFutureInVM(std::move(future));
 }
 
 Value ModuleFileIO::fileio_close_builtin(ArgsView args)

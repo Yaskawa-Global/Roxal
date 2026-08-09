@@ -12389,6 +12389,35 @@ FutureStatus VM::tryResolveValue(Value& value)
     return status;
 }
 
+Value VM::awaitFutureInVM(Value future)
+{
+    if (!isFuture(future))
+        return future;                        // completed immediately
+
+    Thread* t = VM::thread.get();
+    if (!t) {
+        // No dispatch context to suspend in (host-side call): block for real.
+        return asFuture(future)->asValue();
+    }
+
+    // Fast path: already resolved (or failed -- tryResolveValue raised).
+    auto status = tryResolveValue(future);
+    if (status == FutureStatus::Error)
+        return Value::nilVal();
+    if (status == FutureStatus::Resolved)
+        return future;                        // resolved in place
+
+    // Suspend exactly as sys.wait(for=...) does: the dispatch loop resolves
+    // pendingWaitFor and finalizeWaitSuspension() writes the value into this
+    // call's result slot. Both native result-delivery sites honor the
+    // suspension (callNativeFn and the deferred-defaults continuation path).
+    t->pendingWaitFor = future;
+    t->waitSuspension.active = true;
+    t->waitSuspension.resultMode = Thread::WaitSuspension::ResultMode::PendingWaitTarget;
+    t->waitSuspension.storedValue = Value::nilVal();
+    return Value::nilVal();
+}
+
 FutureStatus VM::tryAwaitFuture(Value& v)
 {
     auto s = v.tryResolveFuture();

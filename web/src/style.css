@@ -18,13 +18,16 @@ header { flex: 0 0 auto; }
 /* Collapsing is for watching the app run, so give it the height: output and
    console pair off side by side underneath instead of stacking. */
 .workbench.source-collapsed .right-column { grid-template-columns: 1fr 1fr;
-                                            grid-template-rows: minmax(0, 1fr) minmax(6rem, 7rem); }
+                                            grid-template-rows: minmax(0, 1fr) minmax(7rem, 9rem); }
 .workbench.source-collapsed .app-pane { grid-column: 1 / -1; }
 .collapse { background: none; border: 1px solid #333844; color: #88c0d0;
             border-radius: 4px; padding: .1rem .4rem; font-size: 11px;
             cursor: pointer; line-height: 1.4; }
 .collapse:hover { background: #2e3440; }
-.right-column { display: grid; min-width: 0; grid-template-rows: minmax(0, 3.4fr) minmax(3.2rem, 5rem) minmax(6rem, 7.5rem);
+/* The output pane earns a real share of the column, not a token strip: a script
+   that prints (rather than exposing a store) has nowhere else to say anything,
+   and at 5rem minus head and padding that was ONE visible line. */
+.right-column { display: grid; min-width: 0; grid-template-rows: minmax(0, 3fr) minmax(7.5rem, 1fr) minmax(6rem, 7.5rem);
                 gap: 1rem; min-height: 0; }
 .pane { display: flex; flex-direction: column; min-height: 0; min-width: 0;
         background: #1c1f26; border: 1px solid #333844; border-radius: 6px; }
@@ -33,8 +36,11 @@ header { flex: 0 0 auto; }
 .pane-head h2 { margin: 0; font-size: 12px; color: #88c0d0; flex: 0 0 auto; }
 .pane-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 1rem; }
 .editor-pane .editor { flex: 1 1 auto; min-height: 0; border: 0; border-radius: 0 0 6px 6px; }
-.out { margin: 0; font-size: 12px; white-space: pre-wrap; color: #a3d9a5;
-       background: none; border: 0; }
+.out { margin: 0; font-size: 12px; line-height: 1.45; white-space: pre-wrap;
+       color: #a3d9a5; background: none; border: 0; }
+/* Tighter than the other panes: every line of padding here is a line of output
+   the reader does not get. */
+.output-pane .pane-body { padding: .5rem .8rem; }
 
 @media (max-width: 60rem) {
   .workbench { grid-template-columns: 1fr; }
@@ -236,3 +242,39 @@ h2 { font-size: 13px; color: #88c0d0; }
 .view-toggle { display: flex; gap: .25rem; margin-left: auto; }
 .view-toggle .collapse.active { background: #2e3440; color: #67e8f9;
                                 border-color: #4c566a; }
+
+/* --- mnist ----------------------------------------------------------------- */
+/* Two columns (canvas | verdict) over a row of class bars. The canvas is a
+   fixed square because it IS the model's 28x28 input at 11x zoom -- scaling it
+   to the pane would blur the correspondence the demo is there to show. */
+.mnist { display: flex; flex-direction: column; gap: .8rem; min-height: 0; }
+.mnist-main { display: flex; gap: 1rem; align-items: flex-start; flex-wrap: wrap; }
+.mnist-canvas { display: block; border: 1px solid #333844; border-radius: 6px;
+                background: #0e1013; cursor: crosshair; touch-action: none;
+                image-rendering: pixelated; max-width: 100%; }
+.mnist-actions { display: flex; align-items: center; gap: .7rem; margin-top: .5rem; }
+.mnist-actions button { background: #2e3440; border: 1px solid #4c566a; color: #d8dee9;
+                        border-radius: 4px; padding: .25rem .7rem; font: inherit;
+                        font-size: 12px; cursor: pointer; }
+.mnist-actions button:hover { background: #3b4252; }
+.mnist-hint { font-size: 11px; color: #6b7280; }
+
+.mnist-verdict { display: flex; flex-direction: column; align-items: center;
+                 gap: .1rem; min-width: 7rem; }
+.mnist-digit { font-size: 72px; line-height: 1; font-weight: 600; color: #88c0d0; }
+.mnist-confidence { font-size: 12px; color: #9aa5b1; }
+.mnist-device { margin-top: .4rem; font-size: 11px; color: #6b7280;
+                border: 1px solid #333844; border-radius: 999px; padding: .1rem .6rem;
+                cursor: help; }
+
+/* Ten vertical bars, one per class. Height is the softmax probability, so a
+   confident answer is one tall bar and a hesitant one is several stubs. */
+.mnist-bars { display: flex; gap: .35rem; align-items: flex-end; }
+.mnist-bar { flex: 1 1 0; display: flex; flex-direction: column; align-items: center;
+             gap: .2rem; font-size: 10px; color: #6b7280; }
+.mnist-bar-track { width: 100%; height: 3rem; background: #14161a;
+                   border: 1px solid #2b303b; border-radius: 3px;
+                   display: flex; align-items: flex-end; overflow: hidden; }
+.mnist-bar-fill { width: 100%; background: #3b4252; transition: height .12s linear; }
+.mnist-bar.win { color: #88c0d0; }
+.mnist-bar.win .mnist-bar-fill { background: #88c0d0; }

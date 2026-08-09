@@ -3,5 +3,6 @@ dist/
 public/roxal.js
 public/roxal.wasm
 public/roxal.data
+public/ort/
 test-results/
 playwright-report/

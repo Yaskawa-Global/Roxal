@@ -1,22 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { startRoxal, runScript, scriptParked, ensureServices } from './roxal.js';
+import { warmNnProvider } from './nn-provider.js';
 import Editor, { disposeModel } from './Editor.jsx';
 import TanksPanel from './TanksPanel.jsx';
+import MnistPanel from './MnistPanel.jsx';
 import { lazy, Suspense } from 'react';
 const Tanks3D = lazy(() => import('./Tanks3D.jsx'));
 import { useRoxal, useRoxalStore } from './roxal-react.js';
 import OVEN_SRC from './oven.rox.js';
 import TANKS_SRC from './tanks.rox.js';
+import MNIST_SRC from './mnist.rox.js';
 
-// The examples the IDE seeds on a first visit. Both are ordinary files
-// afterwards: edit, save, re-run, or open the other one from the File menu.
+// The examples the IDE seeds on a first visit. All are ordinary files
+// afterwards: edit, save, re-run, or open another from the File menu.
 // tanks.rox opens first for a visitor with no history -- it is the one that
-// shows what a signal network looks like at a glance.
-const EXAMPLES = { 'tanks.rox': TANKS_SRC, 'oven.rox': OVEN_SRC };
+// shows what a signal network looks like at a glance. mnist.rox is a batch
+// script (prints and ends) demonstrating in-browser ai.nn inference.
+const EXAMPLES = { 'tanks.rox': TANKS_SRC, 'oven.rox': OVEN_SRC, 'mnist.rox': MNIST_SRC };
 // Which panel the app pane shows is decided by WHICH STORE the running script
 // exposed -- and by generation, not mere presence, because the JS registry
 // keeps a stale record for every store any previous run exposed.
-const PANELS = ['tanks', 'oven'];
+const PANELS = ['tanks', 'oven', 'digit'];
 const pickPanel = rox =>
     PANELS.map(n => ({ n, g: rox.roxalStoreGeneration?.(n) ?? 0 }))
           .filter(x => x.g > 0)
@@ -29,6 +33,33 @@ const pickPanel = rox =>
 const DATA_DIR = '/data';
 const BOOTSTRAP = 'import web\nweb.serve()\n';
 const LAST_FILE_KEY = 'roxal-ide-last-file';
+const SEED_STAMP_KEY = 'roxal-ide-seeded';
+
+// FNV-1a, enough to answer "is this byte-for-byte what we wrote?" -- the only
+// question asked of it. Storing the full text would work too and cost 8KB of
+// localStorage per deploy's worth of examples.
+function hash(text) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) {
+        h ^= text.charCodeAt(i);
+        h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h.toString(36);
+}
+// Copies we shipped in an earlier deploy, by hash. A visitor from before the
+// stamping above has no record, so a pristine old copy is indistinguishable
+// from an edited one -- except when it matches a version we know we wrote.
+// Add the outgoing hash here whenever an example changes.
+const KNOWN_PRIOR = {
+    'mnist.rox': ['11ljg1w'],   // the print-and-exit version, pre drawing panel
+};
+const readStamps = () => {
+    try { return JSON.parse(localStorage.getItem(SEED_STAMP_KEY) || '{}'); }
+    catch { return {}; }
+};
+const writeStamps = s => {
+    try { localStorage.setItem(SEED_STAMP_KEY, JSON.stringify(s)); } catch { /* private mode */ }
+};
 const SOURCE_OPEN_KEY = 'roxal-ide-source-open';
 const TANKS_VIEW_KEY = 'roxal-ide-tanks-view';
 
@@ -251,14 +282,22 @@ export default function App() {
         return list || [];
     }
 
+    // Returns the file's text: the caller may want to run it, and React state
+    // set here is not readable until the next render, so handing it back is the
+    // only way a caller can act on what was just opened.
     async function openFile(ws, name) {
-        if (!(name in seed)) {
-            const text = await ws.call('fs_read', filePath(name));
-            setSeed(s => ({ ...s, [name]: text ?? '' }));
+        const monaco = window.monaco;
+        // The live editor buffer wins -- it may hold unsaved edits.
+        const m = monaco?.editor.getModel(monaco.Uri.parse('inmemory://roxal' + filePath(name)));
+        let text = m ? m.getValue() : seed[name];
+        if (text === undefined) {
+            text = (await ws.call('fs_read', filePath(name))) ?? '';
+            setSeed(s => ({ ...s, [name]: text }));
         }
         setTabs(t => (t.includes(name) ? t : [...t, name]));
         setActive(name);
         localStorage.setItem(LAST_FILE_KEY, name);
+        return text;
     }
 
     async function saveFile(ws, name) {
@@ -281,18 +320,59 @@ export default function App() {
 
                 let list = await refreshFiles(ws);
                 let seeded = false;
+                // Seeding an example ONCE is not enough: the files live in OPFS
+                // and outlive every deploy, so a shipped example that changes
+                // never reaches anyone who already has the old copy -- they see
+                // a stale demo and no reason why. Update the copies the user has
+                // not touched, and never the ones they have: `stamps` records
+                // what we last wrote, so "unchanged since we wrote it" is
+                // decidable rather than guessed.
+                const stamps = readStamps();
                 for (const [name, src] of Object.entries(EXAMPLES)) {
-                    if (list.includes(name)) continue;
-                    await ws.call('fs_write', filePath(name), src);
-                    seeded = true;
+                    if (!list.includes(name)) {
+                        await ws.call('fs_write', filePath(name), src);
+                        stamps[name] = hash(src);
+                        seeded = true;
+                        continue;
+                    }
+                    const current = (await ws.call('fs_read', filePath(name))) ?? '';
+                    const now = hash(current), shipped = hash(src), stamp = stamps[name];
+                    const update = stamp === undefined
+                        // No record of writing it: refresh ONLY a copy we
+                        // recognise as an older shipment of our own.
+                        ? (KNOWN_PRIOR[name] || []).includes(now)
+                        // We wrote it: refresh while it is untouched since.
+                        : now === stamp && stamp !== shipped;
+                    if (update) {
+                        await ws.call('fs_write', filePath(name), src);
+                        stamps[name] = shipped;
+                        disposeModel(filePath(name));   // drop the editor's stale buffer
+                        setSeed(s => ({ ...s, [name]: src }));
+                        seeded = true;
+                    } else if (stamp === undefined) {
+                        // Adopt an unrecognised copy: it may be the user's work,
+                        // so record it and never touch it. Deliberately NOT done
+                        // when a stamp already exists and no longer matches --
+                        // that stamp is the proof the user has edited since.
+                        stamps[name] = now;
+                    }
                 }
+                writeStamps(stamps);
                 if (seeded) list = await refreshFiles(ws);
                 const last = localStorage.getItem(LAST_FILE_KEY);
                 const first = (last && list.includes(last)) ? last : 'tanks.rox';
                 await openFile(ws, first);
 
                 const text = await ws.call('fs_read', filePath(first));
-                await runScript(rox, text ?? '', { expectStore: 'workspace', name: first });
+                try {
+                    await runScript(rox, text ?? '', { expectStore: 'workspace', name: first });
+                } catch (e) {
+                    // A batch example (mnist.rox) as the remembered file: it ran
+                    // and finished, which is success, not a boot failure. Its
+                    // prints are in the output pane; put the services back.
+                    if (!(e.scriptEnded && e.rc === 0)) throw e;
+                    await ensureServices(rox, BOOTSTRAP);
+                }
                 setPanel(pickPanel(rox));
                 setGeneration(g => g + 1);
             } catch (e) {
@@ -302,8 +382,15 @@ export default function App() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    async function rerun() {
-        if (!workspace || !active) return;
+    // One path for "make this file the running program", shared by the Run
+    // button and by opening a file. `source` exists because a just-opened file
+    // is not yet readable from React state; `save` is false for that case,
+    // since the text came off disk unchanged.
+    async function runNamed(name, { source, save = true } = {}) {
+        if (!workspace || !name) return;
+        // A script that loads a model will block the VM inside Model() until
+        // the runtime is there; start fetching it now so that wait is short.
+        if ((source ?? modelText(name)).includes('ai.nn')) warmNnProvider();
         setRunning(true);
         setRunError(null);
         setRunBenign(false);
@@ -313,8 +400,8 @@ export default function App() {
             // otherwise Run wedges on its own first step when the previous script
             // has ended.
             await ensureServices(rox, BOOTSTRAP);
-            await saveFile(workspace, active);        // Run implies Save
-            await runScript(rox, modelText(active), { expectStore: 'workspace', name: active });
+            if (save) await saveFile(workspace, name);        // Run implies Save
+            await runScript(rox, source ?? modelText(name), { expectStore: 'workspace', name });
             setPanel(pickPanel(rox));
             setGeneration(g => g + 1);
         } catch (e) {
@@ -329,6 +416,35 @@ export default function App() {
             setRunning(false);
         }
     }
+
+    const rerun = () => runNamed(active);
+
+    // Choosing a script -- from the File menu or its tab -- means "show me this
+    // one". Opening without running left the app pane displaying the PREVIOUS
+    // script's UI, which reads as the selection not having worked (and a reload
+    // then "fixed" it, because boot runs whatever file it reopens).
+    async function openAndRun(name) {
+        const text = await openFile(workspace, name);
+        await runNamed(name, { source: text, save: false });
+    }
+
+    // Watchdog for the Run button. Every step of a run is individually bounded
+    // (store calls time out, the start/stop loops have deadlines), but they are
+    // sequential -- a bad run can chain several timeouts and leave the button
+    // reading "running…" long enough to look permanently wedged. Nothing here
+    // cancels the work; it just stops the UI from lying about it.
+    useEffect(() => {
+        if (!running) return;
+        const id = setTimeout(() => {
+            busyRef.current = false;
+            setRunning(false);
+            setRunBenign(false);
+            setRunError('the run is taking unusually long — the VM may be busy '
+                      + '(loading a model runtime, or a script that will not stop). '
+                      + 'Press Run again, or reload if it persists.');
+        }, 45_000);
+        return () => clearTimeout(id);
+    }, [running]);
 
     // A script can also end on its own -- a batch script finishing, or a fatal
     // runtime error minutes later. Poll the liveness invariant and restore the
@@ -368,7 +484,7 @@ export default function App() {
                 await refreshFiles(workspace);
                 await openFile(workspace, name);
             } else if (action.kind === 'open') {
-                await openFile(workspace, action.name);
+                await openAndRun(action.name);
             } else if (action.kind === 'save' && active) {
                 await saveFile(workspace, active);
             } else if (action.kind === 'saveAs' && active) {
@@ -455,11 +571,12 @@ export default function App() {
             <header>
                 <h1>Roxal + React</h1>
                 <p className="sub">
-                    A Roxal <b>signal network</b> drives the app — open <code>tanks.rox</code> from
-                    the File menu for a second one; files persist in the browser's
-                    origin-private file system via Roxal's own <code>fileio</code>; the console
-                    evaluates through the compiler. React renders it all
-                    through <code>useSyncExternalStore</code> and knows nothing else.
+                    A Roxal script drives the app — the File menu switches between
+                    a <b>signal network</b> (<code>tanks.rox</code>, <code>oven.rox</code>) and
+                    a <b>neural net</b> running in this tab (<code>mnist.rox</code>); files persist
+                    in the browser's origin-private file system via Roxal's
+                    own <code>fileio</code>; the console evaluates through the compiler. React
+                    renders it all through <code>useSyncExternalStore</code> and knows nothing else.
                 </p>
             </header>
 
@@ -476,7 +593,7 @@ export default function App() {
                             {tabs.map(name => (
                                 <span key={name}
                                       className={'tab' + (name === active ? ' active' : '')}
-                                      onClick={() => { setActive(name); localStorage.setItem(LAST_FILE_KEY, name); }}>
+                                      onClick={() => { if (name !== active) openAndRun(name); }}>
                                     {name}{dirtyTabs[name] ? ' •' : ''}
                                     {tabs.length > 1 &&
                                         <b className="tab-close"
@@ -529,6 +646,7 @@ export default function App() {
                                   </Suspense>
                                 : <TanksPanel key={generation} rox={rox} />)}
                             {rox && panel === 'oven' && <OvenPanel key={generation} rox={rox} />}
+                            {rox && panel === 'digit' && <MnistPanel key={generation} rox={rox} />}
                             {rox && !panel && !error &&
                                 <p className="loading">the running script exposes no known app store</p>}
                         </div>

@@ -5,6 +5,8 @@
 // It must NOT go through the bundler: Vite would try to rewrite its Worker
 // spawning and its .wasm/.data fetches, both of which Emscripten resolves itself.
 
+import { installNnProvider } from './nn-provider.js';
+
 let loading = null;
 
 // Every submitted script either PARKS (web.serve/dom.run) or completes, so
@@ -52,6 +54,10 @@ export async function startRoxal(source, { expectStore, onOutput, name = '<scrip
             print: t => append(t, false),
             printErr: t => append(t, true),
         });
+
+        // ai.nn's backend: scripts that import it get onnxruntime-web
+        // (WebGPU when available). Registration is cheap; loading is lazy.
+        installNnProvider(rox);
 
         submitted++;
         rox.ccall('roxal_submit_source', null, ['string', 'string'], [source, name]);

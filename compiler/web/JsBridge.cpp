@@ -56,6 +56,8 @@ std::deque<PendingInbound> g_pending;
 
 StoreCallHandler  g_onStoreCall;
 StoreWriteHandler g_onStoreWrite;
+NnResultHandler   g_onNnResult;
+NnShutdownHandler g_onNnShutdown;
 
 } // namespace
 
@@ -82,6 +84,12 @@ void setStoreHandlers(StoreCallHandler onCall, StoreWriteHandler onWrite)
     g_onStoreWrite = std::move(onWrite);
 }
 
+void setNnHandlers(NnResultHandler onResult, NnShutdownHandler onShutdown)
+{
+    g_onNnResult   = std::move(onResult);
+    g_onNnShutdown = std::move(onShutdown);
+}
+
 // ------------------------------------------------------------------ Encoder
 
 void Encoder::u32(uint32_t v)
@@ -90,6 +98,14 @@ void Encoder::u32(uint32_t v)
     buf_.push_back(static_cast<uint8_t>((v >> 8) & 0xff));
     buf_.push_back(static_cast<uint8_t>((v >> 16) & 0xff));
     buf_.push_back(static_cast<uint8_t>((v >> 24) & 0xff));
+}
+
+void Encoder::bytesBlob(const void* data, size_t len)
+{
+    raw(static_cast<uint8_t>(Tag::Bytes));
+    u32(static_cast<uint32_t>(len));
+    const uint8_t* b = static_cast<const uint8_t*>(data);
+    buf_.insert(buf_.end(), b, b + len);
 }
 
 void Encoder::str(const std::string& utf8)
@@ -253,6 +269,18 @@ Value Decoder::value()
                 return exec(e);
             });
         }
+        case Tag::Bytes: {
+            // Raw bytes become a PACKED byte list -- the compact list
+            // representation shared with fileio binary reads and serialize().
+            const uint32_t len = u32();
+            if (p_ + len > end_)
+                throw std::runtime_error("dom: truncated bytes payload");
+            std::vector<uint8_t> bytes(p_, p_ + len);
+            p_ += len;
+            Value listVal = Value::listVal();
+            asList(listVal)->adoptPackedBytes(std::move(bytes));
+            return listVal;
+        }
         case Tag::Error:
             // Surfaces at the Roxal call site as a catchable error, rather than
             // as a nil that goes wrong somewhere else entirely.
@@ -399,6 +427,9 @@ void drainInbound()
                 case Inbound::StoreCall:
                     if (g_onStoreCall) g_onStoreCall(work.store, work.member, args, work.id);
                     break;
+                case Inbound::NnResult:
+                    if (g_onNnResult) g_onNnResult(work.id, args);
+                    break;
                 case Inbound::StoreWrite:
                     if (g_onStoreWrite)
                         g_onStoreWrite(work.store, work.member,
@@ -413,8 +444,58 @@ void drainInbound()
     }
 }
 
+size_t drainInboundOnly(Inbound kind)
+{
+    std::vector<PendingInbound> matched;
+    {
+        std::lock_guard<std::mutex> lock(g_pendingMutex);
+        for (auto it = g_pending.begin(); it != g_pending.end(); ) {
+            if (it->kind == kind) {
+                matched.push_back(std::move(*it));
+                it = g_pending.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+    for (auto& work : matched) {
+        try {
+            // Decode exactly as drainInbound does: a Tag::List becomes the
+            // args vector, a single non-nil value becomes args[0].
+            std::vector<Value> args;
+            if (!work.args.empty()) {
+                Decoder dec(work.args.data(), work.args.size());
+                Value v = dec.value();
+                if (isList(v)) {
+                    ObjList* l = asList(v);
+                    for (int i = 0; i < l->length(); ++i)
+                        args.push_back(l->getElement(i));
+                } else if (v.isNonNil()) {
+                    args.push_back(v);
+                }
+            }
+            switch (work.kind) {
+                case Inbound::NnResult:
+                    if (g_onNnResult) g_onNnResult(work.id, args);
+                    break;
+                default:
+                    break;   // only side-effect-free kinds are safe here
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "web: inbound (filtered) failed: " << e.what() << std::endl;
+        } catch (...) {}
+    }
+    return matched.size();
+}
+
 void shutdown()
 {
+    // Settle outstanding NN requests FIRST -- their promises must not outlive
+    // the bridge unresolved (a hung future would wedge whatever awaits it).
+    if (g_onNnShutdown) g_onNnShutdown();
+    g_onNnResult = nullptr;
+    g_onNnShutdown = nullptr;
+
     { std::lock_guard<std::mutex> lock(g_pendingMutex); g_pending.clear(); }
     { std::lock_guard<std::mutex> lock(g_cbMutex); g_callbacks.clear(); }
     g_onStoreCall = nullptr;

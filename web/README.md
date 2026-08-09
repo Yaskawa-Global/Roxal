@@ -138,6 +138,32 @@ Two ceilings apply on top of either model: the store coalesces changes within a
 pump interval into one update, and the host pump runs at ~125/s, so that is the
 practical maximum notification rate regardless of what you publish.
 
+## Neural networks (ai.nn)
+
+The wasm build has no ONNX Runtime linked in. `ai.nn` instead calls out to a
+**host NN provider** — `Module.roxalNN` — which the page registers at boot
+(`src/nn-provider.js` wraps the shared factory in `wasm/roxal-nn-provider.mjs`
+around onnxruntime-web). The same factory backs the node test runner, so the
+`nn_*` suite runs in wasm against the **native** expected output: numerical
+parity is a test result, not a hope.
+
+Device strings map to execution providers: `'auto'` takes WebGPU when the
+browser offers an adapter and falls back to the wasm EP, `'webgpu'` demands
+it, `'cpu'` forces the wasm EP. `model.device()` reports where the session
+actually landed, `'webgpu'` or `'cpu'`.
+
+**When it says `cpu` on a machine with a GPU**, the provider records why —
+check the console line (`[roxal ai.nn] running on …`) or hover the panel's
+device chip. On Linux the usual cause is Chrome's GPU blocklist: `chrome://gpu`
+will say so, and launching with `--enable-features=Vulkan --use-vulkan=native
+--ignore-gpu-blocklist` gets an adapter. WebGPU also requires a **secure
+context**, so `navigator.gpu` is absent on a plain-http origin.
+
+ORT's runtime binaries are served same-origin from `/ort/` (staged by
+`scripts/sync-wasm.mjs`, uploaded by `deploy.sh`): the page is cross-origin
+isolated, so the CDN copies ORT would otherwise fetch are blocked by COEP.
+Nothing loads until a script actually creates a model.
+
 ## The editor
 
 A plain Monaco editor over the Roxal source, with a Run button that re-runs the

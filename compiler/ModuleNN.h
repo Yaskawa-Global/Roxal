@@ -10,12 +10,23 @@ struct TokenizerWrapper;  // opaque native state for Tokenizer instances
 
 namespace roxal {
 
+// GC root hook: pins the input tensors held by queued and in-flight
+// InferenceWorker jobs. Called from SimpleMarkSweepGC::visitRoots.
+void nnTraceWorkers(ValueVisitor& visitor);
+
 class ModuleNN : public BuiltinModule {
 public:
     ModuleNN();
     virtual ~ModuleNN();
 
     void registerBuiltins(VM& vm) override;
+
+#ifdef __EMSCRIPTEN__
+    // The provider's replies arrive via the host event loop's inbound drain,
+    // so the wasm backend needs the loop installed even when the script never
+    // imports web/dom (mirrors ModuleWeb/ModuleDom).
+    void onModuleLoaded(VM& vm) override;
+#endif
 
     inline Value moduleType() const override { return moduleTypeValue; }
 

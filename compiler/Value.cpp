@@ -1593,6 +1593,11 @@ bool Value::resolveFuture()
         }
 
         vm.processPendingEvents();
+        // A bridged host (the wasm build) fulfills some futures from replies
+        // that only arrive via the host event loop's inbound drain -- which
+        // runs on THIS thread. Sleeping without pumping would deadlock those.
+        if (const auto& hostLoop = vm.hostEventLoop(); hostLoop && VM::onMainThread())
+            hostLoop->pump();
         if (thread) {
             gc.safepoint(*thread);
         }

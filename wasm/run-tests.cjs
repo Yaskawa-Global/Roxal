@@ -69,6 +69,39 @@ if (process.argv[2] === '--one') {
             }
         };
         stageTree(TESTS, '/tests');
+        // The nn tests load models via '../modules/ai/<name>.onnx' from the
+        // /stdlib cwd. Mirror only the small non-LFS models there (the build's
+        // preload already carries them at /models for browser scripts).
+        try { m.FS.mkdir('/modules'); } catch (e) {}
+        try { m.FS.mkdir('/modules/ai'); } catch (e) {}
+        for (const f of ['add-sub.onnx', 'identity-10.onnx', 'double-dynamic.onnx', 'mnist-8.onnx']) {
+            try {
+                m.FS.writeFile('/modules/ai/' + f, fs.readFileSync(path.join(ROXAL, 'modules', 'ai', f)));
+            } catch (e) {}
+        }
+        // NN provider: the same onnxruntime-web the browser uses, on its wasm
+        // EP -- so the nn tests diff against the SAME .out files as native and
+        // the suite doubles as a numerical-parity check. Lazy: ort's ~1MB
+        // bundle only loads in the children that actually create a session.
+        {
+            let nnPromise = null;
+            const getNN = () => nnPromise ??= (async () => {
+                const { default: makeRoxalNN } =
+                    await import(path.join(__dirname, 'roxal-nn-provider.mjs'));
+                let ort;
+                try { ort = require('onnxruntime-web'); }
+                catch (e) { ort = require(path.join(ROXAL, 'web', 'node_modules', 'onnxruntime-web')); }
+                // Single-threaded: ort's worker pool under node's
+                // worker_threads is flaky, and these models are tiny.
+                ort.env.wasm.numThreads = 1;
+                return makeRoxalNN(ort, { webgpu: false });
+            })();
+            m.roxalNN = {
+                create: async (bytes, device) => (await getNN()).create(bytes, device),
+                run: async (id, feeds) => (await getNN()).run(id, feeds),
+                close: async (id) => { if (nnPromise) (await nnPromise).close(id); },
+            };
+        }
         // Name WITH .rox: diagnostics embed it and .err regexes match on it.
         // Submitting never blocks; poll for completion rather than waiting on the
         // VM thread (this thread must stay free to service its proxied FS calls).
@@ -104,7 +137,8 @@ function parseList(src, name) {
 const py = fs.readFileSync(path.join(ROXAL, 'runtests.py'), 'utf8');
 const known = new Set(parseList(py, 'failing_tests'));
 const listed = new Set(parseList(py, 'tests').concat(parseList(py, 'test_list'))
-    .concat(parseList(py, 'inspect_tests')));
+    .concat(parseList(py, 'inspect_tests'))
+    .concat(parseList(py, 'nn_tests')));
 
 // Mirror runtests.py's feature gating. Natively it reads tags from
 // `roxal --version`; the wasm host has no CLI, so take the same information
@@ -130,6 +164,7 @@ if (!has('DDS'))    gated.push(...parseList(py, 'dds_tests'));
 if (!has('REGEX'))  gated.push(...parseList(py, 'regex_tests'));
 if (!has('XML'))    gated.push(...parseList(py, 'xml_tests'));
 if (!has('MEDIA'))  gated.push(...parseList(py, 'media_tests'));
+if (!has('AI_NN'))  gated.push(...parseList(py, 'nn_tests'));
 if (!has('INSPECT')) gated.push(...parseList(py, 'inspect_tests'));
 // reads sibling test sources via host-relative ../tests/ paths that don't
 // exist in the wasm FS — covered natively; not a wasm defect

@@ -2,6 +2,12 @@
 
 #ifdef ROXAL_ENABLE_FILEIO
 #include "AsyncIOManager.h"
+#if defined(__EMSCRIPTEN__) && defined(ROXAL_ENABLE_AI_NN)
+#include "web/NnBridge.h"
+#endif
+#ifdef ROXAL_ENABLE_AI_NN
+#include "ModuleNN.h"
+#endif
 #endif
 #include "GCRoots.h"
 #include "ThreadManager.h"
@@ -1637,6 +1643,20 @@ void SimpleMarkSweepGC::visitRoots(ValueVisitor& visitor) {
     #ifdef ROXAL_ENABLE_FILEIO
     if (AsyncIOManager* aio = AsyncIOManager::instanceIfCreated())
         aio->tracePending(visitor);
+    #endif
+
+    // ai.nn: input tensors held by queued/in-flight InferenceWorker jobs. The
+    // caller may have dropped its references the moment predict() returned,
+    // and the worker thread's stack is invisible to the collector. Locks
+    // internally.
+    #ifdef ROXAL_ENABLE_AI_NN
+    roxal::nnTraceWorkers(visitor);
+    #endif
+
+    // ai.nn wasm provider bridge: in-flight requests pin their futures and
+    // input tensors until the host's reply lands. Locks internally.
+    #if defined(__EMSCRIPTEN__) && defined(ROXAL_ENABLE_AI_NN)
+    roxal::web::nnTracePending(visitor);
     #endif
 
     visitStrongValue(visitor, vm.conditionalInterruptClosure);

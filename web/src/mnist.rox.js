@@ -1,0 +1,69 @@
+// The third demo: NEURAL-NETWORK INFERENCE, entirely in the browser.
+//
+// Shipped as a string so it seeds the IDE's /data on a first visit; after that
+// it is an ordinary file you can edit, save and re-run.
+export default `import web
+import ai.nn
+import math
+
+// Draw a digit in the panel on the right and this script classifies it.
+//
+// This is the same ai.nn module Roxal uses natively (where it runs on ONNX
+// Runtime with CUDA). In the browser the VM hands inference to the browser's
+// ONNX Runtime: on a machine with WebGPU the model runs on your GPU,
+// otherwise on the CPU. Same script, same model, same answers.
+
+var model = ai.nn.Model("/models/mnist-8.onnx")   // bundled 26KB classifier
+
+type Digit object:
+  var device :string = "?"
+  var prediction :int = -1          // -1 while the canvas is blank
+  var confidence :real = 0.0
+  var probs = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  var runs :int = 0                 // how many inferences so far
+
+  // The panel calls this with 784 pixels (0.0 blank .. 1.0 ink), row by row.
+  proc classify(pixels):
+    var img = tensor(1, 1, 28, 28, dtype='float32')
+    var k = 0
+    while k < 784:
+      img[0, 0, k / 28, k rem 28] = pixels[k]
+      k = k + 1
+
+    var scores = model.predict(img)      // a 1x10 tensor of raw scores
+
+    // Pick the winner, and softmax the rest so the bars mean something.
+    var best = 0
+    var total = 0.0
+    var p = []
+    var j = 0
+    while j < 10:
+      if scores[0, j] > scores[0, best]:
+        best = j
+      p.append(math.exp(scores[0, j]))
+      total = total + p[j]
+      j = j + 1
+    j = 0
+    while j < 10:
+      p[j] = p[j] / total
+      j = j + 1
+
+    probs = p
+    prediction = best
+    confidence = p[best]
+    runs = runs + 1
+
+  proc reset():
+    prediction = -1
+    confidence = 0.0
+    probs = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+var digit = Digit()
+digit.device = model.device()
+
+// Publish the object to the view. Nothing above knows React exists: the panel
+// reads these properties and calls classify() as the mouse moves.
+web.expose("digit", digit)
+print("mnist ready — inference running on: {digit.device}")
+web.serve()
+`;

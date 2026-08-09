@@ -11,7 +11,7 @@ type Model object:
 
   @builtin
   proc init(path:string, device:string='auto', warmup:bool=true):
-    """Load an ONNX model from the given file path. Device: 'auto' (GPU if available), 'cpu', or 'cuda'. Set warmup=false to skip the initial warm-up inference. Warm-up is skipped automatically for models with dynamic non-batch input dims (no certainly-valid synthetic input can be built for them)."""
+    """Load an ONNX model from the given file path. Device: 'auto' (GPU if available), 'cpu', or 'cuda' (native) / 'webgpu' (web builds, where inference runs on the browser's ONNX Runtime). Set warmup=false to skip the initial warm-up inference. Warm-up is skipped automatically for models with dynamic non-batch input dims (no certainly-valid synthetic input can be built for them)."""
 
   @builtin
   func predict(input):
@@ -27,7 +27,7 @@ type Model object:
 
   @builtin
   func device():
-    """Return current execution device string."""
+    """Return current execution device string: 'cpu' or 'cuda' (native), 'cpu' or 'webgpu' (web builds)."""
 
   @builtin
   proc close():

@@ -120,8 +120,12 @@ if(ROXAL_COMPUTE_SERVER)
     set(ROXAL_ENABLE_SOCKET ON CACHE BOOL "Enabled implicitly by ROXAL_COMPUTE_SERVER" FORCE)
 endif()
 option(ROXAL_ENABLE_ONNX "Enable ONNX Runtime backend for tensor type" OFF)
-option(ROXAL_ENABLE_AI_NN "Enable ai.nn neural network inference module (requires ONNX Runtime)" OFF)
-if(ROXAL_ENABLE_AI_NN)
+option(ROXAL_ENABLE_AI_NN "Enable ai.nn neural network inference module (requires ONNX Runtime; in wasm builds it bridges to a host NN provider instead)" OFF)
+if(ROXAL_ENABLE_AI_NN AND NOT EMSCRIPTEN)
+    # Native ai.nn runs on the ONNX Runtime C++ API, and with ONNX on the
+    # tensor type itself is ORT-backed. The wasm build keeps builtin tensor
+    # storage and delegates inference to the JS host's provider
+    # (onnxruntime-web / onnxruntime-node) -- see compiler/web/NnBridge.h.
     set(ROXAL_ENABLE_ONNX ON CACHE BOOL "Enabled implicitly by ROXAL_ENABLE_AI_NN" FORCE)
 endif()
 option(ROXAL_ENABLE_MEDIA "Enable media module (PNG/JPEG image I/O)" OFF)
@@ -296,6 +300,9 @@ if(ROXAL_ENABLE_XML)
 endif()
 
 # ONNX Runtime — check: explicit override, then deps/onnxruntime (see install-deps.sh)
+if(ROXAL_ENABLE_ONNX AND EMSCRIPTEN)
+    message(FATAL_ERROR "ROXAL_ENABLE_ONNX (ORT-backed tensors) is not supported in wasm builds; use ROXAL_ENABLE_AI_NN alone, which bridges to the host NN provider")
+endif()
 if(ROXAL_ENABLE_ONNX)
     if(NOT DEFINED OnnxRuntime_ROOT)
       if(EXISTS "${ROXAL_DEPS_DIR}/onnxruntime/lib")
@@ -420,6 +427,9 @@ if(EMSCRIPTEN)
         compiler/web/RoxalStore.cpp
         compiler/web/ModuleWeb.cpp
     )
+    if(ROXAL_ENABLE_AI_NN)
+        list(APPEND COMPILER_SOURCES compiler/web/NnBridge.cpp)
+    endif()
 endif()
 if(ROXAL_ENABLE_FILEIO)
     list(APPEND COMPILER_SOURCES compiler/ModuleFileIO.cpp)

@@ -526,6 +526,17 @@ public:
     static constexpr size_t DefaultMaxStack = 16384;
     static constexpr size_t DefaultMaxCallFrames = 128;
 
+    // Await `future` INSIDE the dispatcher: resolve immediately if ready,
+    // else park the calling Roxal thread (pendingWaitFor + WaitSuspension --
+    // sys.wait(for=)'s machinery) and let finalizeWaitSuspension() write the
+    // resolved value into the native call's result slot. The OS thread never
+    // blocks: under runFor() the thread reports not-runnable, and a host UI
+    // loop keeps pumping. For use by builtins that want synchronous-LOOKING
+    // semantics over async work (fileio's async=false, ai.nn's Model.init).
+    // Returns the resolved value when already ready, else nil (the dispatch
+    // loop delivers the real value).
+    Value awaitFutureInVM(Value future);
+
     static std::string versionString();
     static std::vector<std::string> featureStrings();
     static std::string featureString();
