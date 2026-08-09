@@ -98,7 +98,7 @@ target_link_options(roxal_wasm PRIVATE
     # _roxal_web_queue_inbound is how roxal-bridge.js posts DOM events, store
     # method calls and store writes to the VM thread; _malloc/_free are used by the
     # bridge for its buffers.
-    -sEXPORTED_FUNCTIONS=['_main','_roxal_run_file','_roxal_run_source','_roxal_thread_info','_roxal_request_stop','_roxal_submit_source','_roxal_quit','_roxal_completed_count','_roxal_last_result','_roxal_web_queue_inbound','_malloc','_free']
+    -sEXPORTED_FUNCTIONS=['_main','_roxal_run_file','_roxal_run_source','_roxal_print_ast','_roxal_thread_info','_roxal_request_stop','_roxal_submit_source','_roxal_quit','_roxal_completed_count','_roxal_last_result','_roxal_web_queue_inbound','_malloc','_free']
     -sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','FS','ENV','stringToNewUTF8','UTF8ArrayToString','HEAPU8']
 
     # Main-thread half of the JS bridge. --pre-js so Module.roxalBridge exists

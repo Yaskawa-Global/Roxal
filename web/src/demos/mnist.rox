@@ -1,8 +1,4 @@
-// The third demo: NEURAL-NETWORK INFERENCE, entirely in the browser.
-//
-// Shipped as a string so it seeds the IDE's /data on a first visit; after that
-// it is an ordinary file you can edit, save and re-run.
-export default `import web
+import web
 import ai.nn
 import math
 
@@ -66,4 +62,3 @@ digit.device = model.device()
 web.expose("digit", digit)
 print("mnist ready — inference running on: {digit.device}")
 web.serve()
-`;

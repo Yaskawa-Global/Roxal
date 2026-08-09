@@ -14,7 +14,8 @@ public:
     void registerBuiltins(VM& vm) override;
 
     // Stops all playback and closes the audio engine (idempotent; a no-op if
-    // audio was never used). Defined in ModuleMediaAudio.cpp.
+    // audio was never used). Defined in ModuleMediaAudio.cpp -- or, in an
+    // images-only build (wasm), as an empty body in ModuleMedia.cpp.
     void onModuleUnloading(VM& vm) override;
 
     inline Value moduleType() const override { return moduleTypeValue; }

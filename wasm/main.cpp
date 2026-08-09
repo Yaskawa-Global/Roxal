@@ -32,7 +32,12 @@
 
 #include "VM.h"
 #include "ExecutionStatus.h"
+#include <core/AST.h>
+#include "ASTGenerator.h"
+#include "TypeDeducer.h"
+#include "Error.h"
 #include "web/WebHostLoop.h"
+#include "web/UnicodeHost.h"
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
@@ -56,6 +61,18 @@ std::atomic<int> g_threadInfo{0};
 constexpr int kInfoIsBrowserMain = 1 << 0;
 constexpr int kInfoVMMainThread  = 1 << 1;
 constexpr int kInfoLatched       = 1 << 2;
+
+// Sibling imports resolve relative to the script, as they do for the CLI --
+// `import helper` next to /data/app.rox must find /data/helper.rox. Submitted
+// source has no file, only a name, so derive the directory from that; a bare
+// name (an editor buffer) contributes nothing.
+std::vector<std::string> modulePathsFor(const std::string& name,
+                                        std::vector<std::string> base) {
+    const size_t slash = name.find_last_of('/');
+    if (slash != std::string::npos && slash > 0)
+        base.push_back(name.substr(0, slash));
+    return base;
+}
 
 int runSource(std::istream& source, const std::string& name,
               const std::vector<std::string>& modulePaths) {
@@ -134,7 +151,7 @@ void serveInbox() {
             g_inbox.pop_front();
         }
         std::istringstream in{job.first};
-        const int rc = runSource(in, job.second, {"/stdlib"});
+        const int rc = runSource(in, job.second, modulePathsFor(job.second, {"/stdlib"}));
         g_lastResult.store(rc, std::memory_order_relaxed);
         // Release-store LAST: a poller that sees the new count must also see the
         // result and all output written before it.
@@ -154,14 +171,49 @@ int roxal_run_file(const char* path) {
         std::cerr << "roxal-wasm: cannot open '" << path << "'" << std::endl;
         return 2;
     }
-    return runSource(in, path, {"/stdlib"});
+    return runSource(in, path, modulePathsFor(path, {"/stdlib"}));
 }
 
 // Run a script held in memory -- the path a browser editor actually takes.
 EMSCRIPTEN_KEEPALIVE
 int roxal_run_source(const char* source, const char* name) {
     std::istringstream in{std::string(source)};
-    return runSource(in, name ? name : "<editor>", {"/stdlib"});
+    const std::string scriptName = name ? name : "<editor>";
+    return runSource(in, scriptName, modulePathsFor(scriptName, {"/stdlib"}));
+}
+
+// Parse and type-deduce, printing the AST -- the host's equivalent of the CLI's
+// `roxal --ast file`. No VM is involved: this is the front end alone, which is
+// exactly what makes it worth exporting rather than approximating. The IDE can
+// show a parse tree with it, and the test runner can hold the wasm front end to
+// the same expected output as the native one.
+EMSCRIPTEN_KEEPALIVE
+int roxal_print_ast(const char* source, const char* name) {
+    std::istringstream in{std::string(source ? source : "")};
+    roxal::ptr<ast::AST> tree {};
+    try {
+        ASTGenerator generator {};
+        tree = generator.ast(in, name ? name : "<source>");
+    } catch (const std::exception& e) {
+        compileError(e.what());
+        clearCompileContext();
+        return 1;
+    }
+    if (tree == nullptr) {        // parse/AST error, already reported
+        clearCompileContext();
+        return 1;
+    }
+    try {
+        TypeDeducer deducer {};
+        deducer.visit(roxal::dynamic_ptr_cast<ast::File>(tree));
+    } catch (const std::exception& e) {
+        compileError(e.what());
+        clearCompileContext();
+        return 1;
+    }
+    std::cout << tree << std::endl;
+    clearCompileContext();
+    return 0;
 }
 
 // Ask a parked Roxal app (dom.run / web.serve) to return, so the script can
@@ -241,6 +293,12 @@ int main(int argc, char** argv) {
 #else
     ::mkdir("/data", 0777);
 #endif
+
+    // Lend ustring the host's Unicode tables (upper/lower/title). Installed
+    // before the VM exists, because compiling a script can case-map a string
+    // and the alternative is raising "builtin upper case is unsupported" for
+    // something that works natively.
+    roxal::web::installUnicodeHost();
 
     // Builtin modules (sys.rox, math.rox, ...) are resolved relative to the
     // working directory, and VM::instance() loads them during construction --

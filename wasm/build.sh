@@ -47,6 +47,9 @@ if [ ! -f "$BUILD/CMakeCache.txt" ]; then
         -DROXAL_ENABLE_FILEIO=ON \
         -DROXAL_WASM_WASMFS=ON \
         -DROXAL_ENABLE_AI_NN=ON \
+        -DROXAL_ENABLE_REGEX=ON \
+        -DROXAL_ENABLE_XML=ON \
+        -DROXAL_ENABLE_MEDIA=ON \
         -DROXAL_ENABLE_LTO=OFF \
         -Dantlr4_ROOT="$ROXAL/deps/antlr4-wasm-mt" \
         -DEigen3_DIR="$ROXAL/deps/eigen/share/eigen3/cmake" \

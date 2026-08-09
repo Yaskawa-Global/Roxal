@@ -44,6 +44,9 @@ proc exit(ret:int=0):
 
 // One of "linux", "windows", "macos", "wasm"
 const platform :string = ""
+// This build's version, as `roxal --version` reports it: semver, any
+// prerelease label, and the git hash (e.g. "0.8.33-pre+1a2b3c4")
+const version :string = ""
 // Compiled-in feature names, e.g. ["fileio", "regex", ...]
 const features :list = []
 // True only when the embedding host runs the VM under a real-time scheduler

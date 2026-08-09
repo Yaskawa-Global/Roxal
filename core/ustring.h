@@ -17,6 +17,25 @@ namespace roxal {
 
 using code_point = char32_t;
 
+#ifndef ROXAL_UNICODE_BACKEND_ICU
+// Case mapping is the only Unicode-DATA operation the builtin backend cannot
+// do from first principles: it needs the Unicode tables, which is precisely
+// what ICU is. Rather than ship a second copy of those tables, a host that
+// already has them can install this hook -- the wasm host routes to the
+// browser's own implementation, which is ICU underneath.
+//
+// A plain builtin build installs nothing and case mapping stays UNAVAILABLE,
+// raising as before. That is deliberate: a partial ASCII-only fallback would
+// turn a loud failure into wrong answers for exactly the inputs (ß, Greek,
+// Turkish) that motivate having Unicode case mapping at all.
+enum class CaseMapping { Lower, Upper, Title };
+
+// Maps `text` in place; returns false if the host could not service it, in
+// which case the caller raises as if no hook were installed.
+using CaseMappingFn = bool (*)(std::u16string& text, CaseMapping mode);
+inline CaseMappingFn caseMappingHook = nullptr;
+#endif
+
 constexpr int32_t utf16_code_unit_count(code_point cp) noexcept
 {
     return cp > 0xffff ? 2 : 1;
@@ -337,7 +356,8 @@ public:
 #ifdef ROXAL_UNICODE_BACKEND_ICU
         value_.toUpper();
 #else
-        unicodeOperationUnavailable("upper");
+        if (!caseMappingHook || !caseMappingHook(value_, CaseMapping::Upper))
+            unicodeOperationUnavailable("upper");
 #endif
     }
 
@@ -346,7 +366,8 @@ public:
 #ifdef ROXAL_UNICODE_BACKEND_ICU
         value_.toLower();
 #else
-        unicodeOperationUnavailable("lower");
+        if (!caseMappingHook || !caseMappingHook(value_, CaseMapping::Lower))
+            unicodeOperationUnavailable("lower");
 #endif
     }
 
@@ -355,7 +376,8 @@ public:
 #ifdef ROXAL_UNICODE_BACKEND_ICU
         value_.toTitle(nullptr);
 #else
-        unicodeOperationUnavailable("title");
+        if (!caseMappingHook || !caseMappingHook(value_, CaseMapping::Title))
+            unicodeOperationUnavailable("title");
 #endif
     }
 

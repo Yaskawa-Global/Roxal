@@ -1,8 +1,4 @@
-// The second demo: two cascading water tanks, as a Roxal SIGNAL NETWORK.
-//
-// Shipped as a string so it seeds the IDE's /data on a first visit; after that
-// it is an ordinary file you can edit, save and re-run.
-export default `import web
+import web
 import math
 
 // TWO TANKS, one draining into the other. There is no update loop below --
@@ -102,4 +98,3 @@ when settled becomes true:
 print("two tanks, cascading; engine evaluating at 20 Hz")
 web.expose("tanks", tanks)
 web.serve()
-`;

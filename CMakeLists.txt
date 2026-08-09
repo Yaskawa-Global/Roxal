@@ -129,6 +129,24 @@ if(ROXAL_ENABLE_AI_NN AND NOT EMSCRIPTEN)
     set(ROXAL_ENABLE_ONNX ON CACHE BOOL "Enabled implicitly by ROXAL_ENABLE_AI_NN" FORCE)
 endif()
 option(ROXAL_ENABLE_MEDIA "Enable media module (PNG/JPEG image I/O)" OFF)
+# Audio is a separate axis from images: miniaudio drives real playback/capture
+# devices, which a browser tab reaches only through Web Audio on the main
+# thread. Images are pure computation and port cleanly, so wasm gets those and
+# leaves media.Audio out rather than shipping a backend that cannot open a
+# device.
+if(EMSCRIPTEN)
+    set(_roxal_media_audio_default OFF)
+else()
+    set(_roxal_media_audio_default ON)
+endif()
+option(ROXAL_ENABLE_MEDIA_AUDIO "Enable the media module's audio half (miniaudio)" ${_roxal_media_audio_default})
+unset(_roxal_media_audio_default)
+# Audio without the module that hosts it is meaningless, and reporting it as
+# "on" in the feature list would be a lie. A plain variable, not a FORCEd cache
+# entry: forcing would stick at OFF the next time media IS enabled.
+if(ROXAL_ENABLE_MEDIA_AUDIO AND NOT ROXAL_ENABLE_MEDIA)
+    set(ROXAL_ENABLE_MEDIA_AUDIO OFF)
+endif()
 option(ROXAL_ENABLE_QT "Enable qt module (QML/QtQuick UI, requires Qt6)" OFF)
 option(ROXAL_ENABLE_INSPECT "Enable inspect module (AST and dataflow introspection)" ON)
 if(ROXAL_ENABLE_ALL)
@@ -278,14 +296,36 @@ endif()
 
 # PCRE2 for regex module
 if(ROXAL_ENABLE_REGEX)
-    pkg_check_modules(PCRE2 REQUIRED libpcre2-8)
+    # pkg-config finds the SYSTEM library, which is native code -- useless to a
+    # wasm link. Prefer an explicit prefix (deps/pcre2-wasm by convention, the
+    # same shape as antlr4-wasm-mt) whenever one is present, and fall back to
+    # pkg-config for ordinary native builds.
+    if(NOT DEFINED PCRE2_ROOT AND EXISTS "${ROXAL_DEPS_DIR}/pcre2-wasm/lib/libpcre2-8.a" AND EMSCRIPTEN)
+        set(PCRE2_ROOT "${ROXAL_DEPS_DIR}/pcre2-wasm")
+    endif()
+    if(PCRE2_ROOT)
+        set(PCRE2_ROOT "${PCRE2_ROOT}" CACHE PATH "PCRE2 install prefix")
+        set(PCRE2_INCLUDE_DIRS "${PCRE2_ROOT}/include")
+        # NO_CMAKE_FIND_ROOT_PATH: the Emscripten toolchain re-roots find_library
+        # into its sysroot, which would hide the prefix we just named.
+        find_library(PCRE2_LIBRARIES NAMES pcre2-8 PATHS "${PCRE2_ROOT}/lib"
+                     NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH REQUIRED)
+        message(STATUS "PCRE2: using ${PCRE2_ROOT}")
+    else()
+        pkg_check_modules(PCRE2 REQUIRED libpcre2-8)
+        message(STATUS "PCRE2: using system (pkg-config)")
+    endif()
     include_directories(${PCRE2_INCLUDE_DIRS})
 endif()
 
 # pugixml for XML builtins
 if(ROXAL_ENABLE_XML)
     if(NOT DEFINED pugixml_ROOT)
-      if(EXISTS "${ROXAL_DEPS_DIR}/pugixml/lib/cmake/pugixml")
+      # The wasm cross-build first: deps/pugixml is native code and would fail
+      # the link (or, worse, be found and produce nothing that runs).
+      if(EMSCRIPTEN AND EXISTS "${ROXAL_DEPS_DIR}/pugixml-wasm/lib/cmake/pugixml")
+        set(pugixml_ROOT "${ROXAL_DEPS_DIR}/pugixml-wasm")
+      elseif(NOT EMSCRIPTEN AND EXISTS "${ROXAL_DEPS_DIR}/pugixml/lib/cmake/pugixml")
         set(pugixml_ROOT "${ROXAL_DEPS_DIR}/pugixml")
       endif()
     endif()
@@ -343,8 +383,19 @@ endif()
 # vendored single header (compiler/miniaudio.h, like linenoise) whose device
 # backend libraries are dlopen'd at runtime.
 if(ROXAL_ENABLE_MEDIA)
-    find_package(PNG REQUIRED)
-    find_package(JPEG REQUIRED)
+    if(EMSCRIPTEN)
+        # Emscripten ships libpng and libjpeg as PORTS: one flag both supplies
+        # the headers at compile time and links the prebuilt archives, so there
+        # is nothing to vendor or cross-build. It must be on the COMPILE line
+        # too, which is why this is not just a link option.
+        add_compile_options(-sUSE_LIBPNG=1 -sUSE_LIBJPEG=1)
+        add_link_options(-sUSE_LIBPNG=1 -sUSE_LIBJPEG=1)
+        set(ROXAL_MEDIA_LIBRARIES)
+    else()
+        find_package(PNG REQUIRED)
+        find_package(JPEG REQUIRED)
+        set(ROXAL_MEDIA_LIBRARIES PNG::PNG JPEG::JPEG)
+    endif()
 endif()
 
 # Qt6 for the qt module (QML/QtQuick UI). Point find_package at a desktop Qt6
@@ -426,6 +477,7 @@ if(EMSCRIPTEN)
         compiler/web/ModuleDom.cpp
         compiler/web/RoxalStore.cpp
         compiler/web/ModuleWeb.cpp
+        compiler/web/UnicodeHost.cpp
     )
     if(ROXAL_ENABLE_AI_NN)
         list(APPEND COMPILER_SOURCES compiler/web/NnBridge.cpp)
@@ -471,8 +523,10 @@ if(ROXAL_ENABLE_AI_NN)
 endif()
 if(ROXAL_ENABLE_MEDIA)
     list(APPEND COMPILER_SOURCES compiler/ModuleMedia.cpp)
-    list(APPEND COMPILER_SOURCES compiler/ModuleMediaAudio.cpp)
-    list(APPEND COMPILER_SOURCES compiler/miniaudio_impl.cpp)
+    if(ROXAL_ENABLE_MEDIA_AUDIO)
+        list(APPEND COMPILER_SOURCES compiler/ModuleMediaAudio.cpp)
+        list(APPEND COMPILER_SOURCES compiler/miniaudio_impl.cpp)
+    endif()
 endif()
 # NOTE: the qt module is NOT compiled into roxalcore — it builds as a separate
 # dlopen'd plugin (libroxalqt.so, defined below) so the roxal binary carries no Qt
@@ -596,7 +650,7 @@ else()
 endif()
 set(_roxal_features_on "")
 set(_roxal_features_off "")
-foreach(_roxal_feature FILEIO GRPC DDS REGEX XML SOCKET FFI ONNX AI_NN MEDIA QT INSPECT)
+foreach(_roxal_feature FILEIO GRPC DDS REGEX XML SOCKET FFI ONNX AI_NN MEDIA MEDIA_AUDIO QT INSPECT)
     string(TOLOWER "${_roxal_feature}" _roxal_feature_label)
     if(ROXAL_ENABLE_${_roxal_feature})
         list(APPEND ROXAL_ABI_DEFINITIONS ROXAL_ENABLE_${_roxal_feature})
@@ -692,8 +746,7 @@ target_link_libraries(roxalcore
         $<$<BOOL:${ROXAL_ENABLE_REGEX}>:${PCRE2_LIBRARIES}>
         $<$<BOOL:${ROXAL_ENABLE_XML}>:pugixml::pugixml>
         $<$<BOOL:${ROXAL_ENABLE_ONNX}>:${ONNXRUNTIME_LIBRARY}>
-        $<$<BOOL:${ROXAL_ENABLE_MEDIA}>:PNG::PNG>
-        $<$<BOOL:${ROXAL_ENABLE_MEDIA}>:JPEG::JPEG>
+        ${ROXAL_MEDIA_LIBRARIES}
         # Qt is intentionally NOT linked here — the qt module is a dlopen'd plugin
         # (libroxalqt.so), so roxalcore and the roxal binary carry no Qt dependency.
 )
@@ -852,6 +905,7 @@ file(WRITE "${CMAKE_BINARY_DIR}/roxal_features.cmake"
     "set(ROXAL_HAS_FFI ${ROXAL_ENABLE_FFI})\n"
     "set(ROXAL_HAS_XML ${ROXAL_ENABLE_XML})\n"
     "set(ROXAL_HAS_MEDIA ${ROXAL_ENABLE_MEDIA})\n"
+    "set(ROXAL_HAS_MEDIA_AUDIO ${ROXAL_ENABLE_MEDIA_AUDIO})\n"
     "set(ROXAL_HAS_COMPUTE_SERVER ${ROXAL_COMPUTE_SERVER})\n"
     "set(ROXAL_HAS_GC_DEDICATED_THREAD ${ROXAL_GC_DEDICATED_THREAD})\n"
     # qt is a dlopen'd plugin (libroxalqt.so), not linked into libroxal.a, so a

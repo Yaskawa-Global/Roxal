@@ -1336,6 +1336,12 @@ VM::VM()
 #endif
             defineSysConst("platform", Value::stringVal(toUnicodeString(platform)));
 
+            // The same string `roxal --version` prints (semver + prerelease +
+            // git hash). A script that adapts to the VM it is running on can
+            // already ask `platform` and `features`; this answers "which
+            // build", which is what a bug report needs.
+            defineSysConst("version", Value::stringVal(toUnicodeString(versionString())));
+
             Value featuresVal = Value::listVal();
             for (const auto& f : featureStrings())
                 asList(featuresVal)->append(Value::stringVal(toUnicodeString(f)));

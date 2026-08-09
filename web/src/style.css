@@ -278,3 +278,12 @@ h2 { font-size: 13px; color: #88c0d0; }
 .mnist-bar-fill { width: 100%; background: #3b4252; transition: height .12s linear; }
 .mnist-bar.win { color: #88c0d0; }
 .mnist-bar.win .mnist-bar-fill { background: #88c0d0; }
+
+/* --- build info ------------------------------------------------------------ */
+/* The compiled feature set, published by the bootstrap script. Small and quiet:
+   it is provenance, not navigation. */
+.build-info { margin: -.4rem 0 .7rem; display: flex; flex-wrap: wrap;
+              align-items: center; gap: .3rem; font-size: 11px; }
+.build-label { color: #616e88; }
+.feature { color: #a3d9a5; background: #1c1f26; border: 1px solid #2b303b;
+           border-radius: 3px; padding: 0 .35rem; }

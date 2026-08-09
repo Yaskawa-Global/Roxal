@@ -14,12 +14,26 @@ const N = 28;              // the model's input is 28x28
 const CELL = 11;           // on-screen pixels per model pixel
 const SIZE = N * CELL;
 
-// A soft round brush, because MNIST was drawn with a pen and the model expects
-// strokes with edges rather than single hard cells. Values are ink amounts.
-const BRUSH = [
-    [0, 0, 1.0], [1, 0, 0.75], [-1, 0, 0.75], [0, 1, 0.75], [0, -1, 0.75],
-    [1, 1, 0.4], [1, -1, 0.4], [-1, 1, 0.4], [-1, -1, 0.4],
-];
+// Stroke geometry, in model pixels. MNIST digits were written with a pen and
+// then anti-aliased down, so their strokes are a thin solid core with a soft
+// edge -- NOT the ~3px slab a fixed 3x3 brush produces, which is far enough
+// from the training distribution to cost accuracy.
+//
+// Ink for a cell is a function of its distance from the stroke's centre line:
+// solid within CORE, fading to nothing CORE+FEATHER away. Tune CORE for
+// thickness and FEATHER for how soft the edge is.
+const CORE = 0.30;         // cells within this distance are fully inked
+const FEATHER = 0.70;      // ink falls to zero this much further out
+
+// Distance from a point to a line segment, all in cell units.
+function distToSegment(px, py, x0, y0, x1, y1) {
+    const dx = x1 - x0, dy = y1 - y0;
+    const lenSq = dx * dx + dy * dy;
+    let t = lenSq > 0 ? ((px - x0) * dx + (py - y0) * dy) / lenSq : 0;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const cx = x0 + t * dx - px, cy = y0 + t * dy - py;
+    return Math.hypot(cx, cy);
+}
 
 export default function MnistPanel({ rox }) {
     const digit = useRoxal(rox, 'digit');
@@ -27,6 +41,7 @@ export default function MnistPanel({ rox }) {
     const canvasRef = useRef(null);
     const pixels = useRef(new Float32Array(N * N));
     const drawing = useRef(false);
+    const last = useRef(null);        // previous pointer position, in cell units
     const dirty = useRef(false);
     const busy = useRef(false);
     const [hasInk, setHasInk] = useState(false);
@@ -67,21 +82,39 @@ export default function MnistPanel({ rox }) {
         }
     }
 
+    // Ink the segment from the previous pointer position to this one. Drawing
+    // dot-by-dot instead leaves gaps whenever the mouse outruns the event rate
+    // -- invisible with a fat brush, obvious with a thin one.
     function ink(e) {
         const canvas = canvasRef.current;
         const rect = canvas.getBoundingClientRect();
-        const cx = Math.floor((e.clientX - rect.left) / rect.width * N);
-        const cy = Math.floor((e.clientY - rect.top) / rect.height * N);
+        const x1 = (e.clientX - rect.left) / rect.width * N;      // fractional cells
+        const y1 = (e.clientY - rect.top) / rect.height * N;
+        const prev = last.current;
+        const x0 = prev ? prev.x : x1, y0 = prev ? prev.y : y1;
+        last.current = { x: x1, y: y1 };
+
+        const reach = CORE + FEATHER;
+        const lo = (v, hi) => Math.max(0, Math.min(hi, v));
+        const minX = Math.floor(lo(Math.min(x0, x1) - reach, N - 1));
+        const maxX = Math.floor(lo(Math.max(x0, x1) + reach, N - 1));
+        const minY = Math.floor(lo(Math.min(y0, y1) - reach, N - 1));
+        const maxY = Math.floor(lo(Math.max(y0, y1) + reach, N - 1));
+
         const ctx = canvas.getContext('2d');
         let changed = false;
-        for (const [dx, dy, amount] of BRUSH) {
-            const x = cx + dx, y = cy + dy;
-            if (x < 0 || x >= N || y < 0 || y >= N) continue;
-            const i = y * N + x;
-            if (pixels.current[i] >= amount) continue;
-            pixels.current[i] = amount;
-            paintCell(ctx, i);
-            changed = true;
+        for (let cy = minY; cy <= maxY; cy++) {
+            for (let cx = minX; cx <= maxX; cx++) {
+                // Cell centres, so a stroke down a column of centres is solid.
+                const d = distToSegment(cx + 0.5, cy + 0.5, x0, y0, x1, y1);
+                if (d >= reach) continue;
+                const amount = d <= CORE ? 1 : 1 - (d - CORE) / FEATHER;
+                const i = cy * N + cx;
+                if (pixels.current[i] >= amount) continue;
+                pixels.current[i] = amount;
+                paintCell(ctx, i);
+                changed = true;
+            }
         }
         if (!changed) return;
         setHasInk(true);
@@ -94,6 +127,7 @@ export default function MnistPanel({ rox }) {
         repaintAll();
         setHasInk(false);
         dirty.current = false;
+        last.current = null;
         store?.call('reset');
     }
 
@@ -113,11 +147,12 @@ export default function MnistPanel({ rox }) {
                             onPointerDown={e => {
                                 e.currentTarget.setPointerCapture(e.pointerId);
                                 drawing.current = true;
+                                last.current = null;   // a new stroke starts fresh
                                 ink(e);
                             }}
                             onPointerMove={e => { if (drawing.current) ink(e); }}
-                            onPointerUp={() => { drawing.current = false; }}
-                            onPointerLeave={() => { drawing.current = false; }} />
+                            onPointerUp={() => { drawing.current = false; last.current = null; }}
+                            onPointerLeave={() => { drawing.current = false; last.current = null; }} />
                     <div className="mnist-actions">
                         <button onClick={clear}>clear</button>
                         <span className="mnist-hint">

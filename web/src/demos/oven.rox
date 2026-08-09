@@ -1,11 +1,4 @@
-// The reflow-oven example, as a string so it ships with the bundle and can
-// seed the IDE's /data on a first visit.
-//
-// Everything here is a SIGNAL NETWORK -- there is no update loop. Each line
-// builds a node in a dataflow graph that the engine evaluates on 20 Hz
-// boundaries, which is what Roxal is actually for. Nothing below knows React
-// exists.
-export default `import web
+import web
 import math
 
 // A heater and the thing it is heating, expressed as a SIGNAL NETWORK.
@@ -71,4 +64,3 @@ when heating becomes false:
 web.expose("oven", oven)
 print("network built; engine evaluating at 20 Hz")
 web.serve()
-`;

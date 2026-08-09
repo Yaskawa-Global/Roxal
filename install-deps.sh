@@ -26,7 +26,7 @@ ALL_TARGETS=(eigen antlr4 cyclonedds grpc media pugixml onnxruntime opencv libre
 # WebAssembly cross-build toolchain. Deliberately NOT part of 'all': these are a
 # cross toolchain rather than native libraries, and emsdk alone is ~1GB, so
 # pulling it into "build every native dep" would be a surprise. Use 'wasm'.
-WASM_TARGETS=(emsdk antlr4-wasm)
+WASM_TARGETS=(emsdk antlr4-wasm pcre2-wasm pugixml-wasm)
 KNOWN_TARGETS=("${ALL_TARGETS[@]}" "${WASM_TARGETS[@]}")
 
 # emsdk installs OUTSIDE deps/ -- it is a toolchain, not a library, and this is
@@ -46,6 +46,8 @@ declare -A TARGET_DESC=(
     [librealsense]="librealsense 2.58.3 (modules/realsense FFI binding; builds librsshim.so)"
     [emsdk]="Emscripten SDK (WebAssembly toolchain; installs to \$HOME/dev/emsdk)"
     [antlr4-wasm]="ANTLR4 4.13.1 C++ runtime cross-built for wasm (needs emsdk)"
+    [pcre2-wasm]="PCRE2 10.44 cross-built for wasm (regex module; needs emsdk)"
+    [pugixml-wasm]="pugixml 1.15 cross-built for wasm (xml builtins; needs emsdk)"
 )
 
 print_help() {
@@ -71,6 +73,10 @@ EOF
             [ -f "$EMSDK_DIR/emsdk_env.sh" ] && status="installed" || status="missing"
         elif [ "$t" = antlr4-wasm ]; then
             [ -d "$DEPS_DIR/antlr4-wasm-mt" ] && status="installed" || status="missing"
+        elif [ "$t" = pcre2-wasm ]; then
+            [ -d "$DEPS_DIR/pcre2-wasm" ] && status="installed" || status="missing"
+        elif [ "$t" = pugixml-wasm ]; then
+            [ -d "$DEPS_DIR/pugixml-wasm" ] && status="installed" || status="missing"
         elif [ -d "$DEPS_DIR/$t" ]; then
             status="installed"
         else
@@ -240,6 +246,54 @@ if should_build antlr4-wasm; then
     cmake --build antlr4/build-wasm-mt -j"$JOBS"
     cmake --install antlr4/build-wasm-mt
     echo "  -> installed to $DEPS_DIR/antlr4-wasm-mt"
+fi
+
+# ---------- PCRE2 10.44, cross-built for wasm ----------
+# Its own prefix, like antlr4-wasm-mt: a native libpcre2 cannot link into a wasm
+# build, and the -fwasm-exceptions/-pthread pair must match libroxal.a.
+# Static only, 8-bit code units, no JIT (wasm cannot generate machine code) and
+# no pcre2grep/pcre2test -- the module uses the library API and nothing else.
+if should_build pcre2-wasm; then
+    echo "=== Building PCRE2 10.44 for wasm ==="
+    [ -f "$EMSDK_DIR/emsdk_env.sh" ] || {
+        echo "ERROR: emsdk not found at $EMSDK_DIR -- run '$(basename "$0") emsdk' first" >&2; exit 1; }
+    set +u; source "$EMSDK_DIR/emsdk_env.sh" >/dev/null 2>&1; set -u
+
+    cd "$BUILD_TMP"
+    [ -d pcre2 ] || git clone --depth 1 --branch pcre2-10.44 https://github.com/PCRE2Project/pcre2.git
+    emcmake cmake -B pcre2/build-wasm -S pcre2 \
+        -DCMAKE_INSTALL_PREFIX="$DEPS_DIR/pcre2-wasm" \
+        -DCMAKE_INSTALL_LIBDIR=lib \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DPCRE2_BUILD_PCRE2_8=ON \
+        -DPCRE2_SUPPORT_JIT=OFF \
+        -DPCRE2_BUILD_PCRE2GREP=OFF \
+        -DPCRE2_BUILD_TESTS=OFF \
+        -DCMAKE_C_FLAGS="-fwasm-exceptions -pthread"
+    cmake --build pcre2/build-wasm -j"$JOBS"
+    cmake --install pcre2/build-wasm
+    echo "  -> installed to $DEPS_DIR/pcre2-wasm"
+fi
+
+# ---------- pugixml 1.15, cross-built for wasm ----------
+if should_build pugixml-wasm; then
+    echo "=== Building pugixml 1.15 for wasm ==="
+    [ -f "$EMSDK_DIR/emsdk_env.sh" ] || {
+        echo "ERROR: emsdk not found at $EMSDK_DIR -- run '$(basename "$0") emsdk' first" >&2; exit 1; }
+    set +u; source "$EMSDK_DIR/emsdk_env.sh" >/dev/null 2>&1; set -u
+
+    cd "$BUILD_TMP"
+    [ -d pugixml ] || git clone --depth 1 --branch v1.15 https://github.com/zeux/pugixml.git
+    emcmake cmake -B pugixml/build-wasm -S pugixml \
+        -DCMAKE_INSTALL_PREFIX="$DEPS_DIR/pugixml-wasm" \
+        -DCMAKE_INSTALL_LIBDIR=lib \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DCMAKE_CXX_FLAGS="-fwasm-exceptions -pthread"
+    cmake --build pugixml/build-wasm -j"$JOBS"
+    cmake --install pugixml/build-wasm
+    echo "  -> installed to $DEPS_DIR/pugixml-wasm"
 fi
 
 # ---------- CycloneDDS (C library) + CycloneDDS-CXX ----------

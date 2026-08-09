@@ -7,9 +7,13 @@ import MnistPanel from './MnistPanel.jsx';
 import { lazy, Suspense } from 'react';
 const Tanks3D = lazy(() => import('./Tanks3D.jsx'));
 import { useRoxal, useRoxalStore } from './roxal-react.js';
-import OVEN_SRC from './oven.rox.js';
-import TANKS_SRC from './tanks.rox.js';
-import MNIST_SRC from './mnist.rox.js';
+// The demos are PLAIN .rox files -- editable in any editor, with Roxal syntax
+// rather than a JavaScript string. Vite's ?raw suffix hands us their text; the
+// IDE seeds them into /data on a first visit, after which they are ordinary
+// files the user owns.
+import TANKS_SRC from './demos/tanks.rox?raw';
+import OVEN_SRC from './demos/oven.rox?raw';
+import MNIST_SRC from './demos/mnist.rox?raw';
 
 // The examples the IDE seeds on a first visit. All are ordinary files
 // afterwards: edit, save, re-run, or open another from the File menu.
@@ -31,7 +35,20 @@ const pickPanel = rox =>
 // "workspace" store (a Roxal actor in the web module using fileio itself), so
 // File > Open here exercises the same API user scripts get.
 const DATA_DIR = '/data';
-const BOOTSTRAP = 'import web\nweb.serve()\n';
+// The bootstrap also publishes what this build of the VM can do. `features` is
+// a sys constant (sys.* is implicit), so the header reports the real compiled
+// feature set rather than a list maintained by hand over here -- which would
+// go stale the first time a module is enabled or dropped.
+const BOOTSTRAP = [
+    'import web',
+    'type Build object:',
+    '  var platform :string = platform',
+    '  var version :string = version',
+    '  var features = features',
+    'web.expose("build", Build())',
+    'web.serve()',
+    '',
+].join('\n');
 const LAST_FILE_KEY = 'roxal-ide-last-file';
 const SEED_STAMP_KEY = 'roxal-ide-seeded';
 
@@ -67,6 +84,26 @@ const TANKS_VIEW_KEY = 'roxal-ide-tanks-view';
 // hooks -- useRoxal for state, useRoxalStore for actions. No effects to wire, no
 // polling, no message plumbing: the store is an external store and React already
 // knows how to consume one.
+// What this build of the VM actually has compiled in, straight from the sys
+// constant. The wasm build is a different feature set from the native one --
+// no sockets or FFI, but regex, xml, media images and ai.nn -- and that is
+// worth stating on the page rather than leaving a visitor to guess why an
+// import failed.
+function BuildInfo({ rox }) {
+    const build = useRoxal(rox, 'build');
+    const features = Array.isArray(build.features) ? build.features : null;
+    if (!features) return null;
+    return (
+        <p className="build-info">
+            <span className="build-label">this build:</span>
+            {features.map(f => <code key={f} className="feature">{f}</code>)}
+            <span className="build-label">
+                on {build.platform} — roxal {build.version}
+            </span>
+        </p>
+    );
+}
+
 function OvenPanel({ rox }) {
     const oven = useRoxal(rox, 'oven');
     const store = useRoxalStore(rox, 'oven');
@@ -578,6 +615,7 @@ export default function App() {
                     own <code>fileio</code>; the console evaluates through the compiler. React
                     renders it all through <code>useSyncExternalStore</code> and knows nothing else.
                 </p>
+                {rox && <BuildInfo rox={rox} />}
             </header>
 
             <div className={'workbench' + (sourceOpen ? '' : ' source-collapsed')}>

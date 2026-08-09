@@ -380,8 +380,22 @@ void ModuleMedia::registerBuiltins(VM& vm)
     linkMethod("Image", "normalize",       [this](VM&, ArgsView a) { return image_normalize_builtin(a); });
     linkMethod("Image", "to_tensor",       [this](VM&, ArgsView a) { return image_to_tensor_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
 
+#ifdef ROXAL_ENABLE_MEDIA_AUDIO
     registerAudioBuiltins();
+#else
+    // Images without audio (the wasm build). audio_available() still answers,
+    // because a script that asks "can I play sound here?" deserves `false`
+    // rather than the raise an unlinked builtin would give it -- the whole
+    // point of asking is to take the other branch.
+    link("audio_available", [](VM&, ArgsView) { return Value::falseVal(); });
+#endif
 }
+
+#ifndef ROXAL_ENABLE_MEDIA_AUDIO
+// The audio half owns this hook (it shuts the engine down); with no engine
+// there is nothing to unload.
+void ModuleMedia::onModuleUnloading(VM&) {}
+#endif
 
 // Helper: replace the receiver's data tensor in-place
 static void setImageData(ArgsView args, Value tensorVal)

@@ -92,6 +92,13 @@ enum class Op : uint8_t {
     // 1=run [u32 session][u32 n]{[Str name][Str dtype][List shape][Bytes data]},
     // 2=close [u32 session] (no reply).
     NnRequest    = 14,  // [u32 callId][u8 kind][...]                  -> (deferred)
+
+    // --- Unicode case mapping ---
+    // Borrow the host's Unicode tables for upper/lower/title case (see
+    // web/UnicodeHost.cpp). Synchronous by nature: it is the return value of
+    // a string operation, so there is nothing useful to do until it lands.
+    // mode: 0=lower 1=upper 2=title.
+    UnicodeCase  = 15,  // [u8 mode][Str text]                         -> Str
 };
 
 // Inbound work posted by the main thread, drained on the VM thread.

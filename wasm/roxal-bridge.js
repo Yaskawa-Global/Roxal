@@ -23,7 +23,7 @@
           OP_SETINDEX = 5, OP_NEW = 6, OP_RELEASE = 7, OP_LISTEN = 8,
           OP_UNLISTEN = 9, OP_TYPEOF = 10,
           OP_STORE_DEFINE = 11, OP_STORE_PATCH = 12, OP_STORE_RESOLVE = 13,
-          OP_NN_REQUEST = 14;
+          OP_NN_REQUEST = 14, OP_UNICODE_CASE = 15;
 
     // Inbound kinds (must match roxal::web::Inbound).
     const IN_CALLBACK = 0, IN_STORE_CALL = 1, IN_STORE_WRITE = 2, IN_NN_RESULT = 3;
@@ -331,6 +331,32 @@
         };
     }
 
+    // ------------------------------------------------------------ unicode
+    // Title case, matching ICU's toTitle: each WORD's first letter is
+    // upper-cased and the rest lower-cased. Word boundaries come from
+    // Intl.Segmenter, which implements the same UAX #29 rules ICU does -- a
+    // regex on letters would disagree with the native build on exactly the
+    // interesting cases ("multi-word" is two words, "don't" is one).
+    const wordSegmenter = typeof Intl !== 'undefined' && Intl.Segmenter
+        ? new Intl.Segmenter(undefined, { granularity: 'word' }) : null;
+
+    function titleCase(text) {
+        if (!wordSegmenter) {
+            // No Intl.Segmenter (very old engine): fall back to ASCII-ish word
+            // splitting rather than refusing -- still better than the native
+            // build's alternative here, which is not running at all.
+            return text.toLowerCase().replace(/(^|\P{L})(\p{L})/gu,
+                                              (_, sep, ch) => sep + ch.toUpperCase());
+        }
+        let out = '';
+        for (const { segment, isWordLike } of wordSegmenter.segment(text)) {
+            out += isWordLike
+                ? segment[0].toUpperCase() + segment.slice(1).toLowerCase()
+                : segment;
+        }
+        return out;
+    }
+
     // ------------------------------------------------------------- NN provider
     // ai.nn delegates inference to Module.roxalNN, registered by the host:
     //   create(modelBytes:Uint8Array, device) -> Promise<{id, device, inputs, outputs}>
@@ -520,6 +546,14 @@
                     if (p) Promise.resolve().then(() => p.close(session)).catch(() => {});
                 }
                 return false;                           // reply arrives inbound
+            }
+            case OP_UNICODE_CASE: {
+                const mode = r.u8();
+                const text = (r.u8(), r.str());
+                w.str(TAG_STR, mode === 2 ? titleCase(text)
+                             : mode === 1 ? text.toUpperCase()
+                                          : text.toLowerCase());
+                return true;
             }
             case OP_TYPEOF: {
                 const v = deref(r.u32());

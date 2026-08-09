@@ -102,11 +102,23 @@ if (process.argv[2] === '--one') {
                 close: async (id) => { if (nnPromise) (await nnPromise).close(id); },
             };
         }
-        // Name WITH .rox: diagnostics embed it and .err regexes match on it.
+        // typededucer_* are front-end tests: natively they run `roxal --ast
+        // file`, which never starts a VM. The host exports the same path.
+        if (name.startsWith('typededucer_')) {
+            m.ccall('roxal_print_ast', 'number', ['string', 'string'], [src, name]);
+            process.send({ out, err });
+            process.exit(0);
+        }
+        // The SAME relative path native uses (runtests.py runs from build/ with
+        // ../tests/x.rox). Diagnostics and stack traces embed this string, and
+        // sibling imports resolve relative to it -- so matching native here is
+        // what makes ../tests fixtures and stacktrace expectations line up
+        // instead of needing per-host expected output.
+        const scriptPath = '../tests/' + name + '.rox';
         // Submitting never blocks; poll for completion rather than waiting on the
         // VM thread (this thread must stay free to service its proxied FS calls).
         try {
-            m.ccall('roxal_submit_source', null, ['string', 'string'], [src, name + '.rox']);
+            m.ccall('roxal_submit_source', null, ['string', 'string'], [src, scriptPath]);
             const deadline = Date.now() + 120000;
             while (m.ccall('roxal_completed_count', 'number', [], []) < 1) {
                 if (Date.now() > deadline) { err += 'TIMEOUT\n'; break; }
@@ -138,7 +150,10 @@ const py = fs.readFileSync(path.join(ROXAL, 'runtests.py'), 'utf8');
 const known = new Set(parseList(py, 'failing_tests'));
 const listed = new Set(parseList(py, 'tests').concat(parseList(py, 'test_list'))
     .concat(parseList(py, 'inspect_tests'))
-    .concat(parseList(py, 'nn_tests')));
+    .concat(parseList(py, 'nn_tests'))
+    .concat(parseList(py, 'regex_tests'))
+    .concat(parseList(py, 'xml_tests'))
+    .concat(parseList(py, 'media_tests')));
 
 // Mirror runtests.py's feature gating. Natively it reads tags from
 // `roxal --version`; the wasm host has no CLI, so take the same information
@@ -152,7 +167,6 @@ const BUILD = process.env.BUILD ||
         : path.join(ROXAL, 'build-wasm-mt'));
 const featSrc = fs.readFileSync(path.join(BUILD, 'roxal_features.cmake'), 'utf8');
 const has = f => new RegExp('set\\(ROXAL_HAS_' + f + ' ON\\)', 'i').test(featSrc);
-const usesIcu = /ROXAL_UNICODE_BACKEND_ICU/.test(featSrc);
 
 const gated = [];
 if (!has('FILEIO')) gated.push(...parseList(py, 'fileio_tests'));
@@ -164,11 +178,29 @@ if (!has('DDS'))    gated.push(...parseList(py, 'dds_tests'));
 if (!has('REGEX'))  gated.push(...parseList(py, 'regex_tests'));
 if (!has('XML'))    gated.push(...parseList(py, 'xml_tests'));
 if (!has('MEDIA'))  gated.push(...parseList(py, 'media_tests'));
+// Images port to wasm (libpng/libjpeg are emscripten ports); audio does not --
+// miniaudio drives real devices. Gate only the audio half.
+else if (!has('MEDIA_AUDIO'))
+    gated.push(...parseList(py, 'media_tests').filter(n => n.startsWith('media_audio')));
 if (!has('AI_NN'))  gated.push(...parseList(py, 'nn_tests'));
 if (!has('INSPECT')) gated.push(...parseList(py, 'inspect_tests'));
-// reads sibling test sources via host-relative ../tests/ paths that don't
-// exist in the wasm FS — covered natively; not a wasm defect
-gated.push('inspect_roundtrip_corpus');
+// Tests whose subject is the HOST, not the language: nothing in the VM is
+// wrong when these fail here, so they are excluded with a stated reason
+// rather than left to look like defects. Keep this honest -- if a reason
+// stops being true, delete the entry instead of letting it hide a bug.
+const UNSUPPORTED = {
+    inspect_roundtrip_corpus:
+        'reads sibling sources through host-relative ../tests paths it builds itself',
+    repl_run:
+        'drives the CLI REPL over stdin; the wasm host has no CLI',
+    sys_paths:
+        'prints the module search paths, which are /stdlib here by construction',
+    gc_scanner_selftest:
+        'asserts the CONSERVATIVE stack scanner finds raw/tagged references; wasm '
+        + 'keeps locals outside scannable linear memory, which is why the runner '
+        + 'sets ROXAL_GC_CONSERVATIVE=0',
+};
+gated.push(...Object.keys(UNSUPPORTED));
 // KNOWN WASM DEFECT (not inspect-specific): a std::runtime_error thrown from
 // a module builtin in the same native call that ran a whole-file
 // ASTGenerator::ast() with syntax errors traps ("RuntimeError: unreachable")
@@ -177,7 +209,11 @@ gated.push('inspect_roundtrip_corpus');
 // same failed parse followed by a later `raise`, and the same throw without
 // a prior parse. Repro: submit "import inspect\ninspect.parse('func broken(:\n')".
 gated.push('inspect_parse_err', 'inspect_compile_err');
-if (!usesIcu)       gated.push('string_case', 'string_interp_suffix');
+// NOT gated on the unicode backend any more: the wasm host installs a case
+// mapping hook backed by the browser's own Unicode tables (see
+// compiler/web/UnicodeHost.cpp), so upper/lower/title work here with the same
+// results ICU gives natively. If that hook ever fails to install, these two
+// tests are how you find out.
 const skipped = new Set(gated);
 
 const names = fs.readdirSync(TESTS)
@@ -229,6 +265,10 @@ function runChild(name) {
 
     console.log(`\n${pass} passed, ${fail} failed, of ${selected.length}` +
                 `  (excluded ${known.size} known-failing, ${skipped.size} feature-gated)`);
+    // Name the host-specific exclusions every run: a silent skip list is how a
+    // real regression ends up parked next to the legitimate ones.
+    for (const [name, why] of Object.entries(UNSUPPORTED))
+        console.log(`  skipped ${name}: ${why}`);
     // Every failure, not the first N. A cap here silently hid two failures behind
     // a count that said 17 -- which makes "the failures are all known ones"
     // unverifiable from the output, exactly when that claim matters most.
