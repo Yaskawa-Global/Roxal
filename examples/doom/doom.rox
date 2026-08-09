@@ -406,6 +406,25 @@ func is_held(code:int) -> bool:
 var MOVE_SPEED = 250.0
 var TURN_SPEED = 2.5
 
+# --- deterministic capture: `doom.rox --capture frames.raw` ---
+# Normally the sim is paced by the wall clock, so a slow frame advances more
+# game time and a screen recording shows the stutter. In capture mode every
+# frame advances exactly one 35 Hz tic instead, and the rendered frame is
+# appended to a raw rgb24 file. Real time then only decides how long the
+# session takes, not what the video looks like: encoded at 35 fps the result
+# is evenly paced whatever the renderer managed. The trade is that play runs
+# in slow motion while capturing (and sound, which is real-time, won't match).
+var CAP_PATH = ''
+var CAP_FPS = 35.0
+for i in range(..<len(args)):
+  if args[i] == '--capture' and i + 1 < len(args):
+    CAP_PATH = args[i + 1]
+var capf = nil
+var cap_n = 0
+if CAP_PATH != '':
+  capf = fileio.open(CAP_PATH, write=true, format='binary')
+  print('capture: 320x200 rgb24 @ ' + string(int(CAP_FPS)) + ' fps -> ' + CAP_PATH)
+
 var last = Time.steady_now()
 var tic_acc = 0.0
 var acc_ms = 0.0
@@ -418,6 +437,8 @@ qt.every(16, proc():
   last = now
   if dt > 0.25:
     dt = 0.25
+  if capf != nil:
+    dt = 1.0 / CAP_FPS      # one tic per frame: sim time no longer tracks wall time
 
   if not player_dead():
     var fwd = 0.0
@@ -454,7 +475,11 @@ qt.every(16, proc():
   render_view(px, py, pang, vz)
   draw_hud(player_health(), player_ammo(), muzzle_flash())
   set_palette(flash_palette())   # red damage tint (vanilla palette FX)
-  fb.present(frame_rgb())
+  var rgb = frame_rgb()
+  fb.present(rgb)
+  if capf != nil:
+    fileio.write(capf, rgb.to_bytes())
+    cap_n = cap_n + 1
   acc_ms = acc_ms + Time.steady_now().since(t0).total_millis()
   acc_n = acc_n + 1
   if acc_n == 30:
@@ -466,4 +491,7 @@ qt.every(16, proc():
 )
 
 engine.run()
+if capf != nil:
+  fileio.close(capf)
+  print('capture: ' + string(cap_n) + ' frames (' + string(cap_n / CAP_FPS) + ' s of video) -> ' + CAP_PATH)
 print('doom closed — bye')
