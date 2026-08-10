@@ -77,6 +77,8 @@ FuncNode::FuncNode(const std::string& name,
                 if (funcType.returnTypes.size() == 1)
                     m_outputNames = {DataflowEngine::uniqueFuncName("result")};
                 else {
+                    // multi-return: one output port per declared return type
+                    m_outputNames.clear();
                     for (size_t i = 0; i < funcType.returnTypes.size(); ++i)
                         m_outputNames.push_back("result" + std::to_string(i));
                 }

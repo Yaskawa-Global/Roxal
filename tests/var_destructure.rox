@@ -1,0 +1,46 @@
+// 'var [a, b] = <list>' DECLARES each target, taking one element apiece.
+// The plain '[a, b] = ...' form assigns to targets that already exist (and
+// otherwise creates module variables, like any assignment to an undeclared
+// name), so this is the declaring counterpart, as 'var x' is to 'x = ...'.
+
+func pair() -> [int, real]:
+  return [1, 2.5]
+
+// module scope
+var [a, b] = pair()
+print("{a} {b}")
+print("{typeof(a)} {typeof(b)}")
+
+// inside a function the targets are LOCALS, not module variables
+func useLocals() -> int:
+  var [x, y] = pair()
+  return x + int(y)
+print(useLocals())
+print(useLocals())   // fresh locals each call
+
+// which is what lets it work inside a dataflow function node
+// (a node may not write module variables)
+func nodeFn(v :int) -> int:
+  var [p, q] = pair()
+  return v + p + int(q)
+var c = clock(10)
+var out = nodeFn(c)
+c.tick()
+wait(us=250000)
+print(int(out))
+
+// targets may carry their own types, and the element is converted
+var [m :real, n :int] = pair()
+print("{typeof(m)} {typeof(n)}")
+
+// any list works, not just a multi-return call
+var [j, k] = [7, 8]
+print("{j} {k}")
+
+// nested scopes shadow as usual
+var [s, t] = [1, 2]
+func shadow() -> string:
+  var [s, t] = ["inner", "vals"]
+  return s + " " + t
+print(shadow())
+print("{s} {t}")

@@ -1331,12 +1331,45 @@ std::any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
 {
     visitStart();
 
-    ustring ident { identifierFromTerminal(context->IDENTIFIER()) };
-
     ptr<VarDecl> vardecl = make_ptr<VarDecl>();
     setSourceInfo(vardecl,context);
-    vardecl->name = ident;
     vardecl->isConst = (context->CONST() != nullptr);
+
+    // Declaring destructure: 'var [a, b :real] = expr'
+    if (!context->var_target().empty()) {
+        for (auto* targetCtx : context->var_target()) {
+            VarDecl::Target target;
+            target.name = identifierFromTerminal(targetCtx->IDENTIFIER());
+            if (targetCtx->const_qualifier()) {
+                if (targetCtx->const_qualifier()->CONST())
+                    target.isTypeConst = true;
+                else if (targetCtx->const_qualifier()->MUTABLE())
+                    target.isTypeMutable = true;
+            }
+            if (targetCtx->builtin_type())
+                target.varType = anyas<BuiltinType>(visitBuiltin_type(targetCtx->builtin_type()));
+            else if (targetCtx->type_name()) {
+                TypeName components;
+                for (auto* ident : targetCtx->type_name()->IDENTIFIER())
+                    components.push_back(identifierFromTerminal(ident));
+                target.varType = components;
+            }
+            vardecl->targets.push_back(target);
+        }
+
+        for (size_t i = 0; i < context->annotation().size(); i++) {
+            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(context->annotation().at(i)));
+            ptr<Annotation> annotation = make_ptr<Annotation>();
+            annotation->name = annotInfo->accessed;
+            annotation->args = *annotInfo->args;
+            vardecl->annotations.push_back(annotation);
+        }
+
+        vardecl->initializer = as<Expression>(visitExpression(context->expression()));
+        return typeValue(vardecl);
+    }
+
+    vardecl->name = identifierFromTerminal(context->IDENTIFIER());
 
     if (context->annotation().size() > 0) {
 
@@ -3143,6 +3176,13 @@ std::any ASTGenerator::visitBuiltin_type(RoxalParser::Builtin_typeContext *conte
 std::any ASTGenerator::visitConst_qualifier(RoxalParser::Const_qualifierContext *context)
 {
     // Handled directly in visitParameter / visitVar_decl / visitReturn_type
+    return {};
+}
+
+
+std::any ASTGenerator::visitVar_target(RoxalParser::Var_targetContext *context)
+{
+    // Handled directly in visitVar_decl
     return {};
 }
 

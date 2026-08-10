@@ -1,0 +1,9 @@
+// A call cannot both pass a signal through a ':signal' param (wiring, runs
+// once) and lift on account of another signal arg (per-tick evaluation).
+func mixer(x :signal, k :real) -> real:
+  return k
+
+var c = clock(10)
+a = c > 1
+b = c > 2
+mixer(a, b)

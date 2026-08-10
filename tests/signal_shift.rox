@@ -1,0 +1,32 @@
+// Roxal has no '<<' / '>>' tokens, so lshift/rshift ARE the shift operators.
+// Like every other bitwise operator (& | ^ ~) they lift over signals rather
+// than silently sampling, and the bare and 'sys.'-qualified spellings are the
+// same function.
+import sys
+
+var c = clock(10)
+var shifted = lshift(c, 2)
+var halved = rshift(c, 1)
+print(typeof(shifted))
+print(typeof(halved))
+print(typeof(sys.lshift(c, 2)))
+
+// plain values are unaffected
+print(lshift(3, 2))
+print(rshift(12, 2))
+print(sys.rshift(12, 2))
+
+var i = 0
+while i < 3:
+  c.tick()
+  wait(us=150000)
+  print("c={int(c)} << 2 = {int(shifted)}   >> 1 = {int(halved)}")
+  i = i + 1
+
+// A proc yields no value, so it never lifts: its signal arguments are sampled
+// and the proc runs now (a node with no output would carry nothing).
+proc show(v :int):
+  print("shown {v}")
+show(c)
+print(c)
+sys.print(c)

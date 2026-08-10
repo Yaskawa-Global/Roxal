@@ -5,10 +5,15 @@ func multiReturn() -> [real, int]:
     return [3.14, 42]
 
 func noReturn():
-    pass
+    return nil
 
 proc noReturnProc():
-    pass
+    print('proc ran')
 
 # Test the syntax
 print(simpleReturn())
+[r, i] = multiReturn()
+print(r)
+print(i)
+print(noReturn())
+noReturnProc()

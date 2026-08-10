@@ -665,6 +665,95 @@ this signature isn't satisfied).
   refactor could route via a fresh BoundMethod per call.
 
 
+## Multiple return values
+
+`func f(...) -> [T0, .., TN-1]` declares N return values, as distinct from
+`-> list` (one list). The declaration is the only disambiguator, so the same
+function means the same thing when called normally and when wired as a
+dataflow node (see *Signals and Data-Flow*).
+
+At runtime the values travel as an ordinary list, so no tuple type exists and
+the existing destructuring assignment unpacks them unchanged.
+
+`RoxalCompiler::emitReturnTypeConversion()` emits the conversion at both return
+sites (the `ReturnStatement` visitor and the expression-body lambda tail). For
+a single declared type it emits the usual `ToType`/`ToTypeSpec`. For N > 1 it
+emits `CheckReturnList N` (new opcode, 1-byte count: peeks the top and requires
+a list of exactly N) then, per element, `Dup; ConstInt i; Index 1; ToType(Ti);
+Swap` — the `Swap` keeps the source list on top while converted elements
+accumulate beneath it — and finishes with `Pop` + `NewList N`.
+
+The result is *rebuilt* rather than written back in place, because the returned
+list may alias a caller-visible (or const) list, e.g. `return mylist`.
+
+`return [a, b]` with a literal is special-cased in the `ReturnStatement`
+visitor: the arity is statically known, so a mismatch is a **compile** error
+and the elements are emitted with their conversions directly (no runtime check,
+no Dup/Index loop).
+
+`TypeDeducer` types a multi-return call as `list`; `Type::toString()` already
+rendered `→[T0, T1]`, and `.roc` serialization already stored the full
+`returnTypes` vector, so neither needed changing.
+
+### Declaring destructure (`var [a, b] = ...`)
+
+`VarDecl` carries a `targets` vector (`VarDecl::Target`: name, optional type,
+const/mutable qualifiers) which is empty for the ordinary single-name form. The
+grammar has a second `var_decl` alternative with a bracketed `var_target` list,
+so a bracketed declaration is still one declaration node rather than a separate
+construct.
+
+Codegen declares every target *first* (each with a default placeholder) and
+only then evaluates the initializer: a local **is** its stack slot, so the
+source list has to sit above all the target slots for the `Dup`/`Index`
+sequence to reach it. Each target is then filled with
+`Dup; ConstInt i; Index 1; [ToType]; namedVariable(assign); Pop`, and the
+source list is popped at the end — the same shape as the for-loop multi-target
+path, and uniform for locals and module vars.
+
+`CheckDeclList` (sibling of `CheckReturnList`, sharing its VM handler and
+differing only in the message) enforces the arity.
+
+`const [a, b] = ...` is **deferred, not rejected** — it should exist for
+symmetry with `const x = ...`, and the compiler says "not yet supported".
+
+The obstacle is the codegen shape, not the language design. Declare-then-fill
+cannot produce a const binding: at module scope `defineVariable(var,
+isConst=true)` registers the name as const, so the later assignment fails at
+runtime; for locals, `locals.back().isConst` blocks reassignment the same way.
+A const binding has to be *defined once, with its value*.
+
+The way in is to stash the source list in a synthetic local first (the
+`__iterable__` precedent in the for-loop codegen), so it lives *below* the
+target slots instead of above them. Each target then becomes
+`namedVariable(<synthetic>); ConstInt i; Index 1; [ToType]; declareVariable;
+defineVariable(..., isConst)` — pushing the element and letting
+`defineVariable` consume it, which is exactly the shape const needs and works
+for locals and module vars alike. Two details to get right: the synthetic name
+must be unique per declaration (a fixed name collides when one scope has two
+such declarations, which the for-loop never hits because each loop owns a
+scope), and const targets should take the runtime-const path (`MakeConst`)
+rather than compile-time folding, since the elements are generally not
+compile-time known. That shape would also be a cleaner unification of the
+existing `var` path, which needs the two orders only because locals are stack
+slots.
+
+The `inspect` mirror gets a hand-written `VarTarget` class and
+`setVarTargets`/`getVarTargets` helpers in `ModuleInspect.cpp`, following the
+`TryStatement::ExceptClause` precedent; `tools/inspect-gen/generate.py` gained a
+`var_targets` field kind and verifies the nested struct against
+`VAR_TARGET_FIELDS`. Regenerate after touching `core/AST.h`.
+
+### Default values for declared variables
+
+`RoxalCompiler::emitDefaultValue()` is the single emitter for "no initializer,
+declared builtin type" (local and module vars, properties, property accessors,
+for-loop targets, synthesized `init(*)` members). `list` and `dict` emit
+`NewList 0` / `NewDict 0` rather than a constant-table default: a constant is
+*one* object shared by every execution, so `var l :list` inside a function
+accumulated across calls (and across instances for properties).
+
+
 ## Futures
 
 When a non-proc actor method is called from another thread, the caller receives
@@ -871,9 +960,144 @@ The dataflow engine will updates signal values as they are effected by changes t
 
 Function nodes wrap standard functions (`func`) and execute their `Chunk` code (via a `Closure`).
 
+**Lift gating (`VM::callValue`).** A call is lifted into a `FuncNode` only when
+a signal argument lands on a parameter that is *not* declared `:signal`.  The
+lift branch classifies in two passes over `CallSpec::paramPositions` before
+building anything:
+
+- every signal argument on a `:signal` parameter → **no lift**; the call falls
+  through to normal closure dispatch, so the function runs once with the
+  signals as first-class values (a "wiring" function whose interior calls lift
+  their own sub-nodes).
+- any signal argument on a value-typed or untyped parameter → lift as before
+  (signal args become input ports, the rest become frozen wiring constants).
+- both in one call → runtime error: a lifted body runs per tick, so holding a
+  raw signal in it would wire new nodes on every evaluation.
+- a closure with no `funcType` (untyped) keeps the original lift behavior.
+- `paramPositions` marks a variadic parameter `-2` (and a defaulted one `-1`);
+  both are skipped, so a signal absorbed by a variadic parameter is neither a
+  port nor a constant.
+
+Note that only `OpCode::Call` and property-stored closures reach `callValue`;
+method calls dispatched through `OpCode::Invoke` never lift (pre-existing).
+
+**Output arity.** `FuncNode` derives one output port per declared return type,
+so a `func` declared `-> [T0, .., TN-1]` mints N output signals named
+`result0..resultN-1`, and `VM::callValue` pushes a list of those signals (which
+the existing destructuring assignment then unpacks). A function declared
+`-> list` keeps a single output whose value is a list.
+
 The data flow engine is represented as a builtin actor instance.  Hence, the evaluation of all functions (`FuncNode`s) happens on the dataflow engine's actor thread.
 
 Signals can be sampled to yield their current value at any time on any thread, either via the builtin `value` property, or by using them to construct their underlying value type (e.g. `vector(vecsignal)`, or `real(realsig)`)
+
+**Operator lifting.** Binary/unary operators lift via `signalBinaryOp` /
+`signalUnaryOp` (`Value.cpp`), which build a native-lambda `FuncNode` whose
+body re-enters the same C++ operator on the sampled values.  Every operator
+that reaches the generic `roxal::` free function participates (arithmetic,
+comparison, bitwise, `not`, `rem`, `in`).
+
+`and`/`or` are special because they compile to short-circuit control flow.
+They emit `AndShortCircuit`/`OrShortCircuit` — jumps that behave like
+`JumpIfFalse`/`JumpIfTrue` for plain values but **never branch on a signal and
+never pop** — followed by the RHS and an `And`/`Or` combine at the join. The
+combine lifts when either operand is a signal and otherwise yields the RHS
+(the short-circuit jump already proved the LHS non-deciding). This keeps
+scalar short-circuit semantics exactly as before with a single RHS emission.
+
+`JumpIfFalse`/`JumpIfTrue` then never legitimately see a signal, so both
+handlers reject one outright: *"cannot branch on a signal; sample it
+explicitly"*. (They also no longer call `tryAwaitValue`, which would have
+sampled the signal in place; they await futures only.)
+
+**Builtins and lifting.** A `@builtin` declared in a `.rox` module file is an
+ordinary Roxal *closure* whose body is linked to C++, so it reaches
+`VM::callValue` and lifts like any other function — `math.sqrt(sig)` yields a
+signal, and a typed parameter (`x :real`) is no obstacle (only `:signal`
+suppresses lifting).
+
+`sys` predates the module system and registers most symbols *twice*:
+`ModuleSys::registerBuiltins`'s `addSys` helper both `defineNative`s a global
+under the bare name and `link`s the C++ function into the `sys.rox` closure.
+The two are different callable objects, so the bare name historically bypassed
+the lift path while the `sys.`-qualified one took it. `lshift`/`rshift` are
+exported as the module closure instead (VM.cpp, beside the existing
+`filter`/`map`/`reduce` export — `addSys` skips `defineNative` when the global
+already exists), so both spellings are the same function and both lift. That
+matters because Roxal has no `<<`/`>>` tokens: these two *are* the shift
+operators, and every other bitwise operator lifts.
+
+**Procs never lift.** A proc yields no value, so a node built from one would
+have no output for the network to carry. `callValue` therefore treats a proc as
+an action performed now, and what its parameters see follows the ordinary
+conversion rules: a value-typed parameter converts (so it samples — this is
+what makes `print(sig)` print the current value rather than build a node that
+prints every tick, and it fixes the `sys.print(sig)` crash), while an untyped
+parameter has no conversion and receives the signal itself, as `:signal` would.
+That last case is deliberate: a proc has no lifting alternative, so passing the
+signal through is the only thing it *can* mean.
+
+Note the resulting asymmetry with `func`: for a func an untyped parameter is
+the lifting case (`math.abs(sig)` becomes a node), whereas for a proc it is the
+pass-through case. The rule underneath is uniform — the parameter's declared
+type says what the callee wants, and `func` additionally chooses between
+behavioural (lift) and structural (`:signal`) — but a proc has only the
+structural mode available, since it can never be a node.
+
+Known gap: `sys.wait(for=sig)` still lifts and fails, because `wait` is a
+`func` whose `for=` parameter deliberately accepts an *unresolved* awaitable
+(future, event or signal). Bare `wait(for=sig)` is correct. The general fix is
+a "does not lift" marker on the declaration; only this one builtin needs it.
+
+**Sampling boundaries.** `is` compares signals by identity without sampling
+(so `sig is nil` is false for a live signal). Rendering a signal to text
+samples it: `concatenate()` (string LHS) and `ToStringPart` both go through
+`toString()` → `objSignalToString`, and `print`'s `:string` parameter samples
+through the ordinary parameter cast. A signal LHS stays arithmetic and lifts,
+so `intsig + "x"` fails per tick exactly as the scalar `1 + "2"` does, while a
+*string*-valued signal concatenated with a string yields a live string signal
+(`roxal::add` gained a string-LHS branch so the lifted node can stringify).
+
+**The tick grid.** The engine ticks on the GCD of the declared periods of
+every periodic signal in the network (`buildNetworkCacheData` ->
+`longestDividingPeriod`); event-driven signals (period zero) have no place on
+it. Each node is then gated to run at its own period, which by construction is
+a whole multiple of the grid, so a declared rate is always honoured exactly.
+
+Periods are collected from ALL periodic signals, not only sources. For a
+derived signal that is normally a no-op -- a node's output takes the maximum
+frequency of its inputs, so its period is already in the set -- but `<-` makes
+its left side derived (`copyInto` adopts the right side's `isSource`), which
+orphans the signal carrying an island's declared rate. Before this, an island
+of pure feedback loops contributed no period at all and ran at whatever grid
+the rest of the program imposed, while `freq()` still reported the rate that
+was asked for. Covered by `tests/signal_feedback_rate`; the unaffected
+connected-sources case is pinned by `tests/signal_island_rates`.
+
+Note that the grid is global, so every periodic signal anywhere in the program
+participates -- including module-internal ones such as `math._vecSignal`
+(`modules/math.rox`, 20 Hz), which is present in every program because `math`
+is a builtin module executed at startup.
+
+**Node initialization is structural.** Adding a node must not advance time, so
+the lift paths call `DataflowEngine::initializeNode(node)` rather than a
+whole-network evaluation. It evaluates *only* the new node, at the newest time
+its own inputs carry information for (`max` of their `latestSampleTime()`);
+inputs that last sampled earlier zero-order-hold through `valueAt()`, exactly
+as on a tick. No existing node is evaluated and no existing signal is
+re-stamped.
+
+The time coordinate matters in both directions: `m_tickStart` is in the
+*future* while the engine sleeps toward the next boundary, and a
+future-stamped value would shadow event-driven `set()`s for up to a tick;
+a fabricated `TimePoint::zero()` (what the old whole-network `evaluate()` used)
+made a node lifted into a running island start out stale. A clock that has
+never been evaluated still gets its `t=0` entry, so cold start is unchanged.
+
+Fixing the scope removed three symptoms at once: stale freshly-lifted nodes
+(`tests/signal_lift_fresh`), feedback loops advancing one step per node added
+during wiring, and two nodes reading the same wire ending up a tick apart
+depending on creation order (`tests/signal_lift_nodisturb`).
 
 A signal's time->value history map (`Signal::values`) is written by the engine
 thread (ticks), script threads (`set`) and the DDS reader-signal thread, and
@@ -1179,7 +1403,16 @@ Compiled modules are cached as `.roc` files next to their `.rox` source (the
 dot-prefix is just to keep the directory listing tidy). The compiler reads
 the cache when source mtime ≤ cache mtime; otherwise it recompiles and
 overwrites. `--recompile` deletes all caches under the source root before
-running. Cache reads happen via `compiler.loadFileCache` (top-level scripts
+running.
+
+`--check` (parse, type-deduce and compile without executing, for editors and
+CI) forces `CacheMode::NoCache`, so it neither reads nor writes: a cache hit
+would otherwise skip the compile and report success without having checked
+anything, and a read-only check should not leave `.roc` files behind. It shares
+`precompileFile()` with `--precompile`, which does the opposite — its whole
+point is to populate the caches. Note that `--check` cannot catch what only the
+VM decides: whether a call lifts into a dataflow node, the multi-return and
+destructure arity guards, and every signal-versus-value error are all run-time. Cache reads happen via `compiler.loadFileCache` (top-level scripts
 and builtin-module companions) or `RoxalCompiler::loadModuleFromCache`
 (nested `import`s during compilation).
 
@@ -1968,6 +2201,12 @@ Two protections are in place:
 - `SetModuleVar`, `SetNewModuleVar`, and `MoveModuleVar` raise a runtime error: `"Cannot modify module variable '<name>' from dataflow function"`.
 
 **Closure capture check**: when a closure is registered as a dataflow function node (in `VM::callValue()`), the VM iterates its upvalues. If any captured value is a non-const reference type, a runtime error is raised: `"Dataflow function '<name>' captures a mutable reference variable"`. This check happens at registration time on the main thread, preventing the unsafe state from ever reaching the DF thread.
+
+**Wiring constants**: non-signal arguments become `FuncNode::constArgs`, re-pushed on the DF thread every tick, so they are stored through `createFrozenSnapshot()` (in `VM::callValue` and in `signalBinaryOp`/`signalUnaryOp`, `Value.cpp`) — the same hazard the capture check blocks for upvalues. Primitives and already-const values pass through unchanged.
+
+**Signal payload snapshots**: `Signal::setValueAt` (and the source-signal constructor) publish through the local `snapshotForSignal()` helper — value-semantics types (tensor/vector/matrix/orient) COW-clone as before, and list/dict payloads are frozen, so producer and samplers never share a writable reference. Object/actor payloads deliberately pass through (DDS message flows). A sampled list/dict signal value is therefore `const`.
+
+**Signal params are never frozen**: the frameStart const-freeze loops (sync path in `VM::execute`, async path in `processClosureParamConversion`) skip signal-valued slots. An actor method's `s: signal` parameter is still implicitly const for *marshalling* purposes (so `queueCall` takes the const-ref path rather than demanding `move()`), but stamping a const bit on a live, still-ticking signal would be incoherent.
 
 ### Event Implicit Const
 

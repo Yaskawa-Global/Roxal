@@ -68,7 +68,7 @@ const char* suffixShadowedByNumericBase(const std::string& s)
 }
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 49;
+constexpr std::uint32_t ModuleCacheVersion = 51;
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -1518,7 +1518,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
                     auto bt = std::get<BuiltinType>(prop->varType.value());
                     if (bt == BuiltinType::Signal)
                         error("Can't default-construct signal");
-                    emitConstant(defaultValue(builtinToValueType(bt)));
+                    emitDefaultValue(bt);
                 } else {
                     emitByte(OpCode::ConstNil);
                 }
@@ -1846,7 +1846,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
                 auto bt = std::get<BuiltinType>(prop->varType.value());
                 if (bt == BuiltinType::Signal)
                     error("Can't default-construct signal");
-                emitConstant(defaultValue(builtinToValueType(bt)));
+                emitDefaultValue(bt);
             }
             else
                 emitByte(OpCode::ConstNil);
@@ -1940,7 +1940,7 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
                     auto bt = std::get<BuiltinType>(propAccessor->propType);
                     if (bt == BuiltinType::Signal)
                         error("Can't default-construct signal");
-                    emitConstant(defaultValue(builtinToValueType(bt)));
+                    emitDefaultValue(bt);
                 } else {
                     emitByte(OpCode::ConstNil);
                 }
@@ -2453,6 +2453,95 @@ std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
         }
     };
 
+    // Declaring destructure: 'var [a, b] = <list expr>'.  Each target is
+    // DECLARED (a local inside a function, a module var at module scope) and
+    // takes one element of the list the initializer yields -- unlike the plain
+    // '[a, b] = ...' assignment form, whose targets must already exist and
+    // which otherwise creates module variables.
+    if (!ast->targets.empty()) {
+        if (!ast->initializer.has_value())
+            error("A destructuring declaration requires an initializer.");
+        // Deferred, not rejected: see the note in implementation-notes.md.  The
+        // declare-then-fill codegen below cannot produce const bindings, which
+        // must be defined once WITH their value; supporting it means stashing
+        // the source list in a synthetic local first.
+        if (ast->isConst)
+            error("'const [a, b] = ...' is not yet supported; use 'var'.");
+        if (ast->targets.size() > 255)
+            error("Maximum of 255 destructuring targets exceeded.");
+
+        const bool atModuleScope = (asFuncScope(funcScope())->scopeDepth == 0);
+        std::vector<std::optional<VarTypeSpec>> targetTypes;
+        std::vector<uint16_t> moduleVars(ast->targets.size(), 0);
+
+        // Declare every target up front so its slot exists before the source
+        // list is pushed: a local IS its stack slot, so the list has to sit
+        // above all of them for the indexing sequence below to reach it.
+        for (size_t ti = 0; ti < ast->targets.size(); ti++) {
+            const auto& target = ast->targets.at(ti);
+            std::optional<VarTypeSpec> targetType{};
+            if (target.varType.has_value()) {
+                if (std::holds_alternative<BuiltinType>(target.varType.value()))
+                    targetType = std::get<BuiltinType>(target.varType.value());
+                else
+                    targetType = std::get<TypeName>(target.varType.value());
+            }
+            targetTypes.push_back(targetType);
+
+            declareVariable(target.name, targetType);
+            if (target.isTypeConst) {
+                if (targetType.has_value() && std::holds_alternative<BuiltinType>(*targetType)
+                    && std::get<BuiltinType>(*targetType) == BuiltinType::Signal)
+                    error("const signal is not allowed.");
+                if (!atModuleScope)
+                    asFuncScope(funcScope())->locals.back().isTypeConst = true;
+                else
+                    asModuleScope(moduleScope())->moduleVarTypeConst.insert(target.name);
+            }
+
+            if (targetType.has_value() && std::holds_alternative<BuiltinType>(*targetType)) {
+                auto bt = std::get<BuiltinType>(*targetType);
+                if (bt == BuiltinType::Signal)
+                    emitByte(OpCode::ConstNil); // signals cannot be default-constructed
+                else
+                    emitDefaultValue(bt);
+            } else
+                emitByte(OpCode::ConstNil);
+
+            if (atModuleScope) {
+                moduleVars[ti] = identifierConstant(target.name);
+                if (targetType.has_value())
+                    asModuleScope(moduleScope())->moduleVarTypes[target.name] = targetType.value();
+            }
+            defineVariable(moduleVars[ti]);
+        }
+
+        emitInitializer();
+        emitBytes(OpCode::CheckDeclList, uint8_t(ast->targets.size()));
+
+        for (size_t ti = 0; ti < ast->targets.size(); ti++) {
+            emitByte(OpCode::Dup); // dup the source list
+            if (ti == 0)
+                emitByte(OpCode::ConstInt0);
+            else if (ti == 1)
+                emitByte(OpCode::ConstInt1);
+            else
+                emitConstant(Value::intVal(int64_t(ti)));
+            emitBytes(OpCode::Index, uint8_t(1));
+
+            if (targetTypes.at(ti).has_value())
+                emitConvertToVarType(targetTypes.at(ti).value());
+            if (ast->targets.at(ti).isTypeConst)
+                emitByte(OpCode::MakeConst);
+
+            namedVariable(ast->targets.at(ti).name, /*assign=*/true);
+            emitByte(OpCode::Pop, "destructured element");
+        }
+
+        emitByte(OpCode::Pop, "destructure source list");
+        return {};
+    }
+
     std::optional<VarTypeSpec> declType{};
     if (ast->varType.has_value()) {
         if (std::holds_alternative<BuiltinType>(ast->varType.value()))
@@ -2592,7 +2681,7 @@ std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
                 auto bt = std::get<BuiltinType>(*declType);
                 if (bt == BuiltinType::Signal)
                     error("Can't default-construct signal");
-                emitConstant(defaultValue(builtinToValueType(bt)));
+                emitDefaultValue(bt);
             }
             else
                 emitByte(OpCode::ConstNil);
@@ -2756,10 +2845,111 @@ std::any RoxalCompiler::visit(ptr<ast::ExpressionStatement> ast)
 }
 
 
+void RoxalCompiler::emitDefaultValue(ast::BuiltinType bt)
+{
+    // list/dict defaults must be freshly constructed per execution: pushing a
+    // constant-table default would alias ONE mutable object across every
+    // invocation (or instance), so e.g. 'var l :list' would accumulate
+    // appends across calls.  Other builtins have immutable or value-semantics
+    // defaults and can live in the constant table.
+    auto vt = builtinToValueType(bt);
+    if (vt == ValueType::List)
+        emitBytes(OpCode::NewList, uint8_t(0));
+    else if (vt == ValueType::Dict)
+        emitBytes(OpCode::NewDict, uint8_t(0));
+    else
+        emitConstant(defaultValue(vt));
+}
+
+
+void RoxalCompiler::emitConvertToVarType(const VarTypeSpec& t)
+{
+    if (std::holds_alternative<BuiltinType>(t))
+        emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
+                  uint8_t(builtinToValueType(std::get<BuiltinType>(t))));
+    else {
+        emitTypeName(std::get<TypeName>(t));
+        emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
+    }
+}
+
+
+void RoxalCompiler::emitReturnTypeConversion()
+{
+    auto& astReturnTypes = asFuncScope(funcScope())->astReturnTypes;
+    if (!astReturnTypes.has_value() || astReturnTypes->empty())
+        return;
+
+    if (astReturnTypes->size() == 1) {
+        emitConvertToVarType(astReturnTypes->at(0));
+        return;
+    }
+
+    // Multi-return ('-> [T0,..,TN-1]'): the returned value must be a list of
+    // exactly N elements.  Convert each element to its declared type and
+    // rebuild a fresh list — the returned list may alias a caller-visible or
+    // const list, so no in-place writes.  Converted elements accumulate
+    // beneath the source list, which the Swap keeps on top throughout.
+    auto n = astReturnTypes->size();
+    if (n > 255) {
+        error("Maximum of 255 return values exceeded.");
+        return;
+    }
+    emitBytes(OpCode::CheckReturnList, uint8_t(n));
+    for (size_t i = 0; i < n; i++) {
+        emitByte(OpCode::Dup); // dup source list
+        if (i == 0)
+            emitByte(OpCode::ConstInt0);
+        else if (i == 1)
+            emitByte(OpCode::ConstInt1);
+        else
+            emitConstant(Value::intVal(int64_t(i)));
+        emitBytes(OpCode::Index, uint8_t(1));
+        emitConvertToVarType(astReturnTypes->at(i));
+        emitByte(OpCode::Swap); // source list back on top
+    }
+    emitByte(OpCode::Pop, "multi-return source list");
+    emitBytes(OpCode::NewList, uint8_t(n));
+}
+
+
 std::any RoxalCompiler::visit(ptr<ast::ReturnStatement> ast)
 {
     currentNode = ast;
     ast::Anys results {};
+
+    // Compile-time fast path: 'return [a, b]' with a declared multi-return.
+    // The literal's arity is statically checkable, and each element can be
+    // converted directly — no CheckReturnList / Dup/Index loop needed.
+    auto& declaredReturnTypes = asFuncScope(funcScope())->astReturnTypes;
+    bool multiReturnLiteral =
+        ast->expr.has_value() && isa<ast::List>(ast->expr.value()) &&
+        declaredReturnTypes.has_value() && declaredReturnTypes->size() > 1;
+
+    if (multiReturnLiteral) {
+        auto lst = as<ast::List>(ast->expr.value());
+        auto n = declaredReturnTypes->size();
+        if (n > 255) {
+            error("Maximum of 255 return values exceeded.");
+            return results;
+        }
+        if (lst->elements.size() != n) {
+            error("function declares " + std::to_string(n) + " return values but return provides "
+                  + std::to_string(lst->elements.size()));
+            return results;
+        }
+        if (asFuncScope(funcScope())->functionType == FunctionType::Initializer)
+            error("A value cannot be returned from an 'init' method.");
+        if (asFuncScope(funcScope())->type->func.has_value() && asFuncScope(funcScope())->type->func.value().isProc)
+            error("A value cannot be returned from a proc method.");
+        for (size_t i = 0; i < n; i++) {
+            lst->elements.at(i)->accept(*this);
+            emitConvertToVarType(declaredReturnTypes->at(i));
+        }
+        emitBytes(OpCode::NewList, uint8_t(n));
+        emitByte(OpCode::Return);
+        return results;
+    }
 
     ast->acceptChildren(*this, results);
 
@@ -2772,17 +2962,7 @@ std::any RoxalCompiler::visit(ptr<ast::ReturnStatement> ast)
 
         // Emit return type conversion if the function has a declared return type.
         // The return expression result is on the stack from acceptChildren.
-        auto& astReturnTypes = asFuncScope(funcScope())->astReturnTypes;
-        if (astReturnTypes.has_value() && !astReturnTypes->empty()) {
-            auto& rt = astReturnTypes->at(0);
-            if (std::holds_alternative<BuiltinType>(rt))
-                emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
-                          uint8_t(builtinToValueType(std::get<BuiltinType>(rt))));
-            else {
-                emitTypeName(std::get<TypeName>(rt));
-                emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
-            }
-        }
+        emitReturnTypeConversion();
 
         emitByte(OpCode::Return);
     }
@@ -3108,7 +3288,7 @@ std::any RoxalCompiler::visit(ptr<ast::ForStatement> ast)
             auto bt = std::get<BuiltinType>(*vtype);
             if (bt == BuiltinType::Signal)
                 error("Can't default-construct signal");
-            emitConstant(defaultValue(builtinToValueType(bt)));
+            emitDefaultValue(bt);
         } else
             emitByte(OpCode::ConstNil);
         defineVariable();
@@ -3909,17 +4089,7 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
     // if the body is an expression (e.g. lambda func), leaves the result on the stack, so return it
     if (std::holds_alternative<ptr<Expression>>(ast->body)) {
         // Emit return type conversion for expression-body lambdas
-        auto& astReturnTypes = asFuncScope(funcScope())->astReturnTypes;
-        if (astReturnTypes.has_value() && !astReturnTypes->empty()) {
-            auto& rt = astReturnTypes->at(0);
-            if (std::holds_alternative<BuiltinType>(rt))
-                emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
-                          uint8_t(builtinToValueType(std::get<BuiltinType>(rt))));
-            else {
-                emitTypeName(std::get<TypeName>(rt));
-                emitByte(asFuncScope(funcScope())->strict ? OpCode::ToTypeSpecStrict : OpCode::ToTypeSpec);
-            }
-        }
+        emitReturnTypeConversion();
         emitByte(OpCode::Return);
     }
 
@@ -4148,7 +4318,7 @@ void RoxalCompiler::emitStarInitPrologue(const std::vector<StarInitMember>& memb
                              && std::holds_alternative<BuiltinType>(m.declaredType.value());
             if (isBuiltin) {
                 auto bt = std::get<BuiltinType>(m.declaredType.value());
-                emitConstant(defaultValue(builtinToValueType(bt)));
+                emitDefaultValue(bt);
             } else {
                 emitByte(OpCode::ConstNil);
             }
@@ -4547,14 +4717,16 @@ std::any RoxalCompiler::visit(ptr<ast::BinaryOp> ast)
     bool handled = false;
 
     // Logical And and Or operators have short-circuit semantics, so may not need to evaluate all
-    //  children, so handle them differently
+    //  children, so handle them differently.  A signal operand can't be branched on, so the
+    //  short-circuit jump falls through for signals (never popping the lhs) and the And/Or
+    //  combine at the join either lifts (signal operand) or yields the rhs (scalar operands).
     if (ast->op == BinaryOp::Or) {
         ast->lhs->accept(*this);
 
-        Chunk::size_type jumpToEnd = emitJump(OpCode::JumpIfTrue);
-        emitByte(OpCode::Pop);
+        Chunk::size_type jumpToEnd = emitJump(OpCode::OrShortCircuit);
 
         ast->rhs->accept(*this);
+        emitByte(OpCode::Or);
 
         patchJump(jumpToEnd);
 
@@ -4562,10 +4734,10 @@ std::any RoxalCompiler::visit(ptr<ast::BinaryOp> ast)
     }
     else if (ast->op == BinaryOp::And) {
         ast->lhs->accept(*this);
-        Chunk::size_type jumpToEnd = emitJump(OpCode::JumpIfFalse);
-        emitByte(OpCode::Pop);
+        Chunk::size_type jumpToEnd = emitJump(OpCode::AndShortCircuit);
 
         ast->rhs->accept(*this);
+        emitByte(OpCode::And);
 
         patchJump(jumpToEnd);
 

@@ -225,6 +225,7 @@ public:
     virtual std::any visitType_spec(RoxalParser::Type_specContext *context);
     virtual std::any visitBuiltin_type(RoxalParser::Builtin_typeContext *context);
     virtual std::any visitConst_qualifier(RoxalParser::Const_qualifierContext *context);
+    virtual std::any visitVar_target(RoxalParser::Var_targetContext *context);
 
     virtual std::any visitList(RoxalParser::ListContext *context);
 

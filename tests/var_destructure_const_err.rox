@@ -1,0 +1,4 @@
+// 'const [a, b] = ...' is not supported (a const binding is defined once,
+// with its value, rather than declared and then filled in)
+const [a, b] = [1, 2]
+print(a)

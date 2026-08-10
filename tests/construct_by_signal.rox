@@ -45,7 +45,8 @@ func retList(c) -> list:
 
 var ls :signal = retList(c)
 var l = list(ls)
-print(typeof(l)) // list
+print(typeof(l)) // const list - list/dict signal payloads are frozen on store,
+                 //   so samplers can never observe the producer mutating them
 
 
 func retDict(c) -> dict:
@@ -53,7 +54,7 @@ func retDict(c) -> dict:
 
 var ds :signal = retDict(c)
 var d = dict(ds)
-print(typeof(d)) // dict
+print(typeof(d)) // const dict
 
 
 func retVec(c) -> vector:

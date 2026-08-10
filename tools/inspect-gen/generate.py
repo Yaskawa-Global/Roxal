@@ -56,6 +56,7 @@ END_MARK = "# ==== END GENERATED ===="
 #   pair_expr_list   vector<pair<Expr,Expr>>        -> list of [key, value]
 #   interp_parts     vector<StrInterpPart>          -> list of string | node
 #   except_clauses   vector<ExceptClause>           -> list of ExceptClause
+#   var_targets      vector<VarDecl::Target>        -> list of VarTarget
 #   var_type         VarType                        -> string
 #   opt_var_type     optional<VarType>              -> string | nil
 #   opt_var_type_list optional<vector<VarType>>     -> list of string | nil
@@ -195,6 +196,7 @@ NODE_SPEC = [
         F("isTypeConst", "bool", "bool"),
         F("isTypeMutable", "bool", "bool"),
         F("atHost", "std::optional<ptr<Expression>>", "opt_node", cls="Expression"),
+        F("targets", "std::vector<Target>", "var_targets"),
     ], {}),
 
     ("PropertyAccessor", "Node", [
@@ -350,6 +352,14 @@ EXCEPT_CLAUSE_FIELDS = [
     ("body", "ptr<ast::Suite>"),
 ]
 
+# The nested VarDecl::Target struct ('var [a, b] = ...'), verified separately.
+VAR_TARGET_FIELDS = [
+    ("name", "ustring"),
+    ("varType", "std::optional<VarType>"),
+    ("isTypeConst", "bool"),
+    ("isTypeMutable", "bool"),
+]
+
 CONCRETE = [c for (c, b, f, o) in NODE_SPEC if not o.get("abstract")]
 
 
@@ -447,7 +457,7 @@ def verify(structs):
 
     header_nodes = {}
     for name, (base, members) in structs.items():
-        if name in ("AST", "LinePos", "StrInterpPart", "ExceptClause"):
+        if name in ("AST", "LinePos", "StrInterpPart", "ExceptClause", "Target"):
             continue
         header_nodes[name] = (base, members)
 
@@ -487,6 +497,16 @@ def verify(structs):
     else:
         errors.append("TryStatement::ExceptClause not found in AST.h")
 
+    # nested VarDecl::Target
+    if "Target" in structs:
+        _, vt_members = structs["Target"]
+        got = [(n, normalize_type(t)) for (n, t) in vt_members]
+        want = [(n, normalize_type(t)) for (n, t) in VAR_TARGET_FIELDS]
+        if got != want:
+            errors.append(f"VarDecl::Target drifted: header {got} vs spec {want}")
+    else:
+        errors.append("VarDecl::Target not found in AST.h")
+
     if errors:
         sys.stderr.write("core/AST.h does not match NODE_SPEC:\n")
         for e in errors:
@@ -521,6 +541,7 @@ ROX_DEFAULTS = {
     "pair_expr_list": ("var {n} = []", "list(pair)"),
     "interp_parts": ("var {n} = []", "list(part)"),
     "except_clauses": ("var {n} = []", "list(except_clause)"),
+    "var_targets": ("var {n} = []", "list(var_target)"),
     "var_type": ("var {n}:string = ''", "string"),
     "opt_var_type": ("var {n}", "string"),
     "opt_var_type_list": ("var {n}", "list(string)"),
@@ -646,6 +667,7 @@ CPP_SETTERS = {
     "pair_expr_list": 'cx.setPairExprList(v, "{r}", n.{c});',
     "interp_parts": 'cx.setInterpParts(v, "{r}", n.{c});',
     "except_clauses": 'cx.setExceptClauses(v, "{r}", n.{c});',
+    "var_targets": 'cx.setVarTargets(v, "{r}", n.{c});',
     "var_type": 'cx.setVarType(v, "{r}", n.{c});',
     "opt_var_type": 'cx.setOptVarType(v, "{r}", n.{c});',
     "opt_var_type_list": 'cx.setOptVarTypeList(v, "{r}", n.{c});',
@@ -680,6 +702,7 @@ CPP_BUILDERS = {
     "pair_expr_list": 'n->{c} = bx.getPairExprList(inst, "{r}");',
     "interp_parts": 'n->{c} = bx.getInterpParts(inst, "{r}");',
     "except_clauses": 'n->{c} = bx.getExceptClauses(inst, "{r}");',
+    "var_targets": 'n->{c} = bx.getVarTargets(inst, "{r}");',
     "var_type": 'n->{c} = bx.getVarType(inst, "{r}");',
     "opt_var_type": 'n->{c} = bx.getOptVarType(inst, "{r}");',
     "opt_var_type_list": 'n->{c} = bx.getOptVarTypeList(inst, "{r}");',

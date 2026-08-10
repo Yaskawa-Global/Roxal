@@ -715,6 +715,10 @@ Value lessEqual(Value l, Value r);
 Value equal(Value l, Value r, bool strict = false);
 Value notEqual(Value l, Value r, bool strict = false);
 
+// 'in' membership: needle in container (list/dict/string/range).
+// Lifts to a derived bool signal when either operand is a signal.
+Value in(Value needle, Value container, bool strict = false);
+
 std::string toString(const Value& v);
 
 std::ostream& operator<<(std::ostream& out, const Value& v);

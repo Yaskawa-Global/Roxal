@@ -384,6 +384,22 @@ struct InspectConv {
         set(v, name, lst);
     }
 
+    void setVarTargets(const Value& v, const char* name,
+                       const std::vector<ast::VarDecl::Target>& targets)
+    {
+        Value lst = Value::listVal();
+        for (auto& t : targets) {
+            Value tv = newHelper("VarTarget");
+            set(tv, "name", Value::stringVal(t.name));
+            setOptVarType(tv, "var_type", t.varType);
+            setBool(tv, "is_type_const", t.isTypeConst);
+            setBool(tv, "is_type_mutable", t.isTypeMutable);
+            setParent(tv, v);
+            asList(lst)->append(tv);
+        }
+        set(v, name, lst);
+    }
+
     void setExceptClauses(const Value& v, const char* name,
                           const std::vector<ast::TryStatement::ExceptClause>& clauses)
     {
@@ -691,6 +707,30 @@ struct InspectBuild {
                 out.emplace_back(asStringObj(e)->s);
             else
                 out.emplace_back(castAs<ast::Expression>(build(e), name));
+        }
+        return out;
+    }
+
+    std::vector<ast::VarDecl::Target>
+    getVarTargets(ObjectInstance* inst, const char* name)
+    {
+        std::vector<ast::VarDecl::Target> out;
+        Value v = prop(inst, name);
+        if (v.isNil()) return out;
+        if (!isList(v)) fail(name, "expected a list of VarTarget nodes");
+        ObjList* l = asList(v);
+        for (int i = 0; i < l->length(); i++) {
+            Value tv = l->getElement(i);
+            if (!isObjectInstance(tv)) fail(name, "expected VarTarget instances");
+            ObjectInstance* t = asObjectInstance(tv);
+            ast::VarDecl::Target target;
+            auto nameOpt = getOptUStr(t, "name");
+            if (nameOpt.has_value())
+                target.name = nameOpt.value();
+            target.varType = getOptVarType(t, "var_type");
+            target.isTypeConst = getBool(t, "is_type_const");
+            target.isTypeMutable = getBool(t, "is_type_mutable");
+            out.push_back(std::move(target));
         }
         return out;
     }

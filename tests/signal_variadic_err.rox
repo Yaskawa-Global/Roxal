@@ -1,0 +1,8 @@
+// A signal cannot reach a variadic parameter: it can be neither an input port
+// nor a wiring constant, so the call is rejected rather than silently handing
+// the callee a raw signal.
+func first(...xs):
+  return xs[0]
+
+var c = clock(10)
+print(first(c))

@@ -1,0 +1,93 @@
+// A CRC-8 checksum computed by a SHIFT REGISTER, one message bit per tick.
+//
+// A CRC is a hash you can build out of gates: a register whose top bit is fed
+// back and XORed into the polynomial's tap positions. That feedback is the
+// whole point here - the register's next value depends on its own previous
+// value, which is a property of the graph rather than of any one computation,
+// and is the thing plain values cannot express.
+//
+// Where examples/circuit.rox keeps its state as a BUNDLE (four separate bool
+// wires, gate level), this one keeps the register as a WIDE WIRE: a single int
+// signal carrying all eight bits, manipulated with the shift and mask
+// operators. The two forms are the two things reasonably called a "bus", and
+// this is the compact one.
+//
+// Run it with:  ./build/roxal examples/crc.rox
+
+const RATE    = 100.0        // one message bit per tick
+const POLY    = 0x07        // CRC-8 polynomial x^8 + x^2 + x + 1
+const MESSAGE = "123456789" // the standard check string; its CRC-8 is 0xF4
+
+// The message as a list of bits, most significant first. to_bytes gives the
+// UTF-8 bytes and bytes_to_bits unpacks each into eight bools.
+var BITS = bytes_to_bits(to_bytes(MESSAGE))
+var NBITS = len(BITS)
+
+
+// ---------------------------------------------------------------------------
+// Behavioural functions: each becomes ONE node in the graph.
+// ---------------------------------------------------------------------------
+
+// One shift of the register. While enabled: shift left, and if the bit falling
+// off the top disagrees with the incoming message bit, XOR in the polynomial.
+func crc8_step(reg :int, bit :bool, enabled :bool) -> int:
+  if not enabled:
+    return reg
+  var top = (rshift(reg, 7) & 1) == 1
+  var feedback = top != bit          // '!=' on bools is XOR
+  var shifted = lshift(reg, 1) & 0xFF
+  if feedback:
+    return shifted ^ POLY
+  return shifted
+
+// The message bit currently being clocked in (past the end: zero).
+func bit_at(i :int, bits :list) -> bool:
+  if i < len(bits):
+    return bits[i]
+  return false
+
+func more_bits(i :int, n :int) -> bool:
+  return i < n
+
+
+// ---------------------------------------------------------------------------
+// The circuit: a clock, and the register's feedback loop around it.
+// ---------------------------------------------------------------------------
+
+// The circuit's clock. Its count is also the index of the bit being shifted
+// in - a shift register consumes one bit per cycle, so the cycle number IS the
+// bit number. A clock starts STOPPED, which is what gives the whole network a
+// single explicit start, at the bottom of the file.
+var clk = clock(RATE)
+
+// The register. THE FEEDBACK LOOP: its next value depends on its own previous
+// value, which is the part plain values cannot express.
+var reg = signal(RATE, 0)
+
+// On cycle t the register consumes bit t, so both are indexed by the CURRENT
+// clock count while the register folds in its own previous value.
+var bit     = bit_at(clk, BITS)
+var enabled = more_bits(clk, NBITS)
+
+reg <- crc8_step(reg[-1], bit, enabled)
+
+print("CRC network constructed",flush=true)
+
+// Report as soon as the last bit has been clocked through.
+var quit = false
+when clk becomes NBITS:
+  print("message  : " + MESSAGE)
+  print("bits     : " + NBITS)
+  print("crc8     : " + int(reg))
+  if int(reg) == 0xF4:
+    print("check    : ok (0xF4)")
+  else:
+    print("check    : WRONG, expected 244")
+  quit = true
+
+// Nothing above ran anything: it described a circuit and left the clock
+// stopped. This starts it.
+print("clocking {NBITS} bits at {RATE} Hz")
+clk.run()
+while not quit:
+  wait(10ms)

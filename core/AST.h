@@ -603,6 +603,14 @@ struct WithStatement : public Statement {
 struct VarDecl : public Declaration {
     VarDecl() : Declaration(DeclType::Var) {}
 
+    // One target of a declaring destructure, 'var [a, b :real] = expr'.
+    struct Target {
+        ustring name;
+        std::optional<VarType> varType;
+        bool isTypeConst { false };
+        bool isTypeMutable { false };
+    };
+
     ustring name;
     std::optional<ptr<Expression>> initializer;
     std::optional<VarType> varType;
@@ -611,6 +619,12 @@ struct VarDecl : public Declaration {
     bool isTypeConst { false };    // type is qualified with 'const' (e.g. var x: const T)
     bool isTypeMutable { false };  // type is qualified with 'mutable' (e.g. const x: mutable T)
     std::optional<ptr<Expression>> atHost; // optional: host expression from 'at <expr>'
+
+    // Declaring destructure form: 'var [a, b] = <list expr>' declares every
+    // target, each taking one element of the list the initializer yields.
+    // Empty for the ordinary single-name form, which uses `name`/`varType`
+    // above; when non-empty an initializer is required.
+    std::vector<Target> targets;
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;

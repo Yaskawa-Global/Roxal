@@ -932,6 +932,7 @@ public:
     Value orient_inverse_getter(Value& receiver);
 
     Value list_append_builtin(ArgsView args);
+    Value list_sampled_builtin(ArgsView args);
     Value list_extend_builtin(ArgsView args);
     Value list_insert_builtin(ArgsView args);
     Value list_remove_builtin(ArgsView args);

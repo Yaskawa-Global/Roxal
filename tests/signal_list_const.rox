@@ -1,0 +1,24 @@
+// list/dict signal payloads are frozen on store, so a sampler can never
+// observe the producer mutating them after the fact (the same guarantee
+// tensor/vector/matrix payloads already had via copy-on-write).
+
+var src = signal(0, [1, 2, 3])
+var sampled = list(src)
+print(typeof(sampled))
+print(sampled)
+
+// the producer keeps its own reference and mutates it: the published
+// snapshot must not change
+var mine = [10, 20]
+src.set(mine)
+var published = list(src)
+mine.append(30)
+print(len(mine))
+print(len(published))
+
+// a sampled payload is const: mutation fails loudly, clone() gives a copy
+var copy = clone(published)
+copy.append(99)
+print(len(copy))
+published.append(99)
+print("unreachable")

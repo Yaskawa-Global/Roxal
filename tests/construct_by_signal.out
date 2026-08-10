@@ -3,7 +3,7 @@
 <type byte>
 <type real>
 <type enum>
-<type list>
-<type dict>
+<type const list>
+<type const dict>
 <type vector>
 <type matrix>

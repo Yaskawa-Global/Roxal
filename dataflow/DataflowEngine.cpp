@@ -1468,6 +1468,69 @@ bool DataflowEngine::processPendingEventUpdates()
 }
 
 
+void DataflowEngine::initializeNode(const ptr<FuncNode>& node)
+{
+    if (!node)
+        return;
+
+    // Same serialization as evaluate(): runs on SCRIPT threads (func lifts /
+    // signal operators) while the engine thread evaluates and the reclaimer
+    // thread destroys dead signal wrappers.
+    std::unique_lock<std::recursive_mutex> evalLock(m_evalMutex, std::try_to_lock);
+    if (!evalLock.owns_lock()) {
+        if (roxal::SimpleMarkSweepGC::inGCYieldSectionOnThisThread()) {
+            evalLock.lock();
+        } else {
+            roxal::SimpleMarkSweepGC::GCSafeBlockScope blockCover;
+            evalLock.lock();
+        }
+    }
+
+    if (m_networkModified)
+        buildNetworkCacheData();
+
+    // Evaluate at the newest time the inputs actually carry information for.
+    // NOT m_tickStart (while the engine sleeps toward the next boundary it is
+    // in the FUTURE, and a future-stamped value would shadow every
+    // event-driven set() for up to a tick) and NOT a fabricated zero (which
+    // made a node lifted into a running network start out stale, and made the
+    // result depend on creation order).  Inputs that last sampled earlier
+    // zero-order-hold through valueAt(), exactly as on a tick.
+    TimePoint evalTime = TimePoint::zero();
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        for (const auto& input : node->m_inputs) {
+            if (!input.signal)
+                continue;
+            // Cold start: a clock that has never been evaluated has no
+            // samples yet, so give it its t=0 entry (what evaluate() used to
+            // do for every source signal, now only where it is needed).
+            if (input.signal->isSourceSignal() && !input.signal->hasValues())
+                input.signal->evaluate(TimePoint::zero());
+            auto latest = input.signal->latestSampleTime();
+            if (latest > evalTime)
+                evalTime = latest;
+            updateSignalConsumerInputAvailability(input.signal, latest);
+        }
+    }
+
+    // A node whose inputs carry nothing yet has nothing to initialize from;
+    // it simply computes on the island's next tick.  Same guard the tick path
+    // applies in evaluateIsland().
+    if (!node->inputsAvailableAt(evalTime))
+        return;
+
+    node->conditionallyExecute(evalTime);
+
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        for (const auto& output : node->m_outputs)
+            if (output.signal)
+                updateSignalConsumerInputAvailability(output.signal, evalTime);
+    }
+}
+
+
 void DataflowEngine::evaluate()
 {
     // Runs on SCRIPT threads (func lifts / signal operators) while the
@@ -2013,12 +2076,25 @@ void DataflowEngine::buildNetworkCacheData()
 
         std::set<TimeDuration> islandSourcePeriods {};
 
+        // EVERY periodic signal contributes its declared period, not just the
+        // sources.  Two reasons:
+        //
+        //  * A derived signal's period is normally inherited from its inputs
+        //    (a node's output takes the max frequency of its inputs), so
+        //    including it is a no-op -- its period is already in the set.
+        //  * But `<-` makes its left side derived (copyInto adopts the right
+        //    side's isSource), which ORPHANS the signal that carried the
+        //    island's declared rate.  An island of pure feedback loops then
+        //    has no source at all, contributes nothing, and lands on whatever
+        //    grid the rest of the program happens to impose -- while freq()
+        //    still reports the rate that was asked for.
+        //
+        // Because the grid is the GCD of every declared period, each one
+        // divides it exactly, so every node can be gated to run at precisely
+        // the rate it declared.
         for (const auto& signal : island.signals) {
-            if (!signal->isSourceSignal())
-                continue;
-
             if (signal->period() == TimeDuration::zero())
-                continue;
+                continue;   // event-driven: no place on a periodic grid
 
             islandSourcePeriods.insert(signal->period());
             if (!island.background)

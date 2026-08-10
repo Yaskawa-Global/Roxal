@@ -1,16 +1,26 @@
-func t_sig(x) -> bool:
-  return true
+// 'or' with a signal operand lifts into a dataflow node; with plain values
+// it keeps its ordinary short-circuit semantics.
 
-func f_sig(x) -> bool:
-  return false
+var c = clock(10)
+even = (c rem 2) == 0
+big = c > 2
+o = even or big
+print(typeof(o))
 
-c = clock(10)
-t = t_sig(c)
-f = f_sig(c)
-o = t or f
-c.tick()
-wait(ms=120)
-print(bool(o))
-c.tick()
-wait(ms=120)
-print(bool(o))
+var i = 0
+while i < 5:
+  c.tick()
+  wait(us=120000)
+  print("c={int(c)} even={bool(even)} big={bool(big)} or={bool(o)}")
+  i = i + 1
+
+// a truthy scalar LHS still short-circuits: no node, no dependency
+var sc = true or even
+print(typeof(sc))
+print(sc)
+
+// a falsey scalar LHS yields the signal RHS, so the result stays live
+var live = false or even
+print(typeof(live))
+wait(us=250000)   // let the new node join the island's tick cycle
+print(bool(live) == bool(even))

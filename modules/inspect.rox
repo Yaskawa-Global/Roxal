@@ -61,6 +61,20 @@ type Arg object extends Node:
     return cs
 
 
+type VarTarget object extends Node:
+  # one target of a declaring destructure, 'var [a, b :real] = expr'
+  var name:string = ''
+  var var_type                     # declared type as a string, or nil
+  var is_type_const:bool = false
+  var is_type_mutable:bool = false
+
+  proc init(*):
+    """construct a VarTarget, properties as named arguments"""
+
+  func kind() -> string:
+    return 'VarTarget'
+
+
 type ExceptClause object extends Node:
   # one 'except' clause of a TryStatement
   var type_expr    # exception type expression, or nil
@@ -680,6 +694,7 @@ type VarDecl object extends Declaration:
   var is_type_const:bool = false
   var is_type_mutable:bool = false
   var at_host
+  var targets = []
 
   proc init(*):
     """construct a VarDecl node, properties as named arguments"""
@@ -1233,7 +1248,7 @@ _node_fields['RaiseStatement'] = [{'name': 'exception', 'kind': 'node', 'class':
 _node_fields['TryStatement'] = [{'name': 'body', 'kind': 'node', 'class': 'Suite'}, {'name': 'except_clauses', 'kind': 'list(except_clause)'}, {'name': 'finally_suite', 'kind': 'node', 'class': 'Suite'}]
 _node_fields['MatchStatement'] = [{'name': 'match_expr', 'kind': 'node', 'class': 'Expression'}, {'name': 'cases', 'kind': 'list(case)'}, {'name': 'default_case', 'kind': 'node', 'class': 'Suite'}]
 _node_fields['WithStatement'] = [{'name': 'context_expr', 'kind': 'node', 'class': 'Expression'}, {'name': 'body', 'kind': 'node', 'class': 'Suite'}]
-_node_fields['VarDecl'] = [{'name': 'name', 'kind': 'string'}, {'name': 'initializer', 'kind': 'node', 'class': 'Expression'}, {'name': 'var_type', 'kind': 'string'}, {'name': 'access', 'kind': 'string'}, {'name': 'is_const', 'kind': 'bool'}, {'name': 'is_type_const', 'kind': 'bool'}, {'name': 'is_type_mutable', 'kind': 'bool'}, {'name': 'at_host', 'kind': 'node', 'class': 'Expression'}]
+_node_fields['VarDecl'] = [{'name': 'name', 'kind': 'string'}, {'name': 'initializer', 'kind': 'node', 'class': 'Expression'}, {'name': 'var_type', 'kind': 'string'}, {'name': 'access', 'kind': 'string'}, {'name': 'is_const', 'kind': 'bool'}, {'name': 'is_type_const', 'kind': 'bool'}, {'name': 'is_type_mutable', 'kind': 'bool'}, {'name': 'at_host', 'kind': 'node', 'class': 'Expression'}, {'name': 'targets', 'kind': 'list(var_target)'}]
 _node_fields['PropertyAccessor'] = [{'name': 'name', 'kind': 'string'}, {'name': 'prop_type', 'kind': 'string'}, {'name': 'initializer', 'kind': 'node', 'class': 'Expression'}, {'name': 'access', 'kind': 'string'}, {'name': 'is_const', 'kind': 'bool'}, {'name': 'getter', 'kind': 'node'}, {'name': 'getter_abstract', 'kind': 'bool'}, {'name': 'setter', 'kind': 'node'}, {'name': 'setter_abstract', 'kind': 'bool'}]
 _node_fields['FuncDecl'] = [{'name': 'function', 'kind': 'node', 'class': 'Function'}]
 _node_fields['Function'] = [{'name': 'is_proc', 'kind': 'bool'}, {'name': 'name', 'kind': 'string'}, {'name': 'params', 'kind': 'list(node)', 'class': 'Parameter'}, {'name': 'return_types', 'kind': 'list(string)'}, {'name': 'return_type_const', 'kind': 'list(bool)'}, {'name': 'body', 'kind': 'node'}, {'name': 'access', 'kind': 'string'}, {'name': 'modifiers', 'kind': 'list(string)'}]

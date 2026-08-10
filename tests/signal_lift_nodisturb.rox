@@ -1,0 +1,27 @@
+// Adding a node is a STRUCTURAL change: it must not advance time. Wiring more
+// nodes into a network never steps an already-closed feedback loop, and nodes
+// created at different moments stay in phase with each other.
+
+var q = signal(4.0, 0)
+q <- q[-1] + 1
+var atClose = int(q)
+
+// add several more nodes reading the same wire
+var a = q + 100
+var b = q + 200
+var d = q + 300
+var e = q + 400
+var f = q + 500
+
+// the loop has not been stepped by the wiring
+print(int(q) == atClose)
+
+// every node agrees with the wire it reads, regardless of creation order
+print(int(a) - int(q))
+print(int(b) - int(q))
+print(int(f) - int(q))
+
+// and they stay in agreement once the network runs
+wait(us=600000)
+print(int(a) - int(q))
+print(int(f) - int(q))

@@ -1,0 +1,51 @@
+// Multi-return: '-> [T0, T1, ...]' declares N return values (NOT one list).
+// Each element is converted to its declared type; the call yields a list
+// that can be destructured, or captured whole.
+
+func pair() -> [real, int]:
+  return [1, 2]
+
+[a, b] = pair()
+print(a)
+print(b)
+print(typeof(a))  // real - element converted to its declared type
+print(typeof(b))  // int
+
+// captured whole, the call is an ordinary list
+var whole = pair()
+print(whole)
+print(typeof(whole))
+print(len(whole))
+
+// the returned value need not be a literal
+func viaVar(k :int) -> [int, int, int]:
+  var l :list
+  l.append(k)
+  l.append(k+1)
+  l.append(k+2)
+  return l
+
+[c, d, e] = viaVar(10)
+print("{c} {d} {e}")
+
+// slicing the result instead of destructuring (useful for wide results)
+var res = viaVar(100)
+print(res[0])
+print(res[1..2])
+
+// single declared return type is unchanged: '-> [T]' is just '-> T'
+func one() -> [real]:
+  return 3.5
+print(one())
+
+// expression-body lambda form
+var lam = func(k :int) -> [int, int]: [k, k*2]
+[f, g] = lam(4)
+print("{f} {g}")
+
+// a func declared '-> list' returns ONE list (no multi-return convention)
+func single() -> list:
+  return [1, 2, 3]
+var s = single()
+print(typeof(s))
+print(len(s))

@@ -1,0 +1,27 @@
+// A func declared '-> [T, ...]' used as a dataflow node has one output
+// SIGNAL per declared return type (a func declared '-> list' would instead
+// have one output signal carrying a list).
+
+func minmax(v :int) -> [int, int]:
+  return [v - 1, v + 1]
+
+var c = clock(10)
+[lo, hi] = minmax(c)
+print(typeof(lo))
+print(typeof(hi))
+
+// both outputs track the input independently
+c.tick()
+wait(us=120000)
+print("{int(lo)} {int(hi)}")
+c.tick()
+wait(us=120000)
+print("{int(lo)} {int(hi)}")
+
+// a func returning 'list' produces ONE list-valued signal instead
+func aslist(v :int) -> list:
+  return [v, v]
+
+var one = aslist(c)
+print(typeof(one))
+print(len(list(one)))

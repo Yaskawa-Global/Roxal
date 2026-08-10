@@ -902,7 +902,22 @@ void VarDecl::acceptChildren(ASTVisitor& v, Anys& results)
 
 void VarDecl::output(std::ostream& os, int indent) const
 {
-    os << spaces(indent)+"VarDecl " << (access==Access::Private?"private ":"") << (isConst ? "const " : "") << toUTF8StdString(name);
+    os << spaces(indent)+"VarDecl " << (access==Access::Private?"private ":"") << (isConst ? "const " : "");
+    if (!targets.empty()) {
+        os << "[";
+        for (size_t i = 0; i < targets.size(); i++) {
+            if (i > 0) os << ", ";
+            os << toUTF8StdString(targets.at(i).name);
+            if (targets.at(i).varType.has_value()) {
+                if (std::holds_alternative<TypeName>(targets.at(i).varType.value()))
+                    os << " :" << toUTF8StdString(joinTypeName(std::get<TypeName>(targets.at(i).varType.value())));
+                else if (std::holds_alternative<BuiltinType>(targets.at(i).varType.value()))
+                    os << " :" << to_string(std::get<BuiltinType>(targets.at(i).varType.value()));
+            }
+        }
+        os << "]";
+    }
+    os << toUTF8StdString(name);
     if (varType.has_value()) {
         if (std::holds_alternative<TypeName>(varType.value()))
             os << " :" << toUTF8StdString(joinTypeName(std::get<TypeName>(varType.value())));

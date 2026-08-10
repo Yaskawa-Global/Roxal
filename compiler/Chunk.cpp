@@ -341,6 +341,14 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return jumpInstruction("JUMP_IF_FALSE", 1, offset);
         case OpCode::JumpIfTrue:
             return jumpInstruction("JUMP_IF_TRUE", 1, offset);
+        case OpCode::AndShortCircuit:
+            return jumpInstruction("AND_SHORT_CIRCUIT", 1, offset);
+        case OpCode::OrShortCircuit:
+            return jumpInstruction("OR_SHORT_CIRCUIT", 1, offset);
+        case OpCode::CheckReturnList:
+            return byteInstruction("CHECK_RETURN_LIST", offset);
+        case OpCode::CheckDeclList:
+            return byteInstruction("CHECK_DECL_LIST", offset);
         case OpCode::Jump:
             return jumpInstruction("JUMP", 1, offset);
         case OpCode::Loop:

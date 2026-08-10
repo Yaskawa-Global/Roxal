@@ -137,6 +137,12 @@ public:
     Value lastValue() const;
     // Retrieve the timestamp of the most recent sample if available.
     TimePoint latestSampleTime() const;
+    // True once the signal carries any sample at all (a clock that has never
+    // been evaluated carries none).
+    bool hasValues() const {
+        std::lock_guard<std::recursive_mutex> lock(m_valuesMutex);
+        return !values.empty();
+    }
 
     // Value at a negative index relative to the most recent value
     //   index 0 -> last value

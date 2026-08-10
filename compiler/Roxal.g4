@@ -233,6 +233,11 @@ with_stmt
 
 var_decl // FIXME: use ident_opt_type
  : annotation* (VAR | CONST) IDENTIFIER (':' const_qualifier? (builtin_type | type_name))? (EQUALS expression at_clause?)?
+ | annotation* (VAR | CONST) '[' var_target (',' var_target)* ']' EQUALS expression  // declaring destructure
+ ;
+
+var_target
+ : IDENTIFIER (':' const_qualifier? (builtin_type | type_name))?
  ;
 
 ident_opt_type

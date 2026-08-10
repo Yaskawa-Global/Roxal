@@ -1,0 +1,6 @@
+// Run with --check: parses, type-checks and compiles without executing.
+// A compile-stage error is reported (with this file's own positions) and the
+// exit status is nonzero.  The print below never runs -- if --check ever
+// executed the program, this test's stdout would not be empty.
+print("this must not run")
+const [a, b] = [1, 2]

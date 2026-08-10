@@ -1,0 +1,4 @@
+// the initializer of a destructuring declaration must yield a list
+var v = 7
+var [a, b] = v
+print(a)

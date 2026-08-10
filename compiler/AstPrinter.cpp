@@ -486,6 +486,25 @@ void AstPrinter::varDecl(const VarDecl& n, bool asStatement)
     if (n.access == Access::Private)
         s += "private ";
     s += n.isConst ? "const " : "var ";
+    if (!n.targets.empty()) {
+        s += "[";
+        for (size_t i = 0; i < n.targets.size(); i++) {
+            const auto& target = n.targets.at(i);
+            if (i > 0) s += ", ";
+            s += identText(target.name);
+            if (target.varType.has_value()) {
+                s += ":";
+                if (target.isTypeConst) s += "const ";
+                if (target.isTypeMutable) s += "mutable ";
+                s += varTypeText(target.varType.value());
+            }
+        }
+        s += "]";
+        if (n.initializer.has_value() && n.initializer.value())
+            s += " = " + exprTop(*n.initializer.value());
+        emitLine(s);
+        return;
+    }
     s += identText(n.name);
     if (n.varType.has_value()) {
         s += ":";

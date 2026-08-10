@@ -1,0 +1,7 @@
+// a multi-return func must return a list of the declared values
+func two() -> [int, int]:
+  var v = 7
+  return v
+
+[a, b] = two()
+print(a)

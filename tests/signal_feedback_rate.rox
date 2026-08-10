@@ -1,0 +1,26 @@
+// A signal's declared frequency must be honoured whether or not its island
+// happens to contain a source signal.
+//
+// The engine ticks on the GCD of the SOURCE signal periods
+// (DataflowEngine::buildNetworkCacheData -> longestDividingPeriod).  '<-'
+// makes its left side derived (copyInto copies isSource from the right), so an
+// island built purely from feedback loops contributes no period at all: the
+// GCD of the empty set is zero and the engine falls back to a fixed rate of
+// about 20 Hz, while freq() still reports what was declared.
+//
+// Adding any source signal anywhere in the PROGRAM masks this, because the
+// tick grid is global - which is why examples/crc.rox is correct at 100 Hz
+// once it has a clock, and was silently slow before it had one.
+
+func inc(v :int) -> int:
+  return v + 1
+
+var fast = signal(50.0, 0)
+fast <- inc(fast[-1])
+
+print(fast.freq())
+
+// 50 Hz over 2 s is ~100 steps; the fallback yields ~40.  The bound is
+// deliberately loose so machine load cannot flip it.
+wait(ms=2000)
+print(int(fast) > 60)

@@ -2327,7 +2327,7 @@ static Value roxal::signalUnaryOp(const std::string& name,
     if (isSignal(v))
         sigArgs.push_back(asSignal(v)->signal);
     else
-        constArgs["val"] = v;
+        constArgs["val"] = createFrozenSnapshot(v); // never share a mutable ref with the DF thread
 
     auto uniqueName = df::DataflowEngine::uniqueFuncName(name);
     ptr<df::FuncNode> node = roxal::make_ptr<df::FuncNode>(
@@ -2341,7 +2341,7 @@ static Value roxal::signalUnaryOp(const std::string& name,
 
     node->addToEngine();
     auto outputs = node->outputs();
-    df::DataflowEngine::instance()->evaluate();
+    df::DataflowEngine::instance()->initializeNode(node);
     return Value::signalVal(outputs[0]);
 }
 
@@ -2356,12 +2356,12 @@ static Value signalBinaryOp(const std::string& name,
     if (isSignal(l))
         sigArgs.push_back(asSignal(l)->signal);
     else
-        constArgs["lhs"] = l;
+        constArgs["lhs"] = createFrozenSnapshot(l); // never share a mutable ref with the DF thread
 
     if (isSignal(r))
         sigArgs.push_back(asSignal(r)->signal);
     else
-        constArgs["rhs"] = r;
+        constArgs["rhs"] = createFrozenSnapshot(r);
 
     auto uniqueName = df::DataflowEngine::uniqueFuncName(name);
     ptr<df::FuncNode> node = roxal::make_ptr<df::FuncNode>(
@@ -2375,7 +2375,7 @@ static Value signalBinaryOp(const std::string& name,
 
     node->addToEngine();
     auto outputs = node->outputs();
-    df::DataflowEngine::instance()->evaluate();
+    df::DataflowEngine::instance()->initializeNode(node);
     return Value::signalVal(outputs[0]);
 }
 
@@ -2488,6 +2488,13 @@ Value roxal::add(Value l, Value r)
         return signalBinaryOp("add",
                               [](Value a, Value b) { return add(a, b); },
                               l, r);
+    }
+    else if (isString(l)) {
+        // String concatenation — string behaves as if it has a built-in
+        // operator+ (mirrors the VM Add handler, so lifted dataflow nodes
+        // can stringify per tick).  A non-string LHS with string RHS stays
+        // an error, matching scalar semantics.
+        return Value::stringVal(asUString(l) + toUnicodeString(toString(r)));
     }
     else if (isList(l) && isList(r)) {
         // List + List → concatenation. New top-level list; element refs are
@@ -2908,6 +2915,72 @@ Value roxal::lor(Value l, Value r)
     }
 
     return Value::boolVal(l.asBool() || r.asBool());
+}
+
+
+Value roxal::in(Value needle, Value container, bool strict)
+{
+    if (isSignal(needle) || isSignal(container)) {
+        return signalBinaryOp("in",
+                              [strict](Value n, Value c) { return in(n, c, strict); },
+                              needle, container);
+    }
+
+    bool result = false;
+
+    if (isList(container)) {
+        ObjList* list = asList(container);
+        for (int32_t i = 0; i < list->length(); i++) {
+            if (needle.equals(list->getElement(i), strict)) {
+                result = true;
+                break;
+            }
+        }
+    }
+    else if (isDict(container)) {
+        result = asDict(container)->contains(needle);
+    }
+    else if (isString(container)) {
+        if (!isString(needle))
+            throw std::invalid_argument("'in' for string requires string operand on left side");
+        result = (asStringObj(container)->s.indexOf(asStringObj(needle)->s) >= 0);
+    }
+    else if (isRange(container)) {
+        ObjRange* range = asRange(container);
+        if (!needle.isNumber())
+            throw std::invalid_argument("'in' for range requires numeric operand on left side");
+        double val = needle.asReal();
+        double start = range->start.isNil() ? 0 : range->start.asReal();
+        double stop = range->stop.asReal();
+        double step = range->step.isNil() ? 1.0 : range->step.asReal();
+
+        if (step > 0) {
+            bool inBounds = range->closed
+                ? (val >= start && val <= stop)
+                : (val >= start && val < stop);
+            if (inBounds && step != 1.0) {
+                double offset = val - start;
+                result = (fmod(offset, step) == 0);
+            } else {
+                result = inBounds;
+            }
+        } else {
+            // Negative step (reverse range)
+            bool inBounds = range->closed
+                ? (val <= start && val >= stop)
+                : (val <= start && val > stop);
+            if (inBounds && step != -1.0) {
+                double offset = start - val;
+                result = (fmod(offset, -step) == 0);
+            } else {
+                result = inBounds;
+            }
+        }
+    }
+    else
+        throw std::invalid_argument("'in' operator requires list, dict, string, or range on right side");
+
+    return Value::boolVal(result);
 }
 
 

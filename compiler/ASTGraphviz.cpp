@@ -249,6 +249,14 @@ std::any ASTGraphviz::visit(ptr<ast::VarDecl> ast)
         addLink(name, stackPop());
 
     std::string label = toUTF8StdString(ast->name);
+    if (!ast->targets.empty()) { // declaring destructure 'var [a, b] = ...'
+        label = "[";
+        for (size_t i = 0; i < ast->targets.size(); i++) {
+            if (i > 0) label += ", ";
+            label += toUTF8StdString(ast->targets.at(i).name);
+        }
+        label += "]";
+    }
     if (ast->isConst)
         label = "const " + label;
     nodes[name] = node(name,"VarDecl",label);

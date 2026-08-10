@@ -1,0 +1,1 @@
+cannot branch on a signal; sample it explicitly \(e\.g\. bool\(sig\)\) or react with 'when \.\.\. becomes'

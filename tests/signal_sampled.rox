@@ -1,0 +1,32 @@
+// list.sampled() takes a BUNDLE - a list of signals, as a multi-output node
+// returns - at ONE instant.  Reading each wire separately can straddle a tick
+// boundary and produce a set of values that never existed together.
+
+func minmax(v :int) -> [int, int]:
+  return [v - 1, v + 1]
+
+var c = clock(10)
+var bundle = minmax(c)
+c.tick()
+wait(us=250000)
+
+print(typeof(bundle[0]))
+var vals = bundle.sampled()
+print(vals)
+print(typeof(vals[0]))
+
+// non-signal elements pass through, so it works on a mixed list too
+print([bundle[0], 7, "x"].sampled())
+print([1, 2, 3].sampled())
+
+// the bundle itself is untouched - it is still a list of live wires
+print(typeof(bundle[0]))
+c.tick()
+wait(us=250000)
+print(bundle.sampled())
+
+// a cast samples exactly as deep as the target type constrains: 'list' says
+// nothing about its elements, so list(bundle) leaves them as signals, while
+// a vector's elements must be reals, so each one converts (and so samples)
+print(typeof(list(bundle)[0]))
+print(vector(bundle))

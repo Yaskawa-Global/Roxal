@@ -1,0 +1,235 @@
+// A digital circuit built from bool signals: a 4-bit counter feeding a
+// latch bank and a seven-segment decoder, displayed as ASCII.
+//
+// There is no update loop anywhere below. Every line builds part of a signal
+// network and the dataflow engine evaluates it on clock boundaries.
+//
+// Two things here are impossible to write with plain values, and they are the
+// point of the example:
+//
+//   * STATE. The counter is a feedback loop: its next value depends on its own
+//     previous value, written `q[-1]`. A loop like that is a property of the
+//     graph, not of any one computation.
+//   * MULTIPLE RATES. The counter runs at 1 Hz while the latch enable toggles
+//     every 4 s. The engine runs both and the latch samples across the rate
+//     boundary, so the display freezes for four counts at a time while the
+//     counter keeps running underneath.
+//
+// Everything else - the gates, the adder, the decoder - is ordinary
+// combinational logic that could equally well be written over values.
+//
+// Run it with:  ./build/roxal examples/circuit.rox
+
+const CLK    = 1.0    // counter clock, Hz
+const ENABLE = 0.25   // latch-enable toggle, Hz (a 4 s period)
+const RUN_S  = 26
+
+
+// ---------------------------------------------------------------------------
+// BEHAVIOURAL functions: parameters are values.
+//
+// Calling one of these with signals does not call it - it becomes a NODE in
+// the graph, re-evaluated whenever an input changes. Its body then describes
+// what the node computes on each tick. Nesting is free: everything a
+// behavioural function calls internally is part of that one node, which is
+// also how the real hardware works - a 74LS08 is one package whose internals
+// are not separately observable.
+// ---------------------------------------------------------------------------
+
+// 74LS00 quad 2-input NAND - the universal gate; everything below is built
+// from it, so the whole circuit is really one part number repeated.
+func ls00_nand(a :bool, b :bool) -> bool:
+  return not (a and b)
+
+// 74LS04 hex inverter
+func ls04_inv(a :bool) -> bool:
+  return ls00_nand(a, a)
+
+// 74LS08 quad AND
+func ls08_and(a :bool, b :bool) -> bool:
+  return ls04_inv(ls00_nand(a, b))
+
+// 74LS86 quad XOR (four NANDs, as in the real die)
+func ls86_xor(a :bool, b :bool) -> bool:
+  var n = ls00_nand(a, b)
+  return ls00_nand(ls00_nand(a, n), ls00_nand(b, n))
+
+// 74LS183 half adder: TWO outputs, so it is declared '-> [bool, bool]'.
+// Wired into the network this becomes a node with two output signals; called
+// with plain values it returns the two values, unpacked by '[s, c] = ...'.
+func ls183_half_add(a :bool, b :bool) -> [bool, bool]:
+  return [ls86_xor(a, b), ls08_and(a, b)]
+
+// 74LS161 4-bit counter, combinational part: q + 1 when the count-enable pin
+// is high, else hold. Four bits in, four bits out - one node with four output
+// signals.
+//
+// Each half adder yields [sum, carry], unpacked with 'var [s, c] = ...' - the
+// declaring form, which makes locals. (The plain '[s, c] = ...' form assigns to
+// existing targets, and otherwise creates module variables, which a function
+// node may not write.)
+func ls161_next(q0 :bool, q1 :bool, q2 :bool, q3 :bool, count_en :bool) -> [bool, bool, bool, bool]:
+  var [s0, c0] = ls183_half_add(q0, count_en)   // the +1 enters here
+  var [s1, c1] = ls183_half_add(q1, c0)
+  var [s2, c2] = ls183_half_add(q2, c1)
+  var [s3, c3] = ls183_half_add(q3, c2)         // c3, the carry out, is unconnected
+  return [s0, s1, s2, s3]
+
+
+// 74LS75 transparent D-latch, one bit: follows d while enabled, else holds.
+// `held` is fed from the latch's own previous output - see ls75_quad below.
+func ls75_bit(d :bool, en :bool, held :bool) -> bool:
+  if en:
+    return d
+  return held
+
+// 74LS47 BCD-to-seven-segment decoder, extended to hex so the full 0-F count
+// is displayable. Seven outputs: '-> [bool x 7]', segments a..g.
+//
+// The patterns live as bytes (segment a in the most significant bit) and
+// bytes_to_bits unpacks one back into the seven output bools - the exact
+// inverse of the bits_to_bytes call in `nibble` below.
+func ls47_decode(b0 :bool, b1 :bool, b2 :bool, b3 :bool) -> [bool, bool, bool, bool, bool, bool, bool]:
+  var patterns = [byte(0xFC), byte(0x60), byte(0xDA), byte(0xF2),   // 0 1 2 3
+                  byte(0x66), byte(0xB6), byte(0xBE), byte(0xE0),   // 4 5 6 7
+                  byte(0xFE), byte(0xF6), byte(0xEE), byte(0x3E),   // 8 9 A b
+                  byte(0x9C), byte(0x7A), byte(0x9E), byte(0x8E)]   // C d E F
+  var seg = bytes_to_bits([patterns[nibble(b0, b1, b2, b3)]])
+  return [seg[0], seg[1], seg[2], seg[3], seg[4], seg[5], seg[6]]
+
+// four bits (b0 = least significant) as a number, via the packed-bit builtin
+func nibble(b0 :bool, b1 :bool, b2 :bool, b3 :bool) -> int:
+  return int(bits_to_bytes([b0, b1, b2, b3], msb_first=false)[0])
+
+
+// ---------------------------------------------------------------------------
+// STRUCTURAL functions: parameters are declared ':signal'.
+//
+// These receive the wires themselves and are NOT turned into nodes. The body
+// runs once, as wiring code, and whatever it calls inside becomes real
+// sub-nodes. They nest as deeply as you like - a structural function may call
+// other structural functions - so a design is not limited to two levels.
+// A structural function may also own state, by declaring a signal and closing
+// a feedback loop around it.
+// ---------------------------------------------------------------------------
+
+// A bank of four latch bits sharing one enable. Each bit closes its own
+// feedback loop, so this function holds the displayed value between enables.
+// It returns a BUNDLE: four separate wires that tick independently.
+func ls75_quad(d0 :signal, d1 :signal, d2 :signal, d3 :signal, en :signal) -> [signal, signal, signal, signal]:
+  var q0 = signal(CLK, false)
+  var q1 = signal(CLK, false)
+  var q2 = signal(CLK, false)
+  var q3 = signal(CLK, false)
+  q0 <- ls75_bit(d0, en, q0[-1])
+  q1 <- ls75_bit(d1, en, q1[-1])
+  q2 <- ls75_bit(d2, en, q2[-1])
+  q3 <- ls75_bit(d3, en, q3[-1])
+  return [q0, q1, q2, q3]
+
+
+// ---------------------------------------------------------------------------
+// Top level: wiring it all together. Module scope is structural too - these
+// lines build the network, they do not run repeatedly.
+// ---------------------------------------------------------------------------
+
+// The counter's four flip-flop outputs, and the latch enable. Declaring the
+// wires first is what lets the feedback lines below refer to their previous
+// values.
+var q0 = signal(CLK, false)
+var q1 = signal(CLK, false)
+var q2 = signal(CLK, false)
+var q3 = signal(CLK, false)
+var latch_open = signal(ENABLE, true)
+
+// The counter's count-enable pin (CEP on a real 74LS161), held low until the
+// whole circuit is wired and then asserted at the bottom of the file. Gating a
+// feedback loop on a plain bool signal like this is how you start, stop or
+// single-step any stateful part of a network.
+var power_on = signal(CLK, false)
+
+// THE FEEDBACK LOOPS. One ls161_next node reads the counter's previous outputs
+// and drives the next ones; a 74LS74 D-flip-flop wired as a divide-by-two -
+// an inverter in its own feedback path - gives the slow latch-enable square
+// wave. Note that it runs at its OWN rate, a quarter of the counter's.
+//
+// Note the [-1]: without the delay tap these would be algebraic loops (q needs
+// next, next needs q, both on the same tick) and the nodes would simply never
+// settle. The delay is what makes a counter out of an adder.
+//
+// Both sides of a '<-' must share a frequency, which is why the slow loop
+// cannot take the counter's count-enable as an input.
+[n0, n1, n2, n3] = ls161_next(q0[-1], q1[-1], q2[-1], q3[-1], power_on)
+q0 <- n0
+q1 <- n1
+q2 <- n2
+q3 <- n3
+latch_open <- ls04_inv(latch_open[-1])
+
+// The latch bank, sampling the fast counter with the slow enable.
+[h0, h1, h2, h3] = ls75_quad(q0, q1, q2, q3, latch_open)
+
+// Two decoder nodes: one on the live count, one on the held value. Keeping
+// each result as a plain list gives a bundle of seven segment wires.
+var live_segments = ls47_decode(q0, q1, q2, q3)
+var held_segments = ls47_decode(h0, h1, h2, h3)
+
+
+// ---------------------------------------------------------------------------
+// Display: a seven-segment digit as ASCII.
+// ---------------------------------------------------------------------------
+
+func bar(on :bool) -> string:
+  if on:
+    return "----"
+  return "    "
+
+func post(on :bool) -> string:
+  if on:
+    return "|"
+  return " "
+
+// segments arrive as [a, b, c, d, e, f, g]
+func digit_rows(s :list) -> list:
+  var rows = []
+  rows.append(" " + bar(s[0]) + " ")
+  rows.append(post(s[5]) + "    " + post(s[1]))
+  rows.append(" " + bar(s[6]) + " ")
+  rows.append(post(s[4]) + "    " + post(s[2]))
+  rows.append(" " + bar(s[3]) + " ")
+  return rows
+
+proc show():
+  var state = "held"
+  if bool(latch_open):
+    state = "open"
+  // Sample every wire once, here, and derive the whole frame from that one
+  // set of values - reading a signal twice can straddle a tick boundary.
+  // list.sampled() takes a whole bundle at one instant.
+  var counter = [q0, q1, q2, q3].sampled()
+  var latched = [h0, h1, h2, h3].sampled()
+  var live = digit_rows(live_segments.sampled())
+  var held = digit_rows(held_segments.sampled())
+  // nibble() called on plain bools is an ordinary call, not a node
+  print("count {nibble(counter[0], counter[1], counter[2], counter[3])}   latch {state}   showing {nibble(latched[0], latched[1], latched[2], latched[3])}")
+  var i = 0
+  while i < 5:
+    print("   " + live[i] + "      " + held[i])
+    i = i + 1
+  print("    count          display")
+  print("")
+
+// The only thing driving output: the counter's least significant bit, which
+// toggles once per tick. Everything above is a graph; this is the one place
+// values leave it.
+when q0 changes:
+  show()
+
+print("74LS counter -> latch -> 7-segment; {CLK} Hz count, latch toggles every {int(1.0/ENABLE)} s")
+print("")
+
+// Everything above only described the circuit. This applies power.
+power_on.set(true)
+
+wait(s=RUN_S)
+print("done")

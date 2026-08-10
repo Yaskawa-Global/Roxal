@@ -1,0 +1,33 @@
+// Params declared ':signal' receive signals as first-class values, so the
+// func is NOT lifted: it runs once as WIRING code and its interior calls
+// lift sub-nodes.  Chips are funcs over values; boards are funcs over signals.
+
+// chips: behavioral, over values
+func nand(a :bool, b :bool) -> bool:
+  return not (a and b)
+
+// boards: structural, over signals
+func not_gate(x :signal) -> signal:
+  return nand(x, x)
+
+func and_gate(a :signal, b :signal) -> signal:
+  return not_gate(nand(a, b))
+
+func or_gate(a :signal, b :signal) -> signal:
+  return nand(not_gate(a), not_gate(b))
+
+var c = clock(10)
+even = (c rem 2) == 0
+big = c > 2
+
+var andOut = and_gate(even, big)
+var orOut = or_gate(even, big)
+print(typeof(andOut))
+print(typeof(orOut))
+
+var i = 0
+while i < 5:
+  c.tick()
+  wait(us=120000)
+  print("c={int(c)} even={bool(even)} big={bool(big)} and={bool(andOut)} or={bool(orOut)}")
+  i = i + 1

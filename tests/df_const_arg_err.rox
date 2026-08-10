@@ -1,0 +1,13 @@
+// Non-signal args to a lifted func become WIRING CONSTANTS, re-pushed on
+// the dataflow thread every tick.  They are frozen at wiring time so a
+// mutable list/dict/object is never shared writable across threads.
+func tally(v :int, into :list) -> int:
+  into.append(v)
+  return len(into)
+
+var c = clock(10)
+var acc = [1, 2]
+var out = tally(c, acc)
+c.tick()
+wait(us=200000)
+print(int(out))

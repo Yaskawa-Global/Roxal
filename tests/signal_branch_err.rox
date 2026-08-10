@@ -1,0 +1,7 @@
+// branching on a signal would silently freeze one moment in time
+// (and 'while sig:' would re-lift a node per iteration), so it is an error:
+// sample explicitly instead.
+var c = clock(10)
+t = c > 1
+if t:
+  print("yes")

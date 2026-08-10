@@ -1,0 +1,6 @@
+// a 'return [..]' literal has statically known arity, so a mismatch with the
+// declared multi-return is a COMPILE error
+func three() -> [int, int, int]:
+  return [1, 2]
+
+print(three())

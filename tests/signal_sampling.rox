@@ -1,0 +1,49 @@
+// Where signals are SAMPLED vs where they stay live wires.
+// Rule: arithmetic on a signal lifts into a dataflow node; rendering a
+// signal to text samples it (both '+' with a string LHS and "{...}"
+// interpolation), and explicit casts sample.
+
+var c = clock(10)
+c.tick()
+wait(us=120000)
+
+// rendering samples -> plain string values
+var viaConcat = "c=" + c
+var viaInterp = "c={c}"
+print(typeof(viaConcat))
+print(typeof(viaInterp))
+print(viaConcat)
+print(viaInterp)
+
+// print() samples too (its value param is declared :string)
+print(c)
+
+// explicit casts sample
+var sampled = int(c)
+print(typeof(sampled))
+
+// arithmetic lifts
+var sum = c + 1
+var cmp = c > 0
+print(typeof(sum))
+print(typeof(cmp))
+
+// a sampled string is a snapshot: it does not follow later ticks,
+// while the lifted arithmetic signal does
+c.tick()
+wait(us=120000)
+print(viaConcat)
+print("c={c}")
+print(int(sum))
+
+// to get a LIVE string signal, name the computation in a func
+func label(v :int) -> string:
+  return "c=" + v
+
+var live = label(c)
+print(typeof(live))
+wait(us=350000)   // let the new node join the island's tick cycle
+print(string(live))
+c.tick()
+wait(us=350000)
+print(string(live))

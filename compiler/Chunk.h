@@ -122,6 +122,15 @@ enum class OpCode {
                    // so that Concat below only ever sees strings.
     Concat,        // pop N strings (1-byte arg), push their concatenation (one allocation).
                    // Every operand is guaranteed already a string: see ToStringPart.
+    CheckReturnList, // multi-return arity guard: peek top, require a list of exactly
+                     // N elements (1-byte arg). No stack change.
+    CheckDeclList,   // as CheckReturnList, for 'var [a, b] = ...' (differs only in
+                     // the message it raises).
+    AndShortCircuit, // 'and' short-circuit: jump (2-byte dist) if top is a non-signal
+                     // falsey value. Never pops; signals always fall through to the
+                     // And combine so they can lift into a dataflow node.
+    OrShortCircuit,  // 'or' short-circuit: jump (2-byte dist) if top is a non-signal
+                     // truthy value. Never pops (see AndShortCircuit).
     _Last
 };
 

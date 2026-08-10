@@ -1,0 +1,7 @@
+<type signal>
+<type signal>
+c=1 even=false big=false and=false or=false
+c=2 even=true big=false and=false or=true
+c=3 even=false big=true and=false or=true
+c=4 even=true big=true and=true or=true
+c=5 even=false big=true and=false or=true

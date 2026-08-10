@@ -1,0 +1,9 @@
+<type signal>
+[0, 2]
+<type int>
+[0, 7, "x"]
+[1, 2, 3]
+<type signal>
+[1, 3]
+<type signal>
+[1 3]

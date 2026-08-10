@@ -13,6 +13,24 @@
 
 using namespace df;
 
+namespace {
+
+// Publish-safe snapshot of a value stored into a signal: value-semantics
+// types (tensor/vector/matrix/orient) COW-clone exactly like assignment;
+// list/dict payloads are frozen (createFrozenSnapshot) so producer and
+// samplers never share a writable reference across threads.  Object/actor
+// payloads deliberately pass through (e.g. DDS message flows).
+roxal::Value snapshotForSignal(const roxal::Value& v)
+{
+    if (v.isConst())
+        return v;
+    if (roxal::isList(v) || roxal::isDict(v))
+        return roxal::createFrozenSnapshot(v);
+    return roxal::cloneIfValueSemantics(v);
+}
+
+}
+
 
 uint64_t df::nextGraphId()
 {
@@ -95,10 +113,10 @@ Signal::Signal(double freq, Value initial, std::optional<std::string> name)
         m_period = TimeDuration::microSecs(static_cast<int64_t>(period_round));
     }
 
-    // Snapshot value-semantics types (tensor/vector/matrix/orient) on store,
-    // exactly like assignment does (COW): the creator keeping its reference
-    // and mutating in place must never alter what samplers observe.
-    values[TimePoint::zero()] = roxal::cloneIfValueSemantics(initial);
+    // Snapshot on store (value-semantics COW clone; list/dict frozen): the
+    // creator keeping its reference and mutating in place must never alter
+    // what samplers observe.
+    values[TimePoint::zero()] = snapshotForSignal(initial);
 }
 
 
@@ -224,13 +242,13 @@ void Signal::setValueAt(TimePoint t, const Value& v)
 #endif
     }
 
-    // Snapshot value-semantics types (tensor/vector/matrix/orient) on store,
-    // exactly like assignment does (COW, O(1)): the setter keeping its
-    // reference and mutating in place must never alter what samplers (or
-    // change-event payloads) observe.  Reads already snapshot symmetrically.
+    // Snapshot on store, exactly like assignment does for value-semantics
+    // types (COW, O(1)); list/dict payloads are frozen so the setter keeping
+    // its reference and mutating in place can never alter what samplers (or
+    // change-event payloads) observe — mutation attempts fail loudly instead.
     // Const (frozen) values need no snapshot at all — immutability makes the
     // reference itself safe to share, so publishing a const tensor is free.
-    Value stored = v.isConst() ? v : roxal::cloneIfValueSemantics(v);
+    Value stored = snapshotForSignal(v);
 
     bool notifyChange = false;
     {
@@ -335,7 +353,10 @@ TimePoint Signal::latestSampleTime() const
 Value Signal::valueAtIndex(int index, std::optional<TimePoint> referenceTime) const
 {
     if (index > 0)
-        throw std::invalid_argument("Signal index must be 0 or negative");
+        throw std::invalid_argument(
+            "Signal index must be 0 or negative (sig[-1] is the value one period ago). "
+            "To sample a signal use a cast like real(sig); a func returning a list "
+            "produces ONE list-valued signal - declare '-> [T, ...]' for multiple outputs");
 
     std::lock_guard<std::recursive_mutex> lock(m_valuesMutex);
     if (values.empty())
@@ -362,7 +383,10 @@ Value Signal::valueAtIndex(int index, std::optional<TimePoint> referenceTime) co
 ptr<Signal> Signal::indexedSignal(int index)
 {
     if (index > 0)
-        throw std::invalid_argument("Signal index must be 0 or negative");
+        throw std::invalid_argument(
+            "Signal index must be 0 or negative (sig[-1] is the value one period ago). "
+            "To sample a signal use a cast like real(sig); a func returning a list "
+            "produces ONE list-valued signal - declare '-> [T, ...]' for multiple outputs");
 
     if (index == 0)
         return ptr_from_this();

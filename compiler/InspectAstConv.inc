@@ -227,6 +227,7 @@ static Value convVarDecl(InspectConv& cx, const ast::VarDecl& n)
     cx.setBool(v, "is_type_const", n.isTypeConst);
     cx.setBool(v, "is_type_mutable", n.isTypeMutable);
     cx.setOptNode(v, "at_host", n.atHost);
+    cx.setVarTargets(v, "targets", n.targets);
     return v;
 }
 
@@ -681,6 +682,7 @@ static ptr<ast::VarDecl> buildVarDecl(InspectBuild& bx, ObjectInstance* inst)
     n->isTypeConst = bx.getBool(inst, "is_type_const");
     n->isTypeMutable = bx.getBool(inst, "is_type_mutable");
     n->atHost = bx.getOptNodeAs<ast::Expression>(inst, "at_host");
+    n->targets = bx.getVarTargets(inst, "targets");
     return n;
 }
 

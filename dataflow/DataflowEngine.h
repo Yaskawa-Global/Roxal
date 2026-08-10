@@ -112,6 +112,12 @@ public:
     // analogue of VM::consumeNativeCallOverrun).
     std::vector<NodeOverrun> consumeNodeOverruns();
 
+    // Give a newly added node an initial output value, computed from its
+    // inputs as they are NOW.  Adding a node is a structural change: no other
+    // node is evaluated and no existing signal is re-stamped, so wiring never
+    // advances a feedback loop nor shifts an existing node's phase.
+    void initializeNode(const ptr<FuncNode>& node);
+
     // evaluate the network without advancing time or ticking clocks
     // useful for initializing signal values when new nodes are added
     void evaluate();

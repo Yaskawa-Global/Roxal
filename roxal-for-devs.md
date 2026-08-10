@@ -1460,6 +1460,194 @@ UI pipeline built this way. Note that dataflow function nodes execute on the
 engine's thread, where module variables are frozen — keep function nodes pure
 (inputs to output) and put stateful work in actors.
 
+**Signals and list/dict payloads.** A `list` or `dict` stored into a signal is
+frozen on store, giving the same guarantee by a different mechanism: the
+producer may keep mutating its own list, but what samplers see never changes.
+A sampled payload is therefore `const` — use `clone()` if you need to modify it.
+
+**Wiring constants.** Non-signal arguments to a lifted function become *wiring
+constants*: fixed at wiring time and re-supplied on every tick. They are frozen
+too, so a function node cannot mutate one (that would be a data race with the
+main thread).
+
+### Nodes with several outputs
+
+For inputs, a function node just takes several parameters. For **outputs**,
+declare several return types — `-> [T0, T1, ...]` means "this function yields N
+values", as distinct from `-> list`, which means "this function yields one
+list". The declaration decides, so the same function means the same thing
+whether you call it normally or wire it into the network:
+
+```php
+func minmax(v :int) -> [int, int]:
+  return [v - 1, v + 1]
+
+[lo, hi] = minmax(3)      // plain call: two values, 2 and 4
+[loSig, hiSig] = minmax(c)  // wired: a node with TWO output signals
+```
+
+`var [a, b] = ...` is the **declaring** form: it declares each target, so
+inside a function they are locals. The bracketed form without `var` assigns to
+targets that already exist — and, like any assignment to an undeclared name,
+otherwise creates *module* variables, which is both surprising inside a
+function and rejected outright inside a dataflow function node. Prefer `var`
+when introducing new names:
+
+```php
+var [lo, hi] = minmax(3)      // declares lo and hi
+[lo, hi] = minmax(7)          // assigns to the existing ones
+var [x, y :real] = minmax(3)  // targets may carry their own types
+```
+
+The list must have exactly as many elements as there are targets.
+
+A plain call returns the values as a list, so you can also capture the whole
+result and pick it apart afterwards — handy when there are too many outputs to
+name comfortably:
+
+```php
+var res = split(bus)   // a func declared '-> [real, real, real, real]'
+a = res[0]
+rest = res[1..3]       // an ordinary list slice
+```
+
+Note that a function declared `-> list` (or with no declared return type) still
+produces a single signal whose value is a list. Both remain useful: see *buses*
+below.
+
+### Behavioural and structural functions
+
+There are two ways to write a function that participates in the network, and
+the parameter declarations say which — the same split HDLs make between
+describing *what a block computes* and *how blocks are wired together*:
+
+* **Behavioural** — parameters are ordinary value types. Calling it with a
+  signal *lifts* it: the function becomes one node whose body runs on every
+  tick with the sampled inputs, and the call yields output signals.
+* **Structural** — parameters are declared `:signal`. The function receives the
+  signals themselves and is **not** lifted: the body runs *once*, as wiring
+  code, and whatever it calls internally becomes real nodes.
+
+```php
+// behavioural: describes what one node computes
+func nand(a :bool, b :bool) -> bool:
+  return not (a and b)
+
+// structural: runs once, wires two nand nodes together
+func and_gate(a :signal, b :signal) -> signal:
+  return nand(nand(a, b), nand(a, b))
+```
+
+Either kind may call either kind, to any depth, so a design is not limited to
+two levels: a structural function can wire up other structural functions, and a
+behavioural function can call any number of ordinary functions inside the one
+node it becomes. Module scope is structural too — the top level of a program
+that builds a network is wiring code.
+
+Write behavioural functions by default: `func`s calling `func`s over plain
+values is the simple case, and one lifted call re-runs that whole computation
+each tick. Reach for `:signal` parameters when a composite needs *network-level*
+structure inside it — feedback through a delay (`sig[-1]`), sub-nodes at
+different rates, or per-node visibility in `inspect`. A single call cannot do
+both at once: passing one signal to a `:signal` parameter and another to a
+value parameter is an error, since the body would have to be wiring code and
+per-tick code simultaneously.
+
+Feedback — and therefore state — is written by declaring a signal first and
+binding it afterwards with copy-into, so the expression can refer to the
+signal's own previous value. A structural function can do this internally and
+hand back the wire, which is how a block comes to own state:
+
+```php
+func latch(d :signal, en :signal) -> signal:
+  var q = signal(RATE, false)
+  q <- hold(d, en, q[-1])     // q[-1] is q one period ago
+  return q
+```
+
+Both sides of a `<-` must have the same frequency. See `examples/circuit.rox`
+for a worked example: a 74LS-series counter, latch and seven-segment decoder
+built from NAND gates, where the feedback loop and two clock rates are the
+parts that plain values could not express.
+
+### Buses
+
+Two different things are reasonably called a "bus", and the distinction is
+real, so Roxal keeps them separate and never converts implicitly:
+
+* A **bundle** is a plain list *of* signals — what a multi-output node returns.
+  It exists only at wiring time; the elements tick independently.
+* A **wide wire** is one signal whose value *is* composite — a `vector`,
+  `matrix`, `tensor` or `list`. It updates atomically, with a single timestamp.
+
+For a bus of bits, an `int` or `byte` signal with the bitwise operators
+(`&`, `|`, `^`, `~`) is usually the cheapest wide wire. To convert between the
+two forms, write a behavioural function — one taking N inputs and returning a
+single composite, or one declared `-> [T, ...]` to split a composite into N
+outputs.
+
+`bundle.sampled()` reads a whole bundle at **one instant**, returning a plain
+list of values (non-signal elements pass through unchanged). Prefer it to
+sampling each wire separately: two reads can straddle a tick boundary and give
+you a combination of values that never existed together.
+
+Note that a cast samples exactly as deep as its target type constrains.
+`vector(bundle)` samples, because a vector's elements must be reals so each one
+is converted; `list(bundle)` does not, because `list` says nothing about its
+elements and there is nothing to convert — it is still the bundle.
+
+### Operators on signals, and when sampling happens
+
+Arithmetic, comparison, bitwise and logical operators all *lift*: if either
+operand is a signal, the result is a new signal computed by a node. This
+includes `and`, `or` and `not` — with plain values these keep their usual
+short-circuit behaviour, but a signal operand cannot be short-circuited on
+(its value is not fixed), so it builds a node instead.
+
+This includes `lshift` and `rshift` — Roxal has no `<<` / `>>` tokens, so those
+two functions *are* the shift operators and behave like `&`, `|`, `^` and `~`.
+
+A **proc** never lifts. A proc yields no value, so there would be nothing for a
+node to carry — it is an action performed now, not a computation the network
+can hold. What its parameters receive follows the ordinary rules: a value-typed
+parameter (`v :int`) converts, and so samples the signal, which is why
+`print(sig)` prints the current value instead of printing on every tick; an
+untyped parameter has no conversion and receives the signal itself, as a
+`:signal` parameter would.
+
+To get a *value* out of a signal you must sample it explicitly, and there are
+exactly two ways:
+
+* an explicit cast: `int(c)`, `bool(flag)`, `vector(pose)`, or `c.value`
+* rendering it to text: `"c=" + c` and `"c={c}"` both sample, and so does
+  `print(c)` (its parameter is declared `:string`)
+
+Because rendering samples, a formatted string is a **snapshot** — it will not
+follow later ticks. If you want a string that *does* track the signal, name the
+computation in a function so it becomes a node:
+
+```php
+func label(v :int) -> string:
+  return "c=" + v
+
+txt = label(c)    // a live string signal
+```
+
+Branching on a signal is an error rather than an implicit sample:
+
+```php
+if c > 10:        // ERROR: cannot branch on a signal
+  ...
+if bool(c > 10):  // OK — an explicit sample at this instant
+  ...
+when c becomes 11:   // usually what you actually wanted
+  ...
+```
+
+This is deliberate: `c > 10` is a *signal* that changes over time, so silently
+freezing one moment of it is almost never what was meant — and in a loop it
+would build a new node on every iteration.
+
 
 ## Until
 

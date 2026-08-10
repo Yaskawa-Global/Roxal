@@ -1,0 +1,12 @@
+<type signal>
+<type signal>
+<type signal>
+12
+3
+3
+c=1 << 2 = 4   >> 1 = 0
+c=2 << 2 = 8   >> 1 = 1
+c=3 << 2 = 12   >> 1 = 1
+shown 3
+3
+3

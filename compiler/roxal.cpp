@@ -787,6 +787,7 @@ int main(int argc, const char* argv[])
         ("recompile", "ignore existing .roc cache files but write new ones")
         ("dis", "output dissasembly of VM bytecodes during compilation")
         ("precompile", "compile script and all imports without executing (ensures .roc cache files exist)")
+        ("check", "parse, type-check and compile without executing; never reads or writes .roc caches")
         ("ast", "parse only and output text Abstract Syntax Tree (AST)")
         ("astgraph", po::value< std::vector<std::string> >(), "parse only and output GraphViz dot file")
         ("gc-threshold", po::value<long long>(), gcOptionHelp.c_str())
@@ -904,7 +905,10 @@ int main(int argc, const char* argv[])
 
     VM::configureModulePaths(modulePaths);
 
-    const bool disableCache = vmap.count("nocache") > 0;
+    // --check must compile the source every time: a cache hit would skip the
+    // compile entirely and report success without having checked anything,
+    // and writing a .roc as a side effect of a read-only check is unwanted.
+    const bool disableCache = vmap.count("nocache") > 0 || vmap.count("check") > 0;
     const bool forceRecompile = (!disableCache) && vmap.count("recompile") > 0;
     VM::CacheMode cacheMode = VM::CacheMode::Normal;
     if (disableCache)
@@ -978,7 +982,7 @@ int main(int argc, const char* argv[])
 #ifdef ROXAL_COMPUTE_SERVER
     if (vmap.count("server")) {
         if (vmap.count("execute") || vmap.count("input-file") || vmap.count("ast") ||
-            vmap.count("astgraph") || vmap.count("precompile")) {
+            vmap.count("astgraph") || vmap.count("precompile") || vmap.count("check")) {
             std::cerr << "Error: --server cannot be combined with script execution or parse modes" << std::endl;
             return 1;
         }
@@ -1038,6 +1042,23 @@ int main(int argc, const char* argv[])
                 if (res != ExecutionStatus::OK)
                     return 1;
                 std::cout << "Precompilation successful: " << filename << std::endl;
+            }
+            else if (vmap.count("check")) {
+                // Same compile the runner does (parse, type deduction, code
+                // generation), stopping before execution.  cacheMode is forced
+                // to NoCache above, so this always compiles the source in front
+                // of it and errors carry that file's own positions.
+                //
+                // It cannot catch what only the VM knows: whether a call lifts
+                // into a dataflow node, the multi-return / destructure arity
+                // guards, and every signal-versus-value error are all decided
+                // at run time.
+                VM::instance().setCacheMode(cacheMode);
+                ExecutionStatus res =
+                    precompileFile(filename, modulePaths, /*outputBytecodeDisassembly=*/false);
+                if (res != ExecutionStatus::OK)
+                    return 1;
+                std::cout << "Check passed: " << filename << std::endl;
             }
             else {
                 bool outputBytecodeDisassembly = (vmap.count("dis") > 0);

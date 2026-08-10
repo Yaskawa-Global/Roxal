@@ -1,0 +1,37 @@
+// The type the compiler DEDUCES for an expression must match what the VM
+// actually produces, since deduction drives overload resolution and the
+// declared-type checks.
+
+func pick(v :signal) -> string:
+  return "signal"
+func pick(v :string) -> string:
+  return "string"
+func pick(v :int) -> string:
+  return "int"
+
+var c = clock(10)
+c.tick()
+wait(us=250000)
+
+// rendering to text samples, so a string LHS concatenation is a string even
+// with a signal on the right (a signal LHS stays arithmetic and lifts)
+print(typeof("x=" + c))
+print(pick("x=" + c))
+
+// membership lifts like the other operators
+print(typeof(c in [1, 2]))
+var member :signal = c in [1, 2]
+print(typeof(member))
+
+// arithmetic lifts
+print(typeof(c + 1))
+print(pick(c + 1))
+
+// a destructuring target shadows an outer variable of the same name, even
+// when its own type is not statically known
+var shadowed :string = "outer"
+func inner() -> string:
+  var [shadowed, other] = [1, 2]
+  return pick(shadowed)
+print(inner())
+print(pick(shadowed))

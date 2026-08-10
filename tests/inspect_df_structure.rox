@@ -1,0 +1,46 @@
+// inspect: a multi-return func node has one output PORT per declared return
+// type, and a ':signal' wiring func elaborates into real sub-nodes rather
+// than one opaque box.
+import inspect
+
+func minmax(v :real) -> [real, real]:
+  return [v - 1.0, v + 1.0]
+
+var src = signal(0, 1.0, 'src')
+[lo, hi] = minmax(src)
+
+var node = lo.network().nodes[0]
+print(len(node.inputs))
+print(len(node.outputs))
+print(node.outputs[0].name)
+print(node.outputs[1].name)
+// both output ports of the same node feed the two result signals
+print(hi.network().nodes[0].id == node.id)
+
+// a wiring func (':signal' params) runs once and builds sub-nodes: the
+// island holds one node per interior call, not a single lifted box
+func neg(x :real) -> real:
+  return -x
+
+func negate_twice(s :signal) -> signal:
+  return neg(neg(s))
+
+var w = signal(0, 2.0, 'w')
+var out = negate_twice(w)
+print(len(out.network().nodes))
+
+// Introspecting a network must not disturb it: reading ports and islands
+// alongside a running clock leaves the tick values alone.
+func plus1(v :int) -> int:
+  return v + 1
+
+var c = clock(10)
+var p = plus1(c)
+var ignored = len(p.network().nodes)
+c.tick()
+wait(us=150000)
+print("{int(c)} {int(p)}")
+var alsoIgnored = len(inspect.signals())
+c.tick()
+wait(us=150000)
+print("{int(c)} {int(p)}")

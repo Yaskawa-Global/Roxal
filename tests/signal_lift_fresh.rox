@@ -1,0 +1,24 @@
+// A node lifted into an ALREADY-RUNNING network initializes from its inputs'
+// current values, so sampling it immediately yields the right answer - whether
+// the input it reads is a source signal or a derived one.
+var c = clock(10)
+plus1 = c + 1
+
+c.tick()
+wait(us=250000)
+c.tick()
+wait(us=250000)
+
+print(int(c))         // 2
+print(int(plus1))     // 3
+
+var overSource = c + 10        // lifted over a source signal
+var overDerived = plus1 + 10   // lifted over a derived signal
+print(int(overSource))         // 12
+print(int(overDerived))        // 13
+
+// after the island ticks again, both agree
+c.tick()
+wait(us=250000)
+print(int(overSource))         // 13
+print(int(overDerived))        // 14

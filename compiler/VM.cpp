@@ -1308,7 +1308,15 @@ VM::VM()
     {
         Value sysModule = getBuiltinModuleType(toUnicodeString("sys"));
         auto& sysVars = asModuleType(sysModule)->vars;
-        for (const char* name : {"filter", "map", "reduce"}) {
+        // lshift/rshift are also exported as the module's CLOSURE rather than
+        // being separately registered as a global native (addSys skips
+        // defineNative when the global already exists).  Roxal has no '<<'/'>>'
+        // tokens, so these two are the shift operators, and every other bitwise
+        // operator lifts over signals -- reaching them through the closure is
+        // what makes 'lshift(sig, 2)' build a node like 'sig & 1' does, instead
+        // of silently sampling.  It also makes the bare and 'sys.'-qualified
+        // spellings the same function.
+        for (const char* name : {"filter", "map", "reduce", "lshift", "rshift"}) {
             auto maybeFunc = sysVars.load(toUnicodeString(name));
             if (maybeFunc.has_value() && isClosure(maybeFunc.value())) {
                 globals.storeGlobal(toUnicodeString(name), maybeFunc.value());
@@ -3014,71 +3022,138 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
         Value closureVal = callee;
         std::vector<ptr<df::Signal>> sigArgs;
         df::FuncNode::ConstArgMap constArgs;
+        bool lift = true;  // untyped closures keep today's lift behavior
 
         auto functionObj = asFunction(asClosure(closureVal)->function);
         if (functionObj->funcType.has_value()) {
             auto calleeType = functionObj->funcType.value();
             auto paramPositions = callSpec.paramPositions(calleeType, true);
             const auto& funcType = calleeType->func.value();
+
+            auto paramIsSignal = [&](size_t pi) {
+                const auto& p = funcType.params[pi];
+                return p.has_value() && p->type.has_value()
+                    && p->type.value()->builtin == type::BuiltinType::Signal;
+            };
+
+            // Classification: a signal arg landing on a param declared
+            // ':signal' passes through as a first-class value (wiring func);
+            // one landing on a value-typed (or untyped) param lifts the call
+            // into a dataflow node.
+            bool signalOnValueParam = false;
+            bool signalOnSignalParam = false;
+            std::vector<bool> argClaimed(size_t(callSpec.argCount), false);
             for (size_t pi = 0; pi < paramPositions.size(); ++pi) {
                 int argIndex = paramPositions[pi];
-                if (argIndex == -1) continue;
-                Value arg = peek(callSpec.argCount - 1 - argIndex);
-                const auto& param = funcType.params[pi];
-                std::string pname = param.has_value() ?
-                                    toUTF8StdString(param->name) : std::to_string(pi);
-                if (isSignal(arg))
-                    sigArgs.push_back(asSignal(arg)->signal);
-                else {
-                    if (!resolveValue(arg))
-                        return false;
-                    constArgs[pname] = arg;
+                if (argIndex < 0) continue;  // -1 defaulted, -2 variadic
+                argClaimed[size_t(argIndex)] = true;
+                if (isSignal(peek(callSpec.argCount - 1 - argIndex))) {
+                    if (paramIsSignal(pi))
+                        signalOnSignalParam = true;
+                    else
+                        signalOnValueParam = true;
+                }
+            }
+            // Args not claimed by a named param were absorbed by a variadic
+            // param — a signal there can be neither an input port nor a
+            // wiring constant.  Checked unconditionally: a call whose ONLY
+            // signal argument lands in the variadic sets neither flag above,
+            // and would otherwise slip through and hand the callee a raw
+            // signal.
+            for (int ai = 0; ai < callSpec.argCount; ++ai) {
+                if (!argClaimed[size_t(ai)] && isSignal(peek(callSpec.argCount - 1 - ai))) {
+                    runtimeError("signal arguments cannot be passed to a variadic parameter");
+                    return false;
+                }
+            }
+
+            if (funcType.isProc) {
+                // A proc yields no value, so a node built from one would have
+                // no output -- there is nothing for the network to carry.  A
+                // proc is an action performed NOW, so its signal arguments are
+                // sampled by the ordinary parameter conversion instead (this
+                // is what makes print(sig) print the current value rather than
+                // build a node that prints on every tick).
+                lift = false;
+            } else if (!signalOnValueParam) {
+                // Pure wiring call: the func receives the signals themselves
+                // and runs once (its interior calls may lift sub-nodes).
+                lift = false;
+            } else if (signalOnSignalParam) {
+                // Conservative v1: a lifted (per-tick) body holding a raw
+                // signal reference invites wiring-per-tick on the DF thread.
+                runtimeError("cannot mix ':signal' parameters with lifted signal arguments "
+                             "in one call to '" + toUTF8StdString(functionObj->name) + "'");
+                return false;
+            } else {
+                for (size_t pi = 0; pi < paramPositions.size(); ++pi) {
+                    int argIndex = paramPositions[pi];
+                    if (argIndex < 0) continue;
+                    Value arg = peek(callSpec.argCount - 1 - argIndex);
+                    const auto& param = funcType.params[pi];
+                    std::string pname = param.has_value() ?
+                                        toUTF8StdString(param->name) : std::to_string(pi);
+                    if (isSignal(arg))
+                        sigArgs.push_back(asSignal(arg)->signal);
+                    else {
+                        if (!resolveValue(arg))
+                            return false;
+                        // Wiring constants are re-pushed on the DF thread every
+                        // tick — freeze so a mutable list/dict/object is never
+                        // shared writable across threads (same hazard the
+                        // mutable-capture check below blocks for upvalues).
+                        constArgs[pname] = createFrozenSnapshot(arg);
+                    }
                 }
             }
         }
 
-        // Check closure upvalues for mutable reference type captures.
-        // DF funcs run on the dataflow thread — mutable captures would be
-        // unsafely shared between threads.
-        ObjClosure* cls = asClosure(closureVal);
-        for (size_t i = 0; i < cls->upvalues.size(); ++i) {
-            if (cls->upvalues[i].isNil()) continue;
-            Value captured = *asUpvalue(cls->upvalues[i])->location;
-            if (captured.isObj() && !captured.isConst()) {
-                runtimeError("Dataflow function '" + toUTF8StdString(functionObj->name)
-                    + "' captures a mutable reference variable; "
-                      "captured variables must be const or primitive types.");
-                return false;
+        if (lift) {
+            // Check closure upvalues for mutable reference type captures.
+            // DF funcs run on the dataflow thread — mutable captures would be
+            // unsafely shared between threads.
+            ObjClosure* cls = asClosure(closureVal);
+            for (size_t i = 0; i < cls->upvalues.size(); ++i) {
+                if (cls->upvalues[i].isNil()) continue;
+                Value captured = *asUpvalue(cls->upvalues[i])->location;
+                if (captured.isObj() && !captured.isConst()) {
+                    runtimeError("Dataflow function '" + toUTF8StdString(functionObj->name)
+                        + "' captures a mutable reference variable; "
+                          "captured variables must be const or primitive types.");
+                    return false;
+                }
             }
-        }
 
-        auto baseName = toUTF8StdString(functionObj->name);
-        auto name = df::DataflowEngine::uniqueFuncName(baseName);
-        ptr<df::FuncNode> node = roxal::make_ptr<df::FuncNode>(name, closureVal, constArgs, sigArgs);
-        // creation provenance: lets introspection correlate this node (and
-        // the output signals it mints) back to the lifting call site.  The
-        // ctor may have created output signals already, so stamp those too.
-        auto liftLoc = currentSourceLocation();
-        node->setSrcOrigin(liftLoc.name, liftLoc.line, liftLoc.col);
-        node->addToEngine();
-        auto outputs = node->outputs(); // creates output signals if they don't exist
-        for (auto& outSig : outputs)
-            if (outSig && !outSig->hasSrcOrigin())
-                outSig->setSrcOrigin(liftLoc.name, liftLoc.line, liftLoc.col);
-        dataflowEngine->evaluate(); // Initialize signal values for new node
-        popN(callSpec.argCount + 1);
-        if (outputs.size() == 1) {
-            push(Value::signalVal(outputs[0]));
-        } else if (outputs.empty()) {
-            push(Value::nilVal());
-        } else {
-            std::vector<Value> outVals;
-            outVals.reserve(outputs.size());
-            for(const auto& s : outputs)
-                outVals.push_back(Value::signalVal(s));
-            push(Value::listVal(outVals));
+            auto baseName = toUTF8StdString(functionObj->name);
+            auto name = df::DataflowEngine::uniqueFuncName(baseName);
+            ptr<df::FuncNode> node = roxal::make_ptr<df::FuncNode>(name, closureVal, constArgs, sigArgs);
+            // creation provenance: lets introspection correlate this node (and
+            // the output signals it mints) back to the lifting call site.  The
+            // ctor may have created output signals already, so stamp those too.
+            auto liftLoc = currentSourceLocation();
+            node->setSrcOrigin(liftLoc.name, liftLoc.line, liftLoc.col);
+            node->addToEngine();
+            auto outputs = node->outputs(); // creates output signals if they don't exist
+            for (auto& outSig : outputs)
+                if (outSig && !outSig->hasSrcOrigin())
+                    outSig->setSrcOrigin(liftLoc.name, liftLoc.line, liftLoc.col);
+            dataflowEngine->initializeNode(node); // give the new node its first output value
+            popN(callSpec.argCount + 1);
+            if (outputs.size() == 1) {
+                push(Value::signalVal(outputs[0]));
+            } else if (outputs.empty()) {
+                push(Value::nilVal());
+            } else {
+                std::vector<Value> outVals;
+                outVals.reserve(outputs.size());
+                for(const auto& s : outputs)
+                    outVals.push_back(Value::signalVal(s));
+                push(Value::listVal(outVals));
+            }
+            return true;
         }
-        return true;
+        // not lifted: fall through to normal Closure dispatch — the wiring
+        // func runs once with the signals as first-class argument values
     }
 
     if (callee.isObj() && objType(callee) == ObjType::OverloadSet) {
@@ -6585,6 +6660,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                                     continue;
                                 if (params[pi]->type.value()->isConst) {
                                     Value& slot = *(frame->slots + 1 + pi);
+                                    if (isSignal(slot)) continue; // signals are never frozen
                                     slot = createFrozenSnapshot(slot);
                                 }
                             }
@@ -7977,89 +8053,31 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 break;
             }
             case OpCode::Is: {
-                {
-                    auto s = tryAwaitValues(peek(0), peek(1));
-                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
-                    if (s == FutureStatus::Error) return errorReturn;
-                }
+                // Futures only — a signal operand is NOT sampled: 'is' asks a
+                // wiring-level question (signal identity / type), so
+                // 's1 is s2' compares the signals themselves and 'sig is nil'
+                // is false for a live signal.
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
                 Value b = pop();
                 Value a = pop();
                 push(Value::boolVal(a.is(b, frame->strict)));
                 break;
             }
             case OpCode::In: {
-                {
-                    auto s = tryAwaitValues(peek(0), peek(1));
-                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
-                    if (s == FutureStatus::Error) return errorReturn;
-                }
+                // Membership logic lives in roxal::in (Value.cpp) so a signal
+                // operand lifts into a derived bool signal like other binary
+                // operators (futures resolved here; signals preserved).
+                if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
+                    goto postInstructionDispatch;
                 Value container = pop();
                 Value needle = pop();
-
-                bool result = false;
-
-                if (isList(container)) {
-                    ObjList* list = asList(container);
-                    for (int32_t i = 0; i < list->length(); i++) {
-                        if (needle.equals(list->getElement(i), frame->strict)) {
-                            result = true;
-                            break;
-                        }
-                    }
-                }
-                else if (isDict(container)) {
-                    ObjDict* dict = asDict(container);
-                    result = dict->contains(needle);
-                }
-                else if (isString(container)) {
-                    if (!isString(needle)) {
-                        runtimeError("'in' for string requires string operand on left side");
-                        return errorReturn;
-                    }
-                    ObjString* haystack = asStringObj(container);
-                    ObjString* needleStr = asStringObj(needle);
-                    result = (haystack->s.indexOf(needleStr->s) >= 0);
-                }
-                else if (isRange(container)) {
-                    ObjRange* range = asRange(container);
-                    if (!needle.isNumber()) {
-                        runtimeError("'in' for range requires numeric operand on left side");
-                        return errorReturn;
-                    }
-                    double val = needle.asReal();
-                    double start = range->start.isNil() ? 0 : range->start.asReal();
-                    double stop = range->stop.asReal();
-                    double step = range->step.isNil() ? 1.0 : range->step.asReal();
-
-                    if (step > 0) {
-                        bool inBounds = range->closed
-                            ? (val >= start && val <= stop)
-                            : (val >= start && val < stop);
-                        if (inBounds && step != 1.0) {
-                            double offset = val - start;
-                            result = (fmod(offset, step) == 0);
-                        } else {
-                            result = inBounds;
-                        }
-                    } else {
-                        // Negative step (reverse range)
-                        bool inBounds = range->closed
-                            ? (val <= start && val >= stop)
-                            : (val <= start && val > stop);
-                        if (inBounds && step != -1.0) {
-                            double offset = start - val;
-                            result = (fmod(offset, -step) == 0);
-                        } else {
-                            result = inBounds;
-                        }
-                    }
-                }
-                else {
-                    runtimeError("'in' operator requires list, dict, string, or range on right side");
+                try {
+                    push(roxal::in(needle, container, frame->strict));
+                } catch (std::exception& e) {
+                    runtimeError(e.what());
                     return errorReturn;
                 }
-
-                push(Value::boolVal(result));
                 break;
             }
             case OpCode::Greater: ROX_LBL(Greater) {
@@ -8259,7 +8277,13 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     goto postInstructionDispatch;
 
                 // String concatenation takes priority when LHS is a string
-                // (string behaves as if it has a built-in operator+)
+                // (string behaves as if it has a built-in operator+).
+                // Concatenation is rendering, not arithmetic, so a signal RHS
+                // is SAMPLED here rather than lifted — matching interpolation
+                // ("x={sig}"), which stringifies eagerly.  To build a live
+                // string signal, name the computation in a func.
+                // (A signal LHS stays arithmetic and lifts: 'intsig + "x"'
+                // fails per tick exactly as the scalar '1 + "2"' does.)
                 if (isString(peek(1))) {
                     // Check for @implicit operator string() on RHS before falling to concatenate()
                     if (!isString(peek(0)) && (isObjectInstance(peek(0)) || isActorInstance(peek(0)))) {
@@ -8516,40 +8540,41 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                 break;
             }
             case OpCode::And: {
+                // Join combine for 'and': [lhs, rhs] on the stack.  Reached
+                // either with a signal operand (AndShortCircuit never branches
+                // on signals — they must lift into a dataflow node) or with a
+                // non-deciding scalar lhs, where the result is simply the rhs.
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
-                if (!peek(0).isBool() && !isSignal(peek(0))) {
-                    runtimeError("Operand of 'and' must be a bool");
-                    return errorReturn;
-                }
-                if (!peek(1).isBool() && !isSignal(peek(1))) {
-                    runtimeError("Operand of 'and' must be a bool");
-                    return errorReturn;
-                }
-                try {
-                    binaryOp([](Value a, Value b) -> Value { return land(a,b); });
-                } catch (std::exception& e) {
-                    runtimeError(e.what());
-                    return errorReturn;
+                if (isSignal(peek(0)) || isSignal(peek(1))) {
+                    try {
+                        binaryOp([](Value a, Value b) -> Value { return land(a,b); });
+                    } catch (std::exception& e) {
+                        runtimeError(e.what());
+                        return errorReturn;
+                    }
+                } else {
+                    Value r = pop();
+                    pop();
+                    push(r);
                 }
                 break;
             }
             case OpCode::Or: {
+                // Join combine for 'or' — see OpCode::And.
                 if (tryAwaitFutures(peek(0), peek(1)) != FutureStatus::Resolved)
                     goto postInstructionDispatch;
-                if (!peek(0).isBool() && !isSignal(peek(0))) {
-                    runtimeError("Operand of 'or' must be a bool");
-                    return errorReturn;
-                }
-                if (!peek(1).isBool() && !isSignal(peek(1))) {
-                    runtimeError("Operand of 'or' must be a bool");
-                    return errorReturn;
-                }
-                try {
-                    binaryOp([](Value a, Value b) -> Value { return lor(a,b); });
-                } catch (std::exception& e) {
-                    runtimeError(e.what());
-                    return errorReturn;
+                if (isSignal(peek(0)) || isSignal(peek(1))) {
+                    try {
+                        binaryOp([](Value a, Value b) -> Value { return lor(a,b); });
+                    } catch (std::exception& e) {
+                        runtimeError(e.what());
+                        return errorReturn;
+                    }
+                } else {
+                    Value r = pop();
+                    pop();
+                    push(r);
                 }
                 break;
             }
@@ -8783,9 +8808,17 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             case OpCode::JumpIfFalse: ROX_LBL(JumpIfFalse) {
                 uint16_t jumpDist = readShort();
                 {
-                    auto s = tryAwaitValue(peek(0));
+                    auto s = tryAwaitFuture(peek(0));
                     if (s == FutureStatus::Pending) goto postInstructionDispatch;
                     if (s == FutureStatus::Error) return errorReturn;
+                }
+                // Sampling a signal implicitly here would silently freeze a
+                // moment in time (and 'while sig:' would re-lift per
+                // iteration) — require an explicit sample instead.
+                if (isSignal(peek(0))) {
+                    runtimeError("cannot branch on a signal; sample it explicitly "
+                                 "(e.g. bool(sig)) or react with 'when ... becomes'");
+                    return errorReturn;
                 }
                 if (isFalsey(peek(0)))
                     frame->ip += jumpDist;
@@ -8794,11 +8827,39 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
             case OpCode::JumpIfTrue: ROX_LBL(JumpIfTrue) {
                 uint16_t jumpDist = readShort();
                 {
-                    auto s = tryAwaitValue(peek(0));
+                    auto s = tryAwaitFuture(peek(0));
                     if (s == FutureStatus::Pending) goto postInstructionDispatch;
                     if (s == FutureStatus::Error) return errorReturn;
                 }
+                if (isSignal(peek(0))) {
+                    runtimeError("cannot branch on a signal; sample it explicitly "
+                                 "(e.g. bool(sig)) or react with 'when ... becomes'");
+                    return errorReturn;
+                }
                 if (isTruthy(peek(0)))
+                    frame->ip += jumpDist;
+                break;
+            }
+            case OpCode::AndShortCircuit: {
+                uint16_t jumpDist = readShort();
+                {
+                    auto s = tryAwaitFuture(peek(0));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
+                // Signals fall through un-popped so the And combine can lift.
+                if (!isSignal(peek(0)) && isFalsey(peek(0)))
+                    frame->ip += jumpDist;
+                break;
+            }
+            case OpCode::OrShortCircuit: {
+                uint16_t jumpDist = readShort();
+                {
+                    auto s = tryAwaitFuture(peek(0));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
+                if (!isSignal(peek(0)) && isTruthy(peek(0)))
                     frame->ip += jumpDist;
                 break;
             }
@@ -9642,6 +9703,37 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                         runtimeError("unable to convert " + val.typeName()
                                      + " to " + typeSpec.typeName());
                         return errorReturn;
+                }
+                break;
+            }
+            case OpCode::CheckReturnList:
+            case OpCode::CheckDeclList: {
+                // Arity guard for the two places a list is unpacked positionally
+                // into a known number of slots: a declared '-> [T0,..,TN-1]'
+                // return, and a 'var [a, b] = ...' declaration.  Peek-only — the
+                // list stays on the stack for the per-element sequence that
+                // follows.
+                const bool isReturn = (instruction == OpCode::CheckReturnList);
+                if (isFuture(peek(0))) {
+                    auto s = tryAwaitFuture(peek(0));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
+                uint8_t expected = readByte();
+                const Value& v = peek(0);
+                const std::string subject = isReturn
+                    ? ("function declares " + std::to_string(expected) + " return values")
+                    : ("declaration has " + std::to_string(expected) + " targets");
+                if (!isList(v)) {
+                    runtimeError(subject + " but the "
+                                 + (isReturn ? "returned value" : "value") + " is a " + v.typeName());
+                    return errorReturn;
+                }
+                if (asList(v)->length() != int32_t(expected)) {
+                    runtimeError(subject + " but the "
+                                 + (isReturn ? "returned list" : "list")
+                                 + " has " + std::to_string(asList(v)->length()) + " elements");
+                    return errorReturn;
                 }
                 break;
             }
@@ -11487,6 +11579,7 @@ bool VM::processClosureParamConversion(Value convertedValue)
                 continue;
             if (params[pi]->type.value()->isConst) {
                 Value& slot = *(targetFrame->slots + 1 + pi);
+                if (isSignal(slot)) continue; // signals are never frozen
                 slot = createFrozenSnapshot(slot);
             }
         }
@@ -12105,6 +12198,8 @@ void VM::defineBuiltinMethods()
                         false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x1);
     defineBuiltinMethod(ValueType::List, "reserve", std::mem_fn(&VM::list_reserve_builtin),
                         false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/false, /*noMutateArgs=*/0x1);
+    defineBuiltinMethod(ValueType::List, "sampled", std::mem_fn(&VM::list_sampled_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
 
     // String case-conversion methods — read-only on self (return new string)
     defineBuiltinMethod(ValueType::String, "upper", std::mem_fn(&VM::string_upper_builtin),
@@ -13419,6 +13514,28 @@ Value VM::list_append_builtin(ArgsView args)
     ObjList* list = asList(args[0]);
     list->append(args[1]);
     return Value::nilVal();
+}
+
+Value VM::list_sampled_builtin(ArgsView args)
+{
+    if (args.size() != 1 || !isList(args[0]))
+        throw std::invalid_argument("list.sampled expects no arguments");
+
+    // Sample a BUNDLE -- a list of signals, as a multi-output node returns --
+    // at one instant.  Reading each wire separately can straddle a tick
+    // boundary and give a set of values that never existed together, so the
+    // whole list is taken in one go.  Non-signal elements pass through, which
+    // makes this meaningful on a mixed list too.
+    const ObjList* list = asList(args[0]);
+    std::vector<Value> values;
+    values.reserve(size_t(list->length()));
+    for (int32_t i = 0; i < list->length(); i++) {
+        Value element = list->getElement(i);
+        if (isSignal(element))
+            element = asSignal(element)->signal->lastValue();
+        values.push_back(element);
+    }
+    return Value::listVal(values);
 }
 
 Value VM::list_extend_builtin(ArgsView args)

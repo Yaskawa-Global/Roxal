@@ -138,6 +138,11 @@ tests = [
     'module_var_when_changed', 'module_var_when_changed_string', 'module_var_when_becomes', 'object_member_when_changed', 'when_obj_becomes', 'when_accessor_var_changes',
     'test_signal_value_property', 'test_signal_name_property', 'signal_named_param', 'construct_by_signal', 'signal_run_stop', 'signal_source', 'signal_default_err', 'signal_network1',
     'signal_islands', 'signal_domain', 'signal_tensor_isolation', 'signal_tensor_const',
+    'multi_return', 'multi_return_arity_err', 'multi_return_nonlist_err', 'multi_return_literal_err', 'test_multi_return_syntax',
+    'signal_multi_output', 'signal_wiring_func', 'signal_wiring_mixed_err', 'signal_branch_err', 'signal_sampling',
+    'signal_list_const', 'df_const_arg_err', 'inspect_df_structure', 'signal_lift_fresh', 'signal_lift_nodisturb',
+    'var_destructure', 'var_destructure_arity_err', 'var_destructure_nonlist_err', 'var_destructure_const_err',
+    'signal_shift', 'signal_deduce', 'signal_variadic_err', 'check_compile_err', 'signal_sampled', 'signal_feedback_rate', 'signal_island_rates',
     'dataflow_clocktest1', 'multi_clock', 'clock_error', 'clock_name_param',
     'event1', 'event_when_stmt', 'event_emit_keyword', 'event_when_method', 'event_remove_method', 'event_ref', 'event_actor_ref', 'event_actor_ref2', 'event_actor_ref3', 'event_actor_ref4', 'event_instance_emit',
     'event_payload', 'event_implicit_constructor', 'event_type_when', 'event_target_filter',
@@ -452,7 +457,7 @@ long_running_tests = [
 doom_tests = ['doom_wad', 'doom_gfx', 'doom_render', 'doom_game', 'doom_sound', 'doom_pickup']
 
 # implementation doesn't yet allow these tests to pass (do not add to this list without human consent)
-failing_tests = ['signal_network1']
+failing_tests = []
 assert(set(failing_tests).issubset(set(tests) | set(long_running_tests)))
 
 
@@ -942,6 +947,8 @@ try:
             cmd = [roxal]
         elif test.startswith('typededucer_'):
             cmd = [roxal, '--ast', rel_testrox]
+        elif test.startswith('check_'):
+            cmd = [roxal, '--check', rel_testrox]
         if test == 'cmdline_execute':
             with open(testrox, 'r') as f:
                 snippet = f.read().strip()

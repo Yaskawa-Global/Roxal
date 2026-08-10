@@ -1,0 +1,9 @@
+// returning the wrong number of values from a multi-return func
+func three() -> [int, int, int]:
+  var l :list
+  l.append(1)
+  l.append(2)
+  return l
+
+[a, b, c] = three()
+print(a)

@@ -425,6 +425,32 @@ std::any TypeDeducer::visit(ptr<ast::VarDecl> ast)
     if (ast->isConst && !ast->initializer.has_value()) {
         throw std::logic_error(linePos(ast) + " - const declarations require an initializer");
     }
+
+    // Declaring destructure 'var [a, b] = expr': each target is its own
+    // variable.  Element types are not statically known (the initializer is a
+    // list), so an unannotated target is declared with an UNKNOWN type rather
+    // than skipped -- codegen creates the variable either way, so skipping it
+    // would leave an outer variable of the same name visible to deduction and
+    // let overload resolution pick against the wrong type.
+    if (!ast->targets.empty()) {
+        for (const auto& target : ast->targets) {
+            if (!target.varType.has_value()) {
+                declareVar(target.name, nullptr, false);
+                continue;
+            }
+            if (std::holds_alternative<BuiltinType>(target.varType.value()))
+                declareVar(target.name,
+                           make_ptr<type::Type>(std::get<BuiltinType>(target.varType.value())),
+                           true);
+            else {
+                auto typeInfo = lookupVar(joinTypeName(std::get<TypeName>(target.varType.value())));
+                if (typeInfo.has_value() && typeInfo->type != nullptr
+                    && typeInfo->type->builtin != BuiltinType::Type)
+                    declareVar(target.name, typeInfo->type, true);
+            }
+        }
+        return results;
+    }
     if (ast->varType.has_value()) {
         if (std::holds_alternative<BuiltinType>(ast->varType.value())) {
             ast->type = make_ptr<type::Type>(std::get<BuiltinType>(ast->varType.value()));
@@ -694,12 +720,6 @@ std::any TypeDeducer::visit(ptr<ast::Function> ast)
                 retType->isConst = true;
             type->func->returnTypes.push_back(retType);
         }
-
-        if (returnTypes.size() > 1) {
-            // Multiple return types - not yet fully supported in call type deduction
-            // But we can still record them in the function type
-            // TODO: implement proper multi-return call handling
-        }
     }
 
     type->func->params.resize(ast->params.size());
@@ -821,6 +841,16 @@ std::any TypeDeducer::visit(ptr<ast::BinaryOp> ast)
                 break;
         }
 
+        // A string LHS makes '+' concatenation, which RENDERS its right side
+        // and so samples a signal rather than lifting (matching "x={sig}"
+        // interpolation).  This must precede the generic signal rule below, or
+        // deduction would claim signal for a value the VM produces as a string.
+        // A signal LHS stays arithmetic and does lift.
+        if (ast->op == ast::BinaryOp::Add && lhsType == BuiltinType::String) {
+            ast->type = make_ptr<Type>(BuiltinType::String);
+            return results;
+        }
+
         if (supportsSignal && signalArg) {
             ast->type = make_ptr<Type>(BuiltinType::Signal);
             return results;
@@ -865,7 +895,12 @@ std::any TypeDeducer::visit(ptr<ast::BinaryOp> ast)
                 break;
             case ast::BinaryOp::In:
             case ast::BinaryOp::NotIn:
-                ast->type = make_ptr<Type>(BuiltinType::Bool);
+                // membership lifts like the other operators when either side
+                // is a signal (roxal::in, Value.cpp)
+                if (lhsType == BuiltinType::Signal || rhsType == BuiltinType::Signal)
+                    ast->type = make_ptr<Type>(BuiltinType::Signal);
+                else
+                    ast->type = make_ptr<Type>(BuiltinType::Bool);
                 break;
             case ast::BinaryOp::Equal:
             case ast::BinaryOp::NotEqual:
@@ -981,9 +1016,9 @@ std::any TypeDeducer::visit(ptr<ast::Call> ast)
                 if (f.returnTypes.size() == 1) {
                     ast->type = f.returnTypes[0];
                 } else {
-                    // Multiple return types - for now just use the first one
-                    // TODO: implement proper multi-return type handling
-                    ast->type = f.returnTypes[0];
+                    // Multi-return: the call yields a list of the declared
+                    // values (destructurable via '[a, b] = f()').
+                    ast->type = make_ptr<Type>(BuiltinType::List);
                 }
             }
         }

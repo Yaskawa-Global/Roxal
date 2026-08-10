@@ -557,6 +557,14 @@ protected:
     ValueType builtinToValueType(ast::BuiltinType bt);
 
     void emitTypeName(const ast::TypeName& components); // emit namedVariable + GetProp chain for dotted type names
+    void emitConvertToVarType(const VarTypeSpec& t);    // emit ToType/ToTypeSpec (strict per func scope) for one declared type
+    void emitDefaultValue(ast::BuiltinType bt); // push the default value for a declared builtin type.
+                                                // list/dict emit NewList/NewDict 0 — a constant-table
+                                                // default would be ONE shared mutable object across
+                                                // every invocation/instance
+    void emitReturnTypeConversion(); // convert stack top to the declared return type(s);
+                                     // multi-return ('-> [T0,..]') verifies arity and
+                                     // converts element-wise, rebuilding the list
     void emitByte(uint8_t byte, const std::string& comment = "");
     void emitByte(OpCode op, const std::string& comment = "");
     void emitBytes(uint8_t byte1, uint8_t byte2, const std::string& comment = "");

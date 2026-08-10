@@ -1,0 +1,24 @@
+// Sources of different rates CONNECTED into one island each keep their own
+// rate: the island ticks on the GCD of its source periods, so every source's
+// boundaries fall on the shared grid and none is dragged to another's rate.
+
+func combine(a :int, b :int) -> int:
+  return a + b
+
+var fast = clock(50)
+var slow = clock(20)
+var both = combine(fast, slow)   // joins the two clocks into one island
+
+fast.run()
+slow.run()
+wait(ms=2000)
+
+// Assert the RATIO, not the counts: a loaded machine drops ticks from both
+// clocks together (the engine skips missed periods rather than replaying
+// them), so 50/20 stays ~2.5 even when the absolute numbers sag.  If either
+// clock were dragged to the other's rate the ratio would collapse to 1.
+var f = int(fast)
+var s = int(slow)
+print(s >= 5)          // the network actually ran
+print(f > s * 2)       // ~2.5x, and nowhere near 1x
+print(f < s * 3)
