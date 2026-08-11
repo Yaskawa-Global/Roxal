@@ -487,6 +487,12 @@ public:
         return t == ValueType::Int || t == ValueType::Real || t == ValueType::Byte; // TODO: || Decimal
     }
 
+    /// @brief Checks if the value is an integer, INCLUDING one heap-boxed
+    /// because it falls outside the inline 32-bit NaN-box payload (see
+    /// Value::intVal).  isInt() tests the box tag alone, so it answers false
+    /// for those; anything reasoning about the int TYPE wants this instead.
+    inline bool isIntValue() const { return type() == ValueType::Int; }
+
     inline bool isEnum() const {
         return (val & (SignBit | QNAN | TypeTag)) == (QNAN | TagEnum);
     }

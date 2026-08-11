@@ -1,0 +1,22 @@
+// wait() consumes awaitables itself - a future, an event, or a signal - so a
+// call to it must never be lifted into a dataflow node.  Its 'for' parameter
+// cannot be a value parameter (that would lift) nor ':signal' (that would
+// reject futures and events), so the declaration carries @nolift.
+//
+// A signal is not a future, so wait returns it unchanged rather than awaiting
+// it (use 'until' or anyof() to wait on a signal).  What matters here is that
+// both spellings reach the same function, neither builds a node, and neither
+// crashes - the qualified one used to lift and die.
+import sys
+
+var c = clock(10)
+var cond = c > 2
+
+print(typeof(wait(for = cond)))
+print(typeof(sys.wait(for = cond)))
+print(typeof(cond))
+
+// a plain delay still works either way
+wait(ms=10)
+sys.wait(ms=10)
+print("delays returned")

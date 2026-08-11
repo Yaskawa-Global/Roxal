@@ -142,7 +142,7 @@ tests = [
     'signal_multi_output', 'signal_wiring_func', 'signal_wiring_mixed_err', 'signal_branch_err', 'signal_sampling',
     'signal_list_const', 'df_const_arg_err', 'inspect_df_structure', 'signal_lift_fresh', 'signal_lift_nodisturb',
     'var_destructure', 'var_destructure_arity_err', 'var_destructure_nonlist_err', 'var_destructure_const_err',
-    'signal_shift', 'signal_deduce', 'signal_variadic_err', 'check_compile_err', 'signal_sampled', 'signal_feedback_rate', 'signal_island_rates',
+    'signal_shift', 'signal_deduce', 'signal_variadic_err', 'check_compile_err', 'signal_sampled', 'signal_feedback_rate', 'signal_island_rates', 'bitwise_large_int', 'signal_nolift_wait', 'inline_lambda_assign_err',
     'dataflow_clocktest1', 'multi_clock', 'clock_error', 'clock_name_param',
     'event1', 'event_when_stmt', 'event_emit_keyword', 'event_when_method', 'event_remove_method', 'event_ref', 'event_actor_ref', 'event_actor_ref2', 'event_actor_ref3', 'event_actor_ref4', 'event_instance_emit',
     'event_payload', 'event_implicit_constructor', 'event_type_when', 'event_target_filter',

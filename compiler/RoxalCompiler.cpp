@@ -4481,7 +4481,7 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             emitBytes(OpCode::SetIndex, uint8_t(index->args.size()));
         }
         else {
-            throw std::runtime_error("LHS of copy into must be a variable, property accessor or indexing");
+            error("LHS of copy into must be a variable, property accessor or indexing");
         }
         return {};
     }
@@ -4548,6 +4548,13 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
     }
     else if (isa<UnaryOp>(ast->lhs) && as<UnaryOp>(ast->lhs)->op==UnaryOp::Accessor) {
         auto accessor = as<UnaryOp>(ast->lhs);
+        // 'proc(): t.x = 5' parses as '(proc(): t).x = 5' -- the same ambiguity
+        // as the bare-assignment case below, reached through the property form.
+        // Without this it compiles and fails at RUNTIME complaining that a
+        // closure has no properties, which says nothing about the real mistake.
+        if (isa<ast::LambdaFunc>(accessor->arg))
+            error("an inline func/proc body cannot contain a bare assignment "
+                  "-- parenthesise it, or use the indented block form");
         // visit the lhs of the accessor operator to generate code to evaluate it
         //  (so we don't evaluate the access, since we want to set the member, not get it)
         accessor->arg->accept(*this);
@@ -4699,13 +4706,22 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
                 emitBytes(OpCode::SetIndex, uint8_t(index->args.size()));
             }
             else
-                throw std::runtime_error("Elements of LHS list of binding assignment must be variables, property accessors or indexing");
+                error("Elements of LHS list of binding assignment must be variables, property accessors or indexing");
 
             emitByte(OpCode::Pop,"RHS #"+std::to_string(li)); // discard RHS element, leaving RHS list on top
         }
     }
+    else if (isa<ast::LambdaFunc>(ast->lhs)) {
+        // 'var p = proc(): y = 7' parses as '(proc(): y) = 7': an inline lambda
+        // body is an expression, assignment IS an expression here, and the
+        // enclosing assignment wins the ambiguity -- so the '= 7' binds outside
+        // the body and lands here with a lambda on the left.  Blaming the LHS
+        // would send the reader hunting for a mistake they did not make.
+        error("an inline func/proc body cannot contain a bare assignment "
+              "-- parenthesise it, or use the indented block form");
+    }
     else
-        throw std::runtime_error("LHS of assignment must be a variable, property accessor or indexing");
+        error("LHS of assignment must be a variable, property accessor or indexing");
     return {};
 }
 
@@ -6332,7 +6348,8 @@ static std::string linePos(ptr<AST> node)
     return std::to_string(node->interval.first.line)+":"+std::to_string(node->interval.first.pos);
 }
 
-
+// call error() for user code errors
+//  (use throw std::runtime_error for internal compiler errors)
 void RoxalCompiler::error(const std::string& message)
 {
     if (!currentNode)

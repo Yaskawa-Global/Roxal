@@ -3014,18 +3014,50 @@ bool VM::call(ValueType builtinType, const CallSpec& callSpec)
 bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 {
 
+    // Only a closure call can be lifted into a dataflow node, so establish
+    // that before scanning the arguments: isSignal() dereferences the object
+    // header of every object-valued argument, and a native call, a type
+    // constructor or a bound-method dispatch would pay for a result it cannot
+    // use.  signalArg therefore implies a closure callee on its own.
     bool signalArg = false;
-    for(int i=0;i<callSpec.argCount;i++)
-        if (isSignal(peek(i))) { signalArg = true; break; }
+    if (callee.isObj() && objType(callee) == ObjType::Closure) {
+        for(int i=0;i<callSpec.argCount;i++)
+            if (isSignal(peek(i))) { signalArg = true; break; }
+    }
 
-    if (signalArg && callee.isObj() && objType(callee) == ObjType::Closure) {
+    if (signalArg) {
         Value closureVal = callee;
         std::vector<ptr<df::Signal>> sigArgs;
         df::FuncNode::ConstArgMap constArgs;
         bool lift = true;  // untyped closures keep today's lift behavior
 
         auto functionObj = asFunction(asClosure(closureVal)->function);
-        if (functionObj->funcType.has_value()) {
+
+        // @nolift: this function consumes signals ITSELF, so a call to it must
+        // never become a node.  wait(for=sig) is the case that needs it -- its
+        // 'for' parameter deliberately takes an unresolved awaitable (a future,
+        // an event or a signal), so it can be neither a value parameter (which
+        // would lift) nor ':signal' (which would reject the other two).
+        // Guarded like the @builtin stub check in VM::call: an ordinary
+        // function carries no annotations, so this costs one empty test.  The
+        // scan itself is already cold -- we only reach it when a call has a
+        // signal argument, and the lift it precedes allocates a FuncNode and
+        // takes the engine mutex.  If @nolift ever spreads beyond wait(), the
+        // precedent for making it free is ObjFunction::builtinInfo: an
+        // annotation-derived field computed once at link time.
+        bool noLift = false;
+        if (!functionObj->annotations.empty()) [[unlikely]] {
+            for (const auto& annot : functionObj->annotations) {
+                if (annot && annot->name == "nolift") {
+                    noLift = true;
+                    break;
+                }
+            }
+        }
+
+        if (noLift) {
+            lift = false;
+        } else if (functionObj->funcType.has_value()) {
             auto calleeType = functionObj->funcType.value();
             auto paramPositions = callSpec.paramPositions(calleeType, true);
             const auto& funcType = calleeType->func.value();

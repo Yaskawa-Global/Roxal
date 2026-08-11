@@ -1,0 +1,8 @@
+// An inline lambda body is an expression, and assignment is also an expression
+// here, so 'proc(): y = 7' parses as '(proc(): y) = 7' -- the '=' binds outside
+// the body.  The error should say that rather than blaming the left-hand side.
+// Parenthesising, 'proc(): (y = 7)', is the one-line fix; the block form works
+// too.
+var y = 0
+var p = proc(): y = 7
+p()

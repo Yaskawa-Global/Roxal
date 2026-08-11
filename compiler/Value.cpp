@@ -3008,8 +3008,8 @@ Value roxal::band(Value l, Value r)
     }
 
 
-    if ((l.isBool() || l.isByte() || l.isInt()) &&
-        (r.isBool() || r.isByte() || r.isInt())) {
+    if ((l.isBool() || l.isByte() || l.isIntValue()) &&
+        (r.isBool() || r.isByte() || r.isIntValue())) {
         if (l.isBool() && r.isBool())
             return Value::boolVal(l.asBool() & r.asBool());
 
@@ -3049,8 +3049,8 @@ Value roxal::bor(Value l, Value r)
         return result;
     }
 
-    if ((l.isBool() || l.isByte() || l.isInt()) &&
-        (r.isBool() || r.isByte() || r.isInt())) {
+    if ((l.isBool() || l.isByte() || l.isIntValue()) &&
+        (r.isBool() || r.isByte() || r.isIntValue())) {
         if (l.isBool() && r.isBool())
             return Value::boolVal(l.asBool() | r.asBool());
 
@@ -3073,8 +3073,8 @@ Value roxal::bxor(Value l, Value r)
                               l, r);
     }
 
-    if ((l.isBool() || l.isByte() || l.isInt()) &&
-        (r.isBool() || r.isByte() || r.isInt())) {
+    if ((l.isBool() || l.isByte() || l.isIntValue()) &&
+        (r.isBool() || r.isByte() || r.isIntValue())) {
         if (l.isBool() && r.isBool())
             return Value::boolVal(l.asBool() ^ r.asBool());
 
@@ -3099,7 +3099,7 @@ Value roxal::bnot(Value v)
         return Value::boolVal(!v.asBool());
     if (v.isByte())
         return Value::byteVal(~v.asByte(false));
-    if (v.isInt()) {
+    if (v.isIntValue()) {
         int64_t val = v.asInt();
         return Value::intVal(~val);
     }

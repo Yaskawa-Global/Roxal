@@ -1,0 +1,14 @@
+// Bitwise operators work on the whole int range.  Values outside the inline
+// 32-bit NaN-box payload are heap-boxed (Value::intVal), and the operators
+// test the int TYPE rather than the box tag, so the boxing stays invisible.
+print(2147483647 & 1)
+print(2147483648 & 1)
+print(4294967295 & 0xFF)
+print(0xFFFFFFFF | 0)
+print(0xFFFFFFFF ^ 0x0F)
+print(~0)
+print(~4294967295)
+print(lshift(1, 40))
+print(rshift(4294967296, 8))
+print(lshift(1, 40) & 0xFFFFFFFFFF)
+print(typeof(0xFFFFFFFF & 0xFF))
