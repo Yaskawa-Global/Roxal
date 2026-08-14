@@ -59,6 +59,20 @@ export async function startRoxal(source, { expectStore, onOutput, name = '<scrip
         // (WebGPU when available). Registration is cheap; loading is lazy.
         installNnProvider(rox);
 
+        // Diagnostic switch: ?nogc=1 disables the collector for crash triage
+        // (mirrors the native --nogc flag). Memory then only grows.
+        try {
+            const qs = new URLSearchParams(location.search);
+            if (qs.has('nogc'))
+                rox.ccall('roxal_config', null, ['string', 'string'], ['gc.disabled', 'true']);
+            if (qs.has('gcthreshold'))
+                rox.ccall('roxal_config', null, ['string', 'string'], ['gc.threshold', qs.get('gcthreshold')]);
+            if (qs.has('gcshadow'))
+                rox.ccall('roxal_config', null, ['string', 'string'], ['env.ROXAL_GC_SHADOW_SCAN', qs.get('gcshadow')]);
+            if (qs.has('gcprecise'))
+                rox.ccall('roxal_config', null, ['string', 'string'], ['env.ROXAL_GC_CONSERVATIVE', '0']);
+        } catch { /* non-browser host */ }
+
         submitted++;
         rox.ccall('roxal_submit_source', null, ['string', 'string'], [source, name]);
 

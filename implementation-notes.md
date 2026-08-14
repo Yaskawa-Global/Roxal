@@ -1677,6 +1677,16 @@ Two paths lead to destruction, both ending in the same place:
 - **Tracing sweep** (`performCollection`): unmarked objects get the same
   treatment and are pushed onto the same queue.
 
+`ObjControl::obj` is the **atomic death flag** shared by both paths (release
+store at death, acquire loads in the weak-deref readers): the refcount path
+runs on arbitrary mutator threads while `strongRef`/`isAlive`/weak `asObj`
+read concurrently. Weak→strong promotion (`Value::strongRef`) is a
+two-check protocol: `tryIncRef` (a CAS that fails once strong hit zero)
+proves the object escaped *refcount* death, but the sweep retires cyclic
+garbage with `strong > 0` — so a successful increment re-checks the death
+flag and backs out (the `collecting` CAS makes the undo `decRef` safe
+against double-routing) before vending a strong Value.
+
 The retire queue is an intrusive lock-free CAS chain through
 `ObjControl::retiredObj`/`retireNext` (link-then-publish, so the consumer's
 take-all sees only fully linked chains; the consumer reverses for FIFO).
@@ -1724,6 +1734,15 @@ until the collection has run, its garbage has actually been destroyed
 RT yield section it degrades to request-and-return — a blocking wait there
 would violate the RT contract.
 
+On **wasm** `gc()` is likewise asynchronous by design: every builtin runs
+under a `GCNoParkScope` cover (see below), and `pollContext` returns
+immediately inside a no-park section, so the safepoint in `gc()` cannot
+park. The request is made and honored at the next uncovered safepoint after
+the builtin returns; the freed-count returned is the previous collection's.
+Scripts must not rely on `gc()`'s deterministic collect-and-reclaim contract
+on wasm (accepted trade-off — the deterministic form exists for native tests
+and teardown-sensitive scripts).
+
 ### The stop-the-world barrier: MutatorContext
 
 Every physical thread that touches GC state has exactly ONE
@@ -1759,7 +1778,12 @@ Three sources, in decreasing order of "how much code has to care":
    sweep. This retires the historical unrooted-local bug class for stack
    references. The kill switch `ROXAL_GC_CONSERVATIVE=0` is a **diagnostic
    precise mode** (scan still runs, hits only compared) — not a safe
-   configuration for code holding native-stack-only references. Trade-off:
+   configuration for code holding native-stack-only references. **Wasm
+   cannot provide this mechanism at all** (locals live in wasm SSA registers
+   outside scannable linear memory, and there is no register-spill
+   primitive); the browser therefore runs precise mode with blanket
+   `GCNoParkScope` covers over every native region instead — see the wasm
+   posture under `GCNoParkScope` below. Trade-off:
    prompt cycle death is no longer guaranteed (a stale stack word can pin a
    dropped cycle until the slot is overwritten; quantified by the shadow-scan
    stats).
@@ -1878,6 +1902,38 @@ parks, and never skips work. With conservative marking on, in-progress
 compiler products in C++ stack locals are already scan-covered; the compiler
 therefore holds a no-park scope only under the precise-mode kill switch,
 where those locals would otherwise be invisible.
+
+**Wasm posture (precise-by-default + blanket covers).** Wasm cannot satisfy
+the conservative-scan contract: locals live outside scannable linear memory
+(no `__builtin_unwind_init` register spill), so the browser runs precise
+mode and instead covers every native region that holds `Value`s in C++
+frames with a `GCNoParkScope`: `callNativeFn`, both actor-dispatch native
+invocation sites in `Thread::run` (actor dispatch calls builtins directly,
+bypassing `callNativeFn`), the deferred-default/param-conversion resumption
+paths (`processNativeDefaultParamDispatch` / `processNativeParamConversion`,
+which likewise invoke the native outside `callNativeFn`),
+`WebHostLoop::pump`, and
+`VM::processPendingEvents`. Missing any such site lets a collection sweep
+objects whose only reference is a wasm local — the historical
+first-auto-collection heap-corruption class.
+
+**No-park outranks SafeBlock.** `blockEnter` inside an active no-park
+section does NOT declare the thread SafeBlocked (it counts the skip so
+`blockExit` pairs); the barrier waits the covered section out. Rationale:
+the cover exists precisely because the thread's native frames hold Values
+the scanner cannot see — SafeBlocked would let the collection proceed and
+sweep them.
+
+**Constraint on future builtins (the join triangle).** The precedence rule
+means a *covered* builtin that blocks waiting on another thread's progress
+can deadlock: thread A (covered, Running) waits on thread B; B parks at a
+safepoint waiting for a collection; the collection barrier waits for A.
+No current wasm builtin blocks on cross-thread progress (the web host loop
+polls), but any new one must either avoid blocking under a cover or first
+transfer its live Values into precise roots (`GCRoots.h`) and drop to
+`GCSafeBlockScope` — making quiescence safe again. The precise-roots
+handoff is the principled long-term shape for blocking natives on every
+platform.
 
 #### `ScopedGCMutatorCover` — host bootstrap phases
 

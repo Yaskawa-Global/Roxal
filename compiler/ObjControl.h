@@ -66,7 +66,11 @@ inline SnapshotEpochTracker snapshotEpochTracker;
 struct ObjControl {
     std::atomic_int32_t strong;
     std::atomic_int32_t weak;
-    Obj* obj;
+    // The death flag: nulled by whichever path kills the object (refcount
+    // zero on any mutator thread, or GC sweep with the world stopped).
+    // Atomic because weak-deref readers (strongRef/isAlive/asObj) race the
+    // refcount-death null store.
+    std::atomic<Obj*> obj;
     std::uint64_t allocationSize;
     // Set when the GC or the reference counting path has scheduled the
     // object for destruction. Prevents double-enqueueing the same Obj while

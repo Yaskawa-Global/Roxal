@@ -32,6 +32,8 @@
 
 #include "VM.h"
 #include "ExecutionStatus.h"
+#include "RuntimeConfig.h"
+#include "SimpleMarkSweepGC.h"
 #include <core/AST.h>
 #include "ASTGenerator.h"
 #include "TypeDeducer.h"
@@ -261,6 +263,31 @@ int roxal_completed_count(void) {
 EMSCRIPTEN_KEEPALIVE
 int roxal_last_result(void) {
     return g_lastResult.load(std::memory_order_relaxed);
+}
+
+// Diagnostic/config hook driven by page URL flags. GC keys act on the GC
+// directly -- the RuntimeConfig entries of the same names have no readers
+// (the native CLI also calls the GC API, not the config).
+EMSCRIPTEN_KEEPALIVE
+void roxal_config(const char* key, const char* value) {
+    const std::string k = key ? key : "";
+    if (k == "gc.disabled") {
+        roxal::SimpleMarkSweepGC::instance().setEnabled(
+            !(value && std::string(value) == "true"));
+        return;
+    }
+    if (k == "gc.threshold") {
+        roxal::SimpleMarkSweepGC::instance().setAutoTriggerThreshold(
+            std::strtoull(value ? value : "0", nullptr, 10));
+        return;
+    }
+    if (k.rfind("env.", 0) == 0) {
+        // environment passthrough for diagnostics gated on getenv (e.g.
+        // ROXAL_GC_SHADOW_SCAN); must land before the first lazy read
+        setenv(k.c_str() + 4, value ? value : "", 1);
+        return;
+    }
+    roxal::RuntimeConfig::set(key, value);
 }
 
 } // extern "C"

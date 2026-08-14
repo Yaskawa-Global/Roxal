@@ -1,5 +1,9 @@
 #include "SimpleMarkSweepGC.h"
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten/stack.h>
+#endif
+
 #ifdef ROXAL_ENABLE_FILEIO
 #include "AsyncIOManager.h"
 #if defined(__EMSCRIPTEN__) && defined(ROXAL_ENABLE_AI_NN)
@@ -744,9 +748,16 @@ std::uint64_t SimpleMarkSweepGC::autoTriggerThreshold() const noexcept {
 void SimpleMarkSweepGC::setEnabled(bool enabled) noexcept {
     gcEnabled_.store(enabled, std::memory_order_release);
     if (!enabled) {
-        collectionRequested_.store(false, std::memory_order_release);
-        bytesAllocatedSinceLastCollect_.store(0, std::memory_order_relaxed);
-        lastRequestedBytes_.store(0, std::memory_order_relaxed);
+        // Threads parked in pollContext wait on safepointCv_ for the request
+        // to clear; store under the lock + notify, or they miss the wakeup
+        // and stay parked until some unrelated notify.
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            collectionRequested_.store(false, std::memory_order_release);
+            bytesAllocatedSinceLastCollect_.store(0, std::memory_order_relaxed);
+            lastRequestedBytes_.store(0, std::memory_order_relaxed);
+        }
+        safepointCv_.notify_all();
     }
 }
 
@@ -872,7 +883,17 @@ SimpleMarkSweepGC::StackCaptureRecord* SimpleMarkSweepGC::ensureStackCaptureLock
     }
     auto rec = std::make_unique<StackCaptureRecord>();
     rec->owner = std::this_thread::get_id();
-#ifdef __linux__
+#if defined(__EMSCRIPTEN__)
+    // Emscripten defines neither __linux__ nor pthread_getattr_np, and the
+    // silent fallthrough left every record boundless -- the scanner then
+    // skipped EVERY parked stack, so on wasm the conservative scan
+    // contributed no roots at all and any object whose only reference sat
+    // on a parked thread's stack was swept alive. Each pthread's shadow
+    // stack lives in linear memory with its own bounds: base is the high
+    // address, the stack grows down toward the end.
+    rec->stackBase = reinterpret_cast<void*>(emscripten_stack_get_base());
+    rec->stackLow  = reinterpret_cast<void*>(emscripten_stack_get_end());
+#elif defined(__linux__)
     pthread_attr_t attr;
     if (pthread_getattr_np(pthread_self(), &attr) == 0) {
         void* addr = nullptr;
@@ -884,7 +905,7 @@ SimpleMarkSweepGC::StackCaptureRecord* SimpleMarkSweepGC::ensureStackCaptureLock
         pthread_attr_destroy(&attr);
     }
 #endif
-    // Without bounds (non-Linux, or getattr failure) the record stays
+    // Without bounds (other platforms, or getattr failure) the record stays
     // unusable: the scanner skips records lacking a valid base.
     tlStackCapture_ = rec.get();
     stackCaptures_.push_back(std::move(rec));
@@ -1064,8 +1085,23 @@ void SimpleMarkSweepGC::pollContext(Thread* currentThread)
     }
 }
 
+namespace {
+// blockEnter calls skipped because a no-park cover outranked them; the
+// matching blockExit must skip its restore too.
+thread_local std::uint32_t tlBlockSkipDepth_ = 0;
+}
+
 void SimpleMarkSweepGC::blockEnter(const void* scopeAnchor)
 {
+    if (inGCNoParkSectionOnThisThread()) {
+        // A no-park cover means this thread's NATIVE frames hold live Values
+        // (wasm: unscannable). Declaring the thread SafeBlocked here would
+        // let the barrier proceed and sweep them -- a blocking wait inside a
+        // covered native call must keep the thread Running so collections
+        // wait it out instead.
+        ++tlBlockSkipDepth_;
+        return;
+    }
     std::lock_guard<std::mutex> lock(mutex_);
     MutatorContext* ctx = ensureContextLocked();
     // Capture bounded at the scope object in the caller's frame: locals
@@ -1080,6 +1116,11 @@ void SimpleMarkSweepGC::blockEnter(const void* scopeAnchor)
 
 void SimpleMarkSweepGC::blockExit()
 {
+    if (tlBlockSkipDepth_ > 0) {
+        // Paired with a blockEnter that a no-park cover skipped.
+        --tlBlockSkipDepth_;
+        return;
+    }
     std::unique_lock<std::mutex> lock(mutex_);
     // Return protocol: never leave the captured state while a collection is
     // scanning (acquiring mutex_ already waits out mark+sweep; the loop is
@@ -1382,7 +1423,17 @@ bool SimpleMarkSweepGC::conservativeMarkingEnabled() noexcept {
     // prompt-cycle-death tests via runtests.py).
     static const bool enabled = [] {
         const char* v = std::getenv("ROXAL_GC_CONSERVATIVE");
+#ifdef __EMSCRIPTEN__
+        // Default OFF on wasm: locals live outside scannable linear memory,
+        // so the conservative contract ("a Value held only in a C++ local
+        // survives") cannot be met -- the wasm test runner has always set
+        // ROXAL_GC_CONSERVATIVE=0 for exactly this reason, while the browser
+        // host silently ran the unsatisfiable default. Precise mode uses the
+        // GCNoParkScope pathways (compiles wait out collections) instead.
+        return v && *v == '1';
+#else
         return !(v && *v == '0');
+#endif
     }();
     return enabled;
 }
@@ -1511,7 +1562,7 @@ SimpleMarkSweepGC::CollectionResult SimpleMarkSweepGC::performCollection(std::un
             // Only trim marked (live) objects that have a version chain
             if (control->markEpoch.load(std::memory_order_relaxed) == epoch
                 && control->versionChain.load(std::memory_order_relaxed) != nullptr) {
-                control->obj->trimVersionChain(minEpoch);
+                control->obj.load(std::memory_order_relaxed)->trimVersionChain(minEpoch);
             }
         });
     }
@@ -1557,7 +1608,10 @@ SimpleMarkSweepGC::CollectionResult SimpleMarkSweepGC::performCollection(std::un
         }
 
         control->collecting.store(true, std::memory_order_relaxed);
-        control->obj = nullptr;   // weak derefs observe death immediately
+        // weak derefs observe death immediately; release pairs with the
+        // acquire loads in strongRef/isAlive (RT yield sections and covered
+        // native frames can run weak derefs while the sweep proceeds)
+        control->obj.store(nullptr, std::memory_order_release);
 
         totalFreedBytes += control->allocationSize;
 

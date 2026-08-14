@@ -50,13 +50,20 @@ inline int32_t checkedInt32(int64_t v, const char* what) {
 
 void Obj::decRef()
 {
-    auto prevCount = control->strong.fetch_sub(1, std::memory_order_relaxed);
+    // Release/acquire is the shared-ptr death protocol: the release makes
+    // this thread's writes INTO the object happen-before the count reaching
+    // zero, and the acquire fence on the zero path makes every other
+    // thread's writes visible before dropReferences/destruction/free reads
+    // them. Increments stay relaxed (they publish nothing). Relaxed here is
+    // free on x86 -- which is why only the wasm build ever corrupted.
+    auto prevCount = control->strong.fetch_sub(1, std::memory_order_release);
     if (prevCount <= 1) {
-        if (!control->collecting.exchange(true, std::memory_order_relaxed)) {
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (!control->collecting.exchange(true, std::memory_order_acq_rel)) {
             if (SimpleMarkSweepGC::instance().isCollectionInProgress()) {
                 dropReferences();
             }
-            control->obj = nullptr;
+            control->obj.store(nullptr, std::memory_order_release);
             // Reclamation: queue for the collector role; destruction is
             // promptly queued, never inline (RT slices stay destructor-free
             // and there is exactly ONE destructor-running context).

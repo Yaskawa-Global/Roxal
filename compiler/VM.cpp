@@ -781,6 +781,16 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                       const Value& declFunction,
                       uint32_t resolveArgMask)
 {
+#ifdef __EMSCRIPTEN__
+    // Wasm cannot conservatively scan native frames: locals live in wasm
+    // SSA registers outside linear memory, so a Value whose only reference
+    // is a builtin's C++ local is invisible to the collector. Make every
+    // native call a no-park section instead -- collections wait until this
+    // thread is back at an interpreter boundary, where all live Values sit
+    // in traced storage. (Native builds keep the conservative scan, which
+    // covers these frames via the register spill at park.)
+    SimpleMarkSweepGC::GCNoParkScope nativeCover;
+#endif
     Thread* currentThread = thread.get();
     if (currentThread)
         currentThread->lastNativeCallRaised = false;
@@ -1126,8 +1136,15 @@ void roxal::scheduleEventHandlers(Value eventWeak, ObjEventType* ev, Value event
     std::unordered_set<Thread*> scheduledThreads;
 
     for (auto it = ev->subscribers.begin(); it != ev->subscribers.end(); ) {
-        Value handlerVal = *it;
-        if (!handlerVal.isAlive()) {
+        // Take a STRONG ref before touching the closure. The weak entry can
+        // reach refcount zero concurrently (handler thread teardown), and the
+        // retire path frees without consulting stacks -- so even reading
+        // closure->handlerThread through a dying object does an atomic RMW
+        // through its destructed weak_ptr's control block: heap corruption,
+        // not just a stale read. isAlive() alone is the TOCTOU strongRef()'s
+        // CAS closes; the strong ref then pins the closure for this body.
+        Value handlerVal = it->strongRef();
+        if (handlerVal.isNil()) {
             it = ev->subscribers.erase(it);
             continue;
         }
@@ -10504,6 +10521,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 
 bool VM::processPendingEvents()
 {
+#ifdef __EMSCRIPTEN__
+    // Wasm: this frame holds event Values across handler invocation (which
+    // re-enters the interpreter and can park); see callNativeFn note.
+    SimpleMarkSweepGC::GCNoParkScope nativeCover;
+#endif
 
     if (exitRequested.load()) return false;
 
@@ -11012,6 +11034,13 @@ bool VM::processContinuationDispatch()
 
 bool VM::processNativeDefaultParamDispatch(Value defaultValue)
 {
+#ifdef __EMSCRIPTEN__
+    // Deferred-default/conversion resumption invokes the native OUTSIDE
+    // callNativeFn, so its wasm no-park cover does not apply here; result
+    // and native temporaries live in unscannable wasm locals until stored
+    // back to the traced stack (see callNativeFn).
+    SimpleMarkSweepGC::GCNoParkScope nativeCover;
+#endif
 
     if (!thread->hasNativeDefaultParam())
         return true;
@@ -11469,6 +11498,9 @@ bool VM::pushParamConversionFrame(const Value& val, ptr<type::Type> paramType, b
 
 bool VM::processNativeParamConversion(Value convertedValue)
 {
+#ifdef __EMSCRIPTEN__
+    SimpleMarkSweepGC::GCNoParkScope nativeCover;   // see processNativeDefaultParamDispatch
+#endif
     if (!thread->hasNativeParamConversion())
         return true;
     auto& state = thread->currentNativeParamConversion();
@@ -11836,7 +11868,10 @@ void VM::freeObjects()
         // (Controls were captured before destruction: the obj->control
         // field does not survive quarantine wipes.)
         for (ObjControl* ctrl : batchControls) {
-            if (ctrl->weak.fetch_sub(1, std::memory_order_relaxed) == 1) {
+            // Same release + acquire-on-zero death protocol as Obj::decWeak:
+            // other threads' weak releases must be visible before the free.
+            if (ctrl->weak.fetch_sub(1, std::memory_order_release) == 1) {
+                std::atomic_thread_fence(std::memory_order_acquire);
                 delete[] reinterpret_cast<char*>(ctrl);
             }
         }

@@ -5,6 +5,7 @@
 #include "RoxalStore.h"
 
 #include "VM.h"
+#include "SimpleMarkSweepGC.h"
 
 #include <atomic>
 #include <chrono>
@@ -20,8 +21,21 @@ std::atomic<bool> g_stopRequested{false};
 bool g_installed = false;
 
 struct WebHostLoop : HostEventLoop {
+    // Re-entrancy gate, the QtSignalHub/QtHostLoop precedent: a handler that
+    // yields lands back in waitForEvents -> pump() with the outer turn's
+    // containers mid-mutation. One turn at a time; the nested attempt is a
+    // no-op and the outer turn finishes first. VM-thread-only, so plain int.
+    int pumpDepth_ = 0;
+
     void pump() override
     {
+        if (pumpDepth_ > 0) return;
+        ++pumpDepth_;
+        // Wasm: native pump frames hold Values while store handlers re-enter
+        // the interpreter (which polls safepoints); the conservative scan
+        // cannot see wasm locals, so a collection mid-pump would sweep them.
+        // No-park makes the whole pump turn collection-atomic.
+        SimpleMarkSweepGC::GCNoParkScope nativeCover;
         // Containment: pump() runs from the dispatch loop, which has no call site
         // to propagate to, so an escaping exception would kill the VM thread.
         try {
@@ -40,6 +54,7 @@ struct WebHostLoop : HostEventLoop {
             std::cerr << "web: " << e.what() << std::endl;
         } catch (...) {
         }
+        --pumpDepth_;
     }
 
     void waitForEvents(TimeDuration maxWait) override

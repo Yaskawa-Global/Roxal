@@ -595,8 +595,10 @@ void roxal::Value::decWeakObj()
     if (!isObj() && !isBoxable())
         throw std::runtime_error("Can't decWeak non-object type "+typeName());
     #endif
-    if (asControl()->weak.fetch_sub(1,std::memory_order_relaxed) == 1)
+    if (asControl()->weak.fetch_sub(1,std::memory_order_release) == 1) {
+        std::atomic_thread_fence(std::memory_order_acquire);
         delete[] reinterpret_cast<char*>(asControl());
+    }
 }
 
 
@@ -1240,7 +1242,7 @@ Value Value::strongRef() const
         return *this;
 
     ObjControl* c = asControl();
-    Obj* obj = c->obj;
+    Obj* obj = c->obj.load(std::memory_order_acquire);
     if (!obj)
         return nilVal();
 
@@ -1251,6 +1253,17 @@ Value Value::strongRef() const
     // so accessing obj->control->strong is safe even after the destructor runs.
     if (!obj->tryIncRef())
         return nilVal();
+
+    // A successful increment proves the object escaped REFCOUNT death (the
+    // CAS reads the latest count, and that path only nulls obj after strong
+    // hits zero) -- but NOT the GC sweep, which retires cyclic garbage with
+    // strong still > 0. Re-check the death flag after securing the count.
+    // The undo decRef is safe against double-routing: the killing path set
+    // control->collecting before nulling obj.
+    if (c->obj.load(std::memory_order_acquire) == nullptr) {
+        obj->decRef();
+        return nilVal();
+    }
 
     Value v;
     v.val = SignBit | QNAN | uint64_t(uintptr_t(obj));

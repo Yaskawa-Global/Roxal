@@ -210,8 +210,12 @@ struct Obj {
 
     inline void decWeak()
     {
-        if (control->weak.fetch_sub(1,std::memory_order_relaxed) == 1)
+        // release + acquire-on-zero: same death protocol as Obj::decRef,
+        // guarding the control block's storage
+        if (control->weak.fetch_sub(1,std::memory_order_release) == 1) {
+            std::atomic_thread_fence(std::memory_order_acquire);
             delete[] reinterpret_cast<char*>(control);
+        }
     }
 
 
@@ -275,7 +279,10 @@ inline unique_ptr<T, UnreleasedObj> newObj(const std::string& name, const std::s
 
     ctrl->strong = 0;
     ctrl->weak   = 1;   // implicit weak ref representing strong refs
-    ctrl->obj    = o;
+    // Relaxed: the object is unpublished until the returned Value crosses a
+    // synchronized channel; a plain assignment here would be a seq_cst store
+    // (full fence) on the allocation hot path now that obj is atomic.
+    ctrl->obj.store(o, std::memory_order_relaxed);
     ctrl->allocationSize = static_cast<std::uint64_t>(total);
     ctrl->collecting.store(false, std::memory_order_relaxed);
     ctrl->markEpoch.store(0uLL, std::memory_order_relaxed);
@@ -313,7 +320,10 @@ inline unique_ptr<T, UnreleasedObj> newObj(Args&&... args) {
 
     ctrl->strong = 0;
     ctrl->weak   = 1;   // implicit weak ref representing strong refs
-    ctrl->obj    = o;
+    // Relaxed: the object is unpublished until the returned Value crosses a
+    // synchronized channel; a plain assignment here would be a seq_cst store
+    // (full fence) on the allocation hot path now that obj is atomic.
+    ctrl->obj.store(o, std::memory_order_relaxed);
     ctrl->allocationSize = static_cast<std::uint64_t>(total);
     ctrl->collecting.store(false, std::memory_order_relaxed);
     ctrl->markEpoch.store(0uLL, std::memory_order_relaxed);
@@ -341,8 +351,10 @@ inline void delObj(T* o) {
     ObjControl* ctrl = o->control;
     SimpleMarkSweepGC::instance().unregisterAllocation(ctrl);
     o->~T();
-    if (ctrl->weak.fetch_sub(1, std::memory_order_relaxed) == 1)
+    if (ctrl->weak.fetch_sub(1, std::memory_order_release) == 1) {
+        std::atomic_thread_fence(std::memory_order_acquire);
         delete[] reinterpret_cast<char*>(ctrl);
+    }
 }
 
 inline std::ostream& operator<<(std::ostream& out, const Obj* obj)

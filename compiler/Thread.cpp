@@ -488,6 +488,13 @@ void Thread::act(Value actorInstance)
                             NativeFn native = function->builtinInfo->function;
                             ArgsView view{&(*vm.thread->stackTop) - callInfo.callSpec.argCount - 1,
                                           static_cast<size_t>(callInfo.callSpec.argCount + 1)};
+#ifdef __EMSCRIPTEN__
+                            // Actor dispatch bypasses callNativeFn; same
+                            // wasm rule applies -- 'ret' and native locals
+                            // live in unscannable wasm frames through the
+                            // future-resolution below (see callNativeFn).
+                            SimpleMarkSweepGC::GCNoParkScope nativeCover;
+#endif
                             Value ret{};
                             bool ok = true;
                             try {
@@ -635,6 +642,9 @@ void Thread::act(Value actorInstance)
                         NativeFn native = bn->function;
                         ArgsView view{&(*vm.thread->stackTop) - callInfo.callSpec.argCount - 1,
                                       static_cast<size_t>(callInfo.callSpec.argCount + 1)};
+#ifdef __EMSCRIPTEN__
+                        SimpleMarkSweepGC::GCNoParkScope nativeCover;   // see above
+#endif
                         Value ret{};
                         bool ok = true;
                         try {
