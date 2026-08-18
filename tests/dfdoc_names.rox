@@ -1,0 +1,31 @@
+// dfdoc: generated identifiers -- keyword collisions, unicode labels,
+// duplicates, and the rename op
+import dfdoc
+
+var doc = dfdoc.new_document('Names', [])['doc']
+
+// 'changes' is a grammar keyword; the mangler must not emit it bare
+var a = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'signal', 'label': 'changes', 'clock': 4.0, 'init': false, 'x': 0, 'y': 0})
+print("keyword: {a['ok']}")
+
+// unicode & punctuation flatten to identifier chars
+var b = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'signal', 'label': 'Wört 42!', 'clock': 4.0, 'init': false, 'x': 0, 'y': 1})
+print("unicode: {b['ok']}")
+
+// duplicate labels get suffixes
+var c = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'signal', 'label': 'Wört 42!', 'clock': 4.0, 'init': false, 'x': 0, 'y': 2})
+print("dup: {c['ok']}")
+
+// digits-first labels get a prefix
+var d = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'signal', 'label': '42nd', 'clock': 4.0, 'init': false, 'x': 0, 'y': 3})
+print("digit: {d['ok']}")
+
+print(dfdoc.save(doc))
+
+// rename: valid, colliding, invalid
+print("rn1: {dfdoc.apply(doc, {'op': 'rename', 'id': a['id'], 'name': 'tick'})['ok']}")
+var rn2 = dfdoc.apply(doc, {'op': 'rename', 'id': b['id'], 'name': 'tick'})
+print("rn2: {rn2['ok']} {rn2['error']}")
+var rn3 = dfdoc.apply(doc, {'op': 'rename', 'id': b['id'], 'name': 'not valid'})
+print("rn3: {rn3['ok']} {rn3['error']}")
+print(dfdoc.save(doc))

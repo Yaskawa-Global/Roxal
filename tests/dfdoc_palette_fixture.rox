@@ -1,0 +1,27 @@
+// palette fixture: every shape the extractor must classify
+
+func plain(a :int, b :real = 2.0) -> real:
+  return b
+
+func untyped(v) -> bool:
+  return true
+
+func multi(v :real) -> [real, real]:
+  return [v - 1.0, v + 1.0]
+
+// ':signal' params make a component, not a node
+func wiring(s :signal) -> signal:
+  return s
+
+// procs never lift, so they are never palette nodes
+proc act(v :int):
+  print(v)
+
+type Widget object:
+  var out :signal = nil
+
+  proc init(freq :real = 1.0):
+    out = signal(freq, false)
+
+type Plain object:
+  var n :int = 0

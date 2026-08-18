@@ -1,0 +1,22 @@
+// dfdoc: palette extraction from module sources
+import dfdoc
+
+var items = dfdoc.palette(['../tests/dfdoc_palette_fixture.rox'])
+for it in items:
+  var ps = ''
+  for p in it['params']:
+    if len(ps) > 0:
+      ps = ps + ', '
+    ps = ps + p['name'] + ':' + string(p['type'])
+    if p['has_default']:
+      ps = ps + '='
+  print("{it['kind']}  {it['callee']}({ps}) -> {it['outputs']}")
+
+// a real module parses too; spot-check a known entry
+var math_items = dfdoc.palette(['../modules/math.rox'])
+var found = false
+for it in math_items:
+  if it['callee'] == 'math.atan2':
+    found = true
+    print("math.atan2 params: {len(it['params'])}  outputs: {it['outputs']}")
+print("math funcs > 20: {len(math_items) > 20}  atan2 found: {found}")

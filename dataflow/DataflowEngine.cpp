@@ -257,12 +257,15 @@ void DataflowEngine::copyInto(const ptr<Signal>& lhs, const ptr<Signal>& rhs)
 {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
 
-    // Ensure both signals are valid and have the same frequency
-    if (!lhs || !rhs || lhs->frequency() != rhs->frequency())
-        throw std::runtime_error("Signals have the same frequency");
+    if (!lhs || !rhs)
+        throw std::runtime_error("both sides of '<-' must be valid signals");
+
+    if (lhs->frequency() != rhs->frequency())
+        throw std::runtime_error(roxal::format("both sides of '<-' must have the same frequency (%g Hz vs %g Hz)",
+                                               lhs->frequency(), rhs->frequency()));
 
     if (!lhs->isSourceSignal())
-        throw std::runtime_error("lhs must be a source signal");
+        throw std::runtime_error("left side of '<-' is already driven; it must be an undriven source signal");
 
     // Copy attributes from rhs to lhs
     lhs->isSource = rhs->isSource;

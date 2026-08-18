@@ -1,0 +1,30 @@
+// dfdoc: the AST is the live document -- hand-written comments survive
+// graphical edits (move, connect) untouched
+import dfdoc
+
+var src = """@dataflow_diagram(version=1, next_id=4)
+
+import math
+
+// hand-written header comment
+type Cosine object:
+  @df(id=3, x=400, y=50)
+  var out:signal = nil   // the visible result
+
+  proc init(freq:real=8):
+    // the state point of the loop
+    @df(id=1, x=100, y=50)
+    var w = signal(freq, 0)
+    @df(id=2, x=260, y=60)
+    var cos = math.cos(w[-1])
+    w <- cos
+    out = cos
+"""
+
+var r = dfdoc.load(src)
+print("load: {r['ok']}")
+var doc = r['doc']
+print("move: {dfdoc.apply(doc, {'op': 'move', 'id': 2, 'x': 300, 'y': 80})['ok']}")
+print("disc: {dfdoc.apply(doc, {'op': 'disconnect', 'to': {'id': 3, 'port': 0}})['ok']}")
+print("conn: {dfdoc.apply(doc, {'op': 'connect', 'from': {'id': 2, 'port': 0}, 'to': {'id': 3, 'port': 0}})['ok']}")
+print(dfdoc.save(doc))

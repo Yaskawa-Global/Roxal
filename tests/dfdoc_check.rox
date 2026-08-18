@@ -1,0 +1,28 @@
+// dfdoc: static diagnostics -- unconnected ports, unused inputs, and
+// rate-mismatched feedback splices
+import dfdoc
+
+var doc = dfdoc.new_document('Chk', [{'name': 'freq', 'default': 4.0}])['doc']
+var i = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'input', 'name': 'en', 'type': 'bool', 'x': 0, 'y': 0})['id']
+var f = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'func', 'callee': 'math.cos', 'nin': 1, 'x': 1, 'y': 0})['id']
+var o = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'output', 'name': 'out', 'x': 2, 'y': 0})['id']
+
+// everything dangling: cos input, output, and the unused input port
+for d in dfdoc.check(doc):
+  print("{d['level']}: {d['message']}")
+print("---")
+
+// wire it, but leave the input unused: only the warning remains
+var w = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'signal', 'label': 'w', 'clock': 'freq', 'init': 0.0, 'x': 0, 'y': 1})['id']
+dfdoc.apply(doc, {'op': 'connect', 'from': {'id': w, 'port': 0}, 'to': {'id': f, 'port': 0}, 'prev': true})
+dfdoc.apply(doc, {'op': 'connect', 'from': {'id': f, 'port': 0}, 'to': {'id': w, 'port': 0}})
+dfdoc.apply(doc, {'op': 'connect', 'from': {'id': f, 'port': 0}, 'to': {'id': o, 'port': 0}})
+for d in dfdoc.check(doc):
+  print("{d['level']}: {d['message']}")
+print("---")
+
+// a second wire at a literal rate spliced from the freq-rate chain: rate error
+var w2 = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'signal', 'label': 'slow', 'clock': 8.0, 'init': 0.0, 'x': 0, 'y': 2})['id']
+dfdoc.apply(doc, {'op': 'connect', 'from': {'id': f, 'port': 0}, 'to': {'id': w2, 'port': 0}})
+for d in dfdoc.check(doc):
+  print("{d['level']}: {d['message']}")

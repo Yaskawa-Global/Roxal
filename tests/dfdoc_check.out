@@ -1,0 +1,8 @@
+warning: input en is unused
+error: output out is unconnected
+error: math.cos: input 0 is unconnected
+---
+warning: input en is unused
+---
+warning: input en is unused
+error: feedback into a 8 Hz wire from a freq Hz wire: both sides of a splice must share a rate

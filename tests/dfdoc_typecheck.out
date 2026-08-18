@@ -1,0 +1,20 @@
+real->int: true
+bool->real: true
+int->string: true
+string->real: false
+vector->real: false
+vector->vector: true
+tensor->matrix: false
+unknowns: true true
+---
+scale ports: {"ins": ["real"], "outs": ["real"]}
+norm ports: {"ins": ["vector"], "outs": ["real"]}
+untyped ports: {"ins": [nil], "outs": ["real"]}
+input ports: {"ins": [], "outs": ["vector"]}
+---
+vec->scale: false type mismatch: vector output cannot drive real input
+flag->scale: true
+vec->norm: true
+scale->norm: false type mismatch: real output cannot drive vector input
+vec->untyped: true
+vec->scale no pal: true

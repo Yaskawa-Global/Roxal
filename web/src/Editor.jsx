@@ -64,7 +64,7 @@ export function disposeModel(path) {
     monaco.editor.getModel(monaco.Uri.parse('inmemory://roxal' + path))?.dispose();
 }
 
-export default function Editor({ path, content, onChange, service, height = '22rem' }) {
+export default function Editor({ path, content, onChange, service, height = '22rem', readOnly = false }) {
     const hostRef = useRef(null);
     const editorRef = useRef(null);
     const onChangeRef = useRef(onChange);
@@ -94,6 +94,7 @@ export default function Editor({ path, content, onChange, service, height = '22r
             tabSize: 2,
             insertSpaces: true,           // Roxal is indentation-sensitive
             detectIndentation: false,
+            readOnly,
         });
         editorRef.current = editor;
         // Exposed deliberately: browser tests drive the model rather than
@@ -152,6 +153,10 @@ export default function Editor({ path, content, onChange, service, height = '22r
         // every keystroke would destroy the cursor and undo history.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    // A generated view (a diagram file's source pane) is read-only; the flag
+    // can change as the user switches tabs between diagram and plain files.
+    useEffect(() => { editorRef.current?.updateOptions({ readOnly }); }, [readOnly]);
 
     // The service arrives well after the editor mounts -- the VM has to boot and
     // the script has to reach its web.expose() call. Without this, the first

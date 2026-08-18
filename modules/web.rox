@@ -42,6 +42,7 @@
 // (ROXAL_ENABLE_INSPECT, ROXAL_ENABLE_FILEIO).
 import inspect
 import fileio
+import dfdoc
 
 @builtin
 proc expose(name:string, obj):
@@ -208,6 +209,191 @@ type Workspace actor:
     except e2:
       return string(e2)
 
+# Data-flow diagram service: holds the open diagram DOCUMENTS -- inspect
+# mirror trees -- keyed by file path, and applies the canvas's edit ops to
+# them via dfdoc. The Monaco buffer remains the durable text; on any lost
+# state ('no_document') the JS side simply re-opens from the buffer. Every
+# method returns an {'ok': ...} envelope and never raises across the store
+# boundary.
+type Df actor:
+  private var docs :dict = {}
+  // Sampling cache: path -> {'rev','ran','map'}; `revs` is bumped by every
+  // mutation so the cache can never answer for a stale document.
+  private var revs :dict = {}
+  private var scache :dict = {}
+  private var pals :dict = {}   // per-document palette, for connect-time types
+
+  private func _refresh_palette(path :string):
+    var paths = []
+    for m in dfdoc.doc_modules(docs[path]):
+      paths.append('/stdlib/' + m + '.rox')
+      paths.append('/data/' + m + '.rox')
+    pals[path] = dfdoc.palette(paths)   // unreadable paths skip harmlessly
+
+  private func _pal(path :string) -> list:
+    if not (path in pals):
+      _refresh_palette(path)
+    return pals[path]
+
+  private func _with_view(path :string) -> dict:
+    var doc = docs[path]
+    return {'ok': true, 'view': dfdoc.view(doc), 'source': dfdoc.save(doc),
+            'ports': dfdoc.port_types(doc, _pal(path))}
+
+  func create(path :string, name :string, clocks :list) -> dict:
+    try:
+      var r = dfdoc.new_document(name, clocks)
+      if not r['ok']:
+        return r
+      docs[path] = r['doc']
+      _refresh_palette(path)
+      return _with_view(path)
+    except e:
+      return {'ok': false, 'error': string(e)}
+
+  func open(path :string, source :string) -> dict:
+    // Any mutation invalidates the sampling cache.
+    var r0 = 0
+    if path in revs:
+      r0 = revs[path]
+    revs[path] = r0 + 1
+    try:
+      var r = dfdoc.load(source)
+      if not r['ok']:
+        return r
+      docs[path] = r['doc']
+      _refresh_palette(path)
+      return _with_view(path)
+    except e:
+      return {'ok': false, 'error': string(e)}
+
+  func rules() -> dict:
+    return {'ok': true, 'rules': dfdoc.type_rules()}
+
+  func apply(path :string, op :dict) -> dict:
+    // Any mutation invalidates the sampling cache.
+    var r0 = 0
+    if path in revs:
+      r0 = revs[path]
+    revs[path] = r0 + 1
+    if not (path in docs):
+      return {'ok': false, 'error': 'no_document'}
+    try:
+      var r = dfdoc.apply(docs[path], op, _pal(path))
+      if r['ok']:
+        if op['op'] == 'add_node':
+          _refresh_palette(path)   // a new sub-diagram may add an import
+        r['ports'] = dfdoc.port_types(docs[path], _pal(path))
+      return r
+    except e:
+      return {'ok': false, 'error': string(e)}
+
+  func save(path :string) -> dict:
+    if not (path in docs):
+      return {'ok': false, 'error': 'no_document'}
+    return {'ok': true, 'source': dfdoc.save(docs[path])}
+
+  func close(path :string) -> dict:
+    // Any mutation invalidates the sampling cache.
+    var r0 = 0
+    if path in revs:
+      r0 = revs[path]
+    revs[path] = r0 + 1
+    if path in docs:
+      var kept = {}
+      for k in docs:
+        if k != path:
+          kept[k] = docs[k]
+      docs = kept
+    if path in pals:
+      var kept2 = {}
+      for k2 in pals:
+        if k2 != path:
+          kept2[k2] = pals[k2]
+      pals = kept2
+    return {'ok': true}
+
+  func palette(modules :list) -> dict:
+    try:
+      var paths = []
+      for m in modules:
+        paths.append('/stdlib/' + m + '.rox')
+      return {'ok': true, 'items': dfdoc.palette(paths)}
+    except e:
+      return {'ok': false, 'error': string(e)}
+
+  func harness(path :string) -> dict:
+    if not (path in docs):
+      return {'ok': false, 'error': 'no_document'}
+    try:
+      return {'ok': true, 'source': dfdoc.harness(docs[path])}
+    except e:
+      return {'ok': false, 'error': string(e)}
+
+  func check(path :string) -> dict:
+    if not (path in docs):
+      return {'ok': false, 'error': 'no_document'}
+    try:
+      return {'ok': true, 'diagnostics': dfdoc.check(docs[path])}
+    except e:
+      return {'ok': false, 'error': string(e)}
+
+  # every diagram file under /data that can be placed as a node, except the
+  # one being edited (a diagram cannot contain itself)
+  func components(exclude :string = '') -> dict:
+    try:
+      var items = []
+      var entries = fileio.list_dir('/data')
+      if entries == nil:
+        entries = []
+      for e in entries:
+        var path = '/data/' + e
+        if path == exclude:
+          continue
+        if len(e) < 5 or e[len(e) - 4] != '.' or e[len(e) - 3] != 'r' or e[len(e) - 2] != 'o' or e[len(e) - 1] != 'x':
+          continue
+        try:
+          var spec = dfdoc.component_spec(path)
+          if spec['ok']:
+            spec['file'] = e
+            items.append(spec)
+        except einner:
+          continue
+      return {'ok': true, 'items': items}
+    except e:
+      return {'ok': false, 'error': string(e)}
+
+  func probe() -> dict:
+    var names = []
+    for s in inspect.signals(include_internal=true):
+      names.append(s.info()['src_name'] + ':' + string(s.info()['src_line']))
+    return {'ok': true, 'names': names}
+
+  func sample(path :string) -> dict:
+    if not (path in docs):
+      return {'ok': false, 'error': 'no_document'}
+    try:
+      var stem = dfdoc._module_stem(path)
+      // The editor polls this on a timer to refresh edge labels. Only the
+      // signal reads below change between polls: emitting the harness and
+      // parsing it into a mirror AST depend solely on the document, so cache
+      // both against a revision that every mutation bumps. Without this each
+      // refresh rebuilt a full mirror AST (and reparsed every referenced
+      // sub-diagram) to answer with the same map as last time.
+      var rev = 0
+      if path in revs:
+        rev = revs[path]
+      if (not (path in scache)) or scache[path]['rev'] != rev:
+        var ran0 = dfdoc.harness(docs[path])
+        scache[path] = {'rev': rev, 'ran': ran0,
+                        'map': dfdoc.live_map(ran0, '/data')}
+      var c = scache[path]
+      return {'ok': true,
+              'values': dfdoc.live_values(docs[path], stem, c['ran'], '/data', c['map'])}
+    except e:
+      return {'ok': false, 'error': string(e)}
+
 proc _ensure_ide():
   expose("ide", Ide())
   expose("workspace", Workspace())
+  expose("df", Df())

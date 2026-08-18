@@ -287,3 +287,76 @@ h2 { font-size: 13px; color: #88c0d0; }
 .build-label { color: #616e88; }
 .feature { color: #a3d9a5; background: #1c1f26; border: 1px solid #2b303b;
            border-radius: 3px; padding: 0 .35rem; }
+
+/* --- data-flow diagram editor ---------------------------------------------- */
+/* Canvas + palette fill the editor pane exactly as Monaco does. */
+.df-editor { flex: 1 1 auto; min-height: 0; display: flex; }
+.workbench.source-collapsed .editor-pane .df-editor { display: none; }
+.df-palette { width: 11rem; flex: 0 0 auto; overflow-y: auto; padding: .5rem;
+              border-right: 1px solid #2b303b; display: flex; flex-direction: column;
+              gap: .3rem; font-size: 12px; }
+.df-palette h3 { margin: 0 0 .2rem; font-size: 13px; color: #88c0d0; }
+.df-palette button { text-align: left; background: #1c1f26; color: #d8dee9;
+                     border: 1px solid #2b303b; border-radius: 4px;
+                     padding: .2rem .45rem; cursor: pointer; font-size: 12px; }
+.df-palette button:hover { border-color: #67e8f9; }
+.df-clock { color: #a3d9a5; }
+.df-prev { color: #9aa5b5; display: flex; gap: .35rem; align-items: center; }
+.df-sep { border-top: 1px solid #2b303b; margin: .3rem 0; }
+.df-error { color: #ef8784; font-size: 11px; white-space: pre-wrap; }
+.df-canvas { flex: 1 1 auto; min-width: 0; }
+.df-refusal { padding: 1rem; color: #9aa5b5; }
+.df-refusal b { color: #ef8784; }
+
+/* nodes */
+.df-node { background: #1c1f26; border: 1px solid #3b4252; border-radius: 6px;
+           padding: .35rem .6rem; font-size: 12px; color: #d8dee9;
+           min-width: 6rem; }
+.df-node .df-title { font-weight: 600; }
+.df-node .df-sub { color: #616e88; font-size: 10px; }
+.df-func { border-color: #3b4252; }
+.df-signal { border-color: #56753f; }
+.df-input { border-color: #2c6e8a; }
+.df-output { border-color: #8a6d2c; }
+.react-flow { background: #12141a; }
+.react-flow__edge-textbg { fill: #12141a; }
+.react-flow__edge-text { fill: #9aa5b5; font-size: 10px; }
+
+/* selection, diagnostics, input-type picker */
+.react-flow__node.selected .df-node { outline: 2px solid #67e8f9; outline-offset: 1px; }
+.df-node.df-diag-error { border-color: #ef8784; }
+.df-node.df-diag-warning { border-color: #d4b158; }
+.df-type { margin-top: .2rem; width: 100%; background: #12141a; color: #d8dee9;
+           border: 1px solid #2b303b; border-radius: 3px; font-size: 10px; }
+.df-delete { color: #ef8784; }
+.df-delete:disabled { color: #616e88; cursor: default; }
+.df-diag { font-size: 11px; padding: .1rem .2rem; border-radius: 3px; }
+.df-diag-error { color: #ef8784; }
+.df-diag-warning { color: #d4b158; }
+
+/* composed-diagram nodes */
+.df-node.df-diagram { border-color: #7b6cd9; }
+.df-palette .df-component { color: #b3a6f0; }
+
+/* a selected link matches the node selection color */
+.react-flow__edge.selected .react-flow__edge-path { stroke: #67e8f9; stroke-width: 2; }
+
+/* v12 theming: edge colors are CSS variables, not path styles */
+.react-flow { --xy-edge-stroke-selected: #67e8f9; --xy-edge-stroke-width-selected: 2; }
+
+/* edge label chips follow the theme; clear buttons sit right of the titles */
+.react-flow { --xy-edge-label-background-color: #1c1f26; --xy-edge-label-color: #a3d9a5; }
+.pane-clear { margin-left: auto; }
+
+/* feedback-edge label chip on the detour run */
+.df-fb-label { background: #1c1f26; color: #a3d9a5; border: 1px solid #2b303b;
+               border-radius: 3px; padding: 0 .3rem; font-size: 10px;
+               font-family: ui-monospace, monospace; }
+
+/* right-click menu */
+.df-menu { position: fixed; z-index: 50; display: flex; flex-direction: column;
+           background: #1c1f26; border: 1px solid #3b4252; border-radius: 6px;
+           padding: .2rem; min-width: 9rem; box-shadow: 0 4px 14px rgba(0,0,0,.5); }
+.df-menu button { text-align: left; background: none; border: 0; color: #d8dee9;
+                  padding: .3rem .55rem; border-radius: 4px; cursor: pointer; font-size: 12px; }
+.df-menu button:hover { background: #2e3440; color: #67e8f9; }

@@ -1,0 +1,35 @@
+keyword: true
+unicode: true
+dup: true
+digit: true
+@dataflow_diagram(version=1, next_id=5)
+
+type Names object:
+
+  proc init():
+    @df(id=1, x=0, y=0)
+    var changes_1 = signal(4, false)
+    @df(id=2, x=0, y=1)
+    var w_rt_42_ = signal(4, false)
+    @df(id=3, x=0, y=2)
+    var w_rt_42__2 = signal(4, false)
+    @df(id=4, x=0, y=3)
+    var n42nd = signal(4, false)
+
+rn1: true
+rn2: false name already in use: tick
+rn3: false name must be a plain identifier: not valid
+@dataflow_diagram(version=1, next_id=5)
+
+type Names object:
+
+  proc init():
+    @df(id=1, x=0, y=0)
+    var tick = signal(4, false)
+    @df(id=2, x=0, y=1)
+    var w_rt_42_ = signal(4, false)
+    @df(id=3, x=0, y=2)
+    var w_rt_42__2 = signal(4, false)
+    @df(id=4, x=0, y=3)
+    var n42nd = signal(4, false)
+

@@ -1,0 +1,10 @@
+// typecheck fixture: typed funcs for the connect-time gate tests
+
+func scale(x :real, k :real = 2.0) -> real:
+  return x * k
+
+func norm(v :vector) -> real:
+  return v[0]
+
+func untyped(v) -> real:
+  return 0.0

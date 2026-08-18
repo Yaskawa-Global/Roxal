@@ -1,0 +1,27 @@
+// dfdoc: live_values samples a running instance's wires by src provenance
+import dfdoc
+import inspect
+
+var doc = dfdoc.new_document('Cosine', [{'name': 'freq', 'default': 50.0}])['doc']
+var w = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'signal', 'label': 'w', 'clock': 'freq', 'init': 0.0, 'x': 0, 'y': 0})['id']
+var f = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'func', 'callee': 'math.cos', 'nin': 1, 'x': 1, 'y': 0})['id']
+var o = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'output', 'name': 'out', 'x': 2, 'y': 0})['id']
+dfdoc.apply(doc, {'op': 'connect', 'from': {'id': w, 'port': 0}, 'to': {'id': f, 'port': 0}, 'prev': true})
+dfdoc.apply(doc, {'op': 'connect', 'from': {'id': f, 'port': 0}, 'to': {'id': w, 'port': 0}})
+dfdoc.apply(doc, {'op': 'connect', 'from': {'id': f, 'port': 0}, 'to': {'id': o, 'port': 0}})
+
+// run the component in-process under a known program name, then sample
+var runner = dfdoc.save(doc) + """
+var __c = Cosine()
+wait(ms=400)
+"""
+inspect.compile(inspect.parse(runner, 'livetest'), 'livetest')()
+
+var vals = dfdoc.live_values(doc, 'livetest')
+var keys = []
+for k in vals:
+  keys.append(k)
+print("wires sampled: {len(keys) == 2 and 'w' in keys and 'cos' in keys}")
+// after 400ms at 50 Hz the iteration is deep into (0,1)
+var wv = real(vals['w'])
+print("w in range: {wv > 0.0 and wv < 1.0}")

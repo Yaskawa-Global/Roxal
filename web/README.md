@@ -169,6 +169,16 @@ Nothing loads until a script actually creates a model.
 A plain Monaco editor over the Roxal source, with a Run button that re-runs the
 edited script against the live VM.
 
+The app opens the file it last had open, falling back to `tanks.rox`. To point
+a link at a particular example, pass `?file=`:
+
+    http://localhost:4173/?file=counter4
+
+`counter4`, `counter4.rox` and `/data/counter4.rox` all name the same file. An
+unknown name logs a warning and opens the usual file rather than failing to
+boot -- a link outlives the file it names. Opening a file this way also makes
+it the remembered one, so a later visit without the parameter returns to it.
+
 Deliberately language-less for this first pass: no Monarch tokenizer, no
 IntelliSense, no navigation. You still get multi-cursor, find/replace, undo,
 bracket matching and column select, which is most of why one embeds a real editor

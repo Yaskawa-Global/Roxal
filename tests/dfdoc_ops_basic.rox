@@ -1,0 +1,23 @@
+// dfdoc: basic edit ops -> canonical dialect source (the printed source IS
+// the reference example of the diagram dialect)
+import dfdoc
+
+var r = dfdoc.new_document('Cosine', [{'name': 'freq', 'default': 8.0}])
+print("new: {r['ok']}")
+var doc = r['doc']
+
+var w = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'signal', 'label': 'w', 'clock': 'freq', 'init': 0.0, 'x': 100, 'y': 50})['id']
+var f = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'func', 'callee': 'math.cos', 'nin': 1, 'x': 250, 'y': 50})['id']
+var o = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'output', 'name': 'out', 'x': 400, 'y': 50})['id']
+var i = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'input', 'name': 'en', 'x': 10, 'y': 10})['id']
+print("ids: {w} {f} {o} {i}")
+
+print("c1: {dfdoc.apply(doc, {'op': 'connect', 'from': {'id': w, 'port': 0}, 'to': {'id': f, 'port': 0}, 'prev': true})['ok']}")
+print("c2: {dfdoc.apply(doc, {'op': 'connect', 'from': {'id': f, 'port': 0}, 'to': {'id': w, 'port': 0}})['ok']}")
+print("c3: {dfdoc.apply(doc, {'op': 'connect', 'from': {'id': f, 'port': 0}, 'to': {'id': o, 'port': 0}})['ok']}")
+print("mv: {dfdoc.apply(doc, {'op': 'move', 'id': f, 'x': 260, 'y': 60})['ok']}")
+
+print("--- source ---")
+print(dfdoc.save(doc))
+var v = dfdoc.view(doc)
+print("name: {v['name']}  nodes: {len(v['nodes'])}  edges: {len(v['edges'])}  clocks: {len(v['clocks'])}  next_id: {v['next_id']}")

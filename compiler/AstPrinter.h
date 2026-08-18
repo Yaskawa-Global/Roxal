@@ -28,6 +28,10 @@ public:
 private:
     std::string out;
     int indent = 0;
+    // where a statement's own annotation lines end, so a trailing comment
+    // attaches to the declaration line rather than to an '@...' line
+    size_t annotAnchor = 0;
+    bool annotArmed = false;
 
     void emitLine(const std::string& s);
     std::string ind() const { return std::string(size_t(indent) * 2, ' '); }
