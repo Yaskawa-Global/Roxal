@@ -1,0 +1,22 @@
+// An uncaught exception in an AWAITED actor func is forwarded through the
+// call's future and re-raised on the awaiting thread -- and the actor keeps
+// serving: the very next call must work on a clean stack.
+type Worker actor:
+  private var n :int = 0
+
+  func bump() -> int:
+    n = n + 1
+    if n == 1:
+      raise RuntimeException('first bump fails')
+    return n
+
+var w = Worker()
+try:
+  var r = w.bump()
+  wait(for=r)
+  print('r1 = ' + string(r))
+except e:
+  print('caught: ' + string(e))
+var r2 = w.bump()
+wait(for=r2)
+print('r2 = ' + string(r2))

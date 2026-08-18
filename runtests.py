@@ -293,7 +293,7 @@ tests = [
     'is_operator_type',
     'runtime_error_snippet', 'exception_basic', 'exception_typed', 'exception_rethrow', 'exception_string',
     'except_type_mismatch', 'except_type_mismatch_err',
-    'zero_division', 'zero_division_uncaught_err', 'zero_division_actor',
+    'zero_division', 'zero_division_uncaught_err', 'zero_division_actor', 'actor_proc_uncaught', 'actor_func_exception_reuse',
     'stacktrace', 'exception_stacktrace', 'object_user_ref_cycle', 'gc_list_cycle', 'gc_liveness',
     'property_count', 'property_accessor', 'property_accessor_oneliner', 'dict_property_getters', 'cmdline_execute', 'repl_run', 'invalid_option', 'fileio_basic', 'fileio_binary',
     'fileio_read_binary', 'fileio_write_binary', 'fileio_actor_write', 'fileio_delete', 'fileio_extra', 'fileio_packed',

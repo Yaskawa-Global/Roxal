@@ -323,6 +323,11 @@ void Thread::act(Value actorInstance)
         // demoteWorkerToNonRT): never inherit an RT parent's policy.
         demoteWorkerToNonRT();
 
+        // Hoisted above the try: the outer catch must be able to resolve the
+        // in-flight call's promise (R2 below) -- destroying it unresolved
+        // makes the awaiter crash with future_error(broken_promise) instead
+        // of seeing an error.
+        ActorInstance::MethodCallInfo callInfo {};
         try {
             auto& vm { VM::instance() };
 
@@ -363,13 +368,16 @@ void Thread::act(Value actorInstance)
 
             do {
                 // Park here if a collection barrier is forming -- no queued-
-                // call Values are held at this point.  (wakeAllThreadsForGC
+                // call Values are held at this point (callInfo is reset FIRST
+                // for exactly that reason: it is hoisted outside the loop for
+                // the catch handler, so the previous call's Values must be
+                // released before this thread parks).  (wakeAllThreadsForGC
                 // notifies queueConditionVar via Thread::wake, and the wait
                 // predicate below returns on a pending request, so an idle
                 // actor reaches this poll promptly.)
+                callInfo = ActorInstance::MethodCallInfo {};
                 gcParticipant.pollSafepointIfRequested();
 
-                ActorInstance::MethodCallInfo callInfo {};
                 {
                     std::unique_lock<std::mutex> lock { actorInst->queueMutex };
                     actorInst->queueConditionVar.wait(lock,[&]()
@@ -440,6 +448,7 @@ void Thread::act(Value actorInstance)
 
                             if (callInfo.returnPromise != nullptr) {
                                 callInfo.returnPromise->set_value(remoteComputeCallState.result);
+                                callInfo.returnPromise = nullptr;
                                 if (!remoteComputeCallState.completionFuture.isNil()) {
                                     asFuture(remoteComputeCallState.completionFuture)->wakeWaiters();
                                     remoteComputeCallState.completionFuture = Value::nilVal();
@@ -449,6 +458,7 @@ void Thread::act(Value actorInstance)
                             std::cerr << "Remote actor call failed: " << e.what() << std::endl;
                             if (callInfo.returnPromise != nullptr) {
                                 callInfo.returnPromise->set_value(Value::nilVal());
+                                callInfo.returnPromise = nullptr;
                                 if (!remoteComputeCallState.completionFuture.isNil()) {
                                     asFuture(remoteComputeCallState.completionFuture)->wakeWaiters();
                                     remoteComputeCallState.completionFuture = Value::nilVal();
@@ -494,10 +504,12 @@ void Thread::act(Value actorInstance)
                                           static_cast<size_t>(callInfo.callSpec.argCount + 1)};
                             Value ret{};
                             bool ok = true;
+                            std::string nativeErr;
                             try {
                                 ret = native(vm, view);
                             } catch (std::exception& e) {
                                 ok = false;
+                                nativeErr = e.what();
                             }
 #ifdef __EMSCRIPTEN__
                             // Wasm cover for the POST-call region only: 'ret'
@@ -547,16 +559,39 @@ void Thread::act(Value actorInstance)
                                         forward = Value::nilVal();
                                 }
                                 callInfo.returnPromise->set_value(forward);
+                                callInfo.returnPromise = nullptr;
                                 if (!callInfo.returnFuture.isNil()) {
                                     asFuture(callInfo.returnFuture)->wakeWaiters();
                                     callInfo.returnFuture = Value::nilVal();
                                 }
+                                // A plain C++ throw resolves the future with
+                                // nil -- the awaiter sees a value, not an
+                                // error -- so at least SAY what happened
+                                // (this silence hid the dataflow engine's
+                                // death for a whole session).
+                                if (!ok && !isException(forward)) {
+                                    std::fprintf(stderr, "actor native call '%s' failed: %s\n",
+                                                 toUTF8StdString(function->name).c_str(), nativeErr.c_str());
+                                    std::fflush(stderr);
+                                }
+                            } else if (!ok) {
+                                // Fire-and-forget native call threw: nobody
+                                // will ever observe it -- report, and drop any
+                                // pending exception so it cannot leak into the
+                                // NEXT call's failure path.
+                                pendingUncaughtException = Value::nilVal();
+                                std::fprintf(stderr, "actor native call '%s' failed: %s\n",
+                                             toUTF8StdString(function->name).c_str(), nativeErr.c_str());
+                                std::fflush(stderr);
                             }
 
                             {
                                 auto diff = this->stackTop - (this->stack.begin()+1);
                                 if (diff > 0) popN(size_t(diff));
-                                this->stack[0] = this->actorInstance;
+                                if (this->stackTop == this->stack.begin())
+                                    push(this->actorInstance);   // see comment at the twin below
+                                else
+                                    this->stack[0] = this->actorInstance;
                             }
                         } else {
                             // Regular closure method
@@ -594,6 +629,7 @@ void Thread::act(Value actorInstance)
                                 }
                             }
                             callInfo.returnPromise->set_value(ret);
+                            callInfo.returnPromise = nullptr;
                             if (!callInfo.returnFuture.isNil()) {
                                 asFuture(callInfo.returnFuture)->wakeWaiters();
                                 callInfo.returnFuture = Value::nilVal();
@@ -602,31 +638,46 @@ void Thread::act(Value actorInstance)
                     } else {
                         // Forward an uncaught exception (if any) through the
                         // return future so awaiting code can observe and
-                        // re-raise it; otherwise fall back to nilVal. When we
-                        // successfully forward a Roxal-level exception, the
-                        // actor itself is still healthy — just this method
-                        // invocation failed — so we keep serving subsequent
-                        // calls (don't quit) and reset the per-call result.
+                        // re-raise it.  A fire-and-forget call (a proc, or
+                        // init -- no return promise) has no future to carry
+                        // it, so REPORT it here instead: silently dropping it
+                        // used to kill the actor with no trace anywhere.
+                        // Either way the actor itself is still healthy — just
+                        // this method invocation failed — so we keep serving
+                        // subsequent calls (don't quit).
                         bool forwardedException = false;
+                        Value pendingExc = pendingUncaughtException;
+                        pendingUncaughtException = Value::nilVal();
+                        const bool haveException = isException(pendingExc);
                         if (callInfo.returnPromise != nullptr) {
-                            Value forward = pendingUncaughtException;
-                            pendingUncaughtException = Value::nilVal();
-                            if (isException(forward)) {
-                                forwardedException = true;
-                            } else {
-                                forward = Value::nilVal();
-                            }
-                            callInfo.returnPromise->set_value(forward);
+                            forwardedException = haveException;
+                            callInfo.returnPromise->set_value(haveException ? pendingExc
+                                                                            : Value::nilVal());
+                            callInfo.returnPromise = nullptr;
                             if (!callInfo.returnFuture.isNil()) {
                                 asFuture(callInfo.returnFuture)->wakeWaiters();
                                 callInfo.returnFuture = Value::nilVal();
                             }
+                        } else if (haveException) {
+                            std::fprintf(stderr, "Uncaught exception in actor call '%s' (no awaiter): %s\n",
+                                         toUTF8StdString(function->name).c_str(),
+                                         objExceptionToString(asException(pendingExc)).c_str());
+                            std::fflush(stderr);
+                            forwardedException = true;   // reported: keep serving
                         }
                         // reset stack before breaking
                         {
                             auto diff = this->stackTop - (this->stack.begin()+1);
                             if (diff > 0) popN(size_t(diff));
-                            this->stack[0] = this->actorInstance;
+                            // An exception unwind resetStack()s the whole
+                            // thread stack (depth 0): re-PUSH the actor slot
+                            // rather than writing below stackTop, or the next
+                            // dispatch runs one slot off and corrupts the
+                            // stack.
+                            if (this->stackTop == this->stack.begin())
+                                push(this->actorInstance);
+                            else
+                                this->stack[0] = this->actorInstance;
                         }
                         clearCurrentActorCall();
                         if (forwardedException) {
@@ -641,7 +692,15 @@ void Thread::act(Value actorInstance)
                         {
                             auto diff = this->stackTop - (this->stack.begin()+1);
                             if (diff > 0) popN(size_t(diff));
-                            this->stack[0] = this->actorInstance;
+                            // An exception unwind resetStack()s the whole
+                            // thread stack (depth 0): re-PUSH the actor slot
+                            // rather than writing below stackTop, or the next
+                            // dispatch runs one slot off and corrupts the
+                            // stack.
+                            if (this->stackTop == this->stack.begin())
+                                push(this->actorInstance);
+                            else
+                                this->stack[0] = this->actorInstance;
                         }
                         } // end of regular closure else block
 
@@ -665,10 +724,12 @@ void Thread::act(Value actorInstance)
                                       static_cast<size_t>(callInfo.callSpec.argCount + 1)};
                         Value ret{};
                         bool ok = true;
+                        std::string nativeErr;
                         try {
                             ret = native(vm, view);
                         } catch (std::exception& e) {
                             ok = false;
+                            nativeErr = e.what();
                         }
 #ifdef __EMSCRIPTEN__
                         SimpleMarkSweepGC::GCNoParkScope nativeCover;  // see above
@@ -705,10 +766,33 @@ void Thread::act(Value actorInstance)
                                     forward = Value::nilVal();
                             }
                             callInfo.returnPromise->set_value(forward);
+                            callInfo.returnPromise = nullptr;
                             if (!callInfo.returnFuture.isNil()) {
                                 asFuture(callInfo.returnFuture)->wakeWaiters();
                                 callInfo.returnFuture = Value::nilVal();
                             }
+                            // Same reporting rule as the bound-method branch:
+                            // a plain C++ throw otherwise reads as a nil
+                            // result to the awaiter.
+                            if (!ok && !isException(forward)) {
+                                std::string bnName = isFunction(bn->declFunction)
+                                    ? toUTF8StdString(asFunction(bn->declFunction)->name)
+                                    : std::string("<native>");
+                                std::fprintf(stderr, "actor native call '%s' failed: %s\n",
+                                             bnName.c_str(), nativeErr.c_str());
+                                std::fflush(stderr);
+                            }
+                        } else if (!ok) {
+                            // Fire-and-forget native call threw: report and
+                            // clear any pending exception so it cannot leak
+                            // into the next call's failure path.
+                            pendingUncaughtException = Value::nilVal();
+                            std::string bnName = isFunction(bn->declFunction)
+                                ? toUTF8StdString(asFunction(bn->declFunction)->name)
+                                : std::string("<native>");
+                            std::fprintf(stderr, "actor native call '%s' failed: %s\n",
+                                         bnName.c_str(), nativeErr.c_str());
+                            std::fflush(stderr);
                         }
                     }
 
@@ -748,14 +832,34 @@ void Thread::act(Value actorInstance)
             actorInstanceRaw.store(nullptr, std::memory_order_release);
         }
         catch (std::exception& e) {
-            std::cerr << "VM Runtime error: " << e.what() << std::endl;
+            // What lands here is infrastructure failure (marshalling, cloning,
+            // stack exhaustion in the dispatch preamble...) -- script
+            // exceptions and native throws inside a call are handled and
+            // forwarded above.  Fatal-class, so report and shut the VM down
+            // in an orderly way -- but FIRST resolve the in-flight call's
+            // promise: destroying it unresolved crashes the awaiter with
+            // future_error(broken_promise) instead of an error it can see.
+            if (callInfo.returnPromise != nullptr) {
+                Value forward = pendingUncaughtException;
+                pendingUncaughtException = Value::nilVal();
+                if (!isException(forward))
+                    forward = Value::nilVal();
+                try {
+                    callInfo.returnPromise->set_value(forward);
+                    if (!callInfo.returnFuture.isNil())
+                        asFuture(callInfo.returnFuture)->wakeWaiters();
+                } catch (...) { /* already satisfied */ }
+                callInfo.returnPromise = nullptr;
+                callInfo.returnFuture = Value::nilVal();
+            }
 
             auto& vm { VM::instance() };
-            vm.runtimeErrorFlag = true;
-            vm.threads.apply([](const std::pair<const uint64_t, ptr<Thread>>& entry){
-                if (entry.second)
-                    entry.second->wake();
-            });
+            // runtimeError() = report + runtimeErrorFlag + wake every thread,
+            // the same orderly-shutdown sequence this catch used to do by
+            // hand (with consistent formatting and script location when one
+            // is available).
+            std::string msg = std::string("actor thread error: ") + e.what();
+            vm.runtimeError("%s", msg.c_str());
 
             result = ExecutionStatus::RuntimeError;
             stack.clear();

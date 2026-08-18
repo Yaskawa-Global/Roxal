@@ -1,0 +1,21 @@
+// An uncaught exception in a fire-and-forget actor call (a proc -- there is
+// no return future to carry it) is reported on stderr and the actor SURVIVES:
+// one bad message must not silently kill the actor.  (Awaited func calls
+// forward the exception through their future instead -- and also survive.)
+type Worker actor:
+  private var count :int = 0
+
+  proc poke():
+    count = count + 1
+    raise RuntimeException('poke blew up')
+
+  func get() -> int:
+    return count
+
+var w = Worker()
+w.poke()
+w.poke()
+var n = w.get()
+wait(for=n)
+print('count = ' + string(n))
+print('still alive')
