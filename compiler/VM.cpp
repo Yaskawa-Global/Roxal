@@ -4253,6 +4253,8 @@ std::pair<ExecutionStatus,Value> VM::invokeClosure(ObjClosure* closure,
     // Make this invoke safe to call from a parked native pump (see ParkedInvokeScope).
     ParkedInvokeScope parkedScope(thread.get());
 
+    const size_t entryDepth = thread->stackDepth();
+
     // Push closure first, then arguments (to match OpCode::Call stack layout)
     push(Value::objRef(closure));
     for(const auto& a : args)
@@ -4283,9 +4285,16 @@ std::pair<ExecutionStatus,Value> VM::invokeClosure(ObjClosure* closure,
 
     auto result = execute(deadline);  // Pass deadline to execute()
 
-    // Note: execute() should have handled the cleanup when the function returned,
-    // but for safety in nested calls, we don't need additional cleanup here
-    // since the call() and execute() sequence manages the stack properly
+    // Restore the stack this entry point grew.  The closure runs as the
+    // OUTERMOST frame here, and opReturn() only unwinds a returning frame's
+    // slots when a caller frame remains beneath it -- so a completed call
+    // leaves its slot 0, arguments and locals behind.  Harmless once, but the
+    // dataflow engine evaluates every script node through here: the leftovers
+    // accumulated (~12 slots per evaluation round) until the 16384-slot stack
+    // overflowed, which killed the engine thread mid-run.  A Yielded call is
+    // still live and gets resumed, so leave its frame alone.
+    if (result.first != ExecutionStatus::Yielded)
+        thread->popToDepth(entryDepth);
 
     return result;
 }
@@ -14222,7 +14231,23 @@ void VM::defineNativeFunctions()
 
 Value VM::dataflow_run_native(ArgsView args)
 {
-    df::DataflowEngine::instance()->run();
+    // An exception out of run() ends the engine's periodic driver for the rest
+    // of the process: the tick number stops advancing and every periodic signal
+    // silently stops, while the VM, the host loop and event-driven islands all
+    // carry on -- so the program looks alive and merely stops producing values.
+    // Whatever handling the caller applies, say so first, on a stream that
+    // survives (std::cerr is proxied and lost on wasm worker threads).
+    try {
+        df::DataflowEngine::instance()->run();
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "dataflow engine stopped: %s\n", e.what());
+        std::fflush(stderr);
+        throw;
+    } catch (...) {
+        std::fprintf(stderr, "dataflow engine stopped: unknown exception\n");
+        std::fflush(stderr);
+        throw;
+    }
     return Value::nilVal();
 }
 

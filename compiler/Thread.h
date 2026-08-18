@@ -99,6 +99,19 @@ public:
         for(size_t i=0; i<n; i++) pop();
     }
 
+    // Current value-stack depth, and unwind back down to a recorded one.
+    // Used by re-entrant VM entry points (invokeClosure/invokeMethod) to
+    // restore the stack a completed call left behind: those run a closure as
+    // the OUTERMOST frame, and opReturn only unwinds a frame's slots when a
+    // caller frame remains beneath it.
+    size_t stackDepth() const { return static_cast<size_t>(stackTop - stack.begin()); }
+
+    void popToDepth(size_t depth)
+    {
+        while (stackDepth() > depth)
+            pop();
+    }
+
     Value& peek(int distance)
     {
         #ifdef DEBUG_BUILD
