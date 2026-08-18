@@ -15,4 +15,6 @@ Test: df_closure_output_correct passed - output=499542, expected=499542
 Test: wait_future_yields passed - completed=1, result=0, value=123
 Test: wait_delay_future_yields passed - completed=1, result=0, value=234
 Test: invokeClosure_stack_balance passed - stack delta 0 over 8 calls, results ok=1
-RT Execution tests: Passed 17 failed 0
+Test: invokeClosure_yield_resume_balance passed - yielded=1, result=0, stack delta 0
+Test: invokeMethod_stack_balance passed - stack delta 0 over 8 calls, results ok=1
+RT Execution tests: Passed 19 failed 0

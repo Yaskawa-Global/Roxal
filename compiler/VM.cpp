@@ -4280,20 +4280,24 @@ std::pair<ExecutionStatus,Value> VM::invokeClosure(ObjClosure* closure,
         return { ExecutionStatus::OK, result };
     }
 
-    if(!call(closure, spec))
+    if(!call(closure, spec)) {
+        thread->popToDepth(entryDepth);   // call() failed: nobody owns the pushed args
         return { ExecutionStatus::RuntimeError, Value::nilVal() };
+    }
+
+    // This frame sits on an otherwise-empty frame stack (or a nested one --
+    // either way the pushes above are OURS): mark it so opReturn unwinds its
+    // slots on return.  The flag travels WITH the frame, so a call that
+    // yields here and completes later inside runFor() is unwound at its real
+    // completion site -- this epilogue never sees it.
+    thread->frames.back().unwindOnReturn = true;
 
     auto result = execute(deadline);  // Pass deadline to execute()
 
-    // Restore the stack this entry point grew.  The closure runs as the
-    // OUTERMOST frame here, and opReturn() only unwinds a returning frame's
-    // slots when a caller frame remains beneath it -- so a completed call
-    // leaves its slot 0, arguments and locals behind.  Harmless once, but the
-    // dataflow engine evaluates every script node through here: the leftovers
-    // accumulated (~12 slots per evaluation round) until the 16384-slot stack
-    // overflowed, which killed the engine thread mid-run.  A Yielded call is
-    // still live and gets resumed, so leave its frame alone.
-    if (result.first != ExecutionStatus::Yielded)
+    // A Yielded call is still live (resumed via runFor) and a completed one
+    // was unwound by opReturn; only the error path needs local cleanup here
+    // (the VM is in fatal-error mode then, but leave the stack sane anyway).
+    if (result.first == ExecutionStatus::RuntimeError)
         thread->popToDepth(entryDepth);
 
     return result;
@@ -4328,12 +4332,21 @@ std::pair<ExecutionStatus,Value> VM::invokeMethod(const Value& receiver,
 
     // Stack layout [receiver, args...]: the receiver slot becomes the method's frame
     // slot 0 (`this`) — the same convention bound-method dispatch uses.
+    const size_t entryDepth = thread->stackDepth();
     push(receiver);
     for (const auto& a : args)
         push(a);
-    if (!call(closure, CallSpec(static_cast<int>(args.size()))))
+    if (!call(closure, CallSpec(static_cast<int>(args.size())))) {
+        thread->popToDepth(entryDepth);   // call() failed: nobody owns the pushed args
         return { ExecutionStatus::RuntimeError, Value::nilVal() };
-    return execute(deadline);
+    }
+    // Same slot-ownership contract as invokeClosure: opReturn unwinds this
+    // frame on return (including a later runFor completion after a yield).
+    thread->frames.back().unwindOnReturn = true;
+    auto result = execute(deadline);
+    if (result.first == ExecutionStatus::RuntimeError)
+        thread->popToDepth(entryDepth);
+    return result;
 }
 
 
@@ -5556,10 +5569,12 @@ Value VM::opReturn()
 
     thread->popFrame();
 
-    if (!thread->frames.empty()) {
-        auto slotsOffset = returningFrame.slots - &*thread->stack.begin();
+    // Unwind the returning frame's slots when a caller frame remains beneath
+    // it, OR when the frame was pushed by a re-entrant entry point that owns
+    // its slots (see CallFrame::unwindOnReturn).  Plain outermost frames keep
+    // their slots -- actor message handlers depend on that.
+    if (!thread->frames.empty() || returningFrame.unwindOnReturn) {
         auto popCount = &(*thread->stackTop) - returningFrame.slots;
-        //stackTop -= popCount;
         // loop to ensure stack Values unref'd
         // TODO: could make popn(n) method
         for(auto i=0; i<popCount; i++)

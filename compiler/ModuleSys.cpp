@@ -3220,6 +3220,102 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
             }
         }
 
+        // Same contract across a deadline yield: the frame created by
+        // invokeClosure completes inside runFor(), where the entry point's
+        // epilogue can't reach it -- CallFrame::unwindOnReturn is what makes
+        // opReturn unwind it at the real completion site.
+        {
+            auto savedThread = VM::thread;
+
+            std::stringstream source;
+            source << "func slowSum(x: int) -> int:\n"
+                   << "  var sum = 0\n"
+                   << "  for i in range(..<20000):\n"
+                   << "    sum = sum + 1\n"
+                   << "  return sum + x\n";
+
+            auto setupResult = vm.setup(source, "rt_stack_balance_resume");
+            if (setupResult != ExecutionStatus::OK) {
+                VM::thread = savedThread;
+                reportTest("invokeClosure_yield_resume_balance", false, "Failed to compile");
+            } else {
+                ObjModuleType* modType = vm.moduleType();
+                auto [execResult, _] = vm.execute();
+                auto closureOpt = modType->vars.load(toUnicodeString("slowSum"));
+                if (execResult != ExecutionStatus::OK || !closureOpt.has_value()
+                    || !isClosure(closureOpt.value())) {
+                    VM::thread = savedThread;
+                    reportTest("invokeClosure_yield_resume_balance", false, "setup failed");
+                } else {
+                    const size_t before = VM::thread->stackDepth();
+                    auto deadline = TimePoint::currentTime() + TimeDuration::microSecs(50);
+                    auto [res, val] = vm.invokeClosure(asClosure(closureOpt.value()),
+                                                       {Value::intVal(7)}, deadline);
+                    bool yielded = (res == ExecutionStatus::Yielded);
+                    ExecutionStatus finalRes = res;
+                    Value finalVal = val;
+                    for (int i = 0; i < 200 && finalRes == ExecutionStatus::Yielded; ++i) {
+                        auto [r, v] = vm.runFor(TimeDuration::milliSecs(10));
+                        finalRes = r; finalVal = v;
+                    }
+                    const size_t after = VM::thread->stackDepth();
+                    VM::thread = savedThread;
+                    bool ok = yielded && finalRes == ExecutionStatus::OK
+                              && finalVal.isInt() && finalVal.asInt() == 20007
+                              && after == before;
+                    reportTest("invokeClosure_yield_resume_balance", ok,
+                        "yielded=" + std::to_string(yielded)
+                        + ", result=" + std::to_string(static_cast<int>(finalRes))
+                        + ", stack delta " + std::to_string(static_cast<long long>(after)
+                                                            - static_cast<long long>(before)));
+                }
+            }
+        }
+
+        // And invokeMethod: same slot-ownership contract for [receiver, args]
+        // (qt property dispatch is the production caller).
+        {
+            auto savedThread = VM::thread;
+
+            std::stringstream source;
+            source << "type Balance object:\n"
+                   << "  func addOne(x: int) -> int:\n"
+                   << "    var y = x + 1\n"
+                   << "    return y\n"
+                   << "var inst = Balance()\n";
+
+            auto setupResult = vm.setup(source, "rt_stack_balance_method");
+            if (setupResult != ExecutionStatus::OK) {
+                VM::thread = savedThread;
+                reportTest("invokeMethod_stack_balance", false, "Failed to compile");
+            } else {
+                ObjModuleType* modType = vm.moduleType();
+                auto [execResult, _] = vm.execute();
+                auto instOpt = modType->vars.load(toUnicodeString("inst"));
+                if (execResult != ExecutionStatus::OK || !instOpt.has_value()
+                    || !isObjectInstance(instOpt.value())) {
+                    VM::thread = savedThread;
+                    reportTest("invokeMethod_stack_balance", false, "setup failed");
+                } else {
+                    const size_t before = VM::thread->stackDepth();
+                    bool allOk = true;
+                    for (int i = 0; i < 8; ++i) {
+                        auto [res, v] = vm.invokeMethod(instOpt.value(),
+                                                        toUnicodeString("addOne"),
+                                                        {Value::intVal(i)});
+                        allOk = allOk && res == ExecutionStatus::OK
+                                && v.isInt() && v.asInt() == i + 1;
+                    }
+                    const size_t after = VM::thread->stackDepth();
+                    VM::thread = savedThread;
+                    reportTest("invokeMethod_stack_balance", allOk && after == before,
+                        "stack delta " + std::to_string(static_cast<long long>(after)
+                                                        - static_cast<long long>(before))
+                        + " over 8 calls, results ok=" + std::to_string(allOk));
+                }
+            }
+        }
+
         engine.clear();
         vm.setSynchronousExecution(true); // restore guard
         std::cout << "RT Execution tests: Passed " << passes << " failed " << fails << std::endl;

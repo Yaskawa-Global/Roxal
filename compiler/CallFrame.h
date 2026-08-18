@@ -51,6 +51,19 @@ struct CallFrame {
 
     bool isEventHandler { false }; // true for event handler frames (pushed by processEventDispatch)
     bool isContinuationCallback { false }; // true for native continuation callback frames (e.g., filter/map/reduce, native default params)
+
+    // opReturn() unwinds a returning frame's slots (callee slot 0, arguments,
+    // locals) only when a caller frame remains beneath it -- outermost frames
+    // keep their slots because actor message handlers depend on that.  But the
+    // re-entrant entry points (invokeClosure/invokeMethod) push their frame at
+    // an otherwise-empty frame stack and OWN those slots: without cleanup each
+    // completed call leaks its frame (the dataflow engine evaluates every
+    // script node this way -- the leak killed the engine thread at the
+    // 16384-slot stack limit).  The flag makes opReturn unwind such frames on
+    // return, which also covers calls that complete later via runFor() after a
+    // deadline/future yield -- a path the entry point's own epilogue never
+    // sees.
+    bool unwindOnReturn { false }; // set by invokeClosure/invokeMethod on the frame they push
 };
 
 } // namespace roxal
