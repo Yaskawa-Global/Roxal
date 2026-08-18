@@ -492,7 +492,7 @@ if args.recompile:
     removed_cache_count = clear_bytecode_cache(project_root)
     print(f"Cleared {removed_cache_count} bytecode cache file(s).")
 
-roxalpath = 'build'
+roxalpath = os.environ.get('ROXAL_BUILD_DIR', 'build')  # env override for sanitizer/forensic builds
 roxal = './roxal'
 
 build_dir = os.path.join(project_root, roxalpath)

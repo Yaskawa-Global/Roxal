@@ -76,6 +76,16 @@ join(p)
 gc()
 wait(ms=150)
 
+# `when sig changes` delivery is asynchronous, so a fixed wait races the
+# dispatch loop: at 10Hz the 150ms above is only 1.5 periods of margin, and
+# under load the first delivery can land after it -- the test then read
+# hits == 0 and failed intermittently. Poll for the condition instead,
+# bounded so a genuine delivery failure still fails the test.
+var waited = 0
+while hits == 0 and waited < 3000:
+  wait(ms=10)
+  waited = waited + 10
+
 var cv = c.value()
 wait(for=cv)
 print("counter " + cv)

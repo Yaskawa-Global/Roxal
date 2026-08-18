@@ -47,6 +47,10 @@ export async function startRoxal(source, { expectStore, onOutput, name = '<scrip
         let buffer = '';
         const append = (text, isErr) => {
             buffer += (isErr ? '[stderr] ' : '') + text + '\n';
+            // Mirror VM stderr to the devtools console: aborts (stack-overflow
+            // canaries, assertions) are written there by the runtime, and the
+            // output pane can be gone or truncated by the time they matter.
+            if (isErr) console.error('[VM stderr]', text);
             onOutput?.(buffer);
         };
 
@@ -69,9 +73,17 @@ export async function startRoxal(source, { expectStore, onOutput, name = '<scrip
                 rox.ccall('roxal_config', null, ['string', 'string'], ['gc.threshold', qs.get('gcthreshold')]);
             if (qs.has('gcshadow'))
                 rox.ccall('roxal_config', null, ['string', 'string'], ['env.ROXAL_GC_SHADOW_SCAN', qs.get('gcshadow')]);
+            if (qs.has('fcflags'))
+                rox.ccall('roxal_config', null, ['string', 'string'],
+                          ['forensic.flags', qs.get('fcflags')]);
             if (qs.has('gcprecise'))
                 rox.ccall('roxal_config', null, ['string', 'string'], ['env.ROXAL_GC_CONSERVATIVE', '0']);
-        } catch { /* non-browser host */ }
+        } catch (e) {
+            // A missing export here means the treatment you asked for in the
+            // URL did NOT apply -- an entire validation series was once
+            // invalidated by exactly this being swallowed. Shout.
+            console.error('roxal_config unavailable — URL GC switches ignored:', e);
+        }
 
         submitted++;
         rox.ccall('roxal_submit_source', null, ['string', 'string'], [source, name]);

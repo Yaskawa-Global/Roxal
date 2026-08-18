@@ -178,6 +178,10 @@ void RoxalStore::hookChanges()
         // the value (assign() gates no-op writes). A computed property observes its
         // `_<name>` backing field; getters computed from OTHER fields will not
         // auto-fire, which is what web.notify() is for.
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+        if (roxal::roxalForensicOn(ROXAL_FC_NO_STORE_OBS))
+            continue;   // A/B probe: see ROXAL_FC_NO_STORE_OBS
+#endif
         Role role = r;
         const int32_t observeHash = role.computed ? role.backingHash : role.nameHash;
         const ustring observeName = role.computed ? (ustring("_") + role.uname) : role.uname;

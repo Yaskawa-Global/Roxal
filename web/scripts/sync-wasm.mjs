@@ -15,6 +15,10 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..', '..');
 const from = process.env.ROXAL_WASM_DIST || join(repo, 'build-wasm-mt', 'dist');
+// NOTE: `npm run dev` and `npm run build` invoke this script THEMSELVES,
+// without any ROXAL_WASM_DIST you exported for a manual sync beforehand --
+// they will silently re-sync from the default above.  Export the variable
+// in the same shell as the npm run, or you deploy a stale binary.
 const to = join(here, '..', 'public');
 
 const ARTIFACTS = ['roxal.js', 'roxal.wasm', 'roxal.data'];

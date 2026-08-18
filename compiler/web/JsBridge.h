@@ -33,6 +33,8 @@
 #include <vector>
 
 namespace roxal {
+class ValueVisitor;
+
 namespace web {
 
 // ---------------------------------------------------------------- wire format
@@ -218,6 +220,16 @@ void setNnHandlers(NnResultHandler onResult, NnShutdownHandler onShutdown);
 // embedded in Tag::Func. The callable is held as a GC root until
 // releaseCallback(). Invocations arrive on the VM thread via the inbound queue.
 uint32_t registerCallback(const Value& callable);
+
+// GC root hook: pins every registered JS->Roxal callable (dom.on handlers,
+// and any closure encoded into a store payload or DOM argument) for as long
+// as it stays registered. Called from SimpleMarkSweepGC::visitRoots; locks
+// internally.  Without this the registry is a plain C++ heap map that no
+// scanner reaches -- the conservative stack scan only walks parked STACKS --
+// so the closure is swept as soon as the registering builtin returns, and the
+// next event dispatches through a freed object.
+void traceCallbacks(ValueVisitor& visitor);
+
 void releaseCallback(uint32_t id);
 
 // Drain work queued by the main thread, running each on the VM thread. Called

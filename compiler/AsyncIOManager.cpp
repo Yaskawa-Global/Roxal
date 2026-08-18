@@ -1,4 +1,6 @@
 #include "AsyncIOManager.h"
+#include "SimpleMarkSweepGC.h"
+#include <optional>
 #include "Object.h"
 
 #include <fstream>
@@ -227,6 +229,17 @@ void AsyncIOManager::waitForFile(Value fileValue)
 
 void AsyncIOManager::workerLoop()
 {
+    // This thread ALLOCATES GC objects: executeOp() builds strings and lists
+    // for read results, so it reaches newObj -> registerAllocation, which
+    // pushes into the collector's LOCK-FREE allocation registry. That
+    // registry's compaction (compactSegmentsLocked) rewrites and DELETES
+    // segments on the stated invariant that "no lock-free pushes can race --
+    // allocators are parked or in skipped RT slices". An unregistered thread
+    // breaks exactly that: it can push into a segment being freed, and its
+    // freshly allocated object is born after the mark has walked the registry,
+    // so the sweep retires it while the requesting script still holds the
+    // future. Every other worker in the tree (actor threads, compute workers,
+    // grpc loops) registers; this one did not.
     while (running.load()) {
         {
             std::unique_lock<std::mutex> lock(queueMutex);
@@ -243,6 +256,17 @@ void AsyncIOManager::workerLoop()
             // root tracer can still reach these ops while they execute.
             processingOps.splice(processingOps.end(), pendingOps);
         }
+
+        // Participate in the collection barrier ONLY while actually executing
+        // ops -- that is the window in which this thread allocates. Holding it
+        // for the thread's whole life would leave a Running context at
+        // shutdown, where collectNowForShutdown() requires none, and would
+        // make the barrier wait out every idle poll. Entered with NO queueMutex
+        // held: the collector takes that lock in tracePending(), so the reverse
+        // order here would invert against it.
+        std::optional<SimpleMarkSweepGC::ExternalParticipant> gcParticipant;
+        if (!processingOps.empty())
+            gcParticipant.emplace(SimpleMarkSweepGC::instance());
 
         // Process all pending operations
         size_t abandoned = 0;

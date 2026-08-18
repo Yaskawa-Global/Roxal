@@ -1,4 +1,6 @@
 #pragma once
+#include <atomic>
+#include <cstdint>
 
 #ifdef __EMSCRIPTEN__
 
@@ -33,6 +35,14 @@ void parkCurrentThread(bool timed, double seconds);
 // the host loop after the current handler returns, because the scope that runs a
 // nested handler re-parks on return.
 void requestStop();
+
+// diagnostics: pump turns since boot
+extern std::atomic<std::uint64_t> g_pumpCount;
+// Inbound ops queued by the browser main thread vs drained by the VM thread.
+// A persistent gap means the JS->VM direction is stalled (the program may be
+// running fine), which is otherwise indistinguishable from a dead script.
+extern std::atomic<std::uint64_t> g_inboundQueued;
+extern std::atomic<std::uint64_t> g_inboundDrained;
 
 } // namespace web
 } // namespace roxal

@@ -404,11 +404,15 @@ void Thread::act(Value actorInstance)
 
                 if (callInfo.valid()) {
 
+                    // Root the WHOLE in-flight call, not just the callee:
+                    // callInfo is a C++ local from here until completion.
                     currentActorCall = callInfo.callee;
+                    currentActorArgs = callInfo.args;
+                    currentActorFuture = callInfo.returnFuture;
                     Value strongActor = this->actorInstance.strongRef();
                     if (strongActor.isNil()) {
                         quit = true;
-                        currentActorCall = Value::nilVal();
+                        clearCurrentActorCall();
                         break;
                     }
                     // Ensure actor instance stays alive during call
@@ -455,7 +459,7 @@ void Thread::act(Value actorInstance)
 
                         remoteComputeCallState.clear();
                         this->stack[0] = this->actorInstance;
-                        currentActorCall = Value::nilVal();
+                        clearCurrentActorCall();
                         if (quit)
                             break;
                         continue;
@@ -488,13 +492,6 @@ void Thread::act(Value actorInstance)
                             NativeFn native = function->builtinInfo->function;
                             ArgsView view{&(*vm.thread->stackTop) - callInfo.callSpec.argCount - 1,
                                           static_cast<size_t>(callInfo.callSpec.argCount + 1)};
-#ifdef __EMSCRIPTEN__
-                            // Actor dispatch bypasses callNativeFn; same
-                            // wasm rule applies -- 'ret' and native locals
-                            // live in unscannable wasm frames through the
-                            // future-resolution below (see callNativeFn).
-                            SimpleMarkSweepGC::GCNoParkScope nativeCover;
-#endif
                             Value ret{};
                             bool ok = true;
                             try {
@@ -502,16 +499,33 @@ void Thread::act(Value actorInstance)
                             } catch (std::exception& e) {
                                 ok = false;
                             }
+#ifdef __EMSCRIPTEN__
+                            // Wasm cover for the POST-call region only: 'ret'
+                            // and the temporaries below live in unscannable
+                            // wasm frames across future resolution / cloning,
+                            // which can safepoint.  The call itself must NOT
+                            // be covered: a long-running native (the dataflow
+                            // engine's run loop is the canonical case) polls
+                            // safepoints internally at points where it holds
+                            // no un-stored Value locals, and a cover would
+                            // turn those polls into no-ops -- the thread then
+                            // never parks and the collection barrier waits on
+                            // it forever (silent app-wide freeze).
+                            SimpleMarkSweepGC::GCNoParkScope nativeCover;
+#endif
 
                             popN(callInfo.callSpec.argCount + 1);
 
                             if (callInfo.returnPromise != nullptr) {
                                 // Resolve any futures before returning across actor boundary
+                                currentActorResult = ret;
                                 if (isFuture(ret))
                                     ret.resolveFuture();
+                                currentActorResult = ret;
                                 if (!ret.isPrimitive() && !isException(ret)) {
                                     if (returnIsConst) {
                                         ret = createFrozenSnapshot(ret);
+                                        currentActorResult = ret;
                                     } else {
                                         Obj* obj = ret.asObj();
                                         bool soleOwner = obj && obj->control &&
@@ -519,6 +533,7 @@ void Thread::act(Value actorInstance)
                                         if (!soleOwner || !isIsolatedGraph(obj)) {
                                             ptr<CloneContext> cloneCtx = make_ptr<CloneContext>();
                                             ret = ret.clone(cloneCtx);
+                                            currentActorResult = ret;
                                         }
                                     }
                                 }
@@ -556,12 +571,18 @@ void Thread::act(Value actorInstance)
                     if (resultPair.first == ExecutionStatus::OK) {
                         if (callInfo.returnPromise != nullptr) {
                             Value ret = resultPair.second;
+                            // Root it for the whole hand-back window: the
+                            // calls below allocate, so a collection can land
+                            // while `ret` exists only as a C++ local.
+                            currentActorResult = ret;
                             // Resolve any futures before returning across actor boundary
                             if (isFuture(ret))
                                 ret.resolveFuture();
+                            currentActorResult = ret;
                             if (!ret.isPrimitive() && !isException(ret)) {
                                 if (returnIsConst) {
                                     ret = createFrozenSnapshot(ret);
+                                    currentActorResult = ret;
                                 } else {
                                     Obj* obj = ret.asObj();
                                     bool soleOwner = obj && obj->control &&
@@ -607,7 +628,7 @@ void Thread::act(Value actorInstance)
                             if (diff > 0) popN(size_t(diff));
                             this->stack[0] = this->actorInstance;
                         }
-                        currentActorCall = Value::nilVal();
+                        clearCurrentActorCall();
                         if (forwardedException) {
                             result = ExecutionStatus::OK;
                             // Continue serving subsequent calls.
@@ -642,9 +663,6 @@ void Thread::act(Value actorInstance)
                         NativeFn native = bn->function;
                         ArgsView view{&(*vm.thread->stackTop) - callInfo.callSpec.argCount - 1,
                                       static_cast<size_t>(callInfo.callSpec.argCount + 1)};
-#ifdef __EMSCRIPTEN__
-                        SimpleMarkSweepGC::GCNoParkScope nativeCover;   // see above
-#endif
                         Value ret{};
                         bool ok = true;
                         try {
@@ -652,6 +670,9 @@ void Thread::act(Value actorInstance)
                         } catch (std::exception& e) {
                             ok = false;
                         }
+#ifdef __EMSCRIPTEN__
+                        SimpleMarkSweepGC::GCNoParkScope nativeCover;  // see above
+#endif
 
                         popN(callInfo.callSpec.argCount);
 
@@ -693,10 +714,10 @@ void Thread::act(Value actorInstance)
 
                     // restore weak actor reference for next iteration
                     this->stack[0] = this->actorInstance;
-                    currentActorCall = Value::nilVal();
+                    clearCurrentActorCall();
 
                 } else {
-                    currentActorCall = Value::nilVal();
+                    clearCurrentActorCall();
                 }
 
             } while (true);

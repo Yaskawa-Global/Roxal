@@ -47,6 +47,13 @@ protected:
 // turn boundaries (no native frames live => precise roots suffice) or
 // adopt precise shadow-stack rooting (Root<Value> scopes) for that
 // profile only.
+// Revision of the GC coordination contract (barrier/collector-role/drop
+// invariants -- see implementation-notes.md "GC coordination invariants").
+// Surfaced by roxal_build_info() so a browser verdict carries proof of WHICH
+// coordination code produced it: a stale wasm artifact is otherwise
+// indistinguishable from a fixed one that still crashes.
+#define ROXAL_GC_COORD_REV 2
+
 class SimpleMarkSweepGC {
 public:
     static constexpr std::uint64_t kDefaultAutoTriggerThreshold = 64ull * 1024ull * 1024ull; // 64 MiB
@@ -77,6 +84,14 @@ public:
 
     void requestCollect();
     void safepoint(Thread& currentThread);
+
+    // Reclamation window (VM::freeObjects brackets its drain with these).
+    // In inline-collection builds the reclaimer runs on the collector thread
+    // while a SELF-ELECTING MUTATOR performs mark+sweep -- different threads,
+    // different mutexes.  These let the two be serialized.
+    void reclaimBegin() noexcept;
+    void reclaimEnd() noexcept;
+    bool reclaimDraining() const noexcept;
 
     // ---- RT GC-yield sections -------------------------------------------
     // A real-time thread (e.g. a host's 1-2ms control-loop callback that
@@ -215,6 +230,14 @@ public:
     // holders never notify (the collector's idle poll picks their retires
     // up), keeping the RT path syscall-free.
     void retireObject(Obj* obj);
+    // Publish a WHOLE sweep's unreachable set with one atomic push. Retiring
+    // objects one at a time lets the reclaimer drain a PREFIX: a child can be
+    // destroyed (and its block poisoned) before its parent's teardown reads
+    // the Value that points at it, which is a use-after-free with no missing
+    // root involved. freeObjects' batch discipline -- drop every object's
+    // references before any destructor runs -- only holds if the batch is
+    // indivisible.
+    void retireObjects(const std::vector<Obj*>& objs);
     std::vector<Obj*> drainRetiredObjects();
     bool hasRetiredObjects() const noexcept;
 
@@ -239,6 +262,15 @@ public:
         return collectionRequested_.load(std::memory_order_acquire);
     }
     std::uint64_t currentEpoch() const noexcept;
+    // Diagnostic: this thread's mutator-context state and running depth.
+    // Encoded state matches MutatorContext::State (0=Inactive 1=Running
+    // 2=Parked 3=SafeBlocked); returns state=-1 when the thread has no
+    // context at all (never registered).
+    void currentContextForDiag(int& state, int& runningDepth) const noexcept;
+    // Cumulative count of bad live-parent edges found by mark verification
+    // (0 unless ROXAL_FC_VERIFY is on in a ROXAL_GC_FORENSICS build).
+    std::uint64_t verifyBadEdges() const noexcept
+      { return statsVerifyBadEdges_.load(std::memory_order_relaxed); }
     size_t lastCollectionFreed() const noexcept;
     bool isCollectionInProgress() const noexcept;
 
@@ -456,6 +488,21 @@ private:
     std::atomic<std::uint64_t> statsLastCollectorTid_{0};
     std::atomic<std::uint64_t> statsRTSectionTid_{0};
     std::atomic<std::uint64_t> statsSectionCollectorViolations_{0};
+    // Mark-verification (ROXAL_FC_VERIFY): live-parent edges pointing at
+    // objects this sweep would free or that are already claimed dying.
+    std::atomic<std::uint64_t> statsVerifyBadEdges_{0};
+    // Set under mutex_ the instant the barrier admits a collection -- BEFORE
+    // any lock release on the way into performCollection -- and cleared when
+    // the stop-the-world window ends.  The barrier's admission decision and
+    // the gate that keeps mutators off the heap must reference the SAME
+    // state, or a thread can go Running in the gap between them.
+    std::atomic<bool> worldStopped_{false};
+    // Diagnostics: threads currently blocked trying to BECOME Running.
+    std::atomic<int> enterRunningBlocked_{0};
+public:
+    bool diagWorldStopped() const noexcept { return worldStopped_.load(std::memory_order_relaxed); }
+    int diagEnterRunningBlocked() const noexcept { return enterRunningBlocked_.load(std::memory_order_relaxed); }
+private:
 
     bool externalCollectorActive_{false};
     std::thread::id externalCollectorThread_{};
@@ -508,6 +555,12 @@ private:
     std::vector<std::unique_ptr<MutatorContext>> contexts_;  // under mutex_
     MutatorContext* ensureContextLocked();
     bool anyRunningLocked() const;   // barrier term (excludes callers that parked first)
+public:
+    // Diagnostics: snapshot of mutator context states (best-effort try-lock;
+    // returns false if the GC mutex is contended).  counts[0..3] =
+    // Inactive/Running/Parked/SafeBlocked; rt = RT section count.
+    bool diagContexts(unsigned counts[4], unsigned& rt);
+private:
     void enterRunning();
     void exitRunning();
     void pollContext(Thread* currentThread);
@@ -515,6 +568,10 @@ private:
     void blockExit();
     void shadowScanParkedStacks(std::uint64_t epoch);
 
+    // COUNTER, not a flag: the collector publishes the drain window while it
+    // still holds mutex_ (closing the admission race), and freeObjects'
+    // ReclaimWindow brackets it again -- so the two nest.
+    std::atomic<int> reclaimDraining_{0};
     std::atomic<std::uint64_t> shadowCollectionsScanned_{0};
     std::atomic<std::uint64_t> shadowStacksScanned_{0};
     std::atomic<std::uint64_t> shadowWordsScanned_{0};

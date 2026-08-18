@@ -236,6 +236,18 @@ private:
 
     ExecutionScheme m_executionScheme;
 
+public:
+    // Diagnostics only: try-lock each engine mutex from the caller's thread
+    // and report which are currently held elsewhere.  bit0 = m_mutex,
+    // bit1 = m_evalMutex, bit2 = m_pendingEventMutex.  A wedge that holds a
+    // bit forever names the contended resource.
+    unsigned diagLocksHeld();
+    // Why is the periodic driver not ticking? Reports the loop's own state:
+    // tick number, milliseconds until the next scheduled tick (negative =
+    // overdue), and the two flags that make run() bail to the outer loop.
+    void diagTickState(long long& tickNumber, long long& msToNextTick,
+                       bool& hostDriven, bool& shouldStop);
+private:
     mutable std::recursive_mutex m_mutex; // guard network structures
 
     // Interim single-evaluator guard.  Held for the duration of island

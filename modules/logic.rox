@@ -1,0 +1,28 @@
+// logic — boolean gate functions.
+//
+// Behavioural building blocks for signal networks (each call with signal
+// arguments lifts into one dataflow node), styled after discrete logic:
+// wire them into flip-flops, counters and latches the way circuit.rox does.
+// The names carry a _gate suffix because 'and', 'or' and 'not' are keywords.
+
+func and_gate(a :bool, b :bool) -> bool:
+  return a and b
+
+func or_gate(a :bool, b :bool) -> bool:
+  return a or b
+
+func not_gate(a :bool) -> bool:
+  return not a
+
+func xor_gate(a :bool, b :bool) -> bool:
+  return (a and not b) or (b and not a)
+
+func nand_gate(a :bool, b :bool) -> bool:
+  return not (a and b)
+
+func nor_gate(a :bool, b :bool) -> bool:
+  return not (a or b)
+
+// pack four bits into an integer, b0 the least significant
+func pack4(b0 :bool, b1 :bool, b2 :bool, b3 :bool) -> int:
+  return int(b0) + int(b1)*2 + int(b2)*4 + int(b3)*8

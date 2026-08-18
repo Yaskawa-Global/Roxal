@@ -20,6 +20,7 @@
 #include <unordered_map>
 #include <mutex>
 #include <stack>
+#include <deque>
 #include <queue>
 #include <optional>
 #include <utility>
@@ -862,14 +863,14 @@ public:
     void push(const T& value)
     {
         std::lock_guard<std::mutex> lock(m_lock);
-        q.push(value);
+        q.push_back(value);
     }
 
     T pop()
     {
         std::lock_guard<std::mutex> lock(m_lock);
-        T f { q.front() };
-        q.pop();
+        T f { std::move(q.front()) };
+        q.pop_front();
         return f;
     }
 
@@ -897,24 +898,26 @@ public:
         return q.empty();
     }
 
+    // Walk the queue IN PLACE under the lock.  This deliberately does not
+    // copy: the GC's mark phase walks an actor's pending calls through here,
+    // and copying every element meant copying every Value it holds -- an
+    // incRef/decRef pair per queued Value on the mark's hot path, where the
+    // temporary copy's decRef can drop a refcount to zero and retire an
+    // object DURING the mark.  The visitor must therefore not call back into
+    // this queue (the GC visitor only stamps control blocks).
     template<typename Fn>
     void forEach(Fn fn) const
     {
-        std::queue<T> copy;
-        {
-            std::lock_guard<std::mutex> lock(m_lock);
-            copy = q;
-        }
-        while (!copy.empty()) {
-            fn(copy.front());
-            copy.pop();
+        std::lock_guard<std::mutex> lock(m_lock);
+        for (const T& value : q) {
+            fn(value);
         }
     }
 
 private:
     mutable std::mutex m_lock;
 
-    std::queue<T> q;
+    std::deque<T> q;
 };
 
 

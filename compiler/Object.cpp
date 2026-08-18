@@ -12,6 +12,13 @@
 #include <limits>
 #include <iomanip>
 #include <iostream>
+#include <thread>
+#include <cstdio>
+#include <cstring>
+#include <array>
+#include <deque>
+#include <cstring>
+#include <functional>
 #include <dlfcn.h>
 #include <future>
 #include <vector>
@@ -48,8 +55,507 @@ inline int32_t checkedInt32(int64_t v, const char* what) {
 }
 
 
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+std::atomic<std::uint32_t>& roxal::roxalForensicFlags()
+{
+    // Env override so a native run can select bits without a rebuild (wasm
+    // uses the `forensic.flags` config key / ?fcflags).  Read once: these are
+    // switches for a diagnostic build, not runtime configuration.
+    static std::atomic<std::uint32_t> flags{[] {
+        if (const char* e = std::getenv("ROXAL_FC_FLAGS"))
+            return static_cast<std::uint32_t>(std::strtoul(e, nullptr, 0));
+        return static_cast<std::uint32_t>(ROXAL_FC_CHECKS | ROXAL_FC_POISON | ROXAL_FC_PROV);
+    }()};
+    return flags;
+}
+
+namespace {
+// One report survives; the FIRST claimant wins, which is what we want -- a
+// mark-miss precedes the use-after-free it causes, so it beats the downstream
+// retire/drop violation to the buffer.
+std::atomic<bool> g_roxalForensicBufferClaimed{false};
+bool claimForensicBuffer() { return !g_roxalForensicBufferClaimed.exchange(true); }
+}
+
+char* roxal::roxalForensicBuffer()
+{
+    static char buf[kRoxalForensicBufferSize] = {0};
+    return buf;
+}
+
+roxal::RoxalForensicDropCtx& roxal::roxalForensicDropCtx()
+{
+    static thread_local RoxalForensicDropCtx ctx{nullptr, 0};
+    return ctx;
+}
+
+std::atomic<std::uint64_t>& roxal::roxalForensicWriterGuardCount()
+{
+    static std::atomic<std::uint64_t> n{0};
+    return n;
+}
+
+std::atomic<std::uint64_t>& roxal::roxalForensicQuarantineCount()
+{
+    static std::atomic<std::uint64_t> n{0};
+    return n;
+}
+
+std::atomic<std::uint64_t>& roxal::roxalForensicViolationCount()
+{
+    static std::atomic<std::uint64_t> count{0};
+    return count;
+}
+
+void roxal::roxalForensicViolation(const ObjControl* ctrl, const char* site)
+{
+    // NO iostreams here.  On wasm, writing to std::cerr from a pthread is
+    // proxied to the main thread; if that thread is waiting on the VM the
+    // writer blocks forever and the whole app hangs -- which is exactly what
+    // happened, turning the crash we were hunting into a silent freeze.
+    // Format into a static buffer instead (snprintf only, no allocation, no
+    // I/O) and let JS poll it via roxal_forensic_report().
+    roxalForensicViolationCount().fetch_add(1, std::memory_order_relaxed);
+    if (!claimForensicBuffer()) return;      // first one is the informative one
+    std::snprintf(roxalForensicBuffer(), kRoxalForensicBufferSize,
+        "GC FORENSIC VIOLATION at %s | ctrl=%p magic=0x%x strong=%d weak=%d "
+        "dropCount=%u retireCount=%u deathPath=%u (1=refcount 2=sweep) "
+        "deathEpoch=%llu deathThread=%llu objType=%u thisThread=%llu",
+        site, (const void*)ctrl,
+        ctrl->forensicMagic.load(std::memory_order_relaxed),
+        ctrl->strong.load(std::memory_order_relaxed),
+        ctrl->weak.load(std::memory_order_relaxed),
+        ctrl->dropCount.load(std::memory_order_relaxed),
+        ctrl->retireCount.load(std::memory_order_relaxed),
+        unsigned(ctrl->deathPath.load(std::memory_order_relaxed)),
+        (unsigned long long)ctrl->deathEpoch.load(std::memory_order_relaxed),
+        (unsigned long long)ctrl->deathThread.load(std::memory_order_relaxed),
+        unsigned(ctrl->objTypeAtDeath.load(std::memory_order_relaxed)),
+        (unsigned long long)std::hash<std::thread::id>{}(std::this_thread::get_id()));
+    const auto& dctx = roxalForensicDropCtx();
+    if (dctx.obj) {
+        const std::size_t len = std::strlen(roxalForensicBuffer());
+        std::snprintf(roxalForensicBuffer() + len, kRoxalForensicBufferSize - len,
+            " | DROP-PARENT obj=%p type=%u", dctx.obj, unsigned(dctx.type));
+    }
+
+#ifndef __EMSCRIPTEN__
+    // Native builds can report immediately: the proxied-cerr deadlock that
+    // forced the buffer-only design is a wasm-pthread hazard, and stderr here
+    // makes a violation visible in test/CI output instead of silent.
+    std::fprintf(stderr, "%s\n", roxalForensicBuffer());
+#endif
+}
+
+// Double-free detector for the container the wasm fault dies inside.  The
+// browser crash aborts in free() validating the chunk header of an
+// ObjectInstance's PropertyMap, which is consistent with that map being
+// released twice (two owners each believing they hold the last reference --
+// e.g. a shared_ptr control block corrupted by a racing COW clone).  Record
+// every map we are about to release as the last owner; a repeat is either a
+// genuine double free or allocator address reuse, so the report carries both
+// GC epochs and both object types to tell them apart.
+namespace {
+std::mutex g_mapFreeMutex;
+struct FreedRec { std::uint64_t epoch; unsigned type; const void* owner; };
+std::unordered_map<const void*, FreedRec> g_freedMaps;
+std::deque<std::pair<void*, std::size_t>> g_retainedContainers;
+constexpr std::size_t kRetainedContainers = 65536;
+}
+
+bool roxal::roxalForensicNoteContainerFree(const void* p, std::uint64_t epoch,
+                                           unsigned objType, const void* owner,
+                                           std::uint64_t& priorEpoch,
+                                           unsigned& priorType,
+                                           const void*& priorOwner)
+{
+    std::lock_guard<std::mutex> lock(g_mapFreeMutex);
+    auto it = g_freedMaps.find(p);
+    if (it != g_freedMaps.end()) {
+        priorEpoch = it->second.epoch;
+        priorType = it->second.type;
+        priorOwner = it->second.owner;
+        it->second = {epoch, objType, owner};
+        return false;
+    }
+    g_freedMaps.emplace(p, FreedRec{epoch, objType, owner});
+    return true;
+}
+
+namespace {
+std::mutex g_drainMutex;
+std::array<std::uint32_t, 64> g_drainCounts {};
+}
+
+#if defined(__EMSCRIPTEN__)
+extern "C" int emmalloc_validate_memory_regions(void) __attribute__((weak));
+#endif
+
+bool roxal::roxalForensicHeapCheck(const char* when)
+{
+    if (!roxalForensicOn(ROXAL_FC_HEAPCHECK))
+        return true;
+#if defined(__EMSCRIPTEN__)
+    if (!emmalloc_validate_memory_regions)
+        return true;   // not an emmalloc build; nothing to ask
+    if (emmalloc_validate_memory_regions() == 0)
+        return true;
+    roxalForensicViolationCount().fetch_add(1, std::memory_order_relaxed);
+    if (claimForensicBuffer())
+        std::snprintf(roxalForensicBuffer(), kRoxalForensicBufferSize,
+            "GC HEAP ALREADY INCONSISTENT at %s: the allocator's own region "
+            "structures fail validation, so the corrupting write happened "
+            "BEFORE this point", when);
+    std::fprintf(stderr, "GC HEAP ALREADY INCONSISTENT at %s\n", when);
+    std::fflush(stderr);
+    return false;
+#else
+    (void)when;
+    return true;
+#endif
+}
+
+void roxal::roxalForensicBadPointer(const void* p, const char* site)
+{
+    roxalForensicViolationCount().fetch_add(1, std::memory_order_relaxed);
+    if (claimForensicBuffer()) {
+        const auto& dctx = roxalForensicDropCtx();
+        std::snprintf(roxalForensicBuffer(), kRoxalForensicBufferSize,
+            "GC BAD CONTROL POINTER at %s: %p is not a valid ObjControl. "
+            "0xdd.. is the quarantine poison, i.e. the Value was read out of a "
+            "DEAD object block -- something still holds a pointer into a swept "
+            "object.%s%p type=%u",
+            site, p,
+            dctx.obj ? " DROP-PARENT obj=" : " (no drop in progress) parent=",
+            dctx.obj, unsigned(dctx.type));
+    }
+    if (roxalForensicOn(ROXAL_FC_FATAL)) {
+        // Fatal on demand: the runtime then prints a stack for THIS call,
+        // which names whoever is holding the stale pointer.
+        std::fprintf(stderr, "%s\n", roxalForensicBuffer());
+        std::fflush(stderr);
+        std::abort();
+    }
+#ifndef __EMSCRIPTEN__
+    std::fprintf(stderr, "GC BAD CONTROL POINTER at %s: %p\n", site, p);
+#endif
+}
+
+void roxal::roxalForensicConcurrentMutation(const void* obj, unsigned objType,
+                                            unsigned long long other,
+                                            unsigned long long self,
+                                            const char* site)
+{
+    roxalForensicViolationCount().fetch_add(1, std::memory_order_relaxed);
+    if (claimForensicBuffer())
+        std::snprintf(roxalForensicBuffer(), kRoxalForensicBufferSize,
+            "GC CONCURRENT MUTATION of obj=%p type=%u at %s: thread %llu entered "
+            "while thread %llu was already inside a mutator -- two writers on one "
+            "instance corrupt its property map's internal links",
+            obj, objType, site, self, other);
+#ifndef __EMSCRIPTEN__
+    std::fprintf(stderr, "GC CONCURRENT MUTATION obj=%p type=%u at %s\n", obj, objType, site);
+#endif
+}
+
+roxal::ForensicWriterGuard::ForensicWriterGuard(ObjControl* ctrl, const void* o,
+                                                unsigned t, const char* s)
+    : c(ctrl), obj(o), type(t), site(s)
+{
+    if (!c || !roxalForensicOn(ROXAL_FC_VERIFY)) { c = nullptr; return; }
+    const std::uint64_t me =
+        static_cast<std::uint64_t>(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+    roxalForensicWriterGuardCount().fetch_add(1, std::memory_order_relaxed);
+    std::uint64_t expected = 0;
+    if (!c->mutatingThread.compare_exchange_strong(expected, me,
+            std::memory_order_acq_rel, std::memory_order_acquire)) {
+        if (expected != me)
+            roxalForensicConcurrentMutation(obj, type, expected, me, site);
+        c = nullptr;   // not ours to clear
+    }
+}
+
+roxal::ForensicWriterGuard::~ForensicWriterGuard()
+{
+    if (c) c->mutatingThread.store(0, std::memory_order_release);
+}
+
+void roxal::roxalForensicNoteDestroyed(unsigned objType)
+{
+    if (objType < g_drainCounts.size()) {
+        std::lock_guard<std::mutex> lock(g_drainMutex);
+        ++g_drainCounts[objType];
+    }
+}
+
+const char* roxal::roxalForensicDrainHistogram()
+{
+    static char buf[512];
+    std::lock_guard<std::mutex> lock(g_drainMutex);
+    std::size_t n = 0;
+    buf[0] = '\0';
+    for (std::size_t i = 0; i < g_drainCounts.size(); ++i) {
+        if (!g_drainCounts[i]) continue;
+        n += std::snprintf(buf + n, sizeof(buf) - n, "%st%zu=%u",
+                           n ? "," : "", i, g_drainCounts[i]);
+        if (n >= sizeof(buf) - 16) break;
+    }
+    return buf;
+}
+
+namespace {
+std::mutex g_liveMutex;
+std::unordered_map<void*, std::size_t> g_liveBlocks;   // base -> payload
+std::uint64_t g_liveTick = 0;
+}
+
+bool roxal::roxalForensicCheckRedzones(void* base, std::size_t payload, const char* when)
+{
+    const unsigned char* b = static_cast<const unsigned char*>(base);
+    std::size_t badBefore = 0, badAfter = 0;
+    for (std::size_t i = 0; i < kForensicRedzone; ++i) {
+        if (b[i] != 0xAB) ++badBefore;
+        if (b[kForensicRedzone + payload + i] != 0xAB) ++badAfter;
+    }
+    if (!badBefore && !badAfter)
+        return true;
+    roxalForensicViolationCount().fetch_add(1, std::memory_order_relaxed);
+    if (claimForensicBuffer()) {
+        // Dump what was written: the bytes usually identify the writer --
+        // printable text is a string buffer, 0x7ff8-patterned doubles are
+        // NaN-boxed Values, small ints are counts or pointers.
+        char dump[200]; std::size_t d = 0;
+        for (std::size_t i = 0; i < 24 && d + 4 < sizeof(dump); ++i)
+            d += std::snprintf(dump + d, sizeof(dump) - d, "%02x", b[i]);
+        char ascii[40]; std::size_t a = 0;
+        for (std::size_t i = 0; i < 32 && a + 2 < sizeof(ascii); ++i) {
+            const unsigned char ch = b[i];
+            ascii[a++] = (ch >= 32 && ch < 127) ? char(ch) : '.';
+        }
+        ascii[a] = '\0';
+        std::snprintf(roxalForensicBuffer(), kRoxalForensicBufferSize,
+            "GC REDZONE SMASHED (%s): base=%p payload=%zu -- %zu before / %zu after "
+            "overwritten. first bytes: %s | ascii: %s",
+            when, base, payload, badBefore, badAfter, dump, ascii);
+    }
+    return false;
+}
+
+void roxal::roxalForensicNoteLiveBlock(void* base, std::size_t payload)
+{
+    // The sweep must verify while HOLDING the lock. Verifying a snapshot after
+    // releasing it races deallocate(), which poisons the block (0xCD) right
+    // after removing it from this registry -- the sweep then reads the poison
+    // and reports a smash that never happened. (It did: the byte dump was
+    // solid 0xCD, i.e. this instrument's own pattern.)
+    std::lock_guard<std::mutex> lock(g_liveMutex);
+    g_liveBlocks[base] = payload;
+    // Periodic sweep of LIVE blocks: an overrun into a node that is still in
+    // use would otherwise only surface when the map is destroyed -- far from
+    // the write, and as a crash rather than a report.
+    if ((++g_liveTick % 4096) != 0)
+        return;
+    for (const auto& e : g_liveBlocks)
+        if (!roxalForensicCheckRedzones(e.first, e.second, "live sweep"))
+            break;
+}
+
+void roxal::roxalForensicForgetLiveBlock(void* base)
+{
+    std::lock_guard<std::mutex> lock(g_liveMutex);
+    g_liveBlocks.erase(base);
+}
+
+void roxal::roxalForensicRetainNode(void* p, std::size_t bytes)
+{
+    // Poison, hold, and verify. Verifying ONLY on eviction is not enough: the
+    // fault we are chasing lands ~3s in, long before a 200k ring cycles, so a
+    // corrupted-but-still-retained block would never be looked at. Sweep the
+    // whole ring periodically as well.
+    static std::mutex nodeMutex;
+    static std::deque<std::pair<void*, std::size_t>> nodes;
+    static std::uint64_t retainTick = 0;
+    constexpr std::size_t kMaxNodes = 200000;
+    std::memset(p, 0xCD, bytes);
+    std::pair<void*, std::size_t> evicted { nullptr, 0 };
+    {
+        std::lock_guard<std::mutex> lock(nodeMutex);
+        nodes.push_back({p, bytes});
+        if (nodes.size() > kMaxNodes) { evicted = nodes.front(); nodes.pop_front(); }
+
+        // Periodic full sweep: report the FIRST block whose poison is broken.
+        if ((++retainTick % 2048) == 0) {
+            for (const auto& n : nodes) {
+                const unsigned char* b = static_cast<const unsigned char*>(n.first);
+                std::size_t bad = 0, firstBad = 0;
+                for (std::size_t i = 0; i < n.second; ++i)
+                    if (b[i] != 0xCD) { if (!bad) firstBad = i; ++bad; }
+                if (bad) {
+                    roxalForensicViolationCount().fetch_add(1, std::memory_order_relaxed);
+                    if (claimForensicBuffer())
+                        std::snprintf(roxalForensicBuffer(), kRoxalForensicBufferSize,
+                            "GC WRITE-INTO-DEAD-BLOCK: %zu of %zu bytes overwritten at %p "
+                            "(first at +%zu) -- a freed PropertyMap node/bucket was written "
+                            "AFTER the map released it (retained, so the allocator never "
+                            "handed this address to anyone else)",
+                            bad, n.second, n.first, firstBad);
+                    break;
+                }
+            }
+        }
+    }
+    if (evicted.first) {
+        const unsigned char* b = static_cast<const unsigned char*>(evicted.first);
+        std::size_t bad = 0;
+        for (std::size_t i = 0; i < evicted.second; ++i) if (b[i] != 0xCD) ++bad;
+        if (bad) {
+            roxalForensicViolationCount().fetch_add(1, std::memory_order_relaxed);
+            if (claimForensicBuffer())
+                std::snprintf(roxalForensicBuffer(), kRoxalForensicBufferSize,
+                    "GC USE-AFTER-FREE in a PropertyMap node/bucket: %zu of %zu bytes "
+                    "overwritten at %p after the map released it",
+                    bad, evicted.second, evicted.first);
+        }
+        ::operator delete(evicted.first);
+    }
+}
+
+void roxal::roxalForensicRetainContainer(void* p, std::size_t bytes)
+{
+    std::pair<void*, std::size_t> evicted { nullptr, 0 };
+    {
+        std::lock_guard<std::mutex> lock(g_mapFreeMutex);
+        g_retainedContainers.push_back({p, bytes});
+        if (g_retainedContainers.size() > kRetainedContainers) {
+            evicted = g_retainedContainers.front();
+            g_retainedContainers.pop_front();
+        }
+    }
+    if (evicted.first)
+        ::operator delete(evicted.first);
+}
+
+namespace {
+struct QuarantinedBlock { char* p; std::size_t bytes; unsigned type; };
+std::mutex g_quarMutex;
+std::deque<QuarantinedBlock> g_quarantine;
+constexpr std::size_t kQuarantineBlocks = 8192;
+constexpr unsigned char kPoison = 0xDD;
+}
+
+bool roxal::roxalForensicQuarantine(ObjControl* ctrl, unsigned objType, std::size_t bytes)
+{
+    if (!roxalForensicOn(ROXAL_FC_QUARANTINE) || !ctrl || bytes == 0)
+        return false;
+    char* block = reinterpret_cast<char*>(ctrl);
+    std::memset(block, kPoison, bytes);
+    roxalForensicQuarantineCount().fetch_add(1, std::memory_order_relaxed);
+
+    QuarantinedBlock evicted { nullptr, 0, 0 };
+    {
+        std::lock_guard<std::mutex> lock(g_quarMutex);
+        g_quarantine.push_back({block, bytes, objType});
+        if (g_quarantine.size() > kQuarantineBlocks) {
+            evicted = g_quarantine.front();
+            g_quarantine.pop_front();
+        }
+    }
+    if (evicted.p) {
+        // Verify nothing wrote into it while it was dead.
+        std::size_t bad = 0, firstBad = 0;
+        for (std::size_t i = 0; i < evicted.bytes; ++i) {
+            if (static_cast<unsigned char>(evicted.p[i]) != kPoison) {
+                if (!bad) firstBad = i;
+                ++bad;
+            }
+        }
+        if (bad) {
+            roxalForensicViolationCount().fetch_add(1, std::memory_order_relaxed);
+            if (claimForensicBuffer())
+                std::snprintf(roxalForensicBuffer(), kRoxalForensicBufferSize,
+                    "GC USE-AFTER-SWEEP: %zu of %zu bytes overwritten in a DEAD "
+                    "%u-type object at %p (first at +%zu) -- something still held "
+                    "a reference to it after the sweep freed it",
+                    bad, evicted.bytes, evicted.type, (void*)evicted.p, firstBad);
+        }
+        delete[] evicted.p;
+    }
+    return true;
+}
+
+void roxal::roxalForensicMutationDuringCollection(const char* site, const void* obj)
+{
+    // Counted and buffered, NOT native-only: these tripwires were previously
+    // an fprintf guarded by #ifndef __EMSCRIPTEN__, which made them silent in
+    // the one environment whose crash we are chasing -- a browser run then
+    // reported "no violation" whether or not the invariant had been broken.
+    roxalForensicViolationCount().fetch_add(1, std::memory_order_relaxed);
+    const unsigned long long tid =
+        (unsigned long long)std::hash<std::thread::id>{}(std::this_thread::get_id());
+    if (claimForensicBuffer()) {
+        std::snprintf(roxalForensicBuffer(), kRoxalForensicBufferSize,
+            "GC MUTATION-DURING-COLLECTION at %s: obj=%p thread=%llu",
+            site, obj, tid);
+    }
+#ifndef __EMSCRIPTEN__
+    static std::atomic<unsigned> reported{0};
+    if (reported.fetch_add(1, std::memory_order_relaxed) < 4)
+        std::fprintf(stderr,
+            "GC MUTATION-DURING-COLLECTION at %s: obj=%p thread=%llu\n",
+            site, obj, tid);
+#endif
+}
+
+void roxal::roxalForensicMarkMiss(const char* kind,
+                                  const void* parentObj, unsigned parentType,
+                                  const void* childObj, unsigned childType,
+                                  const ObjControl* childCtrl,
+                                  unsigned long long epoch,
+                                  unsigned long long misses,
+                                  unsigned long long parentTracedEpoch)
+{
+    roxalForensicViolationCount().fetch_add(1, std::memory_order_relaxed);
+    if (!claimForensicBuffer()) return;
+    std::snprintf(roxalForensicBuffer(), kRoxalForensicBufferSize,
+        "GC %s at epoch %llu | LIVE parent obj=%p type=%u -> DOOMED child "
+        "obj=%p type=%u ctrl=%p strong=%d weak=%d markEpoch=%llu "
+        "collecting=%d | parentTracedEpoch=%llu (%s) | %llu such edge(s) this collection",
+        kind, epoch, parentObj, parentType, childObj, childType,
+        (const void*)childCtrl,
+        childCtrl ? childCtrl->strong.load(std::memory_order_relaxed) : 0,
+        childCtrl ? childCtrl->weak.load(std::memory_order_relaxed) : 0,
+        childCtrl ? (unsigned long long)childCtrl->markEpoch.load(std::memory_order_relaxed) : 0ull,
+        childCtrl ? int(childCtrl->collecting.load(std::memory_order_relaxed)) : 0,
+        parentTracedEpoch,
+        parentTracedEpoch == epoch ? "TRACED: edge appeared after tracing"
+                                   : "NOT TRACED this epoch: marked without tracing",
+        misses);
+
+#ifndef __EMSCRIPTEN__
+    // Native builds can report immediately: the proxied-cerr deadlock that
+    // forced the buffer-only design is a wasm-pthread hazard, and stderr here
+    // makes a violation visible in test/CI output instead of silent.
+    std::fprintf(stderr, "%s\n", roxalForensicBuffer());
+#endif
+}
+#endif
+
+void Obj::dropReferencesOnce()
+{
+    if (control && control->dropClaimed.exchange(true, std::memory_order_acq_rel))
+        return;   // the other automatic path already severed this object's edges
+    dropReferences();
+}
+
 void Obj::decRef()
 {
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+    if (roxalForensicOn(ROXAL_FC_CHECKS) &&
+        (reinterpret_cast<std::uintptr_t>(control) & 3u)) {
+        roxalForensicBadPointer(control, "decRef");
+        return;   // containment: do not run an atomic on it
+    }
+#endif
     // Release/acquire is the shared-ptr death protocol: the release makes
     // this thread's writes INTO the object happen-before the count reaching
     // zero, and the acquire fence on the zero path makes every other
@@ -60,8 +566,25 @@ void Obj::decRef()
     if (prevCount <= 1) {
         std::atomic_thread_fence(std::memory_order_acquire);
         if (!control->collecting.exchange(true, std::memory_order_acq_rel)) {
+#ifdef ROXAL_GC_FORENSICS
+            // Provenance BEFORE the inline drop: a crash inside that drop
+            // must still have recorded who/where.  Counting is unconditional
+            // under forensics -- the inline-drop-then-queued-drop double is
+            // exactly the path under investigation, and it must show as
+            // dropCount==2 in freeObjects' check.
+            control->deathPath.store(1, std::memory_order_relaxed);
+            control->deathThread.store(
+                std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                std::memory_order_relaxed);
+            control->objTypeAtDeath.store(static_cast<std::uint8_t>(type),
+                                          std::memory_order_relaxed);
+            control->retireCount.fetch_add(1, std::memory_order_relaxed);
+#endif
             if (SimpleMarkSweepGC::instance().isCollectionInProgress()) {
-                dropReferences();
+#ifdef ROXAL_GC_FORENSICS
+                control->dropCount.fetch_add(1, std::memory_order_relaxed);
+#endif
+                dropReferencesOnce();
             }
             control->obj.store(nullptr, std::memory_order_release);
             // Reclamation: queue for the collector role; destruction is
@@ -366,6 +889,16 @@ void Obj::cleanupMVCC()
             ver->snapshot->decRef();
             ver->snapshot = nullptr;
         }
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+        // The reclaim drain frees these while mutators can still be
+        // CAS-prepending to the same chain (saveVersion). Retaining them under
+        // quarantine turns a double free / use-after-free here into a poison
+        // report instead of an abort inside free().
+        if (roxalForensicOn(ROXAL_FC_QUARANTINE)) {
+            ver->~ObjVersion();
+            roxalForensicRetainNode(ver, sizeof(ObjVersion));
+        } else
+#endif
         delete ver;
         ver = prev;
     }
@@ -399,6 +932,12 @@ void Obj::trimVersionChain(uint64_t minEpoch)
                 chain->snapshot->decRef();
                 chain->snapshot = nullptr;
             }
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+            if (roxalForensicOn(ROXAL_FC_QUARANTINE)) {
+                chain->~ObjVersion();
+                roxalForensicRetainNode(chain, sizeof(ObjVersion));
+            } else
+#endif
             delete chain;
             chain = prev;
         }
@@ -566,8 +1105,35 @@ Value roxal::createFrozenSnapshot(const Value& v)
         // Fall through to shallow-clone + MVCC
     }
 
-    // Shallow-clone the root object
-    auto snap = obj->shallowClone();
+    // Shallow-clone the root object.
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+    // Detector for the unguarded window: this clone reads the COW ptr members
+    // while holding NO cowLock_, so a concurrent mutator's ensureUnique() can
+    // reassign the same member under it.  Publish the window; mutators check.
+    struct CloneWindow {
+        ObjControl* c;
+        explicit CloneWindow(ObjControl* ctrl) : c(ctrl) {
+            if (c) c->cloneInProgress.store(true, std::memory_order_release);
+        }
+        ~CloneWindow() { if (c) c->cloneInProgress.store(false, std::memory_order_release); }
+    } cloneWindow(roxalForensicOn(ROXAL_FC_VERIFY) ? obj->control : nullptr);
+#endif
+    // Take the object's COW spinlock across the ROOT clone. shallowClone()
+    // copies the COW ptr members (properties_ / elts_) while a mutator's
+    // ensureUnique() can be reassigning the very same member: the copy then
+    // shares a map whose control block accounting is wrong, and the map's
+    // internal node/bucket links get written by one side while the other
+    // destroys it. resolveConstChild has always taken this lock for CHILD
+    // clones; the root clone never did.
+    auto snap = [&] {
+        if (obj->control) {
+            obj->control->lockCow();
+            auto s = obj->shallowClone();
+            obj->control->unlockCow();
+            return s;
+        }
+        return obj->shallowClone();
+    }();
     if (!snap) {
         // Type doesn't support shallow cloning (e.g. immutable type like ObjString).
         // Just return with const bit set.
@@ -4086,9 +4652,53 @@ void ObjectInstance::trace(ValueVisitor& visitor) const
 
 void ObjectInstance::dropReferences()
 {
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+    ForensicWriterGuard writerGuard_(control, this, unsigned(type), "dropReferences");
+#endif
     cleanupMVCC();
     instanceType = Value::nilVal();
-    properties_ = make_ptr<PropertyMap>();
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+    // The wasm fault dies HERE: releasing properties_ frees the map through a
+    // shared control block whose heap chunk header is already garbage.  Check
+    // the block for plausibility BEFORE the release, so the report names the
+    // corrupting release instead of arriving after free() has trapped.
+    if (roxalForensicOn(ROXAL_FC_VERIFY)) {
+        const long uc = properties_.use_count();
+        if (uc < 1 || uc > 1000000)
+            roxalForensicMutationDuringCollection(
+                "ObjectInstance::dropReferences properties_ use_count insane",
+                (const void*)this);
+        // Sole owner => this release frees the map. Has it been freed before?
+        // ONLY meaningful with quarantine on: without it the allocator reuses
+        // the address for a fresh map and the check fires constantly (3/3 runs
+        // without quarantine, 0/3 with it, same workload).
+        if (roxalForensicOn(ROXAL_FC_QUARANTINE) && uc == 1 && properties_.get()) {
+            std::uint64_t priorEpoch = 0; unsigned priorType = 0;
+            const void* priorOwner = nullptr;
+            const std::uint64_t epoch = SimpleMarkSweepGC::instance().currentEpoch();
+            if (!roxalForensicNoteContainerFree(properties_.get(), epoch,
+                                                unsigned(type), (const void*)this,
+                                                priorEpoch, priorType, priorOwner)) {
+                char* buf = roxalForensicBuffer();
+                roxalForensicViolationCount().fetch_add(1, std::memory_order_relaxed);
+                if (claimForensicBuffer())
+                    std::snprintf(buf, kRoxalForensicBufferSize,
+                        "GC DOUBLE-FREE? PropertyMap %p released again at epoch %llu by "
+                        "obj=%p type=%u; FIRST release epoch %llu by obj=%p type=%u "
+                        "[%s]",
+                        (const void*)properties_.get(), (unsigned long long)epoch,
+                        (const void*)this, unsigned(type),
+                        (unsigned long long)priorEpoch, priorOwner, priorType,
+                        roxalForensicOn(ROXAL_FC_QUARANTINE)
+                          ? "quarantine ON: the address CANNOT be reused, so this is a REAL double free"
+                          : "quarantine OFF: ALMOST CERTAINLY allocator address reuse -- this fires 3/3 "
+                            "without quarantine and 0/3 with it on the same workload; do not trust it "
+                            "unless quarantine is on");
+            }
+        }
+    }
+#endif
+    properties_ = newPropertyMap();
 }
 
 unique_ptr<Obj, UnreleasedObj> ObjBoundMethod::clone(roxal::ptr<CloneContext> ctx) const
@@ -6325,7 +6935,7 @@ ObjModuleType::~ObjModuleType() {}
 
 
 ObjectInstance::ObjectInstance(const Value& objectType)
-    : properties_(make_ptr<PropertyMap>())
+    : properties_(newPropertyMap())
 {
     type = ObjType::Instance;
     debug_assert_msg(isObjectType(objectType),
@@ -6392,6 +7002,9 @@ Value ObjectInstance::getProperty(const ustring& name) const
 VariablesMap::MonitoredValue& ObjectInstance::propertySlot(int32_t hash)
 {
     ensureMutable();
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+    ForensicWriterGuard writerGuard_(control, this, unsigned(type), "propertySlot");
+#endif
     CowGuard guard(control);
     if (guard.active()) saveVersion();
     ensureUnique();
@@ -6402,6 +7015,9 @@ VariablesMap::MonitoredValue& ObjectInstance::propertySlot(int32_t hash)
 bool ObjectInstance::assignProperty(int32_t hash, const Value& value)
 {
     ensureMutable();
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+    ForensicWriterGuard writerGuard_(control, this, unsigned(type), "assignProperty");
+#endif
     CowGuard guard(control);
     if (guard.active()) saveVersion();
     ensureUnique();
@@ -6413,6 +7029,9 @@ bool ObjectInstance::assignProperty(int32_t hash, const Value& value)
 void ObjectInstance::emplaceProperty(int32_t hash, VariablesMap::MonitoredValue mv)
 {
     ensureMutable();
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+    ForensicWriterGuard writerGuard_(control, this, unsigned(type), "emplaceProperty");
+#endif
     CowGuard guard(control);
     if (guard.active()) saveVersion();
     ensureUnique();
@@ -6423,6 +7042,9 @@ void ObjectInstance::emplaceProperty(int32_t hash, VariablesMap::MonitoredValue 
 void ObjectInstance::setProperty(const ustring& name, Value value)
 {
     ensureMutable();
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+    ForensicWriterGuard writerGuard_(control, this, unsigned(type), "setProperty");
+#endif
     CowGuard guard(control);
     if (guard.active()) saveVersion();
     ensureUnique();
@@ -6624,6 +7246,10 @@ ActorInstance::ActorInstance(const Value& objectType)
 VariablesMap::MonitoredValue& ActorInstance::propertySlot(int32_t hash)
 {
     ensureMutable();
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+    if (roxalForensicOn(ROXAL_FC_VERIFY) && SimpleMarkSweepGC::instance().isCollectionInProgress())
+        roxalForensicMutationDuringCollection("ActorInstance property", this);
+#endif
     if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
     control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
     return properties[hash];
@@ -6632,6 +7258,10 @@ VariablesMap::MonitoredValue& ActorInstance::propertySlot(int32_t hash)
 void ActorInstance::assignProperty(int32_t hash, const Value& value)
 {
     ensureMutable();
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+    if (roxalForensicOn(ROXAL_FC_VERIFY) && SimpleMarkSweepGC::instance().isCollectionInProgress())
+        roxalForensicMutationDuringCollection("ActorInstance property", this);
+#endif
     if (activeSnapshotCount.load(std::memory_order_relaxed) > 0) saveVersion();
     properties[hash].assign(value);
     control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
@@ -6749,7 +7379,24 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
     assert(isActorInstance(recv));
     #endif
 
-    std::lock_guard<std::mutex> lock { queueMutex };
+    // NOTE: queueMutex is taken at the PUSH below, not here.  Everything in
+    // between allocates (the return future, frozen snapshots of arguments),
+    // and allocation takes the GC mutex via registerAllocation -- so holding
+    // queueMutex across it means queueMutex -> GC mutex_, while the mark
+    // phase runs GC mutex_ -> the queue's own lock inside trace().  Building
+    // the call OUTSIDE the lock keeps the queue lock a leaf.
+
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+    // TRIPWIRE: enqueueing here while a collection is running creates a NEW
+    // strong edge (callee + args + future) inside an actor the mark may
+    // already have traced -- those Values are never marked and the sweep
+    // frees them.  Name the thread doing it.
+    if (roxalForensicOn(ROXAL_FC_VERIFY) &&
+        SimpleMarkSweepGC::instance().isCollectionInProgress()) {
+        roxalForensicMutationDuringCollection("actor queueCall (new edges in a traced actor)",
+                                              (const void*)this);
+    }
+#endif
 
     // If the actor's thread has already exited, no one will service this call.
     // Return nil immediately so callers (resolveFuture etc.) don't block forever.
@@ -6890,7 +7537,15 @@ Value ActorInstance::queueCall(const Value& callee, const CallSpec& callSpec, Va
         }
     }
 
-    callQueue.push(callInfo);
+    {
+        std::lock_guard<std::mutex> lock { queueMutex };
+        // Re-check under the lock: the actor may have exited while this call
+        // was being marshalled.  (Dropping the call is the same outcome as
+        // the early return above -- callers get nil and never block.)
+        if (!alive.load(std::memory_order_acquire))
+            return Value::nilVal();
+        callQueue.push(callInfo);
+    }
 
     queueConditionVar.notify_one();
 

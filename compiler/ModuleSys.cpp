@@ -3169,6 +3169,57 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
             }
         }
 
+        // invokeClosure must leave the value stack exactly as it found it.
+        // The closure runs as the OUTERMOST frame here, and opReturn() only
+        // unwinds a returning frame's slots when a caller frame remains
+        // beneath it -- so without invokeClosure's own restore, every call
+        // abandons its slot 0, arguments and locals.  This is the path the
+        // dataflow engine evaluates every script node through: the leftovers
+        // accumulated until the 16384-slot stack overflowed and the engine
+        // thread died mid-run, silently stopping the whole network.
+        {
+            auto savedThread = VM::thread;
+
+            std::stringstream source;
+            source << "func addOne(x: int) -> int:\n"
+                   << "  var y = x + 1\n"
+                   << "  return y\n";
+
+            auto setupResult = vm.setup(source, "rt_stack_balance");
+            if (setupResult != ExecutionStatus::OK) {
+                VM::thread = savedThread;
+                reportTest("invokeClosure_stack_balance", false, "Failed to compile");
+            } else {
+                ObjModuleType* modType = vm.moduleType();
+                auto [execResult, _] = vm.execute();
+                if (execResult != ExecutionStatus::OK) {
+                    VM::thread = savedThread;
+                    reportTest("invokeClosure_stack_balance", false, "execute failed");
+                } else {
+                    auto closureOpt = modType->vars.load(toUnicodeString("addOne"));
+                    if (!closureOpt.has_value() || !isClosure(closureOpt.value())) {
+                        VM::thread = savedThread;
+                        reportTest("invokeClosure_stack_balance", false, "closure not found");
+                    } else {
+                        const size_t before = VM::thread->stackDepth();
+                        bool allOk = true;
+                        for (int i = 0; i < 8; ++i) {
+                            auto [res, val] = vm.invokeClosure(asClosure(closureOpt.value()),
+                                                               {Value::intVal(i)});
+                            allOk = allOk && res == ExecutionStatus::OK
+                                    && val.isInt() && val.asInt() == i + 1;
+                        }
+                        const size_t after = VM::thread->stackDepth();
+                        VM::thread = savedThread;
+                        reportTest("invokeClosure_stack_balance", allOk && after == before,
+                            "stack delta " + std::to_string(static_cast<long long>(after)
+                                                            - static_cast<long long>(before))
+                            + " over 8 calls, results ok=" + std::to_string(allOk));
+                    }
+                }
+            }
+        }
+
         engine.clear();
         vm.setSynchronousExecution(true); // restore guard
         std::cout << "RT Execution tests: Passed " << passes << " failed " << fails << std::endl;
