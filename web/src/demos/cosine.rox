@@ -1,0 +1,15 @@
+@dataflow_diagram(version=1, next_id=4)
+
+import math
+
+type Cosine object:
+  @df(id=3, x=540, y=120)
+  var out:signal = nil
+
+  proc init(freq:real=2):
+    @df(id=1, x=120, y=120)
+    var w = signal(freq, 0)
+    @df(id=2, x=320, y=120)
+    var cos = math.cos(w[-1])
+    w <- cos
+    out = cos

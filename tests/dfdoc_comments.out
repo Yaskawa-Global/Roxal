@@ -1,0 +1,22 @@
+load: true
+move: true
+disc: true
+conn: true
+@dataflow_diagram(version=1, next_id=4)
+
+import math
+
+// hand-written header comment
+type Cosine object:
+  @df(id=3, x=400, y=50)
+  var out:signal = nil   // the visible result
+
+  proc init(freq:real=8):
+    // the state point of the loop
+    @df(id=1, x=100, y=50)
+    var w = signal(freq, 0)
+    @df(id=2, x=300, y=80)
+    var cos = math.cos(w[-1])
+    w <- cos
+    out = cos
+

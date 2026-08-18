@@ -1,0 +1,18 @@
+@dataflow_diagram(version=1, next_id=5)
+
+import logic
+
+type FlipFlop object:
+  @df(id=1, x=20, y=100, payload='bool')
+  var t:signal = nil
+  @df(id=4, x=580, y=100)
+  var q:signal = nil
+
+  proc init(t:signal, freq:real=4):
+    this.t = t
+    @df(id=2, x=400, y=100)
+    var state = signal(freq, false)
+    @df(id=3, x=210, y=100)
+    var xor_gate = logic.xor_gate(state[-1], t)
+    state <- xor_gate
+    q = state

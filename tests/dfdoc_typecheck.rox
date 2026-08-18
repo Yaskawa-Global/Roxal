@@ -1,0 +1,43 @@
+// dfdoc: connect-time payload type checking -- the compatible() rules and
+// the authoritative gate in the connect op (palette supplies port types)
+import dfdoc
+
+print("real->int: {dfdoc.compatible('real', 'int')}")
+print("bool->real: {dfdoc.compatible('bool', 'real')}")
+print("int->string: {dfdoc.compatible('int', 'string')}")
+print("string->real: {dfdoc.compatible('string', 'real')}")
+print("vector->real: {dfdoc.compatible('vector', 'real')}")
+print("vector->vector: {dfdoc.compatible('vector', 'vector')}")
+print("tensor->matrix: {dfdoc.compatible('tensor', 'matrix')}")
+print("unknowns: {dfdoc.compatible(nil, 'real')} {dfdoc.compatible('real', nil)}")
+print("---")
+
+var pal = dfdoc.palette(['../tests/dfdoc_tc_fixture.rox'])
+var doc = dfdoc.new_document('Gate', [{'name': 'freq', 'default': 4.0}])['doc']
+var vin = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'input', 'name': 'vec', 'type': 'vector', 'x': 0, 'y': 0})['id']
+var bin = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'input', 'name': 'flag', 'type': 'bool', 'x': 0, 'y': 64})['id']
+var nsc = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'func', 'callee': 'dfdoc_tc_fixture.scale', 'nin': 1, 'x': 160, 'y': 0}, pal)['id']
+var nnm = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'func', 'callee': 'dfdoc_tc_fixture.norm', 'nin': 1, 'x': 160, 'y': 64}, pal)['id']
+var nut = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'func', 'callee': 'dfdoc_tc_fixture.untyped', 'nin': 1, 'x': 160, 'y': 128}, pal)['id']
+
+var pt = dfdoc.port_types(doc, pal)
+print("scale ports: {pt[string(nsc)]}")
+print("norm ports: {pt[string(nnm)]}")
+print("untyped ports: {pt[string(nut)]}")
+print("input ports: {pt[string(vin)]}")
+print("---")
+
+// vector input -> real param: refused with a reason
+var r1 = dfdoc.apply(doc, {'op': 'connect', 'from': {'id': vin, 'port': 0}, 'to': {'id': nsc, 'port': 0}}, pal)
+print("vec->scale: {r1['ok']} {r1['error']}")
+// bool input -> real param: numeric family converts
+print("flag->scale: {dfdoc.apply(doc, {'op': 'connect', 'from': {'id': bin, 'port': 0}, 'to': {'id': nsc, 'port': 0}}, pal)['ok']}")
+// vector input -> vector param: exact match
+print("vec->norm: {dfdoc.apply(doc, {'op': 'connect', 'from': {'id': vin, 'port': 0}, 'to': {'id': nnm, 'port': 0}}, pal)['ok']}")
+// norm's real output -> vector param: refused
+var r2 = dfdoc.apply(doc, {'op': 'connect', 'from': {'id': nsc, 'port': 0}, 'to': {'id': nnm, 'port': 0}}, pal)
+print("scale->norm: {r2['ok']} {r2['error']}")
+// untyped param accepts anything
+print("vec->untyped: {dfdoc.apply(doc, {'op': 'connect', 'from': {'id': vin, 'port': 0}, 'to': {'id': nut, 'port': 0}}, pal)['ok']}")
+// without a palette the callee types are unknown: permissive by design
+print("vec->scale no pal: {dfdoc.apply(doc, {'op': 'connect', 'from': {'id': vin, 'port': 0}, 'to': {'id': nsc, 'port': 0}})['ok']}")

@@ -141,6 +141,7 @@ tests = [
     'multi_return', 'multi_return_arity_err', 'multi_return_nonlist_err', 'multi_return_literal_err', 'test_multi_return_syntax',
     'signal_multi_output', 'signal_wiring_func', 'signal_wiring_mixed_err', 'signal_branch_err', 'signal_sampling',
     'signal_list_const', 'df_const_arg_err', 'inspect_df_structure', 'signal_lift_fresh', 'signal_lift_nodisturb',
+    'signal_copyinto_freq_err',
     'var_destructure', 'var_destructure_arity_err', 'var_destructure_nonlist_err', 'var_destructure_const_err',
     'signal_shift', 'signal_deduce', 'signal_variadic_err', 'check_compile_err', 'signal_sampled', 'signal_feedback_rate', 'signal_island_rates', 'bitwise_large_int', 'signal_nolift_wait', 'inline_lambda_assign_err',
     'dataflow_clocktest1', 'multi_clock', 'clock_error', 'clock_name_param',
@@ -349,7 +350,11 @@ inspect_tests = [
     'inspect_network_lifecycle', 'inspect_network_provenance',
     'inspect_unparse', 'inspect_edit', 'inspect_fragments',
     'inspect_fragment_err', 'inspect_unparse_err', 'inspect_roundtrip_corpus',
-    'inspect_compile', 'inspect_compile_err',
+    'inspect_compile', 'inspect_compile_err', 'inspect_annot_roundtrip',
+    # dfdoc (diagram document library) is pure Roxal over inspect
+    'dfdoc_ops_basic', 'dfdoc_names', 'dfdoc_feedback', 'dfdoc_load_save',
+    'dfdoc_comments', 'dfdoc_runs', 'dfdoc_palette', 'dfdoc_check',
+    'dfdoc_input_types', 'dfdoc_typecheck', 'dfdoc_live', 'dfdoc_compose', 'dfdoc_compose_run',
 ]
 xml_tests = [
     'xml_basic_compact', 'xml_basic_raw', 'xml_attrs', 'xml_mixed_raw',

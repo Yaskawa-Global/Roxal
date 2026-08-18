@@ -1,0 +1,19 @@
+// dfdoc: input ports carry a payload type (editor metadata in @df) that
+// drives the harness stimulus; set_input_type edits it
+import dfdoc
+
+var doc = dfdoc.new_document('Typed', [{'name': 'freq', 'default': 4.0}])['doc']
+var a = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'input', 'name': 'gain', 'type': 'real', 'x': 0, 'y': 0})['id']
+var b = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'input', 'name': 'img', 'type': 'tensor', 'x': 0, 'y': 1})['id']
+var c = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'input', 'name': 'en', 'x': 0, 'y': 2})['id']
+
+for n in dfdoc.view(doc)['nodes']:
+  print("{n['name']}: {n['type']}")
+
+var bad = dfdoc.apply(doc, {'op': 'set_input_type', 'id': c, 'type': 'flob'})
+print("bad type: {bad['ok']} {bad['error']}")
+print("retype: {dfdoc.apply(doc, {'op': 'set_input_type', 'id': c, 'type': 'bool'})['ok']}")
+print("---")
+print(dfdoc.save(doc))
+print("---")
+print(dfdoc.harness(doc, for_native=true))

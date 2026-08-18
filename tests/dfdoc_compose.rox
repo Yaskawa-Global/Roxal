@@ -1,0 +1,35 @@
+// dfdoc: another diagram as a node -- instance statements, accessor-based
+// edges, output binding through the instance, and a running composed network
+import dfdoc
+import inspect
+
+// the sub-diagram's node-facing spec
+var spec = dfdoc.component_spec('../tests/dfdoc_ff_fixture.rox')
+print("spec: {spec['ok']} {spec['type']} in={len(spec['inputs'])} outs={spec['outs']}")
+
+var doc = dfdoc.new_document('Pair', [{'name': 'freq', 'default': 50.0}])['doc']
+var en = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'input', 'name': 'en', 'type': 'bool', 'x': 0, 'y': 0})['id']
+var f1 = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'diagram', 'module': 'dfdoc_ff_fixture', 'type': 'FlipFlop', 'nin': 1, 'outs': ['q'], 'x': 1, 'y': 0})['id']
+var f2 = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'diagram', 'module': 'dfdoc_ff_fixture', 'type': 'FlipFlop', 'nin': 1, 'outs': ['q'], 'x': 2, 'y': 0})['id']
+var o = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'output', 'name': 'bit1', 'x': 3, 'y': 0})['id']
+
+print("c1: {dfdoc.apply(doc, {'op': 'connect', 'from': {'id': en, 'port': 0}, 'to': {'id': f1, 'port': 0}})['ok']}")
+print("c2: {dfdoc.apply(doc, {'op': 'connect', 'from': {'id': f1, 'port': 0}, 'to': {'id': f2, 'port': 0}})['ok']}")
+print("c3: {dfdoc.apply(doc, {'op': 'connect', 'from': {'id': f2, 'port': 0}, 'to': {'id': o, 'port': 0}})['ok']}")
+print(dfdoc.save(doc))
+
+// round-trip: the composed document reloads and its view sees the instances
+var lr = dfdoc.load(dfdoc.save(doc))
+print("reload: {lr['ok']}")
+var v = dfdoc.view(lr['doc'])
+var kinds = {}
+for n in v['nodes']:
+  var k = n['kind']
+  if not (k in kinds):
+    kinds[k] = 0
+  kinds[k] = kinds[k] + 1
+print("diagram nodes: {kinds['diagram']}  edges: {len(v['edges'])}  diags: {len(dfdoc.check(doc))}")
+
+// Execution of a composed network lives in dfdoc_compose_run.rox: an
+// inspect.compile'd program cannot resolve sibling-file imports, but a test
+// file importing the fixture as a module can.

@@ -1,0 +1,7 @@
+func  dfdoc_palette_fixture.plain(a:int, b:real=) -> ["real"]
+func  dfdoc_palette_fixture.untyped(v:nil) -> ["bool"]
+func  dfdoc_palette_fixture.multi(v:real) -> ["real", "real"]
+component  dfdoc_palette_fixture.wiring(s:signal) -> ["signal"]
+component  dfdoc_palette_fixture.Widget() -> []
+math.atan2 params: 2  outputs: ["real"]
+math funcs > 20: true  atan2 found: true

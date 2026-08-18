@@ -176,6 +176,29 @@ void AstPrinter::emitLine(const std::string& s)
 
 void AstPrinter::file(const File& n)
 {
+    if (!n.annotations.empty()) {
+        annotations(n);
+        // a blank line is load-bearing: a run glued to what follows would
+        // re-parse as bound to that import/declaration, not file-level.
+        // Emit one only if the follower's own trivia doesn't already supply
+        // it, so unparse stays idempotent.
+        const ast::AST* first = nullptr;
+        if (!n.imports.empty() && n.imports.front())
+            first = n.imports.front().get();
+        else if (!n.declsOrStmts.empty()) {
+            auto& d = n.declsOrStmts.front();
+            if (std::holds_alternative<ptr<Declaration>>(d))
+                first = std::get<ptr<Declaration>>(d).get();
+            else
+                first = std::get<ptr<Statement>>(d).get();
+        }
+        bool followerBlank = false;
+        if (first)
+            if (auto* blanks = attrGet<int64_t>(*first, "blank_lines_before"))
+                followerBlank = *blanks > 0;
+        if (!followerBlank)
+            out += "\n";
+    }
     for (auto& i : n.imports)
         if (i) stmtWithTrivia(*i);
     declsOrStmts(n.declsOrStmts);
@@ -207,11 +230,20 @@ void AstPrinter::stmtWithTrivia(const ast::AST& n)
             emitLine(c);
 
     size_t before = out.size();
+    // arm the annotation anchor for THIS statement, preserving any outer
+    // statement's anchor across nested suites
+    size_t savedAnchor = annotAnchor;
+    bool savedArmed = annotArmed;
+    annotAnchor = before;
+    annotArmed = true;
     node(n);
+    size_t anchor = annotArmed ? before : annotAnchor;
+    annotAnchor = savedAnchor;
+    annotArmed = savedArmed;
 
     if (auto* trailing = attrGet<std::string>(n, "trailing_comment")) {
-        // attach to the first rendered line
-        size_t eol = out.find('\n', before);
+        // attach to the first rendered line after the statement's annotations
+        size_t eol = out.find('\n', anchor);
         if (eol != std::string::npos)
             out.insert(eol, "   " + *trailing);
     }
@@ -235,6 +267,12 @@ void AstPrinter::annotations(const ast::AST& n)
         if (!a->args.empty())
             s += "(" + args(a->args) + ")";
         emitLine(s);
+    }
+    if (annotArmed) {
+        // first annotation run of the current statement: everything above is
+        // annotation lines, the statement's own first line starts here
+        annotAnchor = out.size();
+        annotArmed = false;
     }
 }
 
@@ -460,6 +498,7 @@ std::string AstPrinter::inlineStmt(const Statement& n)
 
 void AstPrinter::importDecl(const Import& n)
 {
+    annotations(n);
     std::string s = "import ";
     for (size_t i = 0; i < n.packages.size(); i++) {
         if (i) s += ".";
@@ -522,6 +561,8 @@ void AstPrinter::varDecl(const VarDecl& n, bool asStatement)
 
 std::string AstPrinter::parameter(const Parameter& n)
 {
+    // parameter annotations are not printed: the annotation rule is
+    // NEWLINE-terminated, so an inline @name here would not re-parse
     if (n.isStar)
         return "*";
     std::string s;

@@ -1,0 +1,24 @@
+spec: true FlipFlop in=1 outs=["q"]
+c1: true
+c2: true
+c3: true
+@dataflow_diagram(version=1, next_id=5)
+
+import dfdoc_ff_fixture
+
+type Pair object:
+  @df(id=1, x=0, y=0, payload='bool')
+  var en:signal = nil
+  @df(id=4, x=3, y=0)
+  var bit1:signal = nil
+
+  proc init(en:signal, freq:real=50):
+    this.en = en
+    @df(id=2, x=1, y=0, diagram='dfdoc_ff_fixture', outs='q')
+    var flipflop = dfdoc_ff_fixture.FlipFlop(en)
+    @df(id=3, x=2, y=0, diagram='dfdoc_ff_fixture', outs='q')
+    var flipflop_2 = dfdoc_ff_fixture.FlipFlop(flipflop.q)
+    bit1 = flipflop_2.q
+
+reload: true
+diagram nodes: 2  edges: 3  diags: 0

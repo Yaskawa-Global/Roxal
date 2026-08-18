@@ -1,0 +1,52 @@
+// inspect: annotations survive parse -> unparse -> parse at every
+// attachment site, including file level and imports (printed since the
+// df-dialect work; previously dropped by unparse).
+import inspect
+
+var src = """@dataflow_diagram(version=1, next_id=7)
+
+@meta('imp')
+import math
+
+@df(x=10, y=-5.5)
+var a = 1
+
+func two() -> [int, int]:
+  return [1, 2]
+
+@df(x=1)
+var [b, c] = two()
+
+@pure('f')
+func f() -> int:
+  return 1
+
+type T object:
+  @df(x=3, y=4)
+  var q :signal = nil
+"""
+
+var t1 = inspect.parse(src, 'annot_rt')
+var s1 = inspect.unparse(t1)
+var t2 = inspect.parse(s1, 'annot_rt2')
+
+func annot_names(node) -> string:
+  var names = []
+  for a in node.annotations:
+    names.append(a.name)
+  return string(names)
+
+var ds = t2.decls_or_stmts
+print("file: " + annot_names(t2))
+print("import: " + annot_names(t2.imports[0]))
+print("var: " + annot_names(ds[0]))
+print("destructure: " + annot_names(ds[2]))
+print("func: " + annot_names(ds[3]))
+print("property: " + annot_names(ds[4].properties[0]))
+
+// named args survive with their values
+var df0 = ds[0].annotations[0]
+print("df args: {df0.args[0].name}={df0.args[0].value.value} {df0.args[1].name}={df0.args[1].value.value}")
+
+// canonical form is a fixpoint
+print("fixpoint: {inspect.unparse(t2) == s1}")

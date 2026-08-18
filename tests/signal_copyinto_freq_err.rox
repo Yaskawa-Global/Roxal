@@ -1,0 +1,4 @@
+// both sides of '<-' must share a frequency
+var a = signal(10.0, 0)
+var b = signal(5.0, 0)
+a <- b

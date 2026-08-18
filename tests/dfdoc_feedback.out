@@ -1,0 +1,34 @@
+fwd: true
+back: false cycle: feedback must pass through a signal wire
+edges after refusal: 1
+s1: true
+s2: true
+@dataflow_diagram(version=1, next_id=4)
+
+import math
+
+type Loop object:
+
+  proc init(freq:real=4):
+    @df(id=3, x=0, y=2)
+    var state = signal(freq, 0)
+    @df(id=1, x=0, y=0)
+    var sin = math.sin(state[-1])
+    @df(id=2, x=0, y=1)
+    var cos = math.cos(sin)
+    state <- cos
+
+disc: true
+rm: true
+@dataflow_diagram(version=1, next_id=4)
+
+import math
+
+type Loop object:
+
+  proc init(freq:real=4):
+    @df(id=3, x=0, y=2)
+    var state = signal(freq, 0)
+    @df(id=1, x=0, y=0)
+    var sin = math.sin(state[-1])
+

@@ -1,0 +1,13 @@
+// a diagram FILE is an importable component: instantiate two flip-flops and
+// chain them through their output properties -- the second bit toggles at
+// a quarter of the clock rate
+import dfdoc_ff_fixture.*
+
+var en = signal(50.0, true)
+var a = FlipFlop(en, freq=50.0)
+var b = FlipFlop(a.q, freq=50.0)
+var n = 0
+when b.q changes:
+  n = n + 1
+wait(ms=600)
+print('composed runs: ' + string(n >= 3))

@@ -1,0 +1,43 @@
+// dfdoc: load -> save is a fixpoint on canonical files; non-diagrams and
+// out-of-dialect content are refused with a reason, never mangled
+import dfdoc
+
+var src = """@dataflow_diagram(version=1, next_id=4)
+
+import math
+
+type Cosine object:
+  @df(id=3, x=400, y=50)
+  var out:signal = nil
+
+  proc init(freq:real=8):
+    @df(id=1, x=100, y=50)
+    var w = signal(freq, 0)
+    @df(id=2, x=260, y=60)
+    var cos = math.cos(w[-1])
+    w <- cos
+    out = cos
+"""
+
+var r = dfdoc.load(src)
+print("load: {r['ok']}")
+print("fixpoint: {dfdoc.save(r['doc']) == src}")
+
+var r2 = dfdoc.load("var x = 1\n")
+print("no marker: {r2['ok']} {r2['error']}")
+
+var r3 = dfdoc.load("@dataflow_diagram(version=99)\n\ntype T object:\n\n  proc init():\n    _\n")
+print("future version: {r3['ok']} {r3['error']}")
+
+var bad = """@dataflow_diagram(version=1, next_id=1)
+
+type T object:
+
+  proc init():
+    print('hello')
+"""
+var r4 = dfdoc.load(bad)
+print("out of dialect: {r4['ok']} {r4['error']}")
+
+var r5 = dfdoc.load("@dataflow_diagram(version=1)\n\nvar x = 1\n")
+print("no component: {r5['ok']} {r5['error']}")

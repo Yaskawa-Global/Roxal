@@ -1,0 +1,8 @@
+file: ["dataflow_diagram"]
+import: ["meta"]
+var: ["df"]
+destructure: ["df"]
+func: ["pure"]
+property: ["df"]
+df args: x=10 y=-5.5
+fixpoint: true

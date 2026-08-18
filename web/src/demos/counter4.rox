@@ -1,0 +1,42 @@
+@dataflow_diagram(version=1, next_id=15)
+
+import flipflop
+import logic
+
+type Counter4 object:
+  @df(id=1, x=20, y=40, payload='bool')
+  var en:signal = nil
+  @df(id=3, x=600, y=40)
+  var q0:signal = nil
+  @df(id=5, x=600, y=130)
+  var q1:signal = nil
+  @df(id=7, x=600, y=220)
+  var q2:signal = nil
+  @df(id=9, x=600, y=310)
+  var q3:signal = nil
+  @df(id=13, x=600, y=400, probe=true)
+  var value:signal = nil
+
+  proc init(en:signal, freq:real=4):
+    this.en = en
+    @df(id=2, x=260, y=40, diagram='flipflop', outs='q')
+    var flipflop_2 = flipflop.FlipFlop(en, freq=freq)
+    @df(id=10, x=120, y=130)
+    var and_gate = logic.and_gate(flipflop_2.q, en)
+    @df(id=4, x=260, y=130, diagram='flipflop', outs='q')
+    var flipflop_3 = flipflop.FlipFlop(and_gate, freq=freq)
+    @df(id=11, x=120, y=220)
+    var and_gate_2 = logic.and_gate(flipflop_3.q, and_gate)
+    @df(id=6, x=260, y=220, diagram='flipflop', outs='q')
+    var flipflop_4 = flipflop.FlipFlop(and_gate_2, freq=freq)
+    @df(id=12, x=120, y=310)
+    var and_gate_3 = logic.and_gate(flipflop_4.q, and_gate_2)
+    @df(id=8, x=260, y=310, diagram='flipflop', outs='q')
+    var flipflop_5 = flipflop.FlipFlop(and_gate_3, freq=freq)
+    @df(id=14, x=450, y=400)
+    var packed = logic.pack4(flipflop_2.q, flipflop_3.q, flipflop_4.q, flipflop_5.q)
+    q0 = flipflop_2.q
+    q1 = flipflop_3.q
+    q2 = flipflop_4.q
+    q3 = flipflop_5.q
+    value = packed

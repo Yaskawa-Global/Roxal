@@ -1,0 +1,45 @@
+gain: real
+img: tensor
+en: real
+bad type: false unknown input type: flob
+retype: true
+---
+@dataflow_diagram(version=1, next_id=4)
+
+type Typed object:
+  @df(id=1, x=0, y=0, payload='real')
+  var gain:signal = nil
+  @df(id=2, x=0, y=1, payload='tensor')
+  var img:signal = nil
+  @df(id=3, x=0, y=2, payload='bool')
+  var en:signal = nil
+
+  proc init(gain:signal, img:signal, en:signal, freq:real=4):
+    this.gain = gain
+    this.img = img
+    this.en = en
+
+---
+@dataflow_diagram(version=1, next_id=4)
+
+import logic
+
+type Typed object:
+  @df(id=1, x=0, y=0, payload='real')
+  var gain:signal = nil
+  @df(id=2, x=0, y=1, payload='tensor')
+  var img:signal = nil
+  @df(id=3, x=0, y=2, payload='bool')
+  var en:signal = nil
+
+  proc init(gain:signal, img:signal, en:signal, freq:real=4):
+    this.gain = gain
+    this.img = img
+    this.en = en
+var __in_gain = signal(4, 0.0)
+var __in_img = signal(4, tensor([1], [0.0]))
+var __in_en = signal(4, false)
+__in_en <- logic.not_gate(__in_en[-1])
+var __c = Typed(__in_gain, __in_img, __in_en)
+wait(ms=1500)
+

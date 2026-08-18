@@ -1,0 +1,27 @@
+new: true
+ids: 1 2 3 4
+c1: true
+c2: true
+c3: true
+mv: true
+--- source ---
+@dataflow_diagram(version=1, next_id=5)
+
+import math
+
+type Cosine object:
+  @df(id=3, x=400, y=50)
+  var out:signal = nil
+  @df(id=4, x=10, y=10, payload='real')
+  var en:signal = nil
+
+  proc init(en:signal, freq:real=8):
+    this.en = en
+    @df(id=1, x=100, y=50)
+    var w = signal(freq, 0)
+    @df(id=2, x=260, y=60)
+    var cos = math.cos(w[-1])
+    w <- cos
+    out = cos
+
+name: Cosine  nodes: 4  edges: 3  clocks: 1  next_id: 5

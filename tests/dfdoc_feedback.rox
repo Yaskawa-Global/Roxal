@@ -1,0 +1,27 @@
+// dfdoc: feedback must pass through a declared signal wire; a func-func
+// cycle is refused and the document is left unchanged
+import dfdoc
+
+var doc = dfdoc.new_document('Loop', [{'name': 'freq', 'default': 4.0}])['doc']
+var a = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'func', 'callee': 'math.sin', 'nin': 1, 'x': 0, 'y': 0})['id']
+var b = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'func', 'callee': 'math.cos', 'nin': 1, 'x': 0, 'y': 1})['id']
+
+print("fwd: {dfdoc.apply(doc, {'op': 'connect', 'from': {'id': a, 'port': 0}, 'to': {'id': b, 'port': 0}})['ok']}")
+var back = dfdoc.apply(doc, {'op': 'connect', 'from': {'id': b, 'port': 0}, 'to': {'id': a, 'port': 0}})
+print("back: {back['ok']} {back['error']}")
+
+// the refused connect must not have modified the argument
+var before = dfdoc.save(doc)
+var v = dfdoc.view(doc)
+print("edges after refusal: {len(v['edges'])}")
+
+// the legal form: route the loop through a signal wire
+var w = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'signal', 'label': 'state', 'clock': 'freq', 'init': 0.0, 'x': 0, 'y': 2})['id']
+print("s1: {dfdoc.apply(doc, {'op': 'connect', 'from': {'id': b, 'port': 0}, 'to': {'id': w, 'port': 0}})['ok']}")
+print("s2: {dfdoc.apply(doc, {'op': 'connect', 'from': {'id': w, 'port': 0}, 'to': {'id': a, 'port': 0}, 'prev': true})['ok']}")
+print(dfdoc.save(doc))
+
+// disconnect drops the splice, remove cleans up references
+print("disc: {dfdoc.apply(doc, {'op': 'disconnect', 'to': {'id': w, 'port': 0}})['ok']}")
+print("rm: {dfdoc.apply(doc, {'op': 'remove_node', 'id': b})['ok']}")
+print(dfdoc.save(doc))

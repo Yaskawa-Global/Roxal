@@ -6,3 +6,6 @@
 ../tests/match_basic.rox: OK
 ../tests/exception_typed.rox: OK
 ../tests/lambda1.rox: OK
+../tests/annot1.rox: OK
+../tests/annot_file_level.rox: OK
+../tests/annot_import.rox: OK

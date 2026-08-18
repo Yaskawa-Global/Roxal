@@ -1,0 +1,6 @@
+load: true
+fixpoint: true
+no marker: false not a diagram: no @dataflow_diagram marker
+future version: false diagram version 99 is newer than supported 1
+out of dialect: false line 6: statement outside the diagram dialect
+no component: false not a diagram: no component type declaration

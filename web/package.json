@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@babylonjs/core": "^9.20.0",
+    "@xyflow/react": "^12.11.3",
     "monaco-editor": "^0.56.0",
     "onnxruntime-web": "^1.27.0",
     "react": "^19.2.0",
