@@ -31,6 +31,7 @@ struct WebHostLoop : HostEventLoop {
     {
         if (pumpDepth_ > 0) return;
         ++pumpDepth_;
+        roxal::web::g_pumpCount.fetch_add(1, std::memory_order_relaxed);
         // Wasm: native pump frames hold Values while store handlers re-enter
         // the interpreter (which polls safepoints); the conservative scan
         // cannot see wasm locals, so a collection mid-pump would sweep them.
@@ -80,6 +81,8 @@ struct WebHostLoop : HostEventLoop {
 };
 
 } // namespace
+
+std::atomic<std::uint64_t> roxal::web::g_pumpCount{0};
 
 void roxal::web::installHostLoop(VM& vm)
 {

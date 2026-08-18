@@ -2,6 +2,7 @@
 
 #include "ObjJsValue.h"
 #include "JsBridge.h"
+#include "../VM.h"
 
 #include <cctype>
 #include <stdexcept>
@@ -34,6 +35,12 @@ ObjJsValue::~ObjJsValue()
     // synchronous proxy call from there would block collection on the browser's
     // event loop.
     if (!canIssueOps()) return;
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+    // A/B: the reclaimer runs destructors with no Roxal Thread bound, so this
+    // is the "am I the collector?" test. See ROXAL_FC_NO_JS_RELEASE.
+    if (roxalForensicOn(ROXAL_FC_NO_JS_RELEASE) && !VM::thread.get())
+        return;
+#endif
     Encoder e;
     e.op(Op::Release);
     e.u32(handle);

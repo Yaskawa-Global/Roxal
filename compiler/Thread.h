@@ -420,6 +420,28 @@ public:
     // interpreter is inside Thread::act().
     Value currentActorCall { Value::nilVal() };
 
+    // ...and the REST of that call.  Once a MethodCallInfo is popped off the
+    // queue it lives only in a C++ local in Thread::act(), which the
+    // collector cannot see: natively the conservative stack scan finds it,
+    // but wasm locals are unscannable by any scanner, so a collection during
+    // the call swept the arguments and the return future out from under it.
+    // (Observed as a segfault in ObjFuture::wakeWaiters() walking a freed
+    // waiter list.)  The callee was already rooted here; these complete it.
+    std::vector<Value> currentActorArgs;
+    Value currentActorFuture { Value::nilVal() };
+    // The RESULT, for the window between the method returning and the promise
+    // being fulfilled: it is a C++ local while resolveFuture(),
+    // createFrozenSnapshot() and clone() run on it -- all of which allocate,
+    // and therefore can trigger a collection that would sweep it.  Only
+    // reference types can be swept; assigning a primitive here is harmless.
+    Value currentActorResult { Value::nilVal() };
+    void clearCurrentActorCall() {
+        currentActorCall = Value::nilVal();
+        currentActorArgs.clear();
+        currentActorFuture = Value::nilVal();
+        currentActorResult = Value::nilVal();
+    }
+
     // Keeps the currently executing bound callable (method or native)
     // reachable while dispatched directly on this thread.
     Value currentBoundCall { Value::nilVal() };

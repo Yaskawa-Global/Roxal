@@ -68,6 +68,19 @@ The main execution loop is `VM::execute(TimePoint deadline)`, which processes by
 
 The deadline parameter enables incremental execution for real-time integration, where the VM can be run for a bounded time period and then yield control back to the caller with its state preserved for later resumption.
 
+**Value-stack balance at re-entrant entry points.**  `opReturn()` unwinds a
+returning frame's slots (callee slot 0, arguments, locals) only when a caller
+frame remains beneath it; outermost frames deliberately keep their slots
+(actor message handlers depend on this).  Any entry point that PUSHES a frame
+onto an otherwise-empty frame stack therefore owns the cleanup:
+`invokeClosure()` records the stack depth on entry and restores it after a
+completed (non-`Yielded`) call.  Without that restore, each call leaks its
+frame's slots -- the dataflow engine evaluates every script node through this
+path, and the leak silently killed the engine thread at the 16384-slot limit
+(see wasm-gc-crash-repro.md section 9).  Known gap: `invokeMethod()` and the
+yield-then-`runFor` completion path do not yet restore -- same class, lower
+traffic (qt property dispatch, deadline/future yields).
+
 
 ## Calling Convention
 
@@ -1655,6 +1668,104 @@ native roots are **typed, self-registering members** (`GCRoots.h`); interpreter
 roots come from the **ThreadManager thread index**. Destruction and freeing
 are performed by the **collector role only** — mutators queue garbage, they
 never destroy it.
+
+### GC coordination invariants (and how they are enforced)
+
+The stop-the-world barrier rests on three invariants.  Each was violated at
+some point by a subtle window, and each violation produced heap corruption
+that only surfaced much later inside `free()`, so they are stated explicitly:
+
+**1. No mutator may be Running while a collection is in flight.**  The barrier
+admits a collection only when no `MutatorContext` is `Running`, but admission
+and enforcement must reference the SAME state.  `worldStopped_` is therefore
+published under `mutex_` at the instant the barrier is satisfied -- BEFORE any
+lock release on the way into `performCollection` -- and the transitions INTO
+Running (`enterRunning`, `blockExit`) wait on it.  Gating on
+`collectionInProgress_` alone is not enough: it is set later, inside
+`performCollection`, and the wait for an in-flight reclaim drain releases the
+mutex in between.  A thread that slips through that gap runs for the whole
+collection, and any edge it stores into an already-traced object is never
+marked and is swept while live.
+
+**2. Exactly one thread performs a collection.**  In inline-collection builds
+mutators self-elect at a safepoint, so the collector ROLE
+(`externalCollectorActive_`) must be claimed under the same lock hold as the
+barrier decision, and every wait inside the electing branch must RE-CHECK it
+on wake.  Publishing the role after a lock-releasing wait lets a second
+elector pass the barrier and run a concurrent collection -- two marks
+interleaved on one heap, and whichever finishes first releases the mutators
+while the other is still marking.
+
+**3. `dropReferences()` runs at most once per object.**  It has two automatic
+callers: the refcount zero-crossing (which drops inline while a collection is
+in progress) and the reclaimer draining the retire queue.  Both can reach the
+same object, releasing its COW members twice.  `ObjControl::dropClaimed` is
+the one-shot claim; both paths go through `Obj::dropReferencesOnce()`.
+
+**4. A sweep's unreachable set is published to the retire queue as ONE
+batch.**  `retireObjects()` links the whole set thread-locally and attaches it
+with a single CAS.  Publishing one object at a time let the first push wake
+the reclaimer, which could destroy a child before its parent was even
+published; the parent's later teardown then `decRef`'d a freed control block.
+Both objects were legitimately garbage -- no missing root -- which is why
+root-coverage instruments stayed silent on it.  An unreachable set is closed
+under outgoing `Value` edges only as a WHOLE; a prefix of one is not.
+
+Related, and load-bearing for the same reason: `atomic_queue::forEach` walks
+its queue IN PLACE under the lock.  It used to copy, which meant the mark
+phase copied every queued `Value` -- refcount traffic on the hot path, and a
+temporary copy whose `decRef` could retire an object mid-mark.  For the same
+reason `ActorInstance::queueCall` builds the call OUTSIDE `queueMutex`:
+marshalling allocates (the return future, frozen argument snapshots), and
+allocation takes the GC mutex, so holding the queue lock across it would
+invert the lock order against `trace()`.
+
+### Root coverage for native frames (why wasm differs)
+
+Precise marking sees Values in traced storage: VM stacks, frames, module
+vars, traced object members. It does NOT see a Value whose only reference is
+a **C++ local**. Natively that is harmless -- parked threads' stacks are
+scanned conservatively -- but **wasm locals live in SSA registers outside
+linear memory and no scanner can reach them**, so on wasm such a Value is
+invisible and the sweep frees it while it is still in use. The fault surfaces
+much later and elsewhere (typically inside `free()` on the collector thread),
+which is what made it expensive to find.
+
+Only **reference-type** Values are at risk; primitives carry no heap pointer.
+
+Two remedies, chosen by how long the window is:
+
+- **Cover it** when the window is short and bounded: `VM::callNativeFn` wraps
+  every builtin call in a wasm-only `GCNoParkScope`, so a collection simply
+  waits until the thread is back at an interpreter boundary. This is why
+  ordinary builtins need no rooting.
+- **Root it** when the window is long: covering would starve the collector.
+  `Thread::act` is the example -- once a `MethodCallInfo` is popped it lives
+  in a C++ local for the whole call, so the thread roots the callee, the
+  arguments, the return future and the result
+  (`currentActorCall`/`currentActorArgs`/`currentActorFuture`/`currentActorResult`,
+  cleared together by `clearCurrentActorCall()` and visited in
+  `visitSingleThreadRoots`). Rooting only the callee -- the state before this
+  work -- swept the arguments and the future out from under a running call.
+
+**The rule for new code**: if a C++ frame holds the only reference to a
+reference-type Value across anything that can allocate or park, it must be
+covered or rooted. Dispatch loops that handle Values *outside* any
+`vm.execute()` frame -- actor dispatch, host-loop pumps, store bridges, event
+delivery -- are where this bites, because the interpreter's own roots do not
+apply there.
+
+**Testing these.** `ROXAL_GC_DEDICATED_THREAD` defaults ON on Linux, so the
+default suite never exercises the self-electing paths these invariants govern
+-- which is the configuration wasm ships.  Run `scripts/test-inline-gc.sh` to
+cover it; `tests/gc_liveness.rox` is the canary (it hangs outright if the
+collector's idle predicate regresses, and its weak-liveness assertions fail if
+reclamation stops being prompt).  A `ROXAL_GC_FORENSICS` build adds tripwires
+that fault at the CAUSE rather than the eventual use-after-free: with
+`ROXAL_FC_FLAGS=15`, a verification pass between mark and sweep reports any
+live parent still pointing at an object the sweep would free (naming the
+parent's type), and the barrier invariant above is checked at every collection
+start.
 
 ### Object lifecycle
 

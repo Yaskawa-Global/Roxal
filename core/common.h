@@ -8,6 +8,7 @@
 #include <vector>
 #include <queue>
 #include <iostream>
+#include <cstdio>
 #include <sstream>
 #include <stdexcept>
 #include <limits>
@@ -131,7 +132,13 @@ inline void assert_msg_impl(bool        expr,
             << "  Message   : " << user_msg  << "\n"
             << "  Location  : " << file << ":" << line
             << " in " << func << "()\n";
-        std::cerr << oss.str();
+        // NOT std::cerr: on a wasm pthread that stream is proxied to the main
+        // thread, so an abort() immediately after loses the text -- the
+        // failure then presents as an anonymous "native code called abort()"
+        // and reads like memory corruption. fprintf + fflush reaches the
+        // console synchronously on every target.
+        std::fprintf(stderr, "%s", oss.str().c_str());
+        std::fflush(stderr);
         std::abort();
     }
 }

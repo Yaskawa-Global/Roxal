@@ -13,6 +13,7 @@
 #include <istream>
 #include <fstream>
 #include <cstdint>
+#include <cstring>
 #include <mutex>
 #include <optional>
 #include <unordered_map>
@@ -124,6 +125,131 @@ inline bool isMutableRefContainerType(ObjType t) {
 
 #include "ObjControl.h"
 
+#ifdef ROXAL_GC_FORENSICS
+// Reports a use of a control block whose object has been torn down, with
+// everything known about the death, then aborts so the stack shows the USE.
+void roxalForensicViolation(const ObjControl* ctrl, const char* site);
+std::atomic<std::uint64_t>& roxalForensicViolationCount();
+// How many blocks quarantine has actually retained -- a treatment that never
+// fires makes a clean run meaningless.
+std::atomic<std::uint64_t>& roxalForensicQuarantineCount();
+// How many times the concurrent-writer guard actually ran.
+std::atomic<std::uint64_t>& roxalForensicWriterGuardCount();
+// The object whose dropReferences() is running on this thread, so a
+// violation on a CHILD decRef can name the PARENT whose trace() missed it.
+struct RoxalForensicDropCtx { const void* obj; std::uint8_t type; };
+RoxalForensicDropCtx& roxalForensicDropCtx();
+inline constexpr std::size_t kRoxalForensicBufferSize = 512;
+char* roxalForensicBuffer();
+inline void roxalForensicCheck(const ObjControl* ctrl, const char* site) {
+    if (!ctrl) return;
+    if (ctrl->forensicMagic.load(std::memory_order_relaxed) != ObjControl::kMagicAlive)
+        roxalForensicViolation(ctrl, site);
+}
+// Reports a mark-phase verification failure: a LIVE (marked) object still
+// holds a strong edge to an object the sweep is about to free, or to one
+// already claimed as dying.  This fires at the CAUSE (mark time) rather than
+// at the eventual use-after-free, and it names the parent type that lost the
+// edge.  `misses` is the count for the whole collection.
+// Reports a heap mutation performed while a collection is running -- i.e. by
+// a thread the stop-the-world barrier failed to hold.
+void roxalForensicMutationDuringCollection(const char* site, const void* obj);
+// Records a container about to be freed by its last owner; returns false if
+// that address was already recorded (double free, or allocator reuse -- the
+// caller's report carries both epochs so they can be told apart).
+bool roxalForensicNoteContainerFree(const void* p, std::uint64_t epoch,
+                                    unsigned objType, const void* owner,
+                                    std::uint64_t& priorEpoch, unsigned& priorType,
+                                    const void*& priorOwner);
+// Quarantine for CONTAINER allocations (an instance's PropertyMap): retains the
+// block instead of freeing it, so its address can never be recycled. Without
+// that, a "released twice" report is ambiguous -- a fresh map allocated at the
+// address of a freed one looks identical to a genuine double free.
+void roxalForensicRetainContainer(void* p, std::size_t bytes);
+// Takes ownership of a dead object's block (poisoning it) and returns true;
+// the caller must then NOT free it. Returns false if quarantine is off.
+bool roxalForensicQuarantine(ObjControl* ctrl, unsigned objType, std::size_t bytes);
+void roxalForensicNoteDestroyed(unsigned objType);
+// Reports a control pointer that cannot be one: misaligned (every ObjControl
+// is at least 4-byte aligned, and wasm TRAPS on a misaligned atomic, which is
+// how this fault presents) or obviously out of range. Does NOT dereference it.
+void roxalForensicBadPointer(const void* p, const char* site);
+// Runs the allocator's self-check; reports (and returns false) if the heap is
+// already inconsistent. No-op unless ROXAL_FC_HEAPCHECK and an emmalloc build.
+bool roxalForensicHeapCheck(const char* when);
+// Two threads inside a mutator for the same object at once.
+void roxalForensicConcurrentMutation(const void* obj, unsigned objType,
+                                     unsigned long long other,
+                                     unsigned long long self,
+                                     const char* site);
+// RAII: marks this thread as the mutator of `ctrl` and reports an overlap.
+struct ForensicWriterGuard {
+    ObjControl* c;
+    const void* obj; unsigned type; const char* site;
+    ForensicWriterGuard(ObjControl* ctrl, const void* o, unsigned t, const char* s);
+    ~ForensicWriterGuard();
+};
+// "d<type>=<count>,..." for every type destroyed so far, most numerous first.
+const char* roxalForensicDrainHistogram();
+void roxalForensicMarkMiss(const char* kind,
+                           const void* parentObj, unsigned parentType,
+                           const void* childObj, unsigned childType,
+                           const ObjControl* childCtrl,
+                           unsigned long long epoch, unsigned long long misses,
+                           unsigned long long parentTracedEpoch);
+// Runtime switches so one build can bisect the instrument itself:
+//   bit0 = validity checks, bit1 = poison-at-teardown, bit2 = death provenance,
+//   bit3 = mark verification (live-parent -> dying-child sweep, expensive)
+std::atomic<std::uint32_t>& roxalForensicFlags();
+inline bool roxalForensicOn(std::uint32_t bit) {
+    return (roxalForensicFlags().load(std::memory_order_relaxed) & bit) != 0;
+}
+#define ROXAL_FC_CHECKS 1u
+#define ROXAL_FC_POISON 2u
+#define ROXAL_FC_PROV   4u
+#define ROXAL_FC_VERIFY 8u
+// Diagnostic bisection: sweep normally but NEVER reclaim -- unmarked objects
+// are left fully alive (leaked) instead of being retired, dropped and freed.
+// If a fault disappears under this, the freed memory was still referenced by
+// something the collector cannot see; if it persists, the corruption does not
+// come from reclaiming swept objects at all.
+#define ROXAL_FC_LEAK   16u
+// Quarantine: freed object blocks are poisoned and held instead of returned
+// to the allocator; when a block is finally released its poison is verified.
+// A modified block means something WROTE THROUGH A STALE POINTER after the
+// object died -- and the report names the dead object's type, which points at
+// whoever still held a reference to it.
+#define ROXAL_FC_QUARANTINE 32u
+// A/B probe: suppress ~ObjJsValue's deferred JS "release handle" op when it
+// runs OFF the VM thread (i.e. on the collector during a reclaim drain). That
+// path proxies work to the browser main thread from inside the drain; if the
+// crash disappears under this bit, that is the writer.
+#define ROXAL_FC_NO_JS_RELEASE 64u
+// Records a histogram of the ObjTypes destroyed by each reclaim drain, so two
+// environments running the SAME program can be compared: a type present in the
+// crashing one and absent in the surviving one is the lead.
+#define ROXAL_FC_DRAINLOG 128u
+// A/B: install NO store change-observers. Those callbacks live in GC objects
+// (ChangeNotifier) that the reclaim drain destroys, while the engine/actor
+// thread can be invoking them -- destroying a std::function mid-call frees the
+// lambda's storage under the caller. If the crash disappears under this bit,
+// that is the writer.
+#define ROXAL_FC_NO_STORE_OBS 256u
+// Make the first forensic violation FATAL, so the browser/runtime produces a
+// stack at the offending call rather than a report read after the fact.
+#define ROXAL_FC_FATAL 512u
+// Validate the ALLOCATOR'S OWN structures at collection boundaries (needs a
+// -sMALLOC=emmalloc build). Validating on every malloc is far too slow for the
+// IDE to boot; at boundaries it is affordable and still answers the question
+// that matters: is the heap already inconsistent BEFORE this collection, or
+// does the drain break it?
+#define ROXAL_FC_HEAPCHECK 1024u
+#define ROXAL_FORENSIC_CHECK(ctrl, site) \
+    do { if (roxalForensicOn(ROXAL_FC_CHECKS)) roxalForensicCheck((ctrl), (site)); } while (0)
+#else
+#define ROXAL_FORENSIC_CHECK(ctrl, site) ((void)0)
+#endif
+
 struct Obj {
     Obj() : type(ObjType::None), control(nullptr) {}
     virtual ~Obj() {}
@@ -140,6 +266,10 @@ struct Obj {
     // through the existing unref queue, and builtin modules reuse it during
     // manual teardown.
     virtual void dropReferences();
+    // One-shot wrapper for the two AUTOMATIC drop paths (refcount
+    // zero-crossing and the reclaimer's queue drain).  Explicit teardown
+    // calls dropReferences() directly.
+    void dropReferencesOnce();
 
     virtual unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const = 0; // deep copy preserving structure
     virtual unique_ptr<Obj, UnreleasedObj> shallowClone() const; // shallow copy (copies property slots, not children); returns nullptr for types that don't support it
@@ -184,6 +314,11 @@ struct Obj {
 
     inline void incRef()
     {
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+        if (roxalForensicOn(ROXAL_FC_CHECKS) &&
+            (reinterpret_cast<std::uintptr_t>(control) & 3u))
+            roxalForensicBadPointer(control, "incRef");
+#endif
         control->strong.fetch_add(1,std::memory_order_relaxed);
     }
 
@@ -192,6 +327,7 @@ struct Obj {
     // Returns false if the object is already dying (strong == 0).
     inline bool tryIncRef()
     {
+        ROXAL_FORENSIC_CHECK(control, "tryIncRef");
         int32_t prev = control->strong.load(std::memory_order_relaxed);
         while (prev > 0) {
             if (control->strong.compare_exchange_weak(prev, prev + 1,
@@ -285,6 +421,7 @@ inline unique_ptr<T, UnreleasedObj> newObj(const std::string& name, const std::s
     ctrl->obj.store(o, std::memory_order_relaxed);
     ctrl->allocationSize = static_cast<std::uint64_t>(total);
     ctrl->collecting.store(false, std::memory_order_relaxed);
+    ctrl->dropClaimed.store(false, std::memory_order_relaxed);
     ctrl->markEpoch.store(0uLL, std::memory_order_relaxed);
     o->control   = ctrl;
 
@@ -326,6 +463,7 @@ inline unique_ptr<T, UnreleasedObj> newObj(Args&&... args) {
     ctrl->obj.store(o, std::memory_order_relaxed);
     ctrl->allocationSize = static_cast<std::uint64_t>(total);
     ctrl->collecting.store(false, std::memory_order_relaxed);
+    ctrl->dropClaimed.store(false, std::memory_order_relaxed);
     ctrl->markEpoch.store(0uLL, std::memory_order_relaxed);
     o->control   = ctrl;
 
@@ -349,10 +487,18 @@ inline void delObj(T* o) {
     Obj::allocatedObjs.erase(o);
     #endif
     ObjControl* ctrl = o->control;
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+    const unsigned deadType = static_cast<unsigned>(o->type);
+    const std::size_t deadBytes = ctrl ? ctrl->allocationSize : 0;
+#endif
     SimpleMarkSweepGC::instance().unregisterAllocation(ctrl);
     o->~T();
     if (ctrl->weak.fetch_sub(1, std::memory_order_release) == 1) {
         std::atomic_thread_fence(std::memory_order_acquire);
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+        if (roxalForensicQuarantine(ctrl, deadType, deadBytes))
+            return;   // quarantine owns the block now
+#endif
         delete[] reinterpret_cast<char*>(ctrl);
     }
 }
@@ -2075,9 +2221,62 @@ unique_ptr<ObjModuleType, UnreleasedObj> newModuleTypeObj(const ustring& typeNam
 //
 // object instance
 
+// Forensic allocator for the property map's INTERNAL allocations (buckets and
+// nodes). The browser fault aborts inside free() while ~unordered_map releases
+// exactly those, and quarantining the map OBJECT does not cover them -- they
+// are separate allocations. Under ROXAL_FC_QUARANTINE this poisons each block
+// and retains it, so the address can never be recycled: a fault that survives
+// is not a use-after-free of this container, and a poison that comes back
+// modified names one.
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+void roxalForensicRetainNode(void* p, std::size_t bytes);
+// Redzone bookkeeping for the property map's own allocations. If a NEIGHBOURING
+// allocation overruns into a live map node or bucket array, the guard bytes
+// change and the periodic sweep reports it -- naming the victim and the offset
+// -- instead of the corruption surfacing later as a bad pointer inside free().
+inline constexpr std::size_t kForensicRedzone = 32;   // multiple of 16: keeps alignment
+void roxalForensicNoteLiveBlock(void* base, std::size_t payload);
+void roxalForensicForgetLiveBlock(void* base);
+// Returns false if either guard band was modified.
+bool roxalForensicCheckRedzones(void* base, std::size_t payload, const char* when);
+
+template<class T>
+struct ForensicNodeAlloc {
+    using value_type = T;
+    ForensicNodeAlloc() noexcept = default;
+    template<class U> ForensicNodeAlloc(const ForensicNodeAlloc<U>&) noexcept {}
+    T* allocate(std::size_t n) {
+        const std::size_t payload = n * sizeof(T);
+        if (!roxalForensicOn(ROXAL_FC_QUARANTINE))
+            return static_cast<T*>(::operator new(payload));
+        char* base = static_cast<char*>(::operator new(payload + 2 * kForensicRedzone));
+        std::memset(base, 0xAB, kForensicRedzone);
+        std::memset(base + kForensicRedzone + payload, 0xAB, kForensicRedzone);
+        roxalForensicNoteLiveBlock(base, payload);
+        return reinterpret_cast<T*>(base + kForensicRedzone);
+    }
+    void deallocate(T* p, std::size_t n) noexcept {
+        const std::size_t payload = n * sizeof(T);
+        if (!roxalForensicOn(ROXAL_FC_QUARANTINE)) { ::operator delete(p); return; }
+        char* base = reinterpret_cast<char*>(p) - kForensicRedzone;
+        roxalForensicCheckRedzones(base, payload, "deallocate");
+        roxalForensicForgetLiveBlock(base);
+        roxalForensicRetainNode(base, payload + 2 * kForensicRedzone);
+    }
+    template<class U> bool operator==(const ForensicNodeAlloc<U>&) const noexcept { return true; }
+    template<class U> bool operator!=(const ForensicNodeAlloc<U>&) const noexcept { return false; }
+};
+#endif
+
 struct ObjectInstance : public Obj
 {
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+    using PropertyMap = std::unordered_map<int32_t, VariablesMap::MonitoredValue,
+        std::hash<int32_t>, std::equal_to<int32_t>,
+        ForensicNodeAlloc<std::pair<const int32_t, VariablesMap::MonitoredValue>>>;
+#else
     using PropertyMap = std::unordered_map<int32_t, VariablesMap::MonitoredValue>;
+#endif
 
     ObjectInstance(const Value& objectType);
     virtual ~ObjectInstance();
@@ -2136,9 +2335,40 @@ struct ObjectInstance : public Obj
 
 private:
     ptr<PropertyMap> properties_;
+    // Allocation of the property map goes through here so a forensic build can
+    // give it a deleter that RETAINS the block (see roxalForensicRetainContainer):
+    // an address that is never recycled turns an ambiguous "released twice"
+    // report into proof.
+    static ptr<PropertyMap> newPropertyMap() {
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+        if (roxalForensicOn(ROXAL_FC_QUARANTINE))
+            return ptr<PropertyMap>(std::shared_ptr<PropertyMap>(
+                new PropertyMap(), [](PropertyMap* m) {
+                    m->~PropertyMap();
+                    roxalForensicRetainContainer(m, sizeof(PropertyMap));
+                }));
+#endif
+        return make_ptr<PropertyMap>();
+    }
+    static ptr<PropertyMap> newPropertyMap(const PropertyMap& from) {
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+        if (roxalForensicOn(ROXAL_FC_QUARANTINE))
+            return ptr<PropertyMap>(std::shared_ptr<PropertyMap>(
+                new PropertyMap(from), [](PropertyMap* m) {
+                    m->~PropertyMap();
+                    roxalForensicRetainContainer(m, sizeof(PropertyMap));
+                }));
+#endif
+        return make_ptr<PropertyMap>(from);
+    }
     void ensureUnique() {
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+        if (control && control->cloneInProgress.load(std::memory_order_acquire))
+            roxalForensicMutationDuringCollection(
+                "COW RACE: ensureUnique() during createFrozenSnapshot root clone", this);
+#endif
         if (properties_.use_count() > 1)
-            properties_ = make_ptr<PropertyMap>(*properties_);
+            properties_ = newPropertyMap(*properties_);
     }
 };
 

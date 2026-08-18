@@ -77,6 +77,12 @@ struct ObjControl {
     // its destructor runs (for example, for containers that store self
     // references).
     std::atomic<bool> collecting;
+    // Edge-severing claim.  dropReferences() has TWO automatic callers -- the
+    // refcount zero-crossing (which drops inline while a collection is in
+    // progress) and the reclaimer draining the retire queue -- and both can
+    // reach the same object, releasing its COW members twice.  Whichever
+    // claims this first performs the drop; the other skips.
+    std::atomic<bool> dropClaimed { false };
     // Allocation-registry segment backpointer (segment + slot index): lets
     // unregisterAllocation tombstone its slot without searching.  Written
     // once at registration (thread-private), read/updated only by the
@@ -108,6 +114,36 @@ struct ObjControl {
     // Protects the COW ptr<> members (elts_, data_, properties_) during concurrent
     // access from the owning thread (mutation via ensureUnique) and actor threads
     // (resolveConstChild via shallowClone).  Only acquired when activeSnapshotCount > 0.
+#ifdef ROXAL_GC_FORENSICS
+    // --- Forensics (diagnostic builds only) -----------------------------
+    // Death provenance + a liveness magic.  The point is to fault at the
+    // point of USE, on the offending thread, instead of much later inside
+    // free() where the culprit is gone.
+    static constexpr std::uint32_t kMagicAlive = 0xA11FEED0u;
+    static constexpr std::uint32_t kMagicDropped = 0xDEAD0001u;
+    std::atomic<std::uint32_t> forensicMagic { kMagicAlive };
+    std::atomic<std::uint32_t> dropCount { 0 };      // >1 == double dropReferences
+    std::atomic<std::uint32_t> retireCount { 0 };    // >1 == double retire
+    std::atomic<std::uint8_t>  deathPath { 0 };      // 1=refcount 2=sweep
+    std::atomic<std::uint64_t> deathThread { 0 };
+    std::atomic<std::uint64_t> deathEpoch { 0 };
+    std::atomic<std::uint8_t>  objTypeAtDeath { 0 };
+    // Epoch in which mark actually CALLED trace() on this object.  Marked but
+    // not traced, versus traced and then mutated, are different bugs; the
+    // verification pass needs to tell them apart.
+    std::atomic<std::uint64_t> tracedEpoch { 0 };
+    // Set while createFrozenSnapshot shallow-clones this object's root with no
+    // cowLock_ held; a mutator that reassigns a COW member while this is set
+    // has raced the clone.
+    std::atomic<bool> cloneInProgress { false };
+    // Concurrent-writer detector: the thread currently inside a mutator for
+    // this object. Two threads mutating one instance would corrupt its
+    // property map's internal links exactly as observed, and the actor model
+    // is supposed to make that impossible -- so catching it names a hole in
+    // the isolation, and never catching it excludes the whole hypothesis.
+    std::atomic<std::uint64_t> mutatingThread { 0 };
+#endif
+
     mutable std::atomic_flag cowLock_ = ATOMIC_FLAG_INIT;
     void lockCow() const { while (cowLock_.test_and_set(std::memory_order_acquire)) { /* spin */ } }
     void unlockCow() const { cowLock_.clear(std::memory_order_release); }

@@ -388,6 +388,25 @@ TimeDuration DataflowEngine::tickPeriod() const
     return m_tickPeriod;
 }
 
+void DataflowEngine::diagTickState(long long& tickNumber, long long& msToNextTick,
+                                   bool& hostDriven, bool& shouldStop)
+{
+    tickNumber = static_cast<long long>(m_tickNumber);
+    const TimePoint now = TimePoint::currentTime();
+    msToNextTick = static_cast<long long>((m_tickStart - now).seconds() * 1000.0);
+    hostDriven = m_hostDriven.load(std::memory_order_relaxed);
+    shouldStop = m_shouldStop;
+}
+
+unsigned DataflowEngine::diagLocksHeld()
+{
+    unsigned held = 0;
+    if (m_mutex.try_lock()) m_mutex.unlock(); else held |= 1u;
+    if (m_evalMutex.try_lock()) m_evalMutex.unlock(); else held |= 2u;
+    if (m_pendingEventMutex.try_lock()) m_pendingEventMutex.unlock(); else held |= 4u;
+    return held;
+}
+
 uint64_t DataflowEngine::currentTickNumber() const
 {
     return m_tickNumber.load();

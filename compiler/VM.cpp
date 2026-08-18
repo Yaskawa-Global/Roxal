@@ -10519,8 +10519,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 }
 
 
+std::atomic<std::uint64_t> g_roxalEventTurns{0};
+
 bool VM::processPendingEvents()
 {
+    g_roxalEventTurns.fetch_add(1, std::memory_order_relaxed);
 #ifdef __EMSCRIPTEN__
     // Wasm: this frame holds event Values across handler invocation (which
     // re-enters the interpreter and can park); see callNativeFn note.
@@ -11792,6 +11795,13 @@ void VM::freeObjects()
     std::lock_guard<std::mutex> drainLock(freeObjectsMutex_);
 
     auto& gc = SimpleMarkSweepGC::instance();
+    // Publish the reclamation window: in inline-collection builds a
+    // self-electing mutator may be marking concurrently on another thread.
+    struct ReclaimWindow {
+        SimpleMarkSweepGC& g;
+        explicit ReclaimWindow(SimpleMarkSweepGC& gc) : g(gc) { g.reclaimBegin(); }
+        ~ReclaimWindow() { g.reclaimEnd(); }
+    } reclaimWindow{gc};
     while (true) {
         std::vector<Obj*> pending = gc.drainRetiredObjects();
         if (pending.empty()) {
@@ -11800,7 +11810,24 @@ void VM::freeObjects()
 
         for (Obj* obj : pending) {
             if (obj) {
-                obj->dropReferences();
+#ifdef ROXAL_GC_FORENSICS
+                if (obj->control) {
+                    ROXAL_FORENSIC_CHECK(obj->control, "freeObjects/preDrop");
+                    const std::uint32_t n =
+                        obj->control->dropCount.fetch_add(1, std::memory_order_relaxed) + 1;
+                    if (n > 1)
+                        roxalForensicViolation(obj->control, "DOUBLE dropReferences (inline+queued)");
+                }
+#endif
+#ifdef ROXAL_GC_FORENSICS
+                roxalForensicDropCtx() = { obj, static_cast<std::uint8_t>(obj->type) };
+#endif
+                obj->dropReferencesOnce();
+#ifdef ROXAL_GC_FORENSICS
+                if (roxalForensicOn(ROXAL_FC_DRAINLOG))
+                    roxalForensicNoteDestroyed(static_cast<unsigned>(obj->type));
+                roxalForensicDropCtx() = { nullptr, 0 };
+#endif
             }
         }
 
@@ -11816,10 +11843,23 @@ void VM::freeObjects()
         // last weak ref).
         std::vector<ObjControl*> batchControls;
         batchControls.reserve(pending.size());
+#ifdef ROXAL_GC_FORENSICS
+        // Capture type and block size while the objects are still intact: the
+        // batch release below runs after their destructors, and quarantine
+        // needs both. (Without this the quarantine silently covered NOTHING in
+        // the sweep path -- the batch weak hold means delObj never takes its
+        // last-weak-ref branch, so its quarantine hook cannot fire.)
+        std::vector<std::pair<unsigned, std::size_t>> batchMeta;
+        batchMeta.reserve(pending.size());
+#endif
         for (Obj* obj : pending) {
             if (obj && obj->control) {
                 obj->control->weak.fetch_add(1, std::memory_order_relaxed);
                 batchControls.push_back(obj->control);
+#ifdef ROXAL_GC_FORENSICS
+                batchMeta.emplace_back(static_cast<unsigned>(obj->type),
+                                       static_cast<std::size_t>(obj->control->allocationSize));
+#endif
             }
         }
 
@@ -11867,15 +11907,39 @@ void VM::freeObjects()
         // is free here, after EVERY destructor in the batch has run.
         // (Controls were captured before destruction: the obj->control
         // field does not survive quarantine wipes.)
-        for (ObjControl* ctrl : batchControls) {
+#ifdef ROXAL_GC_FORENSICS
+        // Everything in this batch is now destructed: any later touch of one
+        // of these control blocks is a use-after-death, and the check at the
+        // touching site will report it with that thread's stack.
+        if (roxalForensicOn(ROXAL_FC_POISON)) {
+            for (ObjControl* ctrl : batchControls) {
+                if (ctrl) ctrl->forensicMagic.store(ObjControl::kMagicDropped,
+                                                    std::memory_order_relaxed);
+            }
+        }
+#endif
+        for (std::size_t i = 0; i < batchControls.size(); ++i) {
+            ObjControl* ctrl = batchControls[i];
             // Same release + acquire-on-zero death protocol as Obj::decWeak:
             // other threads' weak releases must be visible before the free.
             if (ctrl->weak.fetch_sub(1, std::memory_order_release) == 1) {
                 std::atomic_thread_fence(std::memory_order_acquire);
+#ifdef ROXAL_GC_FORENSICS
+                // THIS is the sweep's real free site -- quarantine must hook
+                // here, not only in delObj.
+                if (i < batchMeta.size() &&
+                    roxalForensicQuarantine(ctrl, batchMeta[i].first, batchMeta[i].second))
+                    continue;   // quarantine owns the block
+#endif
                 delete[] reinterpret_cast<char*>(ctrl);
             }
         }
     }
+
+#ifdef ROXAL_GC_FORENSICS
+    // ...and after the drain, which is where the fault surfaces.
+    roxalForensicHeapCheck("after reclaim drain");
+#endif
 
     if (thread) {
         thread->pruneEventRegistrations();

@@ -64,10 +64,14 @@ NnShutdownHandler g_onNnShutdown;
 // The main thread's only entry point into the VM's address space. Deliberately
 // tiny: it touches a mutex-protected queue and nothing else, so it can neither
 // corrupt VM state nor block the main thread.
+std::atomic<std::uint64_t> g_inboundQueued{0};
+std::atomic<std::uint64_t> g_inboundDrained{0};
+
 void queueInboundFromMainThread(Inbound kind, uint32_t id,
                                 const char* name, const char* member,
                                 const uint8_t* args, uint32_t len)
 {
+    g_inboundQueued.fetch_add(1, std::memory_order_relaxed);
     PendingInbound work;
     work.kind   = kind;
     work.id     = id;
@@ -259,13 +263,28 @@ Value Decoder::value()
             if (static_cast<Tag>(u8()) != Tag::Str)
                 throw std::runtime_error("dom: malformed method name from JavaScript");
             const std::string name = str();
-            return Value::nativeVal([recv, name](VM&, ArgsView args) -> Value {
+            // A BOUND native, not a bare one: ObjBoundNative::trace visits its
+            // receiver, so the ObjJsValue stays reachable for as long as the
+            // binding does.  A plain nativeVal() with `recv` in the lambda
+            // capture put it in the std::function's storage instead, which
+            // ObjNative::trace cannot see (it visits only defaultValues) and no
+            // scanner reaches -- the mark missed it, the sweep freed it, and the
+            // handle was released back to JS while the binding still used it.
+            return Value::boundNativeVal(recv, [recv, name](VM&, ArgsView args) -> Value {
+                // Bound natives are dispatched with the receiver prepended as
+                // args[0]; other call paths pass only the real arguments. Skip
+                // it only when it IS the receiver, so both shapes encode the
+                // same JS call.
+                size_t first = 0;
+                if (args.size() > 0 && args[0].isObj() && recv.isObj()
+                    && args[0].asObj() == recv.asObj())
+                    first = 1;
                 Encoder e;
                 e.op(Op::Call);
                 e.u32(recv.isNil() ? kNullHandle : asJsValue(recv)->handle);
                 e.str(name);
-                e.u32(static_cast<uint32_t>(args.size()));
-                for (size_t i = 0; i < args.size(); ++i) e.value(args[i]);
+                e.u32(static_cast<uint32_t>(args.size() - first));
+                for (size_t i = first; i < args.size(); ++i) e.value(args[i]);
                 return exec(e);
             });
         }
@@ -372,6 +391,17 @@ void flush()
 
 // ----------------------------------------------------------------- callbacks
 
+// The registry is a C++ heap map, which no scanner reaches: the conservative
+// stack scan walks parked STACKS only. Without this hook a registered closure
+// is unreachable to the mark the moment the registering builtin returns, and
+// the sweep frees it while JS still holds its id.
+void traceCallbacks(ValueVisitor& visitor)
+{
+    std::lock_guard<std::mutex> lock(g_cbMutex);
+    for (const auto& e : g_callbacks)
+        visitor.visit(e.second.callable);
+}
+
 uint32_t registerCallback(const Value& callable)
 {
     std::lock_guard<std::mutex> lock(g_cbMutex);
@@ -396,6 +426,7 @@ void drainInbound()
             work = std::move(g_pending.front());
             g_pending.pop_front();
         }
+        g_inboundDrained.fetch_add(1, std::memory_order_relaxed);
 
         // Decode the payload once. A malformed payload must not be fatal -- the
         // handler simply sees no arguments.

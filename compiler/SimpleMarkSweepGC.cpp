@@ -4,6 +4,10 @@
 #include <emscripten/stack.h>
 #endif
 
+#ifdef __EMSCRIPTEN__
+#include "web/JsBridge.h"
+#endif
+
 #ifdef ROXAL_ENABLE_FILEIO
 #include "AsyncIOManager.h"
 #if defined(__EMSCRIPTEN__) && defined(ROXAL_ENABLE_AI_NN)
@@ -215,6 +219,10 @@ void visitThreadRoots(Thread& thread, ValueVisitor& visitor)
     }
 
     visitStrongValue(visitor, thread.currentActorCall);
+    for (const auto& arg : thread.currentActorArgs)
+        visitStrongValue(visitor, arg);
+    visitStrongValue(visitor, thread.currentActorFuture);
+    visitStrongValue(visitor, thread.currentActorResult);
     visitStrongValue(visitor, thread.currentBoundCall);
 #ifdef ROXAL_COMPUTE_SERVER
     if (thread.remoteComputeCallState.active) {
@@ -377,7 +385,19 @@ void SimpleMarkSweepGC::collectorThreadMain() {
                    // mutators that need it to park (barrier deadlock).
                    collectionRequested_.load(std::memory_order_acquire) ||
 #endif
-                   hasRetiredObjects();
+                   // Deferral-aware, and it MUST mirror the drain-side
+                   // condition below exactly.  Retired objects are a wake
+                   // reason only while the drain is allowed to run; waking on
+                   // a condition the drain then refuses is the
+                   // permanently-true predicate described above, and
+                   // wait_for returns from it WITHOUT RELEASING mutex_ --
+                   // the collector pins the GC mutex, every mutator blocks
+                   // at pollContext entry, and the app freezes.  (That is
+                   // not hypothetical: tests/gc_liveness.rox hangs
+                   // deterministically in an inline-collection build if this
+                   // term is a bare hasRetiredObjects().)
+                   (hasRetiredObjects() &&
+                    !collectionInProgress_.load(std::memory_order_acquire));
         });
         if (collectorState_->stop.load(std::memory_order_acquire)) {
             break;
@@ -395,11 +415,41 @@ void SimpleMarkSweepGC::collectorThreadMain() {
             // collector role is the sole destructor-runner; retire-queue
             // producers woke us (or the idle poll caught an RT-section
             // retire).
-            if (hasRetiredObjects()) {
+            // Reclamation and tracing are MUTUALLY EXCLUSIVE.  freeObjects()
+            // runs without mutex_ (destructors may allocate and take locks),
+            // so in inline-collection builds a drain here would otherwise
+            // overlap a self-electing mutator's mark/sweep -- which walks the
+            // same control blocks and container members that dropReferences()
+            // is resetting.  Defer the drain; the collection wakes us.
+            // Defer only while a collection is ACTUALLY RUNNING.  A merely
+            // REQUESTED collection must not suppress the drain: in inline
+            // builds the request stands until some mutator self-elects at a
+            // safepoint, which can be far away, and this thread is the only
+            // reclaimer -- suppressing it there defers every refcount death
+            // for the whole window and breaks deterministic reclamation
+            // (tests/gc_liveness.rox catches exactly that: the transitive
+            // drop of a dead parent had not run, so its child outlived its
+            // last reference).  Nothing is traced before the collection
+            // starts, and the start handshake waits out an in-flight drain
+            // (see the reclaimDraining_ wait in pollContext), so excluding
+            // only the running window is both sufficient and necessary.
+            const bool collectionInFlight =
+                collectionInProgress_.load(std::memory_order_acquire);
+            if (hasRetiredObjects() && !collectionInFlight) {
                 if (VM* vm = vm_.load(std::memory_order_acquire)) {
+                    // Publish the drain window BEFORE releasing mutex_. The
+                    // collection side tests reclaimDraining_ under this same
+                    // lock, so admission is a single atomic decision. Setting
+                    // it only inside freeObjects left a gap in which an
+                    // inline collector saw "no drain", started marking, and
+                    // then raced dropReferences() -- trace() reading the very
+                    // COW members the drain resets, which is the shared_ptr
+                    // control-block corruption this exclusion exists to stop.
+                    reclaimBegin();
                     lock.unlock();
                     vm->freeObjects();
                     lock.lock();
+                    reclaimEnd();
                 }
             }
             continue;
@@ -451,9 +501,14 @@ void SimpleMarkSweepGC::collectorThreadMain() {
             continue;
         }
 
+        // The barrier is satisfied and mutex_ has not been released since:
+        // publish the stop-the-world window NOW so no context can transition
+        // into Running before performCollection sets collectionInProgress_.
+        worldStopped_.store(true, std::memory_order_release);
         externalCollectorActive_ = true;
         externalCollectorThread_ = std::this_thread::get_id();
         CollectionResult result = performCollection(lock);
+        worldStopped_.store(false, std::memory_order_release);
         statsCollections_.fetch_add(1, std::memory_order_relaxed);
         statsLastCollectorTid_.store(
             std::hash<std::thread::id>{}(std::this_thread::get_id()),
@@ -472,11 +527,10 @@ void SimpleMarkSweepGC::collectorThreadMain() {
         // Destruction runs outside mutex_ (same as the inline collector
         // paths: Obj destructors take mutex_ via unregisterAllocation).
         lock.unlock();
-        for (Obj* obj : result.unreachable) {
-            if (obj) {
-                retireObject(obj);
-            }
-        }
+        // One atomic publish (see retireObjects): the dedicated collector is
+        // less exposed than the inline path because it drains immediately
+        // afterwards, but a mutator-side refcount death could still interleave.
+        retireObjects(result.unreachable);
         if (VM* vm = vm_.load(std::memory_order_acquire)) {
             vm->freeObjects();
         }
@@ -571,6 +625,11 @@ void SimpleMarkSweepGC::registerAllocation(ObjControl* control) {
     // The control is still thread-private here (caller hasn't published the
     // object), so plain initialization needs no lock.
     control->collecting.store(false, std::memory_order_relaxed);
+    control->dropClaimed.store(false, std::memory_order_relaxed);
+#ifdef ROXAL_GC_FORENSICS
+    control->cloneInProgress.store(false, std::memory_order_relaxed);
+    control->tracedEpoch.store(0, std::memory_order_relaxed);
+#endif
     control->markEpoch.store(0uLL, std::memory_order_relaxed);
 
     // Lock-free registry append: slot store, then count release-publish (the
@@ -704,6 +763,24 @@ void SimpleMarkSweepGC::retireObject(Obj* obj)
         return;
     }
     ObjControl* c = obj->control;
+#ifdef ROXAL_GC_FORENSICS
+    // An object must be retired exactly once.  Two claims => two teardowns
+    // => the same shared_ptr members released twice (the observed fault).
+    // CONTAINMENT (diagnostic builds): a control block that fails the
+    // liveness check here is FREED MEMORY -- pushing it corrupts the retire
+    // queue and crashes within milliseconds, often before the violation
+    // report can be read.  Report and REFUSE the push instead: the report
+    // survives, the run continues, and repeated violations accumulate a
+    // count.  This trades crash fidelity for attribution fidelity, which is
+    // what a forensic build is for.
+    if (c->forensicMagic.load(std::memory_order_relaxed) != ObjControl::kMagicAlive) {
+        roxalForensicViolation(c, "retireObject(dead control)");
+        return;
+    }
+    if (roxalForensicOn(ROXAL_FC_CHECKS) &&
+        c->retireCount.load(std::memory_order_relaxed) > 1)
+        roxalForensicViolation(c, "DOUBLE retire");
+#endif
     c->retiredObj = obj;
     ObjControl* prev = retireQueueHead_.load(std::memory_order_relaxed);
     do {
@@ -715,6 +792,43 @@ void SimpleMarkSweepGC::retireObject(Obj* obj)
         // skip the notify (not syscall-free); the 10ms idle poll covers them.
         safepointCv_.notify_all();
     }
+}
+
+void SimpleMarkSweepGC::retireObjects(const std::vector<Obj*>& objs)
+{
+    // Build the chain WITHOUT publishing, then attach it with a single CAS so
+    // a concurrent drain sees either none of this set or all of it.
+    ObjControl* head = nullptr;
+    ObjControl* tail = nullptr;
+    for (Obj* obj : objs) {
+        if (!obj || !obj->control)
+            continue;
+        ObjControl* c = obj->control;
+#ifdef ROXAL_GC_FORENSICS
+        if (c->forensicMagic.load(std::memory_order_relaxed) != ObjControl::kMagicAlive) {
+            roxalForensicViolation(c, "retireObjects(dead control)");
+            continue;
+        }
+        if (roxalForensicOn(ROXAL_FC_CHECKS) &&
+            c->retireCount.load(std::memory_order_relaxed) > 1)
+            roxalForensicViolation(c, "DOUBLE retire");
+#endif
+        c->retiredObj = obj;
+        c->retireNext = head;
+        head = c;
+        if (!tail)
+            tail = c;
+    }
+    if (!head)
+        return;
+
+    ObjControl* prev = retireQueueHead_.load(std::memory_order_relaxed);
+    do {
+        tail->retireNext = prev;
+    } while (!retireQueueHead_.compare_exchange_weak(
+        prev, head, std::memory_order_release, std::memory_order_relaxed));
+    if (prev == nullptr && !inGCYieldSectionOnThisThread())
+        safepointCv_.notify_all();
 }
 
 std::vector<Obj*> SimpleMarkSweepGC::drainRetiredObjects()
@@ -743,6 +857,19 @@ void SimpleMarkSweepGC::setAutoTriggerThreshold(std::uint64_t threshold) {
 
 std::uint64_t SimpleMarkSweepGC::autoTriggerThreshold() const noexcept {
     return autoTriggerThreshold_.load(std::memory_order_relaxed);
+}
+
+void SimpleMarkSweepGC::reclaimBegin() noexcept {
+    reclaimDraining_.fetch_add(1, std::memory_order_release);
+}
+
+void SimpleMarkSweepGC::reclaimEnd() noexcept {
+    if (reclaimDraining_.fetch_sub(1, std::memory_order_release) == 1)
+        safepointCv_.notify_all();
+}
+
+bool SimpleMarkSweepGC::reclaimDraining() const noexcept {
+    return reclaimDraining_.load(std::memory_order_acquire) != 0;
 }
 
 void SimpleMarkSweepGC::setEnabled(bool enabled) noexcept {
@@ -946,6 +1073,28 @@ SimpleMarkSweepGC::MutatorContext* SimpleMarkSweepGC::ensureContextLocked()
     return tlContext_;
 }
 
+bool SimpleMarkSweepGC::diagContexts(unsigned counts[4], unsigned& rt)
+{
+    counts[0] = counts[1] = counts[2] = counts[3] = 0;
+    rt = static_cast<unsigned>(rtSectionCount_.load(std::memory_order_relaxed));
+    std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
+    if (!lock.owns_lock())
+        return false;
+    for (const auto& ctx : contexts_) {
+        if (!ctx) continue;
+        counts[static_cast<unsigned>(ctx->state)]++;
+    }
+    return true;
+}
+
+void SimpleMarkSweepGC::currentContextForDiag(int& state, int& runningDepth) const noexcept
+{
+    MutatorContext* ctx = tlContext_;
+    if (!ctx) { state = -1; runningDepth = 0; return; }
+    state = static_cast<int>(ctx->state);
+    runningDepth = ctx->runningDepth;
+}
+
 bool SimpleMarkSweepGC::anyRunningLocked() const
 {
     for (const auto& ctx : contexts_) {
@@ -958,8 +1107,31 @@ bool SimpleMarkSweepGC::anyRunningLocked() const
 
 void SimpleMarkSweepGC::enterRunning()
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::mutex> lock(mutex_);
     MutatorContext* ctx = ensureContextLocked();
+    // A context may not BECOME Running while a collection is scanning -- the
+    // same return protocol blockExit() uses, and for the same reason.  The
+    // barrier only checks "nobody Running" when the collection STARTS; an
+    // ungated 0->1 transition afterwards puts a mutator back on the heap
+    // mid-mark, and any edge it stores into an already-traced object is never
+    // marked and is swept while live.  (Observed exactly that: an actor call
+    // enqueued during a collection left the callee/args/future unmarked at
+    // strong=1, the sweep freed them, and the actor's next trace() incRef'd
+    // freed memory.)  Only the 0->1 transition waits: a context already
+    // Running cannot have a collection in progress to wait out, and making it
+    // wait would deadlock the very thread the collection is waiting for.
+    if (ctx->runningDepth == 0) {
+        if (worldStopped_.load(std::memory_order_acquire) ||
+            collectionInProgress_.load(std::memory_order_acquire)) {
+            enterRunningBlocked_.fetch_add(1, std::memory_order_relaxed);
+            while (worldStopped_.load(std::memory_order_acquire) ||
+                   collectionInProgress_.load(std::memory_order_acquire)) {
+                safepointCv_.wait(lock);
+            }
+            enterRunningBlocked_.fetch_sub(1, std::memory_order_relaxed);
+        }
+        ctx = ensureContextLocked();   // re-resolve: the wait dropped the lock
+    }
     if (++ctx->runningDepth == 1) {
         ctx->state = MutatorContext::State::Running;
     }
@@ -1029,7 +1201,24 @@ void SimpleMarkSweepGC::pollContext(Thread* currentThread)
             }
         } else {
             // Self-elect: this thread performs the collection inline.
+            //
+            // The collector role must be RE-CHECKED after every wake, not
+            // just on entry.  Each wait below releases mutex_, and another
+            // thread that entered this same branch can take the role in that
+            // window; without the re-check BOTH threads pass the barrier and
+            // run performCollection CONCURRENTLY -- two marks interleaved on
+            // one heap, and the first to finish clears the stop-the-world
+            // window while the other is still marking, releasing mutators
+            // onto a heap mid-collection.  (That is what kept the
+            // "Running context at collection start" invariant firing after
+            // the admission gap was closed.)
+            bool anotherCollectorTookOver = false;
             while (collectionRequested_.load(std::memory_order_acquire)) {
+                if (dedicatedCollectorActive_.load(std::memory_order_acquire) ||
+                    externalCollectorActive_) {
+                    anotherCollectorTookOver = true;
+                    break;
+                }
                 const bool sectionsHeld =
                     rtSectionCount_.load(std::memory_order_seq_cst) != 0;
                 if (!anyRunningLocked() && !sectionsHeld) {
@@ -1041,10 +1230,51 @@ void SimpleMarkSweepGC::pollContext(Thread* currentThread)
                     safepointCv_.wait(lock);
                 }
             }
-            if (collectionRequested_.load(std::memory_order_acquire)) {
+            if (anotherCollectorTookOver) {
+                // Demoted to waiter: wait out their collection AND its
+                // reclamation, exactly as the non-elector branch does.
+                while (collectionRequested_.load(std::memory_order_acquire) ||
+                       reclaimInProgress_.load(std::memory_order_acquire)) {
+                    safepointCv_.wait(lock);
+                }
+            } else if (collectionRequested_.load(std::memory_order_acquire)) {
+                // Both directions of the exclusion are required.  The
+                // reclaimer-side deferral stops NEW drains during a
+                // collection; this wait covers a drain already in flight
+                // when the request lands.  A mid-drain dropReferences()
+                // MUTATES an object's COW members (elts_.reset(),
+                // properties_ = make_ptr...) while the mark phase TRAVERSES
+                // them via trace() -- a data race on the shared_ptr control
+                // block, which is precisely the corruption signature seen in
+                // free().  (Children hitting zero inside freeObjects take
+                // Obj::decRef's inline-drop path whenever a collection is in
+                // progress, so the racing pair is reclaimer-drain vs marker.)
+                // No cycle: the deferral is skip-and-repoll, not a held wait,
+                // so the drain always completes and this wait terminates.
+                // (An earlier version removed this wait after misattributing
+                // an unrelated, GC-independent ~24s VM freeze to it -- see
+                // wasm-gc-crash-repro.md section 2b.)
+                //
+                // Publish the stop-the-world window BEFORE this wait: the
+                // barrier has already admitted the collection, but wait_for
+                // RELEASES mutex_, and in that gap a context could transition
+                // into Running (its gate keys on this flag) and then mutate
+                // the heap for the whole collection -- storing edges into
+                // objects the mark has already traced.  That gap is exactly
+                // how the actor-queue mark-miss was getting in.
+                //
+                // Claim the collector ROLE together with the window, and
+                // before the wait below releases mutex_.  Publishing the role
+                // afterwards leaves a gap in which a second thread sitting in
+                // this same branch still sees externalCollectorActive_ ==
+                // false, elects itself, and runs a concurrent collection.
+                worldStopped_.store(true, std::memory_order_release);
                 externalCollectorActive_ = true;
                 externalCollectorThread_ = std::this_thread::get_id();
+                while (reclaimDraining_.load(std::memory_order_acquire) != 0)
+                    safepointCv_.wait_for(lock, std::chrono::milliseconds(1));
                 CollectionResult result = performCollection(lock);
+                worldStopped_.store(false, std::memory_order_release);
                 toDestroy = std::move(result.unreachable);
                 statsCollections_.fetch_add(1, std::memory_order_relaxed);
                 statsLastCollectorTid_.store(
@@ -1064,14 +1294,9 @@ void SimpleMarkSweepGC::pollContext(Thread* currentThread)
     }
     safepointCv_.notify_all();
 
-    bool pushed = false;
-    for (Obj* obj : toDestroy) {
-        if (!obj) {
-            continue;
-        }
-        retireObject(obj);
-        pushed = true;
-    }
+    // ONE atomic publish for the whole sweep: see retireObjects().
+    retireObjects(toDestroy);
+    const bool pushed = !toDestroy.empty();
     if (pushed) {
         if (VM* vm = vm_.load(std::memory_order_acquire)) {
             vm->freeObjects();
@@ -1085,23 +1310,18 @@ void SimpleMarkSweepGC::pollContext(Thread* currentThread)
     }
 }
 
-namespace {
-// blockEnter calls skipped because a no-park cover outranked them; the
-// matching blockExit must skip its restore too.
-thread_local std::uint32_t tlBlockSkipDepth_ = 0;
-}
-
 void SimpleMarkSweepGC::blockEnter(const void* scopeAnchor)
 {
-    if (inGCNoParkSectionOnThisThread()) {
-        // A no-park cover means this thread's NATIVE frames hold live Values
-        // (wasm: unscannable). Declaring the thread SafeBlocked here would
-        // let the barrier proceed and sweep them -- a blocking wait inside a
-        // covered native call must keep the thread Running so collections
-        // wait it out instead.
-        ++tlBlockSkipDepth_;
-        return;
-    }
+    // NOTE: refusing to block while a no-park section is held DEADLOCKS.
+    // Every wasm native call holds a no-park cover (VM::callNativeFn), so
+    // sys.join() -> Thread::join()'s safe-block would become a no-op: the
+    // joiner stays Running, the collection barrier waits for the joiner, and
+    // the joiner waits for a joined thread that is parked for that very
+    // collection. The underlying hazard is real (a safe-block nested inside a
+    // no-park cover makes the thread quiescent while its native frame still
+    // holds unscannable Values), but closing it needs a ROOTING-AWARE
+    // transition -- suspend the cover only when the frame's Values are
+    // reachable from traced storage -- not blanket precedence either way.
     std::lock_guard<std::mutex> lock(mutex_);
     MutatorContext* ctx = ensureContextLocked();
     // Capture bounded at the scope object in the caller's frame: locals
@@ -1116,16 +1336,12 @@ void SimpleMarkSweepGC::blockEnter(const void* scopeAnchor)
 
 void SimpleMarkSweepGC::blockExit()
 {
-    if (tlBlockSkipDepth_ > 0) {
-        // Paired with a blockEnter that a no-park cover skipped.
-        --tlBlockSkipDepth_;
-        return;
-    }
     std::unique_lock<std::mutex> lock(mutex_);
     // Return protocol: never leave the captured state while a collection is
     // scanning (acquiring mutex_ already waits out mark+sweep; the loop is
     // belt-and-braces).
-    while (collectionInProgress_.load(std::memory_order_acquire)) {
+    while (worldStopped_.load(std::memory_order_acquire) ||
+           collectionInProgress_.load(std::memory_order_acquire)) {
         safepointCv_.wait(lock);
     }
     MutatorContext* ctx = tlContext_;
@@ -1449,6 +1665,33 @@ SimpleMarkSweepGC::CollectionResult SimpleMarkSweepGC::performCollection(std::un
         statsSectionCollectorViolations_.fetch_add(1, std::memory_order_relaxed);
     }
 
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+    // INVARIANT (positive evidence): the barrier admitted this collection only
+    // because no context was Running.  If any context is Running HERE, the
+    // barrier is broken and every edge that thread stores from now on is
+    // invisible to this mark.
+    if (roxalForensicOn(ROXAL_FC_VERIFY)) {
+        static std::atomic<unsigned> reported{0};
+        for (const auto& c : contexts_) {
+            if (!c || c->state != MutatorContext::State::Running) continue;
+            if (reported.fetch_add(1, std::memory_order_relaxed) < 6) {
+#ifndef __EMSCRIPTEN__
+                std::fprintf(stderr,
+                    "GC BARRIER-VIOLATION: Running context at collection start: "
+                    "owner=%llu depth=%u | collector=%llu contexts=%zu\n",
+                    (unsigned long long)std::hash<std::thread::id>{}(c->owner),
+                    c->runningDepth,
+                    (unsigned long long)std::hash<std::thread::id>{}(std::this_thread::get_id()),
+                    contexts_.size());
+#endif
+            }
+        }
+    }
+#endif
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+    // Is the heap already broken before we touch anything this cycle?
+    roxalForensicHeapCheck("collection start");
+#endif
     collectionInProgress_.store(true, std::memory_order_release);
     struct CollectionScope {
         explicit CollectionScope(SimpleMarkSweepGC& owner) : gc(owner) {}
@@ -1508,6 +1751,10 @@ SimpleMarkSweepGC::CollectionResult SimpleMarkSweepGC::performCollection(std::un
                 Obj* current = worklist.back();
                 worklist.pop_back();
                 if (current) {
+#ifdef ROXAL_GC_FORENSICS
+                    if (current->control)
+                        current->control->tracedEpoch.store(epoch, std::memory_order_relaxed);
+#endif
                     current->trace(*this);
                 }
             }
@@ -1590,6 +1837,91 @@ SimpleMarkSweepGC::CollectionResult SimpleMarkSweepGC::performCollection(std::un
         }
     }
 
+#ifdef ROXAL_GC_FORENSICS
+    // MARK VERIFICATION (ROXAL_FC_VERIFY): mark state is final and nothing has
+    // been claimed yet, so this is the last instant at which the question
+    // "would this sweep free something still referenced?" can be answered
+    // BEFORE the damage.  Walk every live (marked) object's strong edges; a
+    // child that is unmarked will be swept out from under its live parent,
+    // and a child already claimed dying is a refcount that reached zero while
+    // a live parent still held it (the `strong=-1` signature).  Both are
+    // impossible in a correct heap, and both name the parent type that owns
+    // the bad edge -- which is the whole point: attribution at the cause
+    // instead of at the eventual use-after-free.
+    //
+    // O(live objects x edges) per collection, hence its own flag bit.
+    if (roxalForensicOn(ROXAL_FC_VERIFY)) {
+        struct VerifyVisitor : ValueVisitor {
+            std::uint64_t epoch { 0 };
+            Obj* parent { nullptr };
+            std::uint64_t unmarked { 0 };
+            std::uint64_t dying { 0 };
+            Obj* firstParent { nullptr };
+            Obj* firstChild { nullptr };
+            ObjControl* firstChildCtrl { nullptr };
+            const char* firstKind { nullptr };
+            std::uint64_t firstParentTraced { 0 };
+
+            void visit(const Value& value) override {
+                if (!value.isObj() || value.isWeak())
+                    return;
+                Obj* child = value.asObj();
+                if (!child)
+                    return;
+                ObjControl* c = child->control;
+                if (!c)
+                    return;
+
+                const bool claimed = c->collecting.load(std::memory_order_relaxed)
+                                     || c->obj.load(std::memory_order_relaxed) == nullptr;
+                const bool willSweep =
+                    !claimed && c->markEpoch.load(std::memory_order_relaxed) != epoch;
+                if (!claimed && !willSweep)
+                    return;
+
+                const char* kind = claimed ? "DYING-CHILD" : "MARK-MISS";
+                if (claimed) ++dying; else ++unmarked;
+                if (!firstChild) {
+                    firstKind = kind;
+                    firstParent = parent;
+                    firstChild = child;
+                    firstChildCtrl = c;
+                    firstParentTraced = (parent && parent->control)
+                        ? parent->control->tracedEpoch.load(std::memory_order_relaxed) : 0;
+                }
+            }
+        } verifier;
+        verifier.epoch = epoch;
+
+        forEachControlLocked([&](ObjControl* control) {
+            Obj* obj = control->obj;
+            if (!obj)
+                return;
+            if (control->collecting.load(std::memory_order_relaxed))
+                return;
+            if (control->markEpoch.load(std::memory_order_relaxed) != epoch)
+                return;   // this one is garbage; its edges are not our problem
+            verifier.parent = obj;
+            obj->trace(verifier);
+        });
+
+        const std::uint64_t bad = verifier.unmarked + verifier.dying;
+        if (bad && verifier.firstChild) {
+            roxalForensicMarkMiss(
+                verifier.firstKind,
+                (const void*)verifier.firstParent,
+                verifier.firstParent ? unsigned(verifier.firstParent->type) : 0u,
+                (const void*)verifier.firstChild,
+                unsigned(verifier.firstChild->type),
+                verifier.firstChildCtrl,
+                (unsigned long long)epoch,
+                (unsigned long long)bad,
+                (unsigned long long)verifier.firstParentTraced);
+        }
+        statsVerifyBadEdges_.fetch_add(bad, std::memory_order_relaxed);
+    }
+#endif
+
     std::vector<Obj*> unreachable;
     unreachable.reserve(64);
     std::uint64_t totalFreedBytes = 0;
@@ -1607,7 +1939,36 @@ SimpleMarkSweepGC::CollectionResult SimpleMarkSweepGC::performCollection(std::un
             return;
         }
 
-        control->collecting.store(true, std::memory_order_relaxed);
+#if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
+        // ROXAL_FC_LEAK: identify this object as garbage but do not reclaim
+        // it.  Purely diagnostic -- see the flag's definition.
+        if (roxalForensicOn(ROXAL_FC_LEAK))
+            return;
+#endif
+
+        // Claim the death ATOMICALLY -- the same protocol Obj::decRef uses.
+        // The earlier load() above is only a cheap early-out: reclamation
+        // (VM::freeObjects) runs under a DIFFERENT mutex and its
+        // dropReferences() decRefs children, so a refcount death can race
+        // this sweep for the same control block.  A load-then-store pair
+        // lets both sides win and retire the object twice: dropReferences
+        // and delObj run twice, and the second pass releases an already-
+        // freed shared_ptr (elts_/properties_) -- the observed corruption.
+        if (control->collecting.exchange(true, std::memory_order_acq_rel)) {
+            return;   // the refcount path claimed it first
+        }
+#ifdef ROXAL_GC_FORENSICS
+        if (roxalForensicOn(ROXAL_FC_PROV)) {
+        control->deathPath.store(2, std::memory_order_relaxed);
+        control->deathThread.store(
+            std::hash<std::thread::id>{}(std::this_thread::get_id()),
+            std::memory_order_relaxed);
+        control->deathEpoch.store(epoch, std::memory_order_relaxed);
+        control->objTypeAtDeath.store(static_cast<std::uint8_t>(obj->type),
+                                      std::memory_order_relaxed);
+        control->retireCount.fetch_add(1, std::memory_order_relaxed);
+        }
+#endif
         // weak derefs observe death immediately; release pairs with the
         // acquire loads in strongRef/isAlive (RT yield sections and covered
         // native frames can run weak derefs while the sweep proceeds)
@@ -1713,6 +2074,12 @@ void SimpleMarkSweepGC::visitRoots(ValueVisitor& visitor) {
     roxal::web::nnTracePending(visitor);
     #endif
 
+    // JS->Roxal callbacks (dom.on handlers, closures encoded into store
+    // payloads): registered in a C++ heap map that nothing else traces.
+    #ifdef __EMSCRIPTEN__
+    roxal::web::traceCallbacks(visitor);
+    #endif
+
     visitStrongValue(visitor, vm.conditionalInterruptClosure);
     visitStrongValue(visitor, vm.combinatorRelayFunction);
     visitStrongValue(visitor, vm.initString);
@@ -1782,12 +2149,7 @@ size_t SimpleMarkSweepGC::collectNowForShutdown() {
         bytesAllocatedSinceLastCollect_.store(0, std::memory_order_relaxed);
     }
 
-    for (Obj* obj : toDestroy) {
-        if (!obj) {
-            continue;
-        }
-        retireObject(obj);
-    }
+    retireObjects(toDestroy);   // one atomic publish (see retireObjects)
 
     return toDestroy.size();
 }

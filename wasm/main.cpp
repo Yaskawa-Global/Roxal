@@ -34,6 +34,9 @@
 #include "ExecutionStatus.h"
 #include "RuntimeConfig.h"
 #include "SimpleMarkSweepGC.h"
+#include "web/WebHostLoop.h"
+#include "../dataflow/DataflowEngine.h"
+#include "Object.h"
 #include <core/AST.h>
 #include "ASTGenerator.h"
 #include "TypeDeducer.h"
@@ -269,6 +272,100 @@ int roxal_last_result(void) {
 // directly -- the RuntimeConfig entries of the same names have no readers
 // (the native CLI also calls the GC API, not the config).
 EMSCRIPTEN_KEEPALIVE
+#ifdef ROXAL_GC_FORENSICS
+// Read the forensic report without any I/O: std::cerr from a pthread is
+// proxied to the main thread and deadlocks if that thread is waiting on the
+// VM.  JS polls these instead.
+extern "C" EMSCRIPTEN_KEEPALIVE const char* roxal_forensic_report() {
+    const char* buf = roxal::roxalForensicBuffer();
+    if (buf[0])
+        return buf;
+    // No violation recorded -- report the LIVE switch value with it.  "Empty
+    // report" is only evidence if the checks were actually enabled; an inert
+    // switch reads identically to a clean run (this has bitten this
+    // investigation more than once).
+    static char none[64];
+    std::snprintf(none, sizeof none, "(no violation; fcflags=0x%x)",
+                  roxal::roxalForensicFlags().load(std::memory_order_relaxed));
+    return none;
+}
+extern "C" EMSCRIPTEN_KEEPALIVE const char* roxal_drain_histogram() {
+    static char buf[600];
+    std::snprintf(buf, sizeof buf, "quarantined=%llu wguards=%llu %s",
+        (unsigned long long)roxal::roxalForensicQuarantineCount().load(std::memory_order_relaxed),
+        (unsigned long long)roxal::roxalForensicWriterGuardCount().load(std::memory_order_relaxed),
+        roxal::roxalForensicDrainHistogram());
+    return buf;
+}
+extern "C" EMSCRIPTEN_KEEPALIVE int roxal_forensic_count() {
+    return int(roxal::roxalForensicViolationCount().load(std::memory_order_relaxed));
+}
+#endif
+
+extern std::atomic<std::uint64_t> g_roxalEventTurns;   // VM.cpp
+
+// One-line activity summary readable from JS at any time (lock-free).
+// Which counter stops advancing localizes a VM wedge to its thread.
+// Build provenance: probes MUST verify this matches the build they think
+// they deployed.  An entire validation series in the freeze/crash hunt was
+// invalidated because `npm run build` re-runs sync-wasm WITHOUT the
+// ROXAL_WASM_DIST override and silently redeployed a stale binary.
+extern "C" EMSCRIPTEN_KEEPALIVE const char* roxal_build_info() {
+    // gcrev proves WHICH GC coordination contract this artifact carries.  The
+    // git hash is configure-time-stale and uncommitted fixes never move it, so
+    // without this a stale wasm and a fixed one read identically.
+    static char buf[128];
+    std::snprintf(buf, sizeof buf, "%s+%s %s %s gcrev=%d",
+                  ROXAL_VERSION, ROXAL_GIT_HASH, __DATE__, __TIME__,
+                  ROXAL_GC_COORD_REV);
+    return buf;
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE const char* roxal_diag() {
+    static char buf[256];
+    // -1 distinguishes "no engine instance at all" (collected or never
+    // created) from "engine present but not ticking" -- both previously
+    // reported 0, which hid which of the two was happening.
+    long long ticks = -1;
+    if (auto eng = df::DataflowEngine::instance(false))
+        ticks = static_cast<long long>(eng->currentTickNumber());
+    unsigned locks = 0;
+    long long engTickNo = -1, engMsToTick = 0;
+    bool engHostDriven = false, engShouldStop = false;
+    if (auto eng2 = df::DataflowEngine::instance(false)) {
+        locks = eng2->diagLocksHeld();
+        eng2->diagTickState(engTickNo, engMsToTick, engHostDriven, engShouldStop);
+    }
+    auto& gc = roxal::SimpleMarkSweepGC::instance();
+    unsigned c[4]; unsigned rt = 0;
+    const bool gotLock = gc.diagContexts(c, rt);
+    std::snprintf(buf, sizeof buf,
+        "tick=%lld/%lldms hd=%d ws=%d/%d in=%llu/%llu pump=%llu eventTurns=%llu engineTicks=%lld locksHeld=%u(m|eval|pend) "
+        "snap=%llu gcOn=%d thr=%llu req=%d inProg=%d drain=%d collections=%llu "
+        "ctx[I/R/P/B]=%u/%u/%u/%u rt=%u lk=%d",
+        engTickNo, engMsToTick, engHostDriven ? 1 : 0,
+        gc.diagWorldStopped() ? 1 : 0, gc.diagEnterRunningBlocked(),
+        (unsigned long long)roxal::web::g_inboundDrained.load(std::memory_order_relaxed),
+        (unsigned long long)roxal::web::g_inboundQueued.load(std::memory_order_relaxed),
+        (unsigned long long)roxal::web::g_pumpCount.load(std::memory_order_relaxed),
+        (unsigned long long)g_roxalEventTurns.load(std::memory_order_relaxed),
+        ticks, locks,
+        // MVCC snapshots exist only when something froze a value (actor-call
+        // arguments, const params). Their version chains are torn down by
+        // cleanupMVCC during the reclaim drain, so a nonzero count here is a
+        // concrete difference between the crashing and surviving environments.
+        (unsigned long long)roxal::activeSnapshotCount.load(std::memory_order_relaxed),
+        gc.isEnabled() ? 1 : 0,
+        (unsigned long long)gc.autoTriggerThreshold(),
+        gc.isCollectionRequested() ? 1 : 0,
+        gc.isCollectionInProgress() ? 1 : 0,
+        gc.reclaimDraining() ? 1 : 0,
+        (unsigned long long)gc.coordinationStats().collections,
+        c[0], c[1], c[2], c[3], rt, gotLock ? 1 : 0);
+    return buf;
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE
 void roxal_config(const char* key, const char* value) {
     const std::string k = key ? key : "";
     if (k == "gc.disabled") {
@@ -281,6 +378,14 @@ void roxal_config(const char* key, const char* value) {
             std::strtoull(value ? value : "0", nullptr, 10));
         return;
     }
+#ifdef ROXAL_GC_FORENSICS
+    if (k == "forensic.flags") {
+        roxal::roxalForensicFlags().store(
+            static_cast<std::uint32_t>(std::atoi(value ? value : "0")),
+            std::memory_order_relaxed);
+        return;
+    }
+#endif
     if (k.rfind("env.", 0) == 0) {
         // environment passthrough for diagnostics gated on getenv (e.g.
         // ROXAL_GC_SHADOW_SCAN); must land before the first lazy read

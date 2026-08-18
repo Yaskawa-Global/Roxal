@@ -1,0 +1,90 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>bare VM harness</title>
+<!--
+  Diagnostic page, not part of the app. It runs a Roxal script directly on the
+  wasm module with NO React, NO IDE stores, NO editor -- the browser equivalent
+  of wasm-gc-probes/run-wasm.mjs.
+
+  Why: the counter4 harness runs 90s clean headless under node but crashes at
+  ~7s in the IDE, on the same build. Something about the BROWSER environment is
+  required. This page splits that in half: if it crashes here, the IDE is
+  irrelevant (the wasm environment itself -- WASMFS/OPFS, thread pool, host
+  loop); if it survives, the IDE's store/DOM traffic is implicated.
+-->
+<pre id="log">booting…</pre>
+<script>
+// roxal.js is an Emscripten MODULARIZE bundle, NOT an ES module: load it by
+// injecting a tag and read the global, exactly as web/src/roxal.js does.
+function loadGlue() {
+    return new Promise((resolve, reject) => {
+        const tag = document.createElement('script');
+        tag.src = '/roxal.js';
+        tag.onload = () => resolve(window.createRoxal);
+        tag.onerror = () => reject(new Error('failed to load /roxal.js'));
+        document.head.appendChild(tag);
+    });
+}
+const logEl = document.getElementById('log');
+const lines = [];
+window.__bare = { values: 0, crashed: null, ready: false };
+function log(s) {
+    lines.push(s);
+    if (lines.length > 40) lines.shift();
+    logEl.textContent = lines.join('\n');
+    if (/^value = /.test(s)) window.__bare.values++;
+}
+addEventListener('error', e => { window.__bare.crashed = String(e.message || e.type); });
+addEventListener('unhandledrejection', e => { window.__bare.crashed = String(e.reason); });
+
+const qs = new URLSearchParams(location.search);
+
+loadGlue().then(create => create({
+    print: log,
+    printErr: log,
+    arguments: [],
+})).then(async mod => {
+    window.__bare.mod = mod;
+    log('build: ' + mod.ccall('roxal_build_info', 'string', [], []));
+    mod.ccall('roxal_config', null, ['string', 'string'],
+              ['gc.threshold', qs.get('gcthreshold') || '4194304']);
+    mod.ccall('roxal_config', null, ['string', 'string'],
+              ['forensic.flags', qs.get('fcflags') || '15']);
+
+    const dep = await (await fetch('/bare-flipflop.rox')).text();
+    const src = await (await fetch('/bare-harness.rox')).text();
+    try { mod.FS.mkdir('/data'); } catch {}
+    mod.FS.writeFile('/data/flipflop.rox', dep);
+    mod.FS.writeFile('/data/harness.rox', src);
+
+    // main() is already serving the inbox; submit exactly as the IDE does.
+    mod.ccall('roxal_submit_source', null, ['string', 'string'], [src, '/data/harness.rox']);
+    window.__bare.ready = true;
+    log('submitted');
+
+    // The IDE constantly calls the stores web.serve() publishes (language
+    // service, workspace, output). The bare page survived without that, so add
+    // it here: if the crash returns, the JS<->VM store path is implicated
+    // rather than the program or the wasm environment.
+    if (qs.get('store') !== '0') {
+        setInterval(async () => {
+            try {
+                const st = mod.roxalStore('probe');
+                if (st) { window.__bare.calls = (window.__bare.calls || 0) + 1; window.__bare.last = await st.call('sample'); }
+            } catch (e) { window.__bare.callErr = String(e).slice(0, 120); }
+        }, 400);
+    }
+
+    // The forensic exports exist only in ROXAL_GC_FORENSICS builds; on the
+    // production configuration a missing export must read as "forensics
+    // unavailable", not as a crash.
+    const hasForensics = typeof mod._roxal_forensic_report === 'function';
+    setInterval(() => {
+        try {
+            window.__bare.forensic = hasForensics
+                ? mod.ccall('roxal_forensic_report', 'string', [], []) : '(forensics compiled out)';
+            window.__bare.count = hasForensics ? mod.ccall('roxal_forensic_count', 'number', [], []) : 0;
+        } catch (e) { window.__bare.crashed = window.__bare.crashed || String(e); }
+    }, 1000);
+});
+</script>
