@@ -1,4 +1,9 @@
 #include <filesystem>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 #include <system_error>
 
 #include <core/common.h>
@@ -68,6 +73,16 @@ const char* suffixShadowedByNumericBase(const std::string& s)
 }
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
+
+// Process id, for naming files that must not be shared between processes.
+static unsigned long currentProcessId()
+{
+#ifdef _WIN32
+    return static_cast<unsigned long>(::GetCurrentProcessId());
+#else
+    return static_cast<unsigned long>(::getpid());
+#endif
+}
 constexpr std::uint32_t ModuleCacheVersion = 53;   // 53: annotation args may be lists, dicts, negations, suffixed literals and nil
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
@@ -6145,8 +6160,13 @@ void RoxalCompiler::storeModuleCache(const ModuleInfo& module, const Value& func
     // truncated file does not merely fail -- it can allocate unboundedly
     // before it does.  (Hit for real by an annotation argument whose
     // expression kind writeExpr() cannot serialize.)
+    //
+    // The temp name carries the process id: two roxal processes compiling the
+    // same module at once must not share it, or one would truncate the other's
+    // file mid-write and the loser would rename a partial cache into place.
     const std::filesystem::path tmpPath =
-        std::filesystem::path(module.cachePath).concat(".tmp");
+        std::filesystem::path(module.cachePath)
+            .concat("." + std::to_string(currentProcessId()) + ".tmp");
     try {
         std::ofstream cacheStream(tmpPath, std::ios::binary | std::ios::trunc);
         if (!cacheStream.is_open())
