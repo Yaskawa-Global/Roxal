@@ -476,12 +476,10 @@ doom_tests = ['doom_wad', 'doom_gfx', 'doom_render', 'doom_game', 'doom_sound', 
 
 # implementation doesn't yet allow these tests to pass (do not add to this list without human consent)
 # name-resolution-issues.md: these encode the CORRECT behaviour for known bugs
-# 1 const shadows inner bindings / 2 actor member vs module var / 3+4 forward
-# extends+implements / 6+7 @strict must require var
+# 1 const shadows inner bindings / 3+4 forward extends+implements
 failing_tests = [
     'const_shadow_param', 'const_shadow_local', 'const_shadow_member',
     'forward_extends_property', 'forward_implements_incomplete_err',
-    'strict_implicit_var_err', 'strict_implicit_then_var_err',
 ]
 assert(set(failing_tests).issubset(set(tests) | set(long_running_tests)))
 

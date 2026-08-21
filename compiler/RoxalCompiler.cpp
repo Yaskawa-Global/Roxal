@@ -83,7 +83,7 @@ static unsigned long currentProcessId()
     return static_cast<unsigned long>(::getpid());
 #endif
 }
-constexpr std::uint32_t ModuleCacheVersion = 53;   // 53: annotation args may be lists, dicts, negations, suffixed literals and nil
+constexpr std::uint32_t ModuleCacheVersion = 54;   // 54: @strict module functions require an explicit 'var' declaration before assignment
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -7325,16 +7325,22 @@ bool RoxalCompiler::namedVariable(const ustring& name, bool assign, bool asSigna
         auto moduleVarIt = module->moduleVarLines.find(name);
         bool exists = moduleVarIt != module->moduleVarLines.end();
         bool isModuleConst = module->moduleConstLines.find(name) != module->moduleConstLines.end();
+        auto currentFuncScope = asFuncScope(funcScope());
+        bool inModuleFunction = currentFuncScope->functionType == FunctionType::Module;
+
+        if (assign && inModuleFunction && !exists && currentFuncScope->strict) {
+            error("Assignment to undeclared module variable '" + toUTF8StdString(name) +
+                  "' requires an explicit 'var' declaration in strict context.");
+        }
 
         bool inActorMethod = inTypeScope() && asTypeScope(typeScope())->isActor &&
-                             (asFuncScope(funcScope())->functionType == FunctionType::Method ||
-                              asFuncScope(funcScope())->functionType == FunctionType::Initializer);
-        if (asFuncScope(funcScope())->functionType != FunctionType::Module || exists)
+                             (currentFuncScope->functionType == FunctionType::Method ||
+                              currentFuncScope->functionType == FunctionType::Initializer);
+        if (!inModuleFunction || exists)
             setOp = OpCode::SetModuleVar;
         else
             setOp = OpCode::SetNewModuleVar;
-        if (assign && asFuncScope(funcScope())->functionType == FunctionType::Module && !exists &&
-            !asFuncScope(funcScope())->strict)
+        if (assign && inModuleFunction && !exists)
             module->moduleVarLines[name] = currentNode->interval.first;
 
         // if module variable isn't found at runtime, the VM will raise an error.
