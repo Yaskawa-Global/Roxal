@@ -1,0 +1,1 @@
+forward_implements_incomplete_err\.rox:3:0: error: Type 'Impl' does not satisfy interface 'Iface':\s*\n\s*missing method 'missing'

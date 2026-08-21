@@ -1,0 +1,15 @@
+// A forward-referenced supertype must contribute its properties and their
+// defaults, not just its methods and its identity.
+type Derived object extends Base:
+  var b :int = 2
+
+type Base object:
+  var a :int = 1
+  func hello():
+    print("hello from Base")
+
+var d = Derived()
+print(d is Base)
+d.hello()
+print(d.a)
+print(d.b)

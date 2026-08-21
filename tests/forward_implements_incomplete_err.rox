@@ -1,0 +1,12 @@
+// The interface conformance check must still fire when the interface is
+// declared after the implementing type.
+type Impl object implements Iface:
+  func go():
+    print("go")
+
+type Iface interface:
+  func go()
+  func missing()
+
+var i = Impl()
+i.go()

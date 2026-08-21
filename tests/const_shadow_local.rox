@@ -1,0 +1,10 @@
+// A module-level const must not shadow a local declared with var in an
+// inner scope.
+const n = 7
+
+func f():
+  var n = 1
+  n = n + 1
+  print(n)
+
+f()

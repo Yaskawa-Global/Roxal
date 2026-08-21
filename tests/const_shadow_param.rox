@@ -1,0 +1,7 @@
+// A module-level const must not shadow a function parameter of the same name.
+const n = 7
+
+func f(n :int):
+  print(n)
+
+f(3)

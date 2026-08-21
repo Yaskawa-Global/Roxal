@@ -1,0 +1,10 @@
+// A module-level const must not shadow an object member of the same name.
+const n = 7
+
+type T object:
+  var n :int = 0
+  func go():
+    n = n + 1
+    print(n)
+
+T().go()

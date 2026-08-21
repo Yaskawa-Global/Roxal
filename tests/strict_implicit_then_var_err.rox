@@ -1,0 +1,8 @@
+@strict
+
+// The implicit assignment below must be diagnosed (see strict_implicit_var_err).
+// It must never silently create `x` and then have the `var x = 6` declaration
+// discarded by DefineModuleVar, leaving x == 5.
+x = 5
+var x = 6
+print(x)

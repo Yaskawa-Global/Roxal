@@ -1,0 +1,16 @@
+// An actor's own member must resolve ahead of an unrelated module variable
+// that happens to share its name. (Actors may not access module variables,
+// but that restriction must not reach a name the actor itself declares.)
+n = 100
+
+type A actor:
+  private var n :int = 0
+  func bump() -> int:
+    n = n + 1
+    return n
+
+var a = A()
+var r = a.bump()
+wait(for=r)
+print(string(r))
+print(string(n))

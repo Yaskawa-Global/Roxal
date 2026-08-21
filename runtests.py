@@ -151,7 +151,7 @@ tests = [
     'until_event', 'until_signal', 'signal_vector_dot',
     'if_suffix_basic', 'if_suffix_assignment', 'if_suffix_mutex_err',
     'nonstrict-assign', 'nonstrict-assign-err', 'strict-assign', 'strict-assign-err',
-    'module_strict_assign_err', 'var_redeclare_err', 'var_redeclare_assign_err', 'repl_var_redeclare_err', 'func_nonstrict', 'conversions1',
+    'module_strict_assign_err', 'strict_implicit_var_err', 'strict_implicit_then_var_err', 'var_redeclare_err', 'var_redeclare_assign_err', 'repl_var_redeclare_err', 'func_nonstrict', 'conversions1',
     'serialize_values', 'serialize_signal', 'serialize_objects', 'serialize_user_objects', 'serialize_func', 'serialize_actor',
     'json_basic',
     'json_dict_order',
@@ -214,6 +214,7 @@ tests = [
     'clone1', 'clone_shared', 'clone_cycle', 'extends1', 'nothis', 'superprop', 'scopetest4', 'local_type_scope',
     'const_member_type_access', 'const_member_type_var_err', 'const_member_type_mutable_err', 'const_member_type_private_err',
     'const_member_freeze', 'const_member_shared', 'const_member_untyped_freeze',
+    'const_shadow_param', 'const_shadow_local', 'const_shadow_member',
     'nested_type_enum', 'nested_type_object', 'nested_type_inherit',
     'nested_type_extends', 'nested_type_implements',
     'nested_type_implements_deep',
@@ -325,7 +326,9 @@ tests = [
     'stmt_action_ignore', 'stmt_action_cycle_err',
     'if_suffix_stmt_action',
     'stack_depth_check', 'dispatch_rare_interleave',
-    'forward_decl_field', 'forward_decl_chain', 'forward_decl_module_var'
+    'forward_decl_field', 'forward_decl_chain', 'forward_decl_module_var',
+    'forward_extends_property', 'forward_implements_incomplete_err',
+    'actor_member_modvar_collision'
 ]
 
 grpc_tests = ['grpc_message_types', 'grpc_service_actor', 'grpc_int64_values', 'grpc_runtime_error', 'grpc_streaming', 'grpc_args']
@@ -472,7 +475,15 @@ long_running_tests = [
 doom_tests = ['doom_wad', 'doom_gfx', 'doom_render', 'doom_game', 'doom_sound', 'doom_pickup']
 
 # implementation doesn't yet allow these tests to pass (do not add to this list without human consent)
-failing_tests = []
+# name-resolution-issues.md: these encode the CORRECT behaviour for known bugs
+# 1 const shadows inner bindings / 2 actor member vs module var / 3+4 forward
+# extends+implements / 6+7 @strict must require var
+failing_tests = [
+    'const_shadow_param', 'const_shadow_local', 'const_shadow_member',
+    'actor_member_modvar_collision',
+    'forward_extends_property', 'forward_implements_incomplete_err',
+    'strict_implicit_var_err', 'strict_implicit_then_var_err',
+]
 assert(set(failing_tests).issubset(set(tests) | set(long_running_tests)))
 
 

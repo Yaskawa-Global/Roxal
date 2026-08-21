@@ -1,0 +1,7 @@
+@strict
+
+// Under @strict, `var` is required: assigning to an undeclared name at module
+// scope must be a compile error, not an implicit declaration.
+// (roxal-for-devs.md: "var is optional in non-strict (e.g. file/module context)")
+x = 5
+print(x)
