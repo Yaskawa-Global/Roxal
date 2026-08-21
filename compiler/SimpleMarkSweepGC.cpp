@@ -2158,12 +2158,21 @@ size_t SimpleMarkSweepGC::collectNowForShutdown() {
 
 namespace {
 // §6 gate 10 helper (see runScannerRecallSelfTest case 6): build an
-// alive-but-unrooted long string in THIS dead-by-return frame; hand back
-// only the XOR-hidden control pointer and the ICU aux-buffer pointer.
+// alive-but-unrooted long string in THIS dead-by-return frame.  Publish the
+// expected control pointer outside the scanned stack and hand back only the
+// ICU aux-buffer pointer.
+//
+// Keeping the expected identity in a side channel is essential: when the
+// caller kept an XOR-hidden copy, GCC 10 hoisted the later XOR decode across
+// forceCollection() and held the raw control pointer in a callee-saved
+// register.  Stack capture then spilled that register and made this negative
+// control report a false retention.
+std::atomic<ObjControl*> borrowedAuxExpectedControl { nullptr };
+
 #if defined(__GNUC__)
 __attribute__((noinline))
 #endif
-std::pair<std::uintptr_t, const char16_t*> makeBorrowedAuxCase(std::uintptr_t enc)
+const char16_t* makeBorrowedAuxCase()
 {
     // Long content => ICU heap-allocates the buffer (short strings live
     // inline inside the GC block and WOULD legitimately be found).
@@ -2174,11 +2183,10 @@ std::pair<std::uintptr_t, const char16_t*> makeBorrowedAuxCase(std::uintptr_t en
     content.append(160, 'x');
     Value v = Value::stringVal(ustring::fromUTF8(content));
     ObjString* so = asStringObj(v);
-    const std::uintptr_t ctrlEnc =
-        reinterpret_cast<std::uintptr_t>(static_cast<const void*>(so->control)) ^ enc;
     const char16_t* buf = so->s.getBuffer();
+    borrowedAuxExpectedControl.store(so->control, std::memory_order_release);
     new Value(v);  // alive-but-unrooted, as in the recall cases
-    return { ctrlEnc, buf };
+    return buf;
 }
 }  // namespace
 
@@ -2296,16 +2304,23 @@ bool SimpleMarkSweepGC::runScannerRecallSelfTest()
     // borrowed-pointer contract: the OWNER must stay rooted.
     // Construction happens in a noinline helper so the object/control
     // pointers only ever exist in a DEAD frame (then scrubbed) -- this
-    // frame holds nothing but the XOR-hidden control value and the aux
-    // buffer pointer under test.
+    // frame holds only the aux buffer pointer under test.  The expected
+    // control identity lives in a test-only atomic side channel and is not
+    // loaded until after the collection.
     {
-        auto [ctrlEnc, buf] = makeBorrowedAuxCase(kEnc);
+        const char16_t* buf = makeBorrowedAuxCase();
         const char16_t* volatile bufKeep = buf;
         gcScrubDeadFrames();  // erase construction residue in the dead frame
         forceCollection();
+        ObjControl* expected = borrowedAuxExpectedControl.exchange(
+            nullptr, std::memory_order_acq_rel);
         ++cases;
-        if (shadowScanSawScanOnly(
-                reinterpret_cast<const void*>(ctrlEnc ^ kEnc))) {
+        if (!expected) {
+            ++failures;
+            std::cerr << "GC scanner self-test: aux-storage case lost its "
+                         "expected control identity" << std::endl;
+        }
+        else if (shadowScanSawScanOnly(expected)) {
             ++failures;
             std::cerr << "GC scanner self-test: aux-storage pointer RETAINED "
                          "its owner (borrowed-pointer contract violated -- "
