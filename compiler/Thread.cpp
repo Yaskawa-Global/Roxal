@@ -15,7 +15,7 @@
 using namespace roxal;
 
 namespace {
-// Actor workers (and the internal fork() threads) are ALWAYS non-RT: a
+// Actor workers are ALWAYS non-RT: a
 // worker spawned from an RT-scheduled parent (e.g. an actor constructed
 // from a SCHED_FIFO control-loop slice) inherits the parent's policy and
 // would compete with the control loop at RT priority.  Demote
@@ -185,49 +185,6 @@ void Thread::pruneEventRegistrations()
     }
 }
 
-void Thread::spawn(Value closure)
-{
-    assert(isClosure(closure));
-
-    state = State::Spawned;
-    osthread = make_ptr<std::thread>([this,closure]() {
-        demoteWorkerToNonRT();
-
-        try {
-            auto& vm { VM::instance() };
-
-            vm.thread = ptr_from_this(); // set thread local storage member
-
-            vm.resetStack();
-            push(closure);
-            vm.call(asClosure(closure),CallSpec(0));
-
-            auto execResult = vm.execute();
-            result = execResult.first;
-
-            stack.clear();
-
-            state = State::Completed;
-            actor = false;
-        }
-        catch (std::exception& e) {
-            std::cerr << "VM Runtime error: " << e.what() << std::endl;
-
-            auto& vm { VM::instance() };
-            vm.runtimeErrorFlag = true;
-            vm.threads.apply([](const std::pair<const uint64_t, ptr<Thread>>& entry){
-                if (entry.second)
-                    entry.second->wake();
-            });
-
-            result = ExecutionStatus::RuntimeError;
-            stack.clear();
-            state = State::Completed;
-            actor = false;
-        }
-    });
-}
-
 void Thread::join(ActorInstance* actorInstOverride)
 {
     // When GC schedules this thread for shutdown it may only hold a raw pointer
@@ -245,9 +202,8 @@ void Thread::join(ActorInstance* actorInstOverride)
         // worker that may itself need that collection to exit (four-way
         // deadlock).  The region also covers osthread->join(), as before:
         // the target thread may need a collection to complete before it
-        // exits (e.g. a forked gc() loop) -- without this, script join(),
-        // actor finalization joins, and shutdown joins can all deadlock the
-        // collection barrier.
+        // exits -- without this, actor finalization and shutdown joins can
+        // deadlock the collection barrier.
         SimpleMarkSweepGC::GCSafeBlockScope blockScope;
         // Join-once: concurrent joiners (the actor lifecycle thread vs
         // script-end / shutdown joinAllThreads) serialize here; the loser

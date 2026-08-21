@@ -30,8 +30,6 @@ public:
     Value allof_builtin(VM& vm, ArgsView args);
     Value anyof_builtin(VM& vm, ArgsView args);
     Value event_subscriber_count_builtin(VM& vm, ArgsView args);
-    Value fork_builtin(VM& vm, ArgsView args);
-    Value join_builtin(VM& vm, ArgsView args);
     Value exit_builtin(VM& vm, ArgsView args);
     Value stacktrace_builtin(VM& vm, ArgsView args);
     Value threadid_builtin(VM& vm, ArgsView args);

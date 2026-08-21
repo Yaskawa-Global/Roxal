@@ -1381,8 +1381,6 @@ void ModuleSys::registerBuiltins(VM& vm)
         addSys("allof", [this](VM& vm, ArgsView a){ return allof_builtin(vm,a); }, nullptr, {}, 0x0);
         addSys("anyof", [this](VM& vm, ArgsView a){ return anyof_builtin(vm,a); }, nullptr, {}, 0x0);
         addSys("_event_subscriber_count", [this](VM& vm, ArgsView a){ return event_subscriber_count_builtin(vm,a); });
-        addSys("fork", [this](VM& vm, ArgsView a){ return fork_builtin(vm,a); });
-        addSys("join", [this](VM& vm, ArgsView a){ return join_builtin(vm,a); }, nullptr, {}, 0x1);
         {
             ptr<type::Type> t = make_ptr<type::Type>(type::BuiltinType::Func);
             t->func = type::Type::FuncType();
@@ -2189,41 +2187,6 @@ Value ModuleSys::event_subscriber_count_builtin(VM& /*vm*/, ArgsView args)
         throw std::runtime_error("_event_subscriber_count expects an event type argument");
     ObjEventType* ev = asEventType(args[0]);
     return Value::intVal(static_cast<int32_t>(ev->subscribers.size()));
-}
-
-Value ModuleSys::fork_builtin(VM& vm, ArgsView args)
-{
-    if ((args.size() != 1) || !isClosure(args[0]))
-        throw std::invalid_argument("fork expects single callable argument (e.g. func or proc)");
-
-    ObjClosure* closure = asClosure(args[0]);
-
-    // Check if closure captures any outer variables (has upvalues)
-    if (!closure->upvalues.empty()) {
-        throw std::runtime_error("fork cannot execute functions that capture variables from outer scopes. "
-                                "The function must only use its parameters and global variables.");
-    }
-
-    ptr<Thread> newThread = make_ptr<Thread>();
-    vm.threads.store(newThread->id(), newThread);
-    newThread->spawn(args[0]);
-
-    int32_t id = int32_t(newThread->id());
-    return Value::intVal(id);
-}
-
-Value ModuleSys::join_builtin(VM& vm, ArgsView args)
-{
-    if ((args.size() != 1) || !args[0].isNumber())
-        throw std::invalid_argument("join expects single numeric argument (thread id)");
-
-    uint64_t id = args[0].asInt(); // FIXME: id is uint64
-
-    auto count = vm.threads.erase_and_apply(id, [](ptr<Thread> t){
-        t->join();
-    });
-
-    return count > 0 ? Value::trueVal() : Value::falseVal();
 }
 
 Value ModuleSys::exit_builtin(VM& vm, ArgsView args)

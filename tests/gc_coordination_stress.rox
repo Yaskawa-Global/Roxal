@@ -1,11 +1,10 @@
-# GC coordination stress: forced collections racing an actor, a periodic
-# dataflow island, interned-string churn, and a forked event-driven set()
-# burst (inline island evaluation on a script thread).  Exercises the
+# GC coordination stress: forced collections from an actor racing a periodic
+# dataflow island, interned-string churn, and a script-driven event set()
+# burst (inline island evaluation on the main thread). Exercises the
 # collection barrier, actor-thread participants (persistent
 # ExternalParticipants), the engine's signal/FuncNode root tracing, the
-# intern table's locked reuse/publish paths under concurrent creators,
-# join()'s GC-safe blocking region, and single-evaluator serialization
-# between a script thread and the engine's actor loop.
+# intern table's locked reuse/publish paths under concurrent creators, and
+# single-evaluator serialization between the script and the engine's actor loop.
 # (Coordination-focused sibling of gc_construct_stress.rox, which covers
 # allocation-triggered collections via --gc-threshold 1.)
 
@@ -26,12 +25,13 @@ var hits = 0
 when sig changes as evt:
   hits = hits + 1
 
-func gcLoop():
-  var i = 0
-  while i < 30:
-    gc()
-    wait(ms=1)
-    i = i + 1
+type GcRunner actor:
+  proc run():
+    var i = 0
+    while i < 30:
+      gc()
+      wait(ms=1)
+      i = i + 1
 
 # Event-driven island: freq-0 signal, so each set() evaluates it INLINE
 # on the setting thread (under the engine's single-evaluator mutex).  The
@@ -39,27 +39,25 @@ func gcLoop():
 # value is deliberately not asserted (event-island output sampling has
 # its own timestamp semantics) -- the pump's job is the concurrent
 # closure-execution/GC interleaving itself.
-var esig = signal(0, 0, "gc_stress_pump")
+const esig = signal(0, 0, "gc_stress_pump")
 var eout = scaled(esig)
 
-func pumpLoop():
-  # Inline event-evaluation bursts on this forked thread: closure execution
-  # + single-evaluator mutex traffic racing the engine's actor loop and the
-  # forked gc() loop -- the same GC interleavings the old host-style pump
-  # exercised, WITHOUT a second periodic scheduler driver (the engine
-  # thread is the sole one).
-  # NOTE: pending-event QUEUE traffic needs a non-VM producer (e.g. a DDS
-  # reader thread) -- script set()s evaluate inline -- so the
-  # drain-ownership race itself is covered by inspection + the dds signal
-  # tests.
-  var i = 0
-  while i < 120:
-    esig.set(i)
-    i = i + 1
+# Inline event-evaluation bursts on the main script thread exercise closure
+# execution + single-evaluator mutex traffic racing the engine's actor loop and
+# the GC actor, without a second periodic scheduler driver (the engine thread
+# is the sole one). Pending-event QUEUE traffic needs a non-VM producer (e.g.
+# a DDS reader thread) -- script set()s evaluate inline -- so the
+# drain-ownership race itself is covered by inspection + the DDS signal tests.
 
 var c = Counter()
-var g = fork(gcLoop)
-var p = fork(pumpLoop)
+var gcRunner = GcRunner()
+var gcDone = gcRunner.run()
+
+# Run the event-island burst while the GC actor and periodic engine are active.
+var pumpIndex = 0
+while pumpIndex < 120:
+  esig.set(pumpIndex)
+  pumpIndex = pumpIndex + 1
 
 var total = 0
 var i = 1
@@ -67,14 +65,20 @@ while i <= 40:
   sig.set(i)
   wait(for=c.bump(i))
   total = total + i
-  # interned-string churn while collections run on the forked thread
+  # interned-string churn while collections run on the GC actor
   var s = "gc-stress-" + i + "-" + (i * i)
   i = i + 1
 
-join(g)
-join(p)
+wait(for=gcDone)
 gc()
 wait(ms=150)
+
+# The forced collections can delay periodic ticks substantially. Wait for the
+# final input value to propagate instead of depending on a fixed timing margin.
+var waitedForOut = 0
+while int(out) != 120 and waitedForOut < 3000:
+  wait(ms=10)
+  waitedForOut = waitedForOut + 10
 
 # `when sig changes` delivery is asynchronous, so a fixed wait races the
 # dispatch loop: at 10Hz the 150ms above is only 1.5 periods of margin, and

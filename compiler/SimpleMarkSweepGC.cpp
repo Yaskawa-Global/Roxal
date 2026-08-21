@@ -1313,15 +1313,14 @@ void SimpleMarkSweepGC::pollContext(Thread* currentThread)
 void SimpleMarkSweepGC::blockEnter(const void* scopeAnchor)
 {
     // NOTE: refusing to block while a no-park section is held DEADLOCKS.
-    // Every wasm native call holds a no-park cover (VM::callNativeFn), so
-    // sys.join() -> Thread::join()'s safe-block would become a no-op: the
-    // joiner stays Running, the collection barrier waits for the joiner, and
-    // the joiner waits for a joined thread that is parked for that very
-    // collection. The underlying hazard is real (a safe-block nested inside a
-    // no-park cover makes the thread quiescent while its native frame still
-    // holds unscannable Values), but closing it needs a ROOTING-AWARE
-    // transition -- suspend the cover only when the frame's Values are
-    // reachable from traced storage -- not blanket precedence either way.
+    // A blocking native holding a no-park cover could otherwise leave its
+    // caller Running while it waits for a thread parked for the collection;
+    // the collection barrier would then wait for the caller. The underlying
+    // hazard is real (a safe-block nested inside a no-park cover makes the
+    // thread quiescent while its native frame still holds unscannable Values),
+    // but closing it needs a ROOTING-AWARE transition -- suspend the cover
+    // only when the frame's Values are reachable from traced storage -- not
+    // blanket precedence either way.
     std::lock_guard<std::mutex> lock(mutex_);
     MutatorContext* ctx = ensureContextLocked();
     // Capture bounded at the scope object in the caller's frame: locals

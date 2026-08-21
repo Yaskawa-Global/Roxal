@@ -2825,8 +2825,6 @@ A dimensional physical quantity type for type-safe unit handling.  Stores a real
 **String display:** `quantity` implicitly converts to string, choosing the most natural unit for the magnitude (e.g., `0.005m` displays as `5mm`). Angles display with the degree symbol (e.g., `90°`). Unknown dimension combinations display using SI unit symbols with Unicode superscript exponents (e.g., `1ms⁻³`).
 
 #### Internal (likely to be removed or renamed)
-* `fork(fn)` - run `fn` in a new thread and return its id
-* `join(id)` - wait for thread `id` to finish and return true if joined
 * `_clock()` - return process time in seconds
 * `_threadid()` - return the current thread id
 * `_stackdepth()` - depth of the current call stack

@@ -24,14 +24,6 @@ func is_ready(future) -> bool:
   """return true when future has produced its value without blocking"""
 
 @builtin
-func fork(fn) -> int:
-  """run fn in a new thread and return its id"""
-
-@builtin
-func join(id:int) -> bool:
-  """wait for thread id to finish and return true if joined"""
-
-@builtin
 proc exit(ret:int=0):
   """Exit the program with specified exit code"""
 

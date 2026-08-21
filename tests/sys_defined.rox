@@ -5,6 +5,10 @@
 print(defined("print"))
 print(defined("len"))
 print(defined("definitely_not_a_global_name"))
+# Raw script threads were removed in favor of actors; neither former entry
+# point may remain registered as a global.
+print(defined("fork"))
+print(defined("join"))
 
 # A script's own top-level declarations are NOT globals -- they live in the
 # script's scope, which is why a separately compiled program (a REPL line)

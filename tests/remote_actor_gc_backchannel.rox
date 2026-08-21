@@ -10,18 +10,15 @@ type GcLogger actor:
 
 type GcWorker actor:
   proc run(logger: mutable GcLogger):
-    wait(for=logger.append("remote:"))
-
-func trigger_gc():
-  wait(ms=20)
-  gc()
+    # Collect on the compute server while the call back to the client is live.
+    var appendDone = logger.append("remote:")
+    gc()
+    wait(for=appendDone)
 
 var logger = GcLogger()
 var worker = GcWorker() at "__COMPUTE_TEST_ADDR__"
 
-var gcThread = fork(trigger_gc)
 wait(for=worker.run(logger))
-join(gcThread)
 
 var result = logger.getLog()
 wait(for=result)

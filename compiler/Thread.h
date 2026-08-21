@@ -48,7 +48,6 @@ public:
 
     std::atomic<State> state;
 
-    void spawn(Value closure);
     void join(ActorInstance* actorInstOverride = nullptr);
     void act(Value actorInstance);
     void detach();

@@ -1829,8 +1829,8 @@ restarts, and reclamation overlaps them (flat-cycle goal).
 via `enqueueActorFinalize`; a lazily started lifecycle thread joins the
 actor's worker and destroys the instance. The reclaimer never blocks on a
 thread exit. `Thread::join` is idempotent (join-once under a per-Thread
-mutex, taken inside a `GCSafeBlockScope`), so script `join()`, actor
-finalization, and shutdown joins cannot race a double-join.
+mutex, taken inside a `GCSafeBlockScope`), so actor finalization and shutdown
+joins cannot race a double-join.
 `ThreadManager::waitLifecycleIdle()` drains the queue deterministically —
 `gc()` calls it so actor teardown is complete when `gc()` returns.
 
@@ -2035,7 +2035,7 @@ the cover exists precisely because the thread's native frames hold Values
 the scanner cannot see — SafeBlocked would let the collection proceed and
 sweep them.
 
-**Constraint on future builtins (the join triangle).** The precedence rule
+**Constraint on future builtins (the blocking triangle).** The precedence rule
 means a *covered* builtin that blocks waiting on another thread's progress
 can deadlock: thread A (covered, Running) waits on thread B; B parks at a
 safepoint waiting for a collection; the collection barrier waits for A.
@@ -2056,12 +2056,12 @@ a poll). Use for bounded setup phases, not steady-state loops.
 #### `GCSafeBlockScope` — registered threads blocking in opaque calls
 
 A registered thread about to block in a call the GC can neither wake nor
-poll (`std::thread::join` is the canonical case — script `join()`, shutdown
-joins, the dataflow engine's contended evaluator-mutex waits) brackets the
-call in a `GCSafeBlockScope`: entry moves the context to SafeBlocked (with
-the stack captured up to the scope object) so the barrier proceeds without
-it; exit waits out any in-flight collection before the thread resumes
-mutating. Keep the scope tight — code inside must not touch GC state. Prefer
+poll brackets the call in a `GCSafeBlockScope`. `std::thread::join` during
+actor finalization or shutdown is the canonical case; another is the
+dataflow engine's contended evaluator-mutex wait. Entry moves the context to
+SafeBlocked (with the stack captured up to the scope object) so the barrier
+proceeds without it; exit waits out any in-flight collection before the
+thread resumes mutating. Keep the scope tight — code inside must not touch GC state. Prefer
 a polling wait (`pollCurrentThreadParticipant()` / `safepoint()`) when the
 wait *can* poll; use the block scope only for truly opaque calls.
 
@@ -2177,8 +2177,8 @@ right after `requestExit()` and before `setVM(nullptr)`.
   with zero section-collector violations and counters returned to rest;
   hard-exits on a barrier deadlock (watchdog). Runs in the suite as
   `tests/gc_selftest.rox`. `tests/gc_coordination_stress.rox` covers the
-  same ground at the script level (actors + dataflow islands + forked
-  `gc()` loop + `join()`).
+  same ground at the script level (actors + dataflow islands + an actor-driven
+  `gc()` loop and a main-thread signal pump).
 - `ROXAL_GC_QUARANTINE=1` — debug: the reclaimer runs the full destruction
   path but wipes the object with `0xEF` and leaks the block instead of
   freeing. Any stale access then faults deterministically *with the

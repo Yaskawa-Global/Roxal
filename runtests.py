@@ -203,7 +203,6 @@ tests = [
     'cachereload_builtin',
     'method_named_param',
     'annot1', 'annot_import', 'annot_file_level', 'annot_ros_nonidl', 'generic', 'objscopes',
-    'threads1', 'fork_upvalue_error', 'fork_no_upvalues',
     'actor1', 'actor2', 'actor3', 'actor4', 'actor5', 'actor6', 'actor7', 'actor8', 'actor9',
     'actor_init', 'actor_stack', 'actor_future', 'future_ready', 'future_builtin_resolve', 'future_typed_param_resolve', 'wait_duration', 'wait_duration_dim_err', 'wait_duration_mixed_err',
     'allof_futures', 'anyof_futures', 'anyof_event', 'anyof_signal',
