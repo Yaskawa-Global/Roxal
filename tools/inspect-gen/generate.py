@@ -170,6 +170,12 @@ NODE_SPEC = [
         F("exception", "std::optional<ptr<ast::Expression>>", "opt_node", cls="Expression"),
     ], {}),
 
+    ("AssertStatement", "Statement", [
+        F("condition", "ptr<ast::Expression>", "node", cls="Expression"),
+        F("message", "std::optional<ptr<ast::Expression>>", "opt_node", cls="Expression"),
+        F("parenForm", "bool", "bool"),
+    ], {}),
+
     ("TryStatement", "Statement", [
         F("body", "ptr<ast::Suite>", "node", cls="Suite"),
         F("exceptClauses", "std::vector<ExceptClause>", "except_clauses"),

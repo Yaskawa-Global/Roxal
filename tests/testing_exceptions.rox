@@ -1,0 +1,36 @@
+// What a test failure can look like: a failed assert, an uncaught exception of
+// any type, and the assert_raises / approx helpers.
+import testing.*
+
+proc explode():
+  raise ProgramException('kaboom')
+
+@test
+func typed_exception_fails_the_test():
+  explode()
+
+@test
+func untyped_exception_fails_the_test():
+  raise 'just a string'
+
+@test
+func assert_raises_passes():
+  var e = assert_raises(ProgramException, explode)
+  assert string(e) == 'kaboom'
+
+@test
+func assert_raises_reports_the_wrong_type():
+  var e = assert_raises(ZeroDivisionError, explode)
+
+@test
+func assert_raises_reports_nothing_raised():
+  var e = assert_raises(ProgramException, func(): 1)
+
+@test
+func approx_compares_with_a_tolerance():
+  assert 0.1 + 0.2 == approx(0.3)
+  assert 1.0 == approx(1.0001, tol=0.001)
+  assert 2.0 != approx(3.0)
+
+var failures = run(times=false, do_exit=false)
+print('failures=' + string(failures))

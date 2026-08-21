@@ -20,6 +20,7 @@ static Value convWhenStatement(InspectConv& cx, const ast::WhenStatement& n);
 static Value convUntilStatement(InspectConv& cx, const ast::UntilStatement& n);
 static Value convAdheringIfStatement(InspectConv& cx, const ast::AdheringIfStatement& n);
 static Value convRaiseStatement(InspectConv& cx, const ast::RaiseStatement& n);
+static Value convAssertStatement(InspectConv& cx, const ast::AssertStatement& n);
 static Value convTryStatement(InspectConv& cx, const ast::TryStatement& n);
 static Value convMatchStatement(InspectConv& cx, const ast::MatchStatement& n);
 static Value convWithStatement(InspectConv& cx, const ast::WithStatement& n);
@@ -187,6 +188,15 @@ static Value convRaiseStatement(InspectConv& cx, const ast::RaiseStatement& n)
 {
     Value v = cx.newNode("RaiseStatement", n);
     cx.setOptNode(v, "exception", n.exception);
+    return v;
+}
+
+static Value convAssertStatement(InspectConv& cx, const ast::AssertStatement& n)
+{
+    Value v = cx.newNode("AssertStatement", n);
+    cx.setNode(v, "condition", n.condition);
+    cx.setOptNode(v, "message", n.message);
+    cx.setBool(v, "paren_form", n.parenForm);
     return v;
 }
 
@@ -472,6 +482,7 @@ Value InspectConv::node(const ast::AST* n)
     if (t == typeid(ast::UntilStatement)) return convUntilStatement(*this, static_cast<const ast::UntilStatement&>(*n));
     if (t == typeid(ast::AdheringIfStatement)) return convAdheringIfStatement(*this, static_cast<const ast::AdheringIfStatement&>(*n));
     if (t == typeid(ast::RaiseStatement)) return convRaiseStatement(*this, static_cast<const ast::RaiseStatement&>(*n));
+    if (t == typeid(ast::AssertStatement)) return convAssertStatement(*this, static_cast<const ast::AssertStatement&>(*n));
     if (t == typeid(ast::TryStatement)) return convTryStatement(*this, static_cast<const ast::TryStatement&>(*n));
     if (t == typeid(ast::MatchStatement)) return convMatchStatement(*this, static_cast<const ast::MatchStatement&>(*n));
     if (t == typeid(ast::WithStatement)) return convWithStatement(*this, static_cast<const ast::WithStatement&>(*n));
@@ -642,6 +653,15 @@ static ptr<ast::RaiseStatement> buildRaiseStatement(InspectBuild& bx, ObjectInst
 {
     auto n = roxal::make_ptr<ast::RaiseStatement>();
     n->exception = bx.getOptNodeAs<ast::Expression>(inst, "exception");
+    return n;
+}
+
+static ptr<ast::AssertStatement> buildAssertStatement(InspectBuild& bx, ObjectInstance* inst)
+{
+    auto n = roxal::make_ptr<ast::AssertStatement>();
+    n->condition = bx.getNodeAs<ast::Expression>(inst, "condition");
+    n->message = bx.getOptNodeAs<ast::Expression>(inst, "message");
+    n->parenForm = bx.getBool(inst, "paren_form");
     return n;
 }
 
@@ -929,6 +949,7 @@ ptr<ast::AST> InspectBuild::build(const Value& v)
     if (kind == "UntilStatement") return memo[inst] = finish(buildUntilStatement(*this, inst), inst);
     if (kind == "AdheringIfStatement") return memo[inst] = finish(buildAdheringIfStatement(*this, inst), inst);
     if (kind == "RaiseStatement") return memo[inst] = finish(buildRaiseStatement(*this, inst), inst);
+    if (kind == "AssertStatement") return memo[inst] = finish(buildAssertStatement(*this, inst), inst);
     if (kind == "TryStatement") return memo[inst] = finish(buildTryStatement(*this, inst), inst);
     if (kind == "MatchStatement") return memo[inst] = finish(buildMatchStatement(*this, inst), inst);
     if (kind == "WithStatement") return memo[inst] = finish(buildWithStatement(*this, inst), inst);
@@ -1039,6 +1060,12 @@ void forEachChildOf(const ast::AST& node, const std::function<void(const ast::AS
     if (t == typeid(ast::RaiseStatement)) {
         auto& n = static_cast<const ast::RaiseStatement&>(node); (void)n;
         if (n.exception.has_value() && n.exception.value()) f(n.exception.value().get());
+        return;
+    }
+    if (t == typeid(ast::AssertStatement)) {
+        auto& n = static_cast<const ast::AssertStatement&>(node); (void)n;
+        if (n.condition) f(n.condition.get());
+        if (n.message.has_value() && n.message.value()) f(n.message.value().get());
         return;
     }
     if (t == typeid(ast::TryStatement)) {

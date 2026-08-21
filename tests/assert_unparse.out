@@ -1,0 +1,7 @@
+assert a == b
+assert x, 'boom'
+assert(y, 'paren')
+
+paren=false cond=a == b msg=nil
+paren=false cond=x msg='boom'
+paren=true cond=y msg='paren'

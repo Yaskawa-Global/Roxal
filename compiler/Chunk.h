@@ -131,6 +131,11 @@ enum class OpCode {
                      // And combine so they can lift into a dataflow node.
     OrShortCircuit,  // 'or' short-circuit: jump (2-byte dist) if top is a non-signal
                      // truthy value. Never pops (see AndShortCircuit).
+    AssertFail,      // a failed 'assert': raise an AssertionError describing it.
+                     // 1-byte flags arg (bit0 message present, bit1 operands
+                     // present) followed by a constant index (the asserted
+                     // expression's source text). Stack, top last:
+                     // [message?] [left right]? -- all consumed.
     _Last
 };
 

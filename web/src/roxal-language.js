@@ -30,7 +30,7 @@ const KEYWORDS = [
     // reactive / dataflow
     'when', 'occurs', 'changes', 'becomes', 'emit', 'by',
     // errors
-    'try', 'except', 'finally', 'raise',
+    'try', 'except', 'finally', 'raise', 'assert',
     // operators that are words
     'and', 'or', 'not', 'is', 'rem',
     // references

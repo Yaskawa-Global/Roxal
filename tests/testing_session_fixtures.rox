@@ -1,0 +1,14 @@
+// A scope is a lifetime, not an identity.  Two modules that each declare a
+// session-scoped fixture of the same name have two distinct fixtures, and a
+// shared provider's fixture of that name is a third -- each built once, and
+// none standing in for another.
+import testing.*
+import testing_sessmod_shared
+import testing_sessmod_a
+import testing_sessmod_b
+
+var failures = run([testing_sessmod_a, testing_sessmod_b],
+                   fixtures=[testing_sessmod_shared],
+                   times=false, do_exit=false)
+print('failures=' + string(failures))
+print('builds=' + string(testing_sessmod_shared.builds))

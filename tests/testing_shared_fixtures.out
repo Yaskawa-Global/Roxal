@@ -1,0 +1,10 @@
+testing_fixmod_a: 2 tests
+  PASS      uses_own_client
+  PASS      uses_shared_db
+testing_fixmod_b: 2 tests
+  PASS      uses_own_client
+  PASS      shadows_the_shared_fixture
+
+4 passed
+failures=0
+provider log=["open db", "open account", "close db", "close account"]

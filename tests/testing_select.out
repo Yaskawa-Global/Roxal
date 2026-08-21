@@ -1,0 +1,25 @@
+-- by name --
+testing_select: 2 tests
+  PASS      echo_roundtrip
+  PASS      echo_streaming
+
+2 passed
+-- by name, alternation --
+testing_select: 2 tests
+  PASS      echo_streaming
+  PASS      unrelated
+
+2 passed
+-- by tag --
+testing_select: 1 test
+  PASS      ping_slow
+
+1 passed
+-- everything --
+testing_select: 4 tests
+  PASS      echo_roundtrip
+  PASS      echo_streaming
+  PASS      ping_slow
+  PASS      unrelated
+
+4 passed

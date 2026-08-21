@@ -1,0 +1,18 @@
+// The other module declaring `client`, and one specialising the shared `db`.
+import testing.*
+
+@fixture
+func client():
+  return 'client-B'
+
+@fixture
+func db():
+  return 'DB-overridden'
+
+@test
+func uses_own_client(client):
+  assert client == 'client-B'
+
+@test
+func shadows_the_shared_fixture(db):
+  assert db == 'DB-overridden'

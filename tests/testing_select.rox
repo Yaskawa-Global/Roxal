@@ -1,0 +1,27 @@
+// Selecting which tests run: by name (a regular expression) and by tag.
+import testing.*
+
+@test
+func echo_roundtrip():
+  assert true
+
+@test
+func echo_streaming():
+  assert true
+
+@test(tags=['slow', 'net'])
+func ping_slow():
+  assert true
+
+@test
+func unrelated():
+  assert true
+
+print('-- by name --')
+var n1 = run(select='echo', times=false, do_exit=false)
+print('-- by name, alternation --')
+var n2 = run(select='streaming|unrelated', times=false, do_exit=false)
+print('-- by tag --')
+var n3 = run(tags=['slow'], times=false, do_exit=false)
+print('-- everything --')
+var n4 = run(times=false, do_exit=false)

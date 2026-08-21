@@ -1,0 +1,13 @@
+testing_timeout: 3 tests
+  TIMEOUT   sleeps_too_long
+  TIMEOUT   computes_too_long
+  PASS      the_run_continues
+
+TIMEOUT sleeps_too_long
+  timeout after 150 ms
+
+TIMEOUT computes_too_long
+  timeout after 150 ms
+
+1 passed, 2 failed
+failures=2

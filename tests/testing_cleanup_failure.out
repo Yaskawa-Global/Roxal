@@ -1,0 +1,20 @@
+testing_cleanup_failure: 3 tests
+  FAIL      passes_but_teardown_fails
+  FAIL      already_failing_test_keeps_its_own_message
+  PASS      uses_module_fixture
+  FAIL      testing_cleanup_failure (teardown)
+
+FAIL passes_but_teardown_fails
+  cleanup failed: teardown exploded
+
+FAIL already_failing_test_keeps_its_own_message
+  testing_cleanup_failure.rox:25: assertion failed: per_test == 99
+  left:  1
+  right: 99
+  cleanup failed: teardown exploded
+
+FAIL testing_cleanup_failure (teardown)
+  cleanup failed: teardown exploded
+
+1 passed, 3 failed
+failures=3

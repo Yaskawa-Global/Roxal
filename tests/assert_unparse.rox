@@ -1,0 +1,18 @@
+// An assert statement round-trips through the inspect mirror and unparse,
+// preserving which of the two spellings was written.
+import inspect
+
+var src = """assert a == b
+assert x, 'boom'
+assert(y, 'paren')
+"""
+
+var t = inspect.parse(src)
+print(inspect.unparse(t))
+
+for n in inspect.walk(t):
+  if n.kind() == 'AssertStatement':
+    var msg = 'nil'
+    if n.message != nil:
+      msg = inspect.unparse(n.message)
+    print('paren=' + n.paren_form + ' cond=' + inspect.unparse(n.condition) + ' msg=' + msg)

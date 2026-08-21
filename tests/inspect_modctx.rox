@@ -1,0 +1,16 @@
+// inspect.calling_module() / main_module(): which module is running, and which
+// module the process was started with.  A module that is imported rather than
+// run sees main_module() != its own module -- the test a self-running module
+// uses to stay quiet when it is merely imported.
+import inspect
+import inspect_modctx_helper
+
+print(string(inspect.calling_module()))
+print(string(inspect.main_module()))
+print('script is main: ' + string(inspect.calling_module() == inspect.main_module()))
+
+print(string(inspect_modctx_helper.THIS))
+print('helper is main: ' + string(inspect_modctx_helper.THIS == inspect_modctx_helper.MAIN_AT_IMPORT))
+
+print(string(inspect_modctx_helper.my_module()))
+print(string(inspect_modctx_helper.callers_module()))

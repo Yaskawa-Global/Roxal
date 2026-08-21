@@ -721,9 +721,58 @@ void writeExpr(std::ostream& out, const ptr<ast::Expression>& expr){
     } else if(auto v = dynamic_ptr_cast<Variable>(expr)){
         uint8_t tag=3; out.write(reinterpret_cast<char*>(&tag),1);
         writeString(out, v->name);
+    } else if(auto l = dynamic_ptr_cast<List>(expr)){
+        uint8_t tag=4; out.write(reinterpret_cast<char*>(&tag),1);
+        uint32_t n = uint32_t(l->elements.size());
+        out.write(reinterpret_cast<char*>(&n),4);
+        for(const auto& el : l->elements)
+            writeExpr(out, el);
+    } else if(auto d = dynamic_ptr_cast<Dict>(expr)){
+        uint8_t tag=5; out.write(reinterpret_cast<char*>(&tag),1);
+        uint32_t n = uint32_t(d->entries.size());
+        out.write(reinterpret_cast<char*>(&n),4);
+        for(const auto& e : d->entries){
+            writeExpr(out, e.first);
+            writeExpr(out, e.second);
+        }
+    } else if(auto u = dynamic_ptr_cast<UnaryOp>(expr)){
+        if(u->op != UnaryOp::Negate)
+            throw std::runtime_error("unsupported annotation expr serialization");
+        uint8_t tag=6; out.write(reinterpret_cast<char*>(&tag),1);
+        writeExpr(out, u->arg);
+    } else if(auto sn = dynamic_ptr_cast<SuffixedNum>(expr)){
+        uint8_t tag=7; out.write(reinterpret_cast<char*>(&tag),1);
+        if(std::holds_alternative<int32_t>(sn->num)){
+            uint8_t ty=0; out.write(reinterpret_cast<char*>(&ty),1);
+            int32_t v=std::get<int32_t>(sn->num); out.write(reinterpret_cast<char*>(&v),4);
+        } else if (std::holds_alternative<int64_t>(sn->num)) {
+            uint8_t ty=2; out.write(reinterpret_cast<char*>(&ty),1);
+            int64_t v=std::get<int64_t>(sn->num); out.write(reinterpret_cast<char*>(&v),8);
+        } else {
+            uint8_t ty=1; out.write(reinterpret_cast<char*>(&ty),1);
+            double v=std::get<double>(sn->num); out.write(reinterpret_cast<char*>(&v),8);
+        }
+        writeString(out, sn->suffix);
+    } else if(auto ss = dynamic_ptr_cast<SuffixedStr>(expr)){
+        uint8_t tag=8; out.write(reinterpret_cast<char*>(&tag),1);
+        writeString(out, ss->str);
+        writeString(out, ss->suffix);
+    } else if(auto lit = dynamic_ptr_cast<Literal>(expr);
+              lit && lit->literalType == Literal::LiteralType::Nil){
+        uint8_t tag=9; out.write(reinterpret_cast<char*>(&tag),1);
     } else {
         throw std::runtime_error("unsupported annotation expr serialization");
     }
+}
+
+// A truncated or corrupt cache reaches here with garbage in the length field.
+// Bound it (and check the stream) so the reader fails instead of trying to
+// build a container with billions of elements.
+static void checkAnnotCount(std::istream& in, uint32_t n)
+{
+    constexpr uint32_t MaxAnnotElements = 65536;
+    if (!in || n > MaxAnnotElements)
+        throw std::runtime_error("corrupt annotation in module cache");
 }
 
 ptr<ast::Expression> readExpr(std::istream& in){
@@ -760,6 +809,54 @@ ptr<ast::Expression> readExpr(std::istream& in){
             v->name = readString(in);
             return v;
         }
+        case 4: {
+            auto l = make_ptr<List>();
+            uint32_t n=0; in.read(reinterpret_cast<char*>(&n),4);
+            checkAnnotCount(in, n);
+            for(uint32_t i=0;i<n;++i)
+                l->elements.push_back(readExpr(in));
+            return l;
+        }
+        case 5: {
+            auto d = make_ptr<Dict>();
+            uint32_t n=0; in.read(reinterpret_cast<char*>(&n),4);
+            checkAnnotCount(in, n);
+            for(uint32_t i=0;i<n;++i){
+                auto k = readExpr(in);
+                auto v = readExpr(in);
+                d->entries.emplace_back(k, v);
+            }
+            return d;
+        }
+        case 6: {
+            auto u = make_ptr<UnaryOp>(UnaryOp::Negate);
+            u->arg = readExpr(in);
+            return u;
+        }
+        case 7: {
+            auto n = make_ptr<SuffixedNum>();
+            uint8_t ty; in.read(reinterpret_cast<char*>(&ty),1);
+            if(ty==0){
+                int32_t v; in.read(reinterpret_cast<char*>(&v),4);
+                n->num = v;
+            } else if (ty==2) {
+                int64_t v; in.read(reinterpret_cast<char*>(&v),8);
+                n->num = v;
+            } else {
+                double v; in.read(reinterpret_cast<char*>(&v),8);
+                n->num = v;
+            }
+            n->suffix = readString(in);
+            return n;
+        }
+        case 8: {
+            auto ss = make_ptr<SuffixedStr>();
+            ss->str = readString(in);
+            ss->suffix = readString(in);
+            return ss;
+        }
+        case 9:
+            return make_ptr<Literal>();     // a Literal defaults to nil
     }
     throw std::runtime_error("unsupported annotation expr tag");
 }
@@ -6739,6 +6836,11 @@ std::string roxal::objToString(const Value& v)
                 return to_string(asObjPrimitive(v)->as.btype);
 
             ObjTypeSpec* ts = asTypeSpec(v);
+            if (ts->typeValue == ValueType::Module) {
+                // Name it like every other named type ("<type object Point>"),
+                // so a module value is identifiable when printed.
+                return "<type "+constPrefix+"module "+toUTF8StdString(asModuleType(v)->name)+">";
+            }
             if ((ts->typeValue != ValueType::Object) && (ts->typeValue != ValueType::Actor)) {
                 return "<type "+constPrefix+to_string(ts->typeValue)+">";
             }

@@ -70,6 +70,8 @@ public:
     virtual std::any visit(ptr<ast::MatchStatement> ast);
     virtual std::any visit(ptr<ast::WithStatement> ast);
     virtual std::any visit(ptr<ast::RaiseStatement> ast);
+    virtual std::any visit(ptr<ast::AssertStatement> ast);
+    void emitComparison(ast::BinaryOp::Op op);
     virtual std::any visit(ptr<ast::Function> ast);
     virtual std::any visit(ptr<ast::Parameter> ast);
     virtual std::any visit(ptr<ast::Assignment> ast);
@@ -553,6 +555,10 @@ protected:
     bool compilingNestedType { false }; // true during nested type compilation — skips module registration
 
     void error(const std::string& message);
+
+    // Reject annotation arguments the module cache cannot round-trip.
+    void checkAnnotationArgs(const std::vector<ptr<ast::Annotation>>& annotations,
+                             const ptr<ast::AST>& location);
 
     ValueType builtinToValueType(ast::BuiltinType bt);
 

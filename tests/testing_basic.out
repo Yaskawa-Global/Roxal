@@ -1,0 +1,24 @@
+testing_basic: 8 tests
+  PASS      passes
+  FAIL      fails
+  PASS      also_runs_as_proc
+  SKIP      skipped -- needs hardware
+  XFAIL     expected_to_fail -- known broken
+  XPASS     unexpectedly_passes
+  SKIP      explicit_skip -- not today
+  FAIL      explicit_fail
+
+FAIL fails
+  testing_basic.rox:11: assertion failed: got == 'pong'
+  left:  'ping'
+  right: 'pong'
+  reply should be pong
+
+XPASS unexpectedly_passes
+  should have been fixed
+
+FAIL explicit_fail
+  testing_basic.rox:38: gave up
+
+2 passed, 3 failed, 2 skipped, 1 xfailed
+failures=3

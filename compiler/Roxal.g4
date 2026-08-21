@@ -126,6 +126,7 @@ compound_stmt
  | when_stmt
  | emit_stmt
  | raise_stmt
+ | assert_stmt
  | try_stmt
  | match_stmt
  | with_stmt
@@ -193,6 +194,15 @@ emit_stmt
 
 raise_stmt
  : RAISE expression?
+ ;
+
+
+// 'assert' is a hard keyword.  Two spellings are accepted: the Python-style
+// `assert cond, msg` and the C-style `assert(cond, msg)` -- the latter needs its
+// own alternative because a parenthesised expression cannot contain the comma.
+assert_stmt
+ : ASSERT ( OPEN_PAREN expression COMMA expression CLOSE_PAREN
+          | expression (COMMA expression)? )
  ;
 
 try_stmt
@@ -676,6 +686,7 @@ TRY: 'try';
 EXCEPT: 'except';
 FINALLY: 'finally';
 RAISE: 'raise';
+ASSERT: 'assert';
 AS: 'as';
 UNTIL: 'until';
 MATCH: 'match';

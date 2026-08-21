@@ -74,7 +74,7 @@
         },
         {
           "name": "keyword.control.roxal",
-          "match": "\\b(?:if|else|elseif|while|for|break|continue|jump|match|case|default|try|except|finally|raise|return|until|when|becomes|changes|occurs|where|emit|scope|with)\\b"
+          "match": "\\b(?:if|else|elseif|while|for|break|continue|jump|match|case|default|try|except|finally|raise|assert|return|until|when|becomes|changes|occurs|where|emit|scope|with)\\b"
         },
         {
           "name": "keyword.control.import.roxal",

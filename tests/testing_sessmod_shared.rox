@@ -1,0 +1,15 @@
+// provider for testing_session_fixtures
+import testing.*
+
+var builds = []
+
+@fixture('session')
+func token():
+  builds.append('shared')
+  return 'SHARED'
+
+
+@fixture('session')
+func shared_token():
+  builds.append('shared_token')
+  return 'SHARED'

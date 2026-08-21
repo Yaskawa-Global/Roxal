@@ -1,0 +1,27 @@
+// inspect.members() lists a module's members: callables first, in declaration
+// order, then everything else by name.
+import inspect
+
+@test
+func alpha():
+  return 1
+
+proc beta(n :int):
+  print(n)
+
+func gamma():
+  return 2
+
+type Widget object:
+  var w :int = 0
+
+var counter = 0
+const LIMIT = 10
+
+for m in inspect.members(inspect.calling_module()):
+  print(m.kind + ' ' + m.name)
+
+// the value is live: calling it works
+for m in inspect.members(inspect.calling_module()):
+  if m.name == 'gamma':
+    print('gamma() = ' + inspect.call(m.value, [], {}))

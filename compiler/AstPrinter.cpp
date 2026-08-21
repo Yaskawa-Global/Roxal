@@ -1,3 +1,4 @@
+#include <functional>
 #include "AstPrinter.h"
 #include <core/common.h>
 
@@ -152,6 +153,18 @@ std::string AstPrinter::print(const ast::AST& n)
         return exprTop(*e);
     stmtWithTrivia(n);   // standalone statements render their decorations too
     return out;
+}
+
+static std::string assertText(const AssertStatement& s,
+                              const std::function<std::string(const Expression&)>& expr)
+{
+    std::string cond = s.condition ? expr(*s.condition) : "";
+    std::string msg = (s.message.has_value() && s.message.value())
+                        ? expr(*s.message.value()) : "";
+    // Reproduce the spelling that was written: assert(cond, msg) or assert cond, msg
+    if (s.parenForm)
+        return "assert(" + cond + ", " + msg + ")";
+    return msg.empty() ? "assert " + cond : "assert " + cond + ", " + msg;
 }
 
 void AstPrinter::emitLine(const std::string& s)
@@ -342,6 +355,11 @@ void AstPrinter::node(const ast::AST& n)
                      ? "raise " + exprTop(*s.exception.value()) : "raise");
         return;
     }
+    if (t == typeid(AssertStatement)) {
+        auto& s = static_cast<const AssertStatement&>(n);
+        emitLine(assertText(s, [this](const Expression& e) { return exprTop(e); }));
+        return;
+    }
     if (t == typeid(IfStatement)) {
         auto& s = static_cast<const IfStatement&>(n);
         for (size_t i = 0; i < s.conditionalSuites.size(); i++) {
@@ -488,6 +506,10 @@ std::string AstPrinter::inlineStmt(const Statement& n)
         auto& s = static_cast<const RaiseStatement&>(n);
         return s.exception.has_value() && s.exception.value()
                    ? "raise " + exprTop(*s.exception.value()) : "raise";
+    }
+    if (t == typeid(AssertStatement)) {
+        auto& s = static_cast<const AssertStatement&>(n);
+        return assertText(s, [this](const Expression& e) { return exprTop(e); });
     }
     throw std::runtime_error(std::string("AstPrinter: statement kind cannot render inline: ") + t.name());
 }

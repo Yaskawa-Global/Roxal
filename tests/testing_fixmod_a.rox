@@ -1,0 +1,15 @@
+// One of two modules that each declare a fixture of the same name.
+import testing.*
+
+@fixture
+func client():
+  return 'client-A'
+
+@test
+func uses_own_client(client):
+  assert client == 'client-A'
+
+@test
+func uses_shared_db(db, account):
+  assert db == 'DB'
+  assert account == 'ACCT'

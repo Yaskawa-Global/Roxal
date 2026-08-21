@@ -1,0 +1,15 @@
+import testing.*
+import testing_sessmod_shared
+
+@fixture('session')
+func token():
+  testing_sessmod_shared.builds.append('a')
+  return 'A-LOCAL'
+
+@test
+func a_sees_its_own(token):
+  assert token == 'A-LOCAL'
+
+@test
+func a_sees_it_again(token):
+  assert token == 'A-LOCAL'

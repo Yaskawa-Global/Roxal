@@ -215,6 +215,127 @@ func signals(include_internal:bool=false):
   signals are excluded unless include_internal=true"""
 
 
+# ---- runtime reflection ---------------------------------------------------
+# Introspection of the *running* program rather than of source text: what a
+# module contains, what a callable's signature and annotations are, and a way
+# to call a callable whose argument list is only known at runtime.  Unlike
+# parse(), these read the live objects, so they see exactly what the VM sees
+# (including declarations that came from a cached .roc).
+
+type Param object:
+  # one parameter of a Signature
+  var name:string = ''
+  var param_type             # declared type as a string, or nil
+  var has_default:bool = false
+  var variadic:bool = false  # declared ...name
+
+  proc init(*):
+    """construct a Param, properties as named arguments"""
+
+
+type AnnotationInfo object:
+  # one @annotation attached to a callable, with its arguments evaluated
+  var name:string = ''
+  var args = []              # positional argument values
+  var named = {}             # named argument values, by parameter name
+
+  func arg(name_or_index, default_value=nil):
+    """argument by name (named args) or by position (int index); returns
+    default_value when absent"""
+    if name_or_index is int:
+      if name_or_index < len(args):
+        return args[name_or_index]
+      return default_value
+    if name_or_index in named:
+      return named[name_or_index]
+    return default_value
+
+  proc init(*):
+    """construct an AnnotationInfo, properties as named arguments"""
+
+
+type Signature object:
+  # the signature of one callable (one overload)
+  var name:string = ''
+  var params = []            # list of Param, in declaration order
+  var return_types = []      # list of type names as strings
+  var is_proc:bool = false
+  var annotations = []       # list of AnnotationInfo
+  var source_file            # file the callable was declared in, or nil
+  var line:int = 0           # declaration line (0 = unknown)
+
+  func annotation(name:string):
+    """the AnnotationInfo with this name, or nil"""
+    for a in annotations:
+      if a.name == name:
+        return a
+    return nil
+
+  func has(name:string) -> bool:
+    """true if an annotation with this name is present"""
+    return annotation(name) != nil
+
+  func param_names() -> list:
+    """the parameter names, in declaration order"""
+    var names = []
+    for p in params:
+      names.append(p.name)
+    return names
+
+  proc init(*):
+    """construct a Signature, properties as named arguments"""
+
+
+type Member object:
+  # one member of a module
+  var name:string = ''
+  var value                  # the live value
+  var kind:string = ''       # 'func' | 'proc' | 'type' | 'var' | 'const' | 'module'
+
+  proc init(*):
+    """construct a Member, properties as named arguments"""
+
+
+@builtin
+func members(module) -> list:
+  """the members of a module, as Member objects.  Callables come first in
+  declaration order (by source line), then everything else by name"""
+
+@builtin
+func signatures(callable) -> list:
+  """the signatures of a callable, one Signature per overload.  Accepts a
+  function, closure, bound method or overload set.  Annotation arguments are
+  evaluated: literals, lists and dicts of literals, negated numbers, suffixed
+  literals (2s) and bare names (resolved as module variables, then globals)"""
+
+@builtin
+func call(callable, args:list, named:dict):
+  """call a callable with arguments supplied at runtime, returning its result.
+  Positional arguments come from args, named ones from named (keyed by
+  parameter name); pass an empty list or dict for the ones you do not use.
+
+  The call runs as an ordinary frame, so it behaves as a written-out call
+  would: parameters left unsupplied take their declared defaults, an overload
+  set is resolved by the same ranking the compiler uses, and the call yields
+  and raises normally.
+
+  args and named are required rather than defaulted (a builtin whose own
+  arguments are defaulted cannot set up this kind of call)"""
+
+@builtin
+func calling_module(depth:int=0):
+  """the module of the code calling this (depth 0), or of a frame further out
+  (depth 1 = that code's caller, and so on); nil if unavailable.  A function
+  in module M sees M at depth 0, so a library wanting its *user's* module --
+  as a test runner does -- asks for depth 1"""
+
+@builtin
+func main_module():
+  """the module of the script the process was started with, or nil.  Comparing
+  it with calling_module() is how a module tells being run from being
+  imported"""
+
+
 # ==== BEGIN GENERATED (tools/inspect-gen/generate.py) — do not edit by hand ====
 
 type Declaration object extends Node:
@@ -611,6 +732,28 @@ type RaiseStatement object extends Statement:
       cs.append(a)
     if exception != nil:
       cs.append(exception)
+    return cs
+
+
+type AssertStatement object extends Statement:
+  var condition
+  var message
+  var paren_form:bool = false
+
+  proc init(*):
+    """construct a AssertStatement node, properties as named arguments"""
+
+  func kind() -> string:
+    return 'AssertStatement'
+
+  func children() -> list:
+    var cs = []
+    for a in annotations:
+      cs.append(a)
+    if condition != nil:
+      cs.append(condition)
+    if message != nil:
+      cs.append(message)
     return cs
 
 
@@ -1245,6 +1388,7 @@ _node_fields['WhenStatement'] = [{'name': 'trigger', 'kind': 'node', 'class': 'E
 _node_fields['UntilStatement'] = [{'name': 'stmt', 'kind': 'node', 'class': 'Statement'}, {'name': 'condition', 'kind': 'node', 'class': 'Expression'}]
 _node_fields['AdheringIfStatement'] = [{'name': 'stmt', 'kind': 'node', 'class': 'Statement'}, {'name': 'condition', 'kind': 'node', 'class': 'Expression'}]
 _node_fields['RaiseStatement'] = [{'name': 'exception', 'kind': 'node', 'class': 'Expression'}]
+_node_fields['AssertStatement'] = [{'name': 'condition', 'kind': 'node', 'class': 'Expression'}, {'name': 'message', 'kind': 'node', 'class': 'Expression'}, {'name': 'paren_form', 'kind': 'bool'}]
 _node_fields['TryStatement'] = [{'name': 'body', 'kind': 'node', 'class': 'Suite'}, {'name': 'except_clauses', 'kind': 'list(except_clause)'}, {'name': 'finally_suite', 'kind': 'node', 'class': 'Suite'}]
 _node_fields['MatchStatement'] = [{'name': 'match_expr', 'kind': 'node', 'class': 'Expression'}, {'name': 'cases', 'kind': 'list(case)'}, {'name': 'default_case', 'kind': 'node', 'class': 'Suite'}]
 _node_fields['WithStatement'] = [{'name': 'context_expr', 'kind': 'node', 'class': 'Expression'}, {'name': 'body', 'kind': 'node', 'class': 'Suite'}]

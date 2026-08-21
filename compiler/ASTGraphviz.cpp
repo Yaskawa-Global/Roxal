@@ -541,6 +541,19 @@ std::any ASTGraphviz::visit(ptr<ast::RaiseStatement> ast)
     return {};
 }
 
+std::any ASTGraphviz::visit(ptr<ast::AssertStatement> ast)
+{
+    startVisit();
+    auto name { uname(ast) };
+    if (ast->message.has_value())
+        addLink(name, stackPop());
+    addLink(name, stackPop());     // condition
+    nodes[name] = node(name, "assert");
+    stackPush(name);
+    endVisit();
+    return {};
+}
+
 
 std::any ASTGraphviz::visit(ptr<ast::Function> ast)
 {

@@ -1,0 +1,21 @@
+// @cases runs one test per argument set, reported as name[i].  A list supplies
+// arguments positionally, a dict by parameter name.
+import testing.*
+
+@test
+@cases([[1, 2, 3], [2, 3, 5], [0, 0, 1]])
+func adds(a, b, expected):
+  assert a + b == expected
+
+@test
+@cases([{'text': 'abc', 'length': 3}, {'text': '', 'length': 0}])
+func measures(text, length):
+  assert len(text) == length
+
+@test
+@cases(['alpha', 'beta'])
+func single_value(word):
+  assert len(word) > 3
+
+var failures = run(times=false, do_exit=false)
+print('failures=' + string(failures))

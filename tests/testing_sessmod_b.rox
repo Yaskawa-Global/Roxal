@@ -1,0 +1,15 @@
+import testing.*
+import testing_sessmod_shared
+
+@fixture('session')
+func token():
+  testing_sessmod_shared.builds.append('b')
+  return 'B-LOCAL'
+
+@test
+func b_sees_its_own(token):
+  assert token == 'B-LOCAL'
+
+@test
+func b_can_reach_the_shared_one(shared_token):
+  assert shared_token == 'SHARED'

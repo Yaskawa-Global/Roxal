@@ -1,0 +1,7 @@
+<type module inspect_modctx>
+<type module inspect_modctx>
+script is main: true
+<type module inspect_modctx_helper>
+helper is main: false
+<type module inspect_modctx_helper>
+<type module inspect_modctx>

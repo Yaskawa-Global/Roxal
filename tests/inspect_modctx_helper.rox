@@ -1,0 +1,11 @@
+// helper module for inspect_modctx: reports the module context it sees
+import inspect
+
+var THIS = inspect.calling_module()
+var MAIN_AT_IMPORT = inspect.main_module()
+
+func my_module():
+  return inspect.calling_module()      // depth 0: the module of this function
+
+func callers_module():
+  return inspect.calling_module(1)     // depth 1: the module that called it

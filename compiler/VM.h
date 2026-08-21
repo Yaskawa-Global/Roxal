@@ -400,6 +400,16 @@ public:
                                                     const std::vector<Value>& args,
                                                     TimePoint deadline = TimePoint::max());
 
+    /// As invokeClosure(), but each argument may carry a parameter name
+    /// (argNames parallel to args; an empty name means positional).  Named
+    /// arguments are matched to parameters exactly as a compiled call site
+    /// would, so unsupplied parameters take their declared defaults.  Used by
+    /// inspect.call() to build a call whose shape is only known at runtime.
+    std::pair<ExecutionStatus,Value> invokeClosure(ObjClosure* closure,
+                                                    const std::vector<Value>& args,
+                                                    const std::vector<ustring>& argNames,
+                                                    TimePoint deadline = TimePoint::max());
+
     /// Call a Roxal method by name on an object instance, with `receiver` bound as
     /// `this`, run to completion → {OK, returnValue}. Resolves a single
     /// (non-overloaded) user method walking the inheritance chain; returns
@@ -607,7 +617,14 @@ protected:
     /// Low-level dispatch loop. Runs until completion, error, or deadline.
     /// Prefer runFor() for incremental execution; this is used internally
     /// by run(), runFor(), and invokeClosure().
-    std::pair<ExecutionStatus,Value> execute(TimePoint deadline = TimePoint::max());
+    /// baseFrameDepth: the frame count this execution is considered to have
+    /// started at -- it terminates when the frame stack drops BELOW it.
+    /// Defaults to the current depth, which is right when execute() is entered
+    /// before any call is set up.  A caller that pushes the callee frame first
+    /// must pass the depth of THAT frame + 1: call() stacks default-value
+    /// frames on top of the callee, and their returns must not end the run.
+    std::pair<ExecutionStatus,Value> execute(TimePoint deadline = TimePoint::max(),
+                                             size_t baseFrameDepth = SIZE_MAX);
 
     bool outputBytecodeDisassembly;
     bool lineMode;
@@ -834,6 +851,16 @@ public:
     // without re-entering execute() (e.g., list.filter/map/reduce)
     bool processContinuationDispatch();
     bool pushContinuationCall(ObjClosure* closure, const std::vector<Value>& args);
+
+    /// As above, but each argument may carry a parameter name (empty = positional),
+    /// and a non-nil receiver takes the callee slot so the callee sees it as
+    /// `this` -- the layout a compiled method call uses.  Lets a native invoke a
+    /// callable whose shape is only known at runtime WITHOUT re-entering
+    /// execute(): the dispatch loop runs the call and hands the result to the
+    /// continuation's onComplete.
+    bool pushContinuationCall(ObjClosure* closure, const std::vector<Value>& args,
+                              const std::vector<ustring>& argNames,
+                              const Value& receiver = Value::nilVal());
     void clearContinuation();
 
     void resetStack();

@@ -1,0 +1,4 @@
+// inspect.call() rejects a value that is not callable
+import inspect
+
+inspect.call(42, [], {})

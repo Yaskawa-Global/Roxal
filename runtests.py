@@ -351,6 +351,16 @@ inspect_tests = [
     'inspect_unparse', 'inspect_edit', 'inspect_fragments',
     'inspect_fragment_err', 'inspect_unparse_err', 'inspect_roundtrip_corpus',
     'inspect_compile', 'inspect_compile_err', 'inspect_annot_roundtrip',
+    # the assert statement
+    'assert_stmt', 'assert_uncaught', 'assert_identifier', 'assert_unparse',
+    # the testing module (a unit-test framework written in Roxal)
+    'testing_basic', 'testing_fixtures', 'testing_cases', 'testing_exceptions',
+    'testing_select', 'testing_timeout', 'testing_import_guard',
+    'testing_shared_fixtures', 'testing_session_fixtures',
+    'testing_cleanup_failure', 'testing_annotation_typo',
+    # runtime reflection (live objects, not source text)
+    'inspect_members', 'inspect_signatures', 'inspect_call', 'inspect_call_err',
+    'inspect_modctx',
     # dfdoc (diagram document library) is pure Roxal over inspect
     'dfdoc_ops_basic', 'dfdoc_names', 'dfdoc_feedback', 'dfdoc_load_save',
     'dfdoc_comments', 'dfdoc_runs', 'dfdoc_palette', 'dfdoc_check',

@@ -1,0 +1,10 @@
+testing_sessmod_a: 2 tests
+  PASS      a_sees_its_own
+  PASS      a_sees_it_again
+testing_sessmod_b: 2 tests
+  PASS      b_sees_its_own
+  PASS      b_can_reach_the_shared_one
+
+4 passed
+failures=0
+builds=["a", "b", "shared_token"]

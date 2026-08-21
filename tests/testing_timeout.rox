@@ -1,0 +1,23 @@
+// A test that does not finish in time is reported as a timeout, and the run
+// carries on.  Sleeping and computing are both interruptible; a test blocked
+// inside a native call is not.
+import testing.*
+
+@test(timeout=150ms)
+func sleeps_too_long():
+  wait(s=30)
+  fail('should have been interrupted')
+
+@test(timeout=150ms)
+func computes_too_long():
+  var i = 0
+  while i < 100000000:
+    i = i + 1
+  fail('should have been interrupted')
+
+@test
+func the_run_continues():
+  assert true
+
+var failures = run(times=false, do_exit=false)
+print('failures=' + string(failures))

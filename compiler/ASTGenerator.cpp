@@ -591,6 +591,7 @@ std::any ASTGenerator::visitFile_input(RoxalParser::File_inputContext *context)
             ptr<Annotation> annotation = make_ptr<Annotation>();
             annotation->name = annotInfo->accessed;
             annotation->args = *annotInfo->args;
+            setSourceInfo(annotation, context->annotation().at(i));
 
             file->annotations.push_back(annotation);
         }
@@ -657,6 +658,7 @@ std::any ASTGenerator::visitImport_stmt(RoxalParser::Import_stmtContext *context
         ptr<Annotation> annotation = make_ptr<Annotation>();
         annotation->name = annotInfo->accessed;
         annotation->args = *annotInfo->args;
+        setSourceInfo(annotation, context->annotation().at(i));
         import->annotations.push_back(annotation);
     }
 
@@ -792,6 +794,9 @@ std::any ASTGenerator::visitStatement(RoxalParser::StatementContext *context)
         else if (is<RaiseStatement>(compound)) {
             stmt = as<RaiseStatement>(compound);
         }
+        else if (is<AssertStatement>(compound)) {
+            stmt = as<AssertStatement>(compound);
+        }
         else if (is<ExpressionStatement>(compound))
             stmt = as<ExpressionStatement>(compound);
         else
@@ -886,6 +891,8 @@ std::any ASTGenerator::visitCompound_stmt(RoxalParser::Compound_stmtContext *con
         return visitWith_stmt(context->with_stmt());
     else if (context->raise_stmt())
         return visitRaise_stmt(context->raise_stmt());
+    else if (context->assert_stmt())
+        return visitAssert_stmt(context->assert_stmt());
     else
         throw std::runtime_error("unimplemented compound statement alternative");
 
@@ -1280,6 +1287,22 @@ std::any ASTGenerator::visitRaise_stmt(RoxalParser::Raise_stmtContext *context)
     visitEnd();
 }
 
+std::any ASTGenerator::visitAssert_stmt(RoxalParser::Assert_stmtContext *context)
+{
+    visitStart();
+    ptr<AssertStatement> as_ = make_ptr<AssertStatement>();
+    setSourceInfo(as_, context);
+    auto exprs = context->expression();
+    as_->condition = as<Expression>(visitExpression(exprs.at(0)));
+    if (exprs.size() > 1)
+        as_->message = as<Expression>(visitExpression(exprs.at(1)));
+    // assert(cond, msg): the parenthesised spelling, preserved so unparsing
+    // reproduces what was written.
+    as_->parenForm = context->OPEN_PAREN() != nullptr;
+    return typeValue(as_);
+    visitEnd();
+}
+
 std::any ASTGenerator::visitExcept_clause(RoxalParser::Except_clauseContext *context)
 {
     visitStart();
@@ -1362,6 +1385,7 @@ std::any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
             ptr<Annotation> annotation = make_ptr<Annotation>();
             annotation->name = annotInfo->accessed;
             annotation->args = *annotInfo->args;
+            setSourceInfo(annotation, context->annotation().at(i));
             vardecl->annotations.push_back(annotation);
         }
 
@@ -1380,6 +1404,7 @@ std::any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
             ptr<Annotation> annotation = make_ptr<Annotation>();
             annotation->name = annotInfo->accessed;
             annotation->args = *annotInfo->args;
+            setSourceInfo(annotation, context->annotation().at(i));
 
             vardecl->annotations.push_back(annotation);
         }
@@ -1460,6 +1485,7 @@ std::any ASTGenerator::visitFunc_decl(RoxalParser::Func_declContext *context)
             ptr<Annotation> annotation = make_ptr<Annotation>();
             annotation->name = annotInfo->accessed;
             annotation->args = *annotInfo->args;
+            setSourceInfo(annotation, context->annotation().at(i));
 
             funcdecl->annotations.push_back(annotation);
         }
@@ -1494,6 +1520,8 @@ std::any ASTGenerator::visitFunction(RoxalParser::FunctionContext *context)
                     ptr<Annotation> annot = make_ptr<Annotation>();
                     annot->name = ustring::fromUTF8("doc");
                     annot->args.emplace_back(ustring(), str);
+                    annot->source = str->source;
+                    annot->interval = str->interval;
                     func->annotations.push_back(annot);
                     suite->declsOrStmts.erase(suite->declsOrStmts.begin());
                 }
@@ -1608,6 +1636,7 @@ std::any ASTGenerator::visitParameter(RoxalParser::ParameterContext *context)
             ptr<Annotation> annotation = make_ptr<Annotation>();
             annotation->name = annotInfo->accessed;
             annotation->args = *annotInfo->args;
+            setSourceInfo(annotation, context->annotation().at(i));
 
             param->annotations.push_back(annotation);
         }
@@ -1701,6 +1730,7 @@ std::any ASTGenerator::visitObject_type_decl(RoxalParser::Object_type_declContex
             ptr<Annotation> annotation = make_ptr<Annotation>();
             annotation->name = annotInfo->accessed;
             annotation->args = *annotInfo->args;
+            setSourceInfo(annotation, annotCtx);
             typeDecl->annotations.push_back(annotation);
         }
 
@@ -1792,6 +1822,7 @@ std::any ASTGenerator::visitEnum_type_decl(RoxalParser::Enum_type_declContext *c
             ptr<Annotation> annotation = make_ptr<Annotation>();
             annotation->name = annotInfo->accessed;
             annotation->args = *annotInfo->args;
+            setSourceInfo(annotation, annotCtx);
             typeDecl->annotations.push_back(annotation);
         }
 
@@ -1839,6 +1870,7 @@ std::any ASTGenerator::visitEvent_type_decl(RoxalParser::Event_type_declContext 
             ptr<Annotation> annotation = make_ptr<Annotation>();
             annotation->name = annotInfo->accessed;
             annotation->args = *annotInfo->args;
+            setSourceInfo(annotation, annotCtx);
             typeDecl->annotations.push_back(annotation);
         }
 
@@ -1913,6 +1945,8 @@ std::any ASTGenerator::visitMethod(RoxalParser::MethodContext *context)
                         ptr<Annotation> annot = make_ptr<Annotation>();
                         annot->name = ustring::fromUTF8("doc");
                         annot->args.emplace_back(ustring(), str);
+                        annot->source = str->source;
+                        annot->interval = str->interval;
                         function->annotations.push_back(annot);
                         suite->declsOrStmts.erase(suite->declsOrStmts.begin());
                     }
@@ -1936,6 +1970,7 @@ std::any ASTGenerator::visitMethod(RoxalParser::MethodContext *context)
             ptr<Annotation> annotation = make_ptr<Annotation>();
             annotation->name = annotInfo->accessed;
             annotation->args = *annotInfo->args;
+            setSourceInfo(annotation, context->annotation().at(i));
 
             function->annotations.push_back(annotation);
         }
@@ -1969,6 +2004,7 @@ std::any ASTGenerator::visitMember_var(RoxalParser::Member_varContext *context)
             ptr<Annotation> annotation = make_ptr<Annotation>();
             annotation->name = annotInfo->accessed;
             annotation->args = *annotInfo->args;
+            setSourceInfo(annotation, annotCtx);
             propAccessor->annotations.push_back(annotation);
         }
 
@@ -2029,6 +2065,7 @@ std::any ASTGenerator::visitMember_var(RoxalParser::Member_varContext *context)
             ptr<Annotation> annotation = make_ptr<Annotation>();
             annotation->name = annotInfo->accessed;
             annotation->args = *annotInfo->args;
+            setSourceInfo(annotation, annotCtx);
             varDecl->annotations.push_back(annotation);
         }
 

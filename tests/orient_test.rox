@@ -1,11 +1,11 @@
-func assert(cond, msg=''):
+func check(cond, msg=''):
   if not cond:
     raise "ASSERT FAILED: " + msg
 
 # Identity
 var o0 = orient()
 print(o0)
-assert(o0 == orient(), "identity equality")
+check(o0 == orient(), "identity equality")
 
 # Construction: r=, p=, y=
 var o1 = orient(r=0deg, p=0deg, y=90deg)
@@ -13,24 +13,24 @@ print(o1)
 
 # Construction: rpy= vector (quantity-aware)
 var o2 = orient(rpy=[0deg 0deg 90deg])
-assert(o1 == o2, "rpy vector matches r/p/y")
+check(o1 == o2, "rpy vector matches r/p/y")
 
 # Construction: rpy= list of quantities
 var o3 = orient(rpy=[0deg, 0deg, 90deg])
-assert(o1 == o3, "rpy list matches r/p/y")
+check(o1 == o3, "rpy list matches r/p/y")
 
 # Construction: axis-angle
 var o4 = orient(axis=[0 0 1], angle=90deg)
-assert(o1 == o4, "axis-angle matches")
+check(o1 == o4, "axis-angle matches")
 
 # Construction: quaternion
 var o5 = orient(quat=[0 0 0.7071067811865476 0.7071067811865476])
-assert(o1 == o5, "quat matches")
+check(o1 == o5, "quat matches")
 
 # Construction: matrix round-trip
 var m = o1.mat
 var o6 = orient(mat=m)
-assert(o1 == o6, "matrix round-trip")
+check(o1 == o6, "matrix round-trip")
 
 # Construction: euler
 var o7 = orient(euler=[30deg 45deg 60deg], axes="ZXZ")
@@ -61,7 +61,7 @@ print(o1.euler("ZYX"))
 
 # Inverse
 var inv = o1.inverse
-assert(inv * o1 == orient(), "inverse * self == identity")
+check(inv * o1 == orient(), "inverse * self == identity")
 print(inv)
 
 # Negative angle

@@ -505,6 +505,14 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return simpleInstruction("END_EXCEPT", offset);
         case OpCode::Throw:
             return simpleInstruction("THROW", offset);
+        case OpCode::AssertFail: {
+            // opcode, 1-byte flags, 2-byte constant index (the asserted text)
+            uint8_t flags = code.at(offset+1);
+            uint16_t constant = (code.at(offset+2) << 8) | code.at(offset+3);
+            std::cout << format("%-16s %4d flags %d '", "ASSERT_FAIL", constant, int(flags))
+                      << toString(constants.at(constant)) << "'" << std::endl;
+            return offset+4;
+        }
         case OpCode::CopyInto:
             return simpleInstruction("COPY_INTO", offset);
         case OpCode::MakeConst:

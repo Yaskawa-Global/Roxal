@@ -1,0 +1,5 @@
+// An uncaught assert failure reports the expression and both operand values.
+var expected = 'pong'
+var actual = 'ping'
+
+assert actual == expected, 'reply should be pong'

@@ -1,0 +1,16 @@
+// A fixture provider: no tests of its own, just fixtures for other modules.
+import testing.*
+
+var log = []
+
+@fixture
+func db():
+  log.append('open db')
+  cleanup(func(): log.append('close db'))
+  return 'DB'
+
+@fixture('session')
+func account():
+  log.append('open account')
+  cleanup(func(): log.append('close account'))
+  return 'ACCT'

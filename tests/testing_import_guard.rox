@@ -1,0 +1,17 @@
+// run() with no arguments only runs when its module is the one being executed,
+// so importing a test module does not set it going.  A driver aggregates
+// several modules by naming them.
+import testing.*
+import testing_helper_mod
+
+@test
+func driver_own_test():
+  assert true
+
+print('-- driver module only --')
+var own = run(times=false, do_exit=false)
+print('own failures=' + string(own))
+
+print('-- naming the imported module --')
+var both = run([testing_helper_mod], times=false, do_exit=false)
+print('imported failures=' + string(both))

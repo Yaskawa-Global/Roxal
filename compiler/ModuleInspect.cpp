@@ -5,6 +5,8 @@
 #include "AstPrinter.h"
 #include "TypeDeducer.h"
 #include "RoxalCompiler.h"
+#include "SimpleMarkSweepGC.h"
+#include "OverloadResolver.h"
 #include "Error.h"
 #include <core/AST.h>
 #include <core/types.h>
@@ -1147,6 +1149,12 @@ void ModuleInspect::registerBuiltins(VM& vm)
     link("parse_expression", [this](VM&, ArgsView a) { return inspect_parse_expression_builtin(a); });
     link("parse_statement", [this](VM&, ArgsView a) { return inspect_parse_statement_builtin(a); });
     link("parse_declaration", [this](VM&, ArgsView a) { return inspect_parse_declaration_builtin(a); });
+
+    link("members", [this](VM&, ArgsView a) { return inspect_members_builtin(a); });
+    link("signatures", [this](VM&, ArgsView a) { return inspect_signatures_builtin(a); });
+    link("call", [this](VM&, ArgsView a) { return inspect_call_builtin(a); });
+    link("calling_module", [this](VM&, ArgsView a) { return inspect_calling_module_builtin(a); });
+    link("main_module", [this](VM&, ArgsView a) { return inspect_main_module_builtin(a); });
 }
 
 void ModuleInspect::onModuleLoaded(VM& vm)
@@ -1523,4 +1531,466 @@ Value ModuleInspect::inspect_parse_file_builtin(ArgsView args)
 
     std::filesystem::path p(path);
     return parseToMirror(source, p.stem().string(), /*tolerant=*/false, /*deduceTypes=*/true);
+}
+
+// ---------------------------------------------------------------------------
+// Runtime reflection
+//
+// Introspection of the live objects rather than of source text: what a module
+// contains, what a callable's signature and annotations are, and a call whose
+// argument list is only known at runtime.  Annotations are retained on
+// ObjFunction (and survive .roc caching), but their arguments are stored as
+// unevaluated AST expressions -- evalAnnotArg() below is the evaluator, and it
+// accepts exactly the literal family that the .roc serializer can round-trip.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+Value numValue(const std::variant<int32_t,int64_t,double>& n)
+{
+    if (std::holds_alternative<int32_t>(n))
+        return Value::intVal(int64_t(std::get<int32_t>(n)));
+    if (std::holds_alternative<int64_t>(n))
+        return Value::intVal(std::get<int64_t>(n));
+    return Value::realVal(std::get<double>(n));
+}
+
+ObjModuleType* ownerModule(ObjFunction* fn)
+{
+    if (!fn)
+        return nullptr;
+    Value mv = fn->moduleType.strongRef();
+    return (mv.isObj() && isModuleType(mv)) ? asModuleType(mv) : nullptr;
+}
+
+// Resolve a bare name in an annotation argument: the declaring module's
+// variables first, then the globals (which is where the sys surface lives).
+Value resolveName(const ustring& name, ObjFunction* fn, VM& vm)
+{
+    if (ObjModuleType* mod = ownerModule(fn)) {
+        auto v = mod->vars.load(name.hashCode());
+        if (v.has_value())
+            return v.value();
+    }
+    auto g = vm.loadGlobal(name);
+    if (g.has_value())
+        return g.value();
+    return Value::nilVal();
+}
+
+// Apply a literal suffix (2s, 100ms, 5kg) by calling the @suffix-registered
+// function, exactly as a compiled suffixed literal would.  Registrations live
+// on the module that declared them; sys's are visible everywhere.
+Value applySuffix(const ustring& suffix, const Value& literal, ObjFunction* fn, VM& vm)
+{
+    ustring funcName;
+    ObjModuleType* declaring = nullptr;
+    if (ObjModuleType* mod = ownerModule(fn)) {
+        auto it = mod->registeredSuffixes.find(suffix);
+        if (it != mod->registeredSuffixes.end()) {
+            funcName = it->second;
+            declaring = mod;
+        }
+    }
+    if (funcName.isEmpty()) {
+        Value sysMod = vm.getBuiltinModuleType(toUnicodeString("sys"));
+        if (sysMod.isObj() && isModuleType(sysMod)) {
+            ObjModuleType* sys = asModuleType(sysMod);
+            auto it = sys->registeredSuffixes.find(suffix);
+            if (it != sys->registeredSuffixes.end()) {
+                funcName = it->second;
+                declaring = sys;
+            }
+        }
+    }
+    if (funcName.isEmpty() || !declaring)
+        throw std::runtime_error("inspect: annotation uses unknown literal suffix '"
+                                 + toUTF8StdString(suffix) + "'");
+
+    auto fv = declaring->vars.load(funcName.hashCode());
+    if (!fv.has_value() || !isClosure(fv.value()))
+        throw std::runtime_error("inspect: suffix function '" + toUTF8StdString(funcName)
+                                 + "' is not callable");
+    auto result = vm.invokeClosure(asClosure(fv.value()), { literal });
+    if (result.first != ExecutionStatus::OK)
+        throw std::runtime_error("inspect: evaluating literal suffix '"
+                                 + toUTF8StdString(suffix) + "' failed");
+    return result.second;
+}
+
+Value evalAnnotArg(const ptr<ast::Expression>& e, ObjFunction* fn, VM& vm)
+{
+    using namespace ast;
+    if (!e)
+        return Value::nilVal();
+    if (auto s = dynamic_ptr_cast<Str>(e))
+        return Value::stringVal(s->str);
+    if (auto n = dynamic_ptr_cast<Num>(e))
+        return numValue(n->num);
+    if (auto b = dynamic_ptr_cast<Bool>(e))
+        return b->value ? Value::trueVal() : Value::falseVal();
+    if (auto sn = dynamic_ptr_cast<SuffixedNum>(e))
+        return applySuffix(sn->suffix, numValue(sn->num), fn, vm);
+    if (auto ss = dynamic_ptr_cast<SuffixedStr>(e))
+        return applySuffix(ss->suffix, Value::stringVal(ss->str), fn, vm);
+    if (auto l = dynamic_ptr_cast<List>(e)) {
+        Value lst = Value::listVal();
+        for (const auto& el : l->elements)
+            asList(lst)->append(evalAnnotArg(el, fn, vm));
+        return lst;
+    }
+    if (auto d = dynamic_ptr_cast<Dict>(e)) {
+        Value dict = Value::dictVal();
+        for (const auto& entry : d->entries)
+            asDict(dict)->store(evalAnnotArg(entry.first, fn, vm),
+                                evalAnnotArg(entry.second, fn, vm));
+        return dict;
+    }
+    if (auto u = dynamic_ptr_cast<UnaryOp>(e)) {
+        if (u->op != UnaryOp::Negate)
+            throw std::runtime_error("inspect: annotation argument is not a literal");
+        return roxal::negate(evalAnnotArg(u->arg, fn, vm));
+    }
+    if (auto v = dynamic_ptr_cast<Variable>(e))
+        return resolveName(v->name, fn, vm);
+    // `nil` is a bare Literal rather than a node type of its own, so it has to
+    // be recognised after the specific literal kinds above (which derive from it)
+    if (auto lit = dynamic_ptr_cast<Literal>(e))
+        if (lit->literalType == Literal::LiteralType::Nil)
+            return Value::nilVal();
+    // Anything else is rejected at compile time (see RoxalCompiler's annotation
+    // validation), so reaching here means a node kind was added without
+    // teaching this evaluator about it.
+    throw std::runtime_error("inspect: annotation argument is not a literal");
+}
+
+// The declaration line of a callable: an annotation's line when there is one
+// (it sits directly above the declaration), else the first line of its body.
+int declLine(ObjFunction* fn)
+{
+    if (!fn)
+        return 0;
+    int best = 0;
+    for (const auto& a : fn->annotations)
+        if (a && (best == 0 || a->interval.first.line < best))
+            best = a->interval.first.line;
+    if (best > 0)
+        return best;
+    if (fn->chunk && !fn->chunk->code.empty())
+        return fn->chunk->getLine(0);
+    return 0;
+}
+
+// Every ObjFunction reachable from a callable value: one per overload.
+std::vector<ObjFunction*> functionsOf(const Value& v)
+{
+    std::vector<ObjFunction*> out;
+    if (isClosure(v))
+        out.push_back(asFunction(asClosure(v)->function));
+    else if (isFunction(v))
+        out.push_back(asFunction(v));
+    else if (isBoundMethod(v)) {
+        Value m = asBoundMethod(v)->method;
+        if (isClosure(m))
+            out.push_back(asFunction(asClosure(m)->function));
+        else if (isFunction(m))
+            out.push_back(asFunction(m));
+    }
+    else if (isOverloadSet(v)) {
+        for (const auto& c : asOverloadSet(v)->closures)
+            if (isClosure(c))
+                out.push_back(asFunction(asClosure(c)->function));
+    }
+    return out;
+}
+
+bool isCallableValue(const Value& v)
+{
+    return isClosure(v) || isFunction(v) || isBoundMethod(v)
+        || isOverloadSet(v) || isNative(v) || isBoundNative(v);
+}
+
+} // anonymous namespace
+
+Value ModuleInspect::signatureValue(ObjFunction* fn)
+{
+    // Evaluating a suffixed annotation argument (2s) re-enters the interpreter,
+    // so a collection can be requested while the half-built mirror objects below
+    // are reachable only from these C++ locals -- invisible to the mark phase.
+    // Staying unparked makes the collection barrier wait us out instead.
+    SimpleMarkSweepGC::GCNoParkScope nativeCover;
+
+    Value sigV = moduleClassInstance(moduleTypeValue, "Signature");
+    ObjectInstance* sig = asObjectInstance(sigV);
+    sig->setProperty("name", Value::stringVal(fn->name));
+
+    Value paramsV = Value::listVal();
+    Value returnsV = Value::listVal();
+    bool isProc = false;   // proc-ness lives only in the function type
+    if (fn->funcType.has_value() && fn->funcType.value()
+        && fn->funcType.value()->func.has_value()) {
+        const auto& ft = fn->funcType.value()->func.value();
+        isProc = ft.isProc;
+        for (const auto& p : ft.params) {
+            Value pV = moduleClassInstance(moduleTypeValue, "Param");
+            ObjectInstance* param = asObjectInstance(pV);
+            if (p.has_value()) {
+                param->setProperty("name", Value::stringVal(p.value().name));
+                param->setProperty("has_default",
+                    p.value().hasDefault ? Value::trueVal() : Value::falseVal());
+                param->setProperty("variadic",
+                    p.value().variadic ? Value::trueVal() : Value::falseVal());
+                if (p.value().type.has_value() && p.value().type.value())
+                    param->setProperty("param_type", Value::stringVal(
+                        toUnicodeString(p.value().type.value()->toString())));
+            }
+            asList(paramsV)->append(pV);
+        }
+        for (const auto& r : ft.returnTypes)
+            if (r)
+                asList(returnsV)->append(Value::stringVal(toUnicodeString(r->toString())));
+    }
+    sig->setProperty("params", paramsV);
+    sig->setProperty("return_types", returnsV);
+    sig->setProperty("is_proc", isProc ? Value::trueVal() : Value::falseVal());
+
+    Value annotsV = Value::listVal();
+    for (const auto& a : fn->annotations) {
+        if (!a)
+            continue;
+        Value aV = moduleClassInstance(moduleTypeValue, "AnnotationInfo");
+        ObjectInstance* ann = asObjectInstance(aV);
+        ann->setProperty("name", Value::stringVal(a->name));
+        Value posV = Value::listVal();
+        Value namedV = Value::dictVal();
+        for (const auto& arg : a->args) {
+            Value av = evalAnnotArg(arg.second, fn, vm());
+            if (arg.first.isEmpty())
+                asList(posV)->append(av);
+            else
+                asDict(namedV)->store(Value::stringVal(arg.first), av);
+        }
+        ann->setProperty("args", posV);
+        ann->setProperty("named", namedV);
+        asList(annotsV)->append(aV);
+    }
+    sig->setProperty("annotations", annotsV);
+
+    if (fn->chunk && !fn->chunk->sourceName.isEmpty())
+        sig->setProperty("source_file", Value::stringVal(fn->chunk->sourceName));
+    sig->setProperty("line", Value::intVal(int64_t(declLine(fn))));
+    return sigV;
+}
+
+Value ModuleInspect::inspect_members_builtin(ArgsView args)
+{
+    if (args.size() < 1 || !isModuleType(args[0]))
+        throw std::invalid_argument("inspect.members expects a module");
+    ObjModuleType* mod = asModuleType(args[0]);
+
+    struct Entry {
+        ustring name;
+        Value value;
+        std::string kind;
+        int line;
+    };
+    std::vector<Entry> entries;
+    for (const auto& nv : mod->vars.snapshot()) {
+        const ustring& name = nv.first;
+        const Value& v = nv.second;
+        std::string kind;
+        int line = 0;
+        if (isModuleType(v))
+            kind = "module";
+        else if (isObjectType(v) || isTypeSpec(v))
+            kind = "type";
+        else if (isCallableValue(v)) {
+            auto fns = functionsOf(v);
+            bool isProc = false;
+            if (!fns.empty()) {
+                line = declLine(fns.front());
+                if (fns.front()->funcType.has_value() && fns.front()->funcType.value()
+                    && fns.front()->funcType.value()->func.has_value())
+                    isProc = fns.front()->funcType.value()->func.value().isProc;
+            }
+            kind = isProc ? "proc" : "func";
+        }
+        else
+            kind = mod->constVars.count(name.hashCode()) ? "const" : "var";
+        entries.push_back(Entry{ name, v, kind, line });
+    }
+
+    // Callables in declaration order (the order tests are written in matters to
+    // a test runner); everything else after, by name, for a stable listing.
+    std::stable_sort(entries.begin(), entries.end(),
+        [](const Entry& a, const Entry& b) {
+            bool ac = (a.kind == "func" || a.kind == "proc");
+            bool bc = (b.kind == "func" || b.kind == "proc");
+            if (ac != bc)
+                return ac;
+            if (ac && a.line != b.line)
+                return a.line < b.line;
+            return a.name < b.name;
+        });
+
+    Value lst = Value::listVal();
+    for (const auto& e : entries) {
+        Value mV = moduleClassInstance(moduleTypeValue, "Member");
+        ObjectInstance* m = asObjectInstance(mV);
+        m->setProperty("name", Value::stringVal(e.name));
+        m->setProperty("value", e.value);
+        m->setProperty("kind", Value::stringVal(toUnicodeString(e.kind)));
+        asList(lst)->append(mV);
+    }
+    return lst;
+}
+
+Value ModuleInspect::inspect_signatures_builtin(ArgsView args)
+{
+    if (args.size() < 1 || !isCallableValue(args[0]))
+        throw std::invalid_argument("inspect.signatures expects a callable");
+    SimpleMarkSweepGC::GCNoParkScope nativeCover;   // `lst` outlives a re-entrant call
+    Value lst = Value::listVal();
+    for (ObjFunction* fn : functionsOf(args[0]))
+        if (fn)
+            asList(lst)->append(signatureValue(fn));
+    return lst;
+}
+
+Value ModuleInspect::inspect_call_builtin(ArgsView args)
+{
+    if (args.size() < 1 || !isCallableValue(args[0]))
+        throw std::invalid_argument("inspect.call expects a callable");
+
+    std::vector<Value> callArgs;
+    std::vector<ustring> callNames;
+    if (args.size() >= 2 && !args[1].isNil()) {
+        if (!isList(args[1]))
+            throw std::invalid_argument("inspect.call: args must be a list");
+        ObjList* lst = asList(args[1]);
+        for (int32_t i = 0; i < lst->length(); ++i) {
+            callArgs.push_back(lst->getElement(size_t(i)));
+            callNames.push_back(ustring());
+        }
+    }
+    if (args.size() >= 3 && !args[2].isNil()) {
+        if (!isDict(args[2]))
+            throw std::invalid_argument("inspect.call: named must be a dict");
+        ObjDict* d = asDict(args[2]);
+        for (const auto& k : d->keys()) {
+            if (!isString(k))
+                throw std::invalid_argument("inspect.call: named keys must be strings");
+            callArgs.push_back(d->at(k));
+            callNames.push_back(asStringObj(k)->s);
+        }
+    }
+
+    Value callee = args[0];
+    Value receiver = Value::nilVal();
+    if (isBoundMethod(callee)) {
+        receiver = asBoundMethod(callee)->receiver;
+        callee = asBoundMethod(callee)->method;
+    }
+    else if (isOverloadSet(callee)) {
+        // Choose the overload with the VM's own resolver rather than a private
+        // rule, so a dynamic call ranks candidates exactly as a written-out one
+        // does -- by argument type, subtyping and conversions, not merely by
+        // how many arguments were supplied -- and reports the same diagnostics.
+        auto* set = asOverloadSet(callee);
+        std::vector<OverloadResolver::Candidate> cands;
+        cands.reserve(set->closures.size());
+        for (const auto& c : set->closures) {
+            OverloadResolver::Candidate cand;
+            if (c.isObj() && isClosure(c)) {
+                auto* fn = asFunction(asClosure(c)->function);
+                if (fn->funcType.has_value())
+                    cand.funcType = fn->funcType.value();
+            }
+            cand.target = c;
+            cand.isMethod = false;
+            cands.push_back(cand);
+        }
+
+        std::vector<OverloadResolver::ArgInfo> argInfos;
+        argInfos.reserve(callArgs.size());
+        for (size_t i = 0; i < callArgs.size(); ++i) {
+            OverloadResolver::ArgInfo info;
+            info.type = valueRuntimeType(callArgs[i]);
+            const ustring& name = i < callNames.size() ? callNames[i] : ustring();
+            if (!name.isEmpty()) {
+                info.isNamed = true;
+                info.nameHash = name.hashCode();
+            }
+            argInfos.push_back(info);
+        }
+
+        OverloadResolver resolver(&vm());
+        auto rr = resolver.resolve(cands, argInfos,
+                                   /*staticDispatchAttempt=*/false,
+                                   /*strictMode=*/true);
+        if (rr.kind == OverloadResolver::ResolveResult::Ambiguous)
+            throw std::runtime_error(
+                toUTF8StdString(toUnicodeString("inspect.call: "))
+                + resolver.ambiguityDiagnostic(set->name, cands, rr.tiedIndices, argInfos));
+        if (rr.kind != OverloadResolver::ResolveResult::ResolvedUnique)
+            throw std::runtime_error(
+                std::string("inspect.call: ")
+                + resolver.noMatchDiagnostic(set->name, cands, argInfos));
+        callee = cands[rr.chosenIndex].target;
+    }
+
+    if (!isClosure(callee))
+        throw std::invalid_argument("inspect.call: value is not callable dynamically");
+
+    // Hand the call to the dispatch loop rather than re-entering execute():
+    // a nested interpreter cannot yield (so it breaks runFor()), and an
+    // exception raised inside one unwinds straight past the boundary.  As an
+    // ordinary frame the callee behaves like any other call -- it can yield,
+    // and its exceptions reach the caller's handlers.
+    VM& vm_ = vm();
+    auto& cont = vm_.thread->pushContinuation();
+    // Leave the result slot unset: because this native pushes frames,
+    // callNativeFn fills in the callee slot itself, from the stack depth and
+    // argument count only it knows (our arguments may have been marshalled
+    // into a buffer rather than left on the stack).
+    cont.resultSlotIndex = -1;
+    cont.onComplete = [](VM& vmRef, Value result) -> bool {
+        vmRef.push(result);      // the call's value becomes inspect.call's value
+        return true;
+    };
+
+    if (!vm_.pushContinuationCall(asClosure(callee), callArgs, callNames, receiver)) {
+        vm_.clearContinuation();
+        throw std::runtime_error("inspect.call: could not invoke the callable");
+    }
+    return Value::nilVal();
+}
+
+Value ModuleInspect::inspect_calling_module_builtin(ArgsView args)
+{
+    int64_t depth = (args.size() >= 1 && args[0].isNumber()) ? args[0].asInt() : 0;
+    if (depth < 0 || !VM::thread)
+        return Value::nilVal();
+    // Natives do not push a bytecode frame, so frames.back() is our caller.
+    const auto& frames = VM::thread->frames;
+    if (frames.size() <= size_t(depth))
+        return Value::nilVal();
+    const CallFrame& frame = frames[frames.size() - 1 - size_t(depth)];
+    ObjFunction* fn = asFunction(asClosure(frame.closure)->function);
+    Value mv = fn->moduleType.strongRef();
+    return (mv.isObj() && isModuleType(mv)) ? mv : Value::nilVal();
+}
+
+Value ModuleInspect::inspect_main_module_builtin(ArgsView args)
+{
+    (void)args;
+    // The outermost frame of this thread: on the main thread that is the body
+    // of the script the process was started with, which is exactly what a test
+    // module wants in order to decide whether it is being run or imported.
+    if (!VM::thread || VM::thread->frames.empty())
+        return Value::nilVal();
+    const CallFrame& frame = VM::thread->frames.front();
+    ObjFunction* fn = asFunction(asClosure(frame.closure)->function);
+    Value mv = fn->moduleType.strongRef();
+    return (mv.isObj() && isModuleType(mv)) ? mv : Value::nilVal();
 }

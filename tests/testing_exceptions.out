@@ -1,0 +1,22 @@
+testing_exceptions: 6 tests
+  FAIL      typed_exception_fails_the_test
+  FAIL      untyped_exception_fails_the_test
+  PASS      assert_raises_passes
+  FAIL      assert_raises_reports_the_wrong_type
+  FAIL      assert_raises_reports_nothing_raised
+  PASS      approx_compares_with_a_tolerance
+
+FAIL typed_exception_fails_the_test
+  testing_exceptions.rox:6: raised ProgramException: kaboom
+
+FAIL untyped_exception_fails_the_test
+  testing_exceptions.rox:14: raised exception: just a string
+
+FAIL assert_raises_reports_the_wrong_type
+  testing_exceptions.rox:23: expected ZeroDivisionError, got ProgramException: kaboom
+
+FAIL assert_raises_reports_nothing_raised
+  testing_exceptions.rox:27: expected ProgramException, but nothing was raised
+
+2 passed, 4 failed
+failures=4

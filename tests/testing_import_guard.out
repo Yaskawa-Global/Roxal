@@ -1,0 +1,14 @@
+helper module run() returned 0
+-- driver module only --
+testing_import_guard: 1 test
+  PASS      driver_own_test
+
+1 passed
+own failures=0
+-- naming the imported module --
+testing_helper_mod: 2 tests
+  PASS      helper_one
+  PASS      helper_two
+
+2 passed
+imported failures=0

@@ -52,6 +52,7 @@ public:
     virtual std::any visit(ptr<ast::MatchStatement> ast);
     virtual std::any visit(ptr<ast::WithStatement> ast);
     virtual std::any visit(ptr<ast::RaiseStatement> ast);
+    virtual std::any visit(ptr<ast::AssertStatement> ast);
     virtual std::any visit(ptr<ast::Function> ast);
     virtual std::any visit(ptr<ast::Parameter> ast);
     virtual std::any visit(ptr<ast::Assignment> ast);

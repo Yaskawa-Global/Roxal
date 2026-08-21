@@ -744,6 +744,38 @@ void RaiseStatement::acceptChildren(ASTVisitor& v, Anys& results)
 }
 
 
+std::any AssertStatement::accept(ASTVisitor& v)
+{
+    Anys results {};
+
+    if (v.visitFirst())
+        results.push_back( v.visit(dynamic_ptr_cast<AssertStatement>(ptr_from_this())) );
+
+    if (v.visitChildren())
+        acceptChildren(v, results);
+
+    if (v.visitLast())
+        results.push_back( v.visit(dynamic_ptr_cast<AssertStatement>(ptr_from_this())) );
+
+    return results;
+}
+
+void AssertStatement::output(std::ostream& os, int indent) const
+{
+    os << spaces(indent)+"Assert" << std::endl;
+    condition->output(os, indent+2);
+    if (message.has_value())
+        message.value()->output(os, indent+2);
+}
+
+void AssertStatement::acceptChildren(ASTVisitor& v, Anys& results)
+{
+    results.push_back( condition->accept(v) );
+    if (message.has_value())
+        results.push_back( message.value()->accept(v) );
+}
+
+
 std::any TryStatement::accept(ASTVisitor& v)
 {
     Anys results {};

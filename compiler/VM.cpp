@@ -1456,6 +1456,14 @@ VM::VM()
     globals.storeGlobal(toUnicodeString("RuntimeException"), runtimeExType);
     globals.storeGlobal(toUnicodeString("ProgramException"), programExType);
     globals.storeGlobal(toUnicodeString("ConditionalInterrupt"), condIntType);
+
+    // AssertionError: raised by a failed `assert`.  A DIRECT subtype of
+    // exception, deliberately not of RuntimeException/ProgramException, so a
+    // broad `except e :RuntimeException:` in code under test cannot swallow the
+    // failure of an assertion about that code.
+    Value assertErrType = Value::objVal(newObjectTypeObj(toUnicodeString("AssertionError"), false));
+    asObjectType(assertErrType)->superType = exType;
+    globals.storeGlobal(toUnicodeString("AssertionError"), assertErrType);
     globals.storeGlobal(toUnicodeString("ZeroDivisionError"), zeroDivType);
 #ifdef ROXAL_ENABLE_FILEIO
     globals.storeGlobal(toUnicodeString("FileIOException"), fileIOExceptionTypeVal);
@@ -4250,6 +4258,14 @@ std::pair<ExecutionStatus,Value> VM::invokeClosure(ObjClosure* closure,
                                                     const std::vector<Value>& args,
                                                     TimePoint deadline)
 {
+    return invokeClosure(closure, args, std::vector<ustring>{}, deadline);
+}
+
+std::pair<ExecutionStatus,Value> VM::invokeClosure(ObjClosure* closure,
+                                                    const std::vector<Value>& args,
+                                                    const std::vector<ustring>& argNames,
+                                                    TimePoint deadline)
+{
     // Make this invoke safe to call from a parked native pump (see ParkedInvokeScope).
     ParkedInvokeScope parkedScope(thread.get());
 
@@ -4260,6 +4276,28 @@ std::pair<ExecutionStatus,Value> VM::invokeClosure(ObjClosure* closure,
     for(const auto& a : args)
         push(a);
     CallSpec spec(args.size());
+
+    // Named arguments: build the same ArgSpec shape a compiled call site emits
+    // (see RoxalCompiler's Call visitor), so paramPositions() resolves them and
+    // unsupplied parameters fall back to their declared defaults.
+    bool anyNamed = false;
+    for (const auto& n : argNames)
+        if (!n.isEmpty()) { anyNamed = true; break; }
+    if (anyNamed) {
+        spec.allPositional = false;
+        spec.args.clear();
+        for (size_t i = 0; i < args.size(); ++i) {
+            CallSpec::ArgSpec aspec {};
+            const ustring& name = i < argNames.size() ? argNames[i] : ustring();
+            if (name.isEmpty())
+                aspec.positional = true;
+            else {
+                aspec.positional = false;
+                aspec.paramNameHash = 0x8000 | (name.hashCode() & 0x7fff);
+            }
+            spec.args.push_back(aspec);
+        }
+    }
 
     // Native closures (builtinInfo) must go through callNativeFn, not call(),
     // because call() sets up a bytecode frame but native closures have no bytecodes.
@@ -4280,6 +4318,8 @@ std::pair<ExecutionStatus,Value> VM::invokeClosure(ObjClosure* closure,
         return { ExecutionStatus::OK, result };
     }
 
+    const size_t entryFrames = thread->frames.size();
+
     if(!call(closure, spec)) {
         thread->popToDepth(entryDepth);   // call() failed: nobody owns the pushed args
         return { ExecutionStatus::RuntimeError, Value::nilVal() };
@@ -4290,9 +4330,15 @@ std::pair<ExecutionStatus,Value> VM::invokeClosure(ObjClosure* closure,
     // slots on return.  The flag travels WITH the frame, so a call that
     // yields here and completes later inside runFor() is unwound at its real
     // completion site -- this epilogue never sees it.
-    thread->frames.back().unwindOnReturn = true;
+    //
+    // Mark the CALLEE frame, not frames.back(): when a parameter's default has
+    // to be evaluated, call() pushes the callee first and then stacks the
+    // default-value frames on top of it.  Flagging the topmost frame would end
+    // execute() as soon as a default expression returned -- before the call
+    // itself ran -- and leave the callee frame stranded.
+    thread->frames[entryFrames].unwindOnReturn = true;
 
-    auto result = execute(deadline);  // Pass deadline to execute()
+    auto result = execute(deadline, entryFrames + 1);
 
     // A Yielded call is still live (resumed via runFor) and a completed one
     // was unwound by opReturn; only the error path needs local cleanup here
@@ -4336,14 +4382,16 @@ std::pair<ExecutionStatus,Value> VM::invokeMethod(const Value& receiver,
     push(receiver);
     for (const auto& a : args)
         push(a);
+    const size_t entryFrames = thread->frames.size();
     if (!call(closure, CallSpec(static_cast<int>(args.size())))) {
         thread->popToDepth(entryDepth);   // call() failed: nobody owns the pushed args
         return { ExecutionStatus::RuntimeError, Value::nilVal() };
     }
     // Same slot-ownership contract as invokeClosure: opReturn unwinds this
     // frame on return (including a later runFor completion after a yield).
-    thread->frames.back().unwindOnReturn = true;
-    auto result = execute(deadline);
+    // Mark and anchor to the CALLEE frame -- default-value frames sit above it.
+    thread->frames[entryFrames].unwindOnReturn = true;
+    auto result = execute(deadline, entryFrames + 1);
     if (result.first == ExecutionStatus::RuntimeError)
         thread->popToDepth(entryDepth);
     return result;
@@ -6212,7 +6260,21 @@ DispatchTable makeDispatchTable(const void* fallback,
 } // namespace
 #endif
 
-std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
+// Render one side of a failed assert's comparison.  Strings are quoted so that
+// a whitespace or empty-string difference is visible, and anything long is
+// clipped -- a failure message has to stay readable.
+static std::string assertOperandRepr(const Value& v)
+{
+    constexpr size_t MaxRepr = 200;
+    std::string text = isString(v)
+        ? ("'" + toUTF8StdString(asStringObj(v)->s) + "'")
+        : roxal::toString(v);
+    if (text.size() > MaxRepr)
+        text = text.substr(0, MaxRepr) + "...";
+    return text;
+}
+
+std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFrameDepth)
 {
     if (thread->frames.empty() ||
         asFunction(asClosure(thread->frames.back().closure)->function)->chunk->code.size() == 0)
@@ -6281,7 +6343,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
 
     // Track execution depth for nested calls
     thread->execute_depth++;
-    size_t frame_depth_on_entry = thread->frames.size();
+    size_t frame_depth_on_entry =
+        (baseFrameDepth == SIZE_MAX) ? thread->frames.size() : baseFrameDepth;
 
     // Deadline-based yielding support
     const bool hasDeadline = (deadline != TimePoint::max());
@@ -9923,6 +9986,70 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline)
                     frame->exceptionHandlers.pop_back();
                 break;
             }
+            case OpCode::AssertFail: {
+                // A failed assert.  Build the failure text -- the asserted
+                // expression as written, plus each side's value when the
+                // condition was a comparison -- and raise it as an
+                // AssertionError, which is catchable like any other exception
+                // and carries the pieces in .detail for programmatic use.
+                uint8_t flags = readByte();
+                // The constant index is ALWAYS two bytes here (see
+                // emitOpArgsBytesPlusIndex), so read it directly rather than
+                // through readConstant(), whose width follows the opcode's
+                // double-byte bit.
+                uint16_t exprConstIdx = readShort();
+                const auto& assertConstants =
+                    asFunction(asClosure(frame->closure)->function)->chunk->constants;
+                #ifdef DEBUG_BUILD
+                if (exprConstIdx >= assertConstants.size())
+                    throw std::runtime_error("AssertFail constant index out of range");
+                #endif
+                Value exprText = assertConstants[exprConstIdx];
+                bool hasMessage = (flags & 0x1) != 0;
+                bool hasOperands = (flags & 0x2) != 0;
+
+                Value right, left, userMessage;
+                if (hasOperands) {
+                    right = pop();
+                    left = pop();
+                }
+                if (hasMessage)
+                    userMessage = pop();
+
+                std::string text = "assertion failed";
+                if (isString(exprText) && !asStringObj(exprText)->s.isEmpty())
+                    text += ": " + toUTF8StdString(asStringObj(exprText)->s);
+                if (hasOperands) {
+                    text += "\n  left:  " + assertOperandRepr(left);
+                    text += "\n  right: " + assertOperandRepr(right);
+                }
+                if (hasMessage) {
+                    Value asText = toType(ValueType::String, userMessage, false);
+                    text += "\n  " + toUTF8StdString(asStringObj(asText)->s);
+                }
+
+                Value detail = Value::dictVal();
+                asDict(detail)->store(Value::stringVal(toUnicodeString("expression")), exprText);
+                if (hasOperands) {
+                    asDict(detail)->store(Value::stringVal(toUnicodeString("left")), left);
+                    asDict(detail)->store(Value::stringVal(toUnicodeString("right")), right);
+                }
+                if (hasMessage)
+                    asDict(detail)->store(Value::stringVal(toUnicodeString("message")), userMessage);
+
+                Value excType = globals.load(toUnicodeString("AssertionError")).value();
+                raiseException(Value::exceptionVal(
+                    Value::stringVal(toUnicodeString(text)), excType, Value::nilVal(), detail));
+                // raiseException rewrote the frame stack, so the cached frame
+                // pointer must be refreshed before dispatching again -- unless
+                // the raise went uncaught or was stashed for actor forwarding,
+                // in which case there is no frame to continue on (mirrors both
+                // OpCode::Throw and handleZeroDivision).
+                if (runtimeErrorFlag.load() || thread->frames.empty())
+                    return errorReturn;
+                frame = thread->frames.end()-1;
+                break;
+            }
             case OpCode::Throw: {
                 // Resolve future before throwing
                 if (isFuture(peek(0))) {
@@ -10974,17 +11101,49 @@ bool VM::processEventDispatch()
 
 bool VM::pushContinuationCall(ObjClosure* closure, const std::vector<Value>& args)
 {
-    push(Value::objRef(closure));
+    return pushContinuationCall(closure, args, std::vector<ustring>{}, Value::nilVal());
+}
+
+bool VM::pushContinuationCall(ObjClosure* closure, const std::vector<Value>& args,
+                              const std::vector<ustring>& argNames,
+                              const Value& receiver)
+{
+    // A method reads `this` from its frame's slot 0, which is the callee slot,
+    // so a receiver goes there in place of the closure.
+    push(receiver.isNil() ? Value::objRef(closure) : receiver);
     for (const auto& arg : args)
         push(arg);
 
     CallSpec spec(args.size());
+    bool anyNamed = false;
+    for (const auto& n : argNames)
+        if (!n.isEmpty()) { anyNamed = true; break; }
+    if (anyNamed) {
+        spec.allPositional = false;
+        spec.args.clear();
+        for (size_t i = 0; i < args.size(); ++i) {
+            CallSpec::ArgSpec aspec {};
+            const ustring& name = i < argNames.size() ? argNames[i] : ustring();
+            if (name.isEmpty())
+                aspec.positional = true;
+            else {
+                aspec.positional = false;
+                aspec.paramNameHash = 0x8000 | (name.hashCode() & 0x7fff);
+            }
+            spec.args.push_back(aspec);
+        }
+    }
+
+    const size_t entryFrames = thread->frames.size();
     if (!call(closure, spec))
         return false;
 
-    thread->frames.back().isContinuationCallback = true;
+    // Flag the CALLEE frame: when a parameter's default has to be evaluated,
+    // call() stacks those frames on top of the callee, and it is the callee's
+    // return that completes the continuation.
+    thread->frames[entryFrames].isContinuationCallback = true;
     if (thread->hasContinuation())
-        thread->currentContinuation().callbackFrameDepth = thread->frames.size();
+        thread->currentContinuation().callbackFrameDepth = entryFrames + 1;
     return true;
 }
 

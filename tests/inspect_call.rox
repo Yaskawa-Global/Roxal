@@ -1,0 +1,40 @@
+// inspect.call() invokes a callable whose argument list is only known at
+// runtime: positional args, named args, and declared defaults.
+import inspect
+
+func add(a :int, b :int = 10) -> int:
+  return a + b
+
+proc shout(msg :string):
+  print(msg + '!')
+
+type Counter object:
+  var n :int = 0
+  func bump(amount :int = 1) -> int:
+    n = n + amount
+    return n
+
+print(inspect.call(add, [1, 2], {}))
+print(inspect.call(add, [], {'a': 5, 'b': 6}))
+print(inspect.call(add, [5], {'b': 100}))
+inspect.call(shout, ['hello'], {})
+
+var c = Counter()
+print(inspect.call(c.bump, [5], {}))         // a bound method: the receiver is `this`
+print(inspect.call(c.bump, [2], {}))
+
+// a dynamic call behaves as a written-out one: unsupplied parameters take
+// their declared defaults
+print(inspect.call(add, [7], {}))
+
+// and an overload set is resolved by the compiler's own ranking -- by argument
+// type, not merely by how many arguments were supplied
+func pick(x :int, y :int = 5) -> string:
+  return 'int ' + string(x + y)
+
+func pick(x :string) -> string:
+  return 'string ' + x
+
+print(inspect.call(pick, [1], {}))
+print(inspect.call(pick, [1, 2], {}))
+print(inspect.call(pick, ['hi'], {}))

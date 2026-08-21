@@ -1,0 +1,14 @@
+// A test module meant to be imported by testing_import_guard: its own run()
+// call does nothing, because this module is not the one being executed.
+import testing.*
+
+@test
+func helper_one():
+  assert 1 == 1
+
+@test
+func helper_two():
+  assert 2 == 2
+
+var never = run(times=false, do_exit=false)
+print('helper module run() returned ' + string(never))

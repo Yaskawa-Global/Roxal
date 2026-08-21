@@ -1,0 +1,32 @@
+// A cleanup that raises must not be swallowed: the test it belongs to fails,
+// a module-scoped one is reported against the module, and both reach the
+// summary -- a suite whose teardown failed is not a suite that passed.
+import testing.*
+
+proc explodes():
+  raise ProgramException('teardown exploded')
+
+@fixture
+func per_test():
+  cleanup(explodes)
+  return 1
+
+@fixture('module')
+func per_module():
+  cleanup(explodes)
+  return 2
+
+@test
+func passes_but_teardown_fails(per_test):
+  assert per_test == 1
+
+@test
+func already_failing_test_keeps_its_own_message(per_test):
+  assert per_test == 99
+
+@test
+func uses_module_fixture(per_module):
+  assert per_module == 2
+
+var failures = run(times=false, do_exit=false)
+print('failures=' + string(failures))

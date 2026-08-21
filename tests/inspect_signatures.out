@@ -1,0 +1,20 @@
+name=alpha
+is_proc=false
+returns=["bool"]
+params=["a", "b", "rest"]
+  a type=int default=false variadic=false
+  b type=string default=true variadic=false
+  rest type=nil default=false variadic=true
+timeout=2s
+timeout is time=true
+tags=["slow", "net"]
+retries=-1
+fallback=nil present=true
+missing=nil
+missing with default=7
+has test=true has fixture=false
+doc=a documented function
+plain is_proc=true
+overloads=2
+  over["x"]
+  over["x", "y"]

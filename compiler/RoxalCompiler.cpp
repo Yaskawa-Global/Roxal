@@ -68,7 +68,7 @@ const char* suffixShadowedByNumericBase(const std::string& s)
 }
 
 constexpr char ModuleCacheMagic[4] = {'R', 'O', 'X', 'C'};
-constexpr std::uint32_t ModuleCacheVersion = 51;
+constexpr std::uint32_t ModuleCacheVersion = 53;   // 53: annotation args may be lists, dicts, negations, suffixed literals and nil
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -2292,6 +2292,62 @@ std::any RoxalCompiler::visit(ptr<ast::TypeDecl> ast)
     return {};
 }
 
+// Annotation arguments attached to a function are retained on the ObjFunction
+// and written to the module's bytecode cache, so they must be expressions the
+// cache can round-trip (see writeExpr/readExpr in Object.cpp).  Reject anything
+// else here rather than at cache-write time: a rejected argument there is
+// silent and costs the whole module its cache.
+static bool isSerializableAnnotArg(const ptr<ast::Expression>& e)
+{
+    using namespace ast;
+    if (!e)
+        return true;
+    if (dynamic_ptr_cast<Str>(e) || dynamic_ptr_cast<Num>(e)
+        || dynamic_ptr_cast<Bool>(e) || dynamic_ptr_cast<Variable>(e)
+        || dynamic_ptr_cast<SuffixedNum>(e) || dynamic_ptr_cast<SuffixedStr>(e))
+        return true;
+    // `nil` is a bare Literal, not a node type of its own
+    if (auto lit = dynamic_ptr_cast<Literal>(e))
+        if (lit->literalType == Literal::LiteralType::Nil)
+            return true;
+    if (auto l = dynamic_ptr_cast<List>(e)) {
+        for (const auto& el : l->elements)
+            if (!isSerializableAnnotArg(el))
+                return false;
+        return true;
+    }
+    if (auto d = dynamic_ptr_cast<Dict>(e)) {
+        for (const auto& entry : d->entries)
+            if (!isSerializableAnnotArg(entry.first) || !isSerializableAnnotArg(entry.second))
+                return false;
+        return true;
+    }
+    if (auto u = dynamic_ptr_cast<UnaryOp>(e))
+        return u->op == UnaryOp::Negate && isSerializableAnnotArg(u->arg);
+    return false;
+}
+
+void RoxalCompiler::checkAnnotationArgs(const std::vector<ptr<ast::Annotation>>& annotations,
+                                        const ptr<ast::AST>& location)
+{
+    for (const auto& annot : annotations) {
+        if (!annot)
+            continue;
+        for (const auto& arg : annot->args) {
+            if (isSerializableAnnotArg(arg.second))
+                continue;
+            // Annotation nodes carry no source interval, so report against the
+            // declaration they are attached to.
+            currentNode = (annot->interval.first.line > 0) ? ptr<ast::AST>(annot) : location;
+            error("annotation @" + toUTF8StdString(annot->name)
+                  + " argument must be a literal: a number, string, bool, nil, "
+                    "a list or dict of those, a negated number, a suffixed "
+                    "literal, or a name");
+            return;
+        }
+    }
+}
+
 std::any RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
 {
     currentNode = ast;
@@ -2361,6 +2417,7 @@ std::any RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
     //  to the function object to make them available at runtime
     function->annotations = ast->annotations;
     function->annotations.insert(function->annotations.end(), ast->func->annotations.begin(), ast->func->annotations.end());
+    checkAnnotationArgs(function->annotations, ast);
     for(const auto& annot : function->annotations) {
         if (annot->name == "doc") {
             std::string d;
@@ -3881,6 +3938,106 @@ std::any RoxalCompiler::visit(ptr<ast::WithStatement> ast)
     return {};
 }
 
+// Comparison operators whose operands are worth reporting when an assert fails.
+static bool isReportableComparison(ast::BinaryOp::Op op)
+{
+    using Op = ast::BinaryOp::Op;
+    switch (op) {
+        case Op::Equal: case Op::NotEqual:
+        case Op::LessThan: case Op::GreaterThan:
+        case Op::LessOrEqual: case Op::GreaterOrEqual:
+        case Op::Is: case Op::In: case Op::NotIn:
+            return true;
+        default:
+            return false;
+    }
+}
+
+void RoxalCompiler::emitComparison(ast::BinaryOp::Op op)
+{
+    using Op = ast::BinaryOp::Op;
+    switch (op) {
+        case Op::Equal: emitByte(OpCode::Equal); break;
+        case Op::NotEqual: emitByte(OpCode::NotEqual); break;
+        case Op::LessThan: emitByte(OpCode::Less); break;
+        case Op::GreaterThan: emitByte(OpCode::Greater); break;
+        case Op::LessOrEqual: emitByte(OpCode::LessEqual); break;
+        case Op::GreaterOrEqual: emitByte(OpCode::GreaterEqual); break;
+        case Op::Is: emitByte(OpCode::Is); break;
+        case Op::In: emitByte(OpCode::In); break;
+        case Op::NotIn: emitByte(OpCode::In); emitByte(OpCode::Negate); break;
+        default:
+            throw std::runtime_error("assert: not a comparison operator");
+    }
+}
+
+std::any RoxalCompiler::visit(ptr<ast::AssertStatement> ast)
+{
+    currentNode = ast;
+
+    // A comparison condition is evaluated through temporaries so that a failure
+    // can report what each side actually was -- the single most useful thing an
+    // assertion can tell you -- without evaluating either operand twice.
+    ptr<ast::BinaryOp> cmp;
+    if (auto b = dynamic_ptr_cast<ast::BinaryOp>(ast->condition)) {
+        // `x is not nil` parses as `x is (not nil)`; the BinaryOp visitor has a
+        // special case for it, so leave that shape alone.
+        bool isNotNilShape = (b->op == ast::BinaryOp::Is) && isa<ast::UnaryOp>(b->rhs);
+        if (isReportableComparison(b->op) && !isNotNilShape)
+            cmp = b;
+    }
+
+    uint16_t exprConst = makeConstant(
+        Value::stringVal(toUnicodeString(ast->condition->sourceText())));
+
+    uint8_t flags = 0;
+    if (ast->message.has_value())
+        flags |= 0x1;
+    if (cmp)
+        flags |= 0x2;
+
+    enterLocalScope();
+
+    ustring lhsName = toUnicodeString("__assert_lhs");
+    ustring rhsName = toUnicodeString("__assert_rhs");
+
+    if (cmp) {
+        declareVariable(lhsName);
+        cmp->lhs->accept(*this);
+        defineVariable();
+        declareVariable(rhsName);
+        cmp->rhs->accept(*this);
+        defineVariable();
+        namedVariable(lhsName, false);
+        namedVariable(rhsName, false);
+        emitComparison(cmp->op);
+    }
+    else {
+        ast->condition->accept(*this);
+    }
+
+    // JumpIfTrue peeks, so both paths own the Pop of the condition value.
+    auto passed = emitJump(OpCode::JumpIfTrue);
+
+    emitByte(OpCode::Pop, "assert condition");
+    if (ast->message.has_value())
+        ast->message.value()->accept(*this);
+    if (cmp) {
+        namedVariable(lhsName, false);
+        namedVariable(rhsName, false);
+    }
+    emitOpArgsBytesPlusIndex(OpCode::AssertFail, flags, exprConst, "assert failed");
+    // AssertFail always raises, so nothing follows it on this path.
+
+    patchJump(passed);
+    emitByte(OpCode::Pop, "assert condition");
+
+    exitLocalScope();
+
+    return {};
+}
+
+
 std::any RoxalCompiler::visit(ptr<ast::RaiseStatement> ast)
 {
     currentNode = ast;
@@ -4103,6 +4260,11 @@ std::any RoxalCompiler::visit(ptr<ast::Function> ast)
 
     ObjFunction* function = asFunction(asFuncScope(funcScope())->function);
     function->annotations = ast->annotations;
+    // Methods and lambdas reach here rather than through visit(FuncDecl), and
+    // their annotations are retained and cached just the same, so they need the
+    // same check -- without it an unserializable argument silently costs the
+    // module its cache and only surfaces when something reads the annotation.
+    checkAnnotationArgs(function->annotations, ast);
     for (const auto& annot : function->annotations) {
         if (annot->name == "doc") {
             std::string d;
@@ -5977,8 +6139,16 @@ void RoxalCompiler::storeModuleCache(const ModuleInfo& module, const Value& func
     if (!cacheWriteEnabled || module.cachePath.empty() || function.isNil() || !isFunction(function))
         return;
 
+    // Write to a sibling temp file and rename only once the whole cache is on
+    // disk.  A partially written .roc must never be left where a later run
+    // would load it: the reader trusts the length fields it finds, so a
+    // truncated file does not merely fail -- it can allocate unboundedly
+    // before it does.  (Hit for real by an annotation argument whose
+    // expression kind writeExpr() cannot serialize.)
+    const std::filesystem::path tmpPath =
+        std::filesystem::path(module.cachePath).concat(".tmp");
     try {
-        std::ofstream cacheStream(module.cachePath, std::ios::binary | std::ios::trunc);
+        std::ofstream cacheStream(tmpPath, std::ios::binary | std::ios::trunc);
         if (!cacheStream.is_open())
             return;
 
@@ -6005,8 +6175,20 @@ void RoxalCompiler::storeModuleCache(const ModuleInfo& module, const Value& func
 
         auto ctx = ptr<SerializationContext>::from_raw(new SerializationContext());
         writeValue(cacheStream, function, ctx);
+
+        cacheStream.flush();
+        if (!cacheStream)
+            throw std::runtime_error("module cache write failed");
+        cacheStream.close();
+
+        std::error_code ec;
+        std::filesystem::rename(tmpPath, module.cachePath, ec);
+        if (ec)
+            std::filesystem::remove(tmpPath, ec);
     } catch (...) {
-        // ignore cache write failures
+        // Ignore cache write failures, but never leave the partial file behind.
+        std::error_code ec;
+        std::filesystem::remove(tmpPath, ec);
     }
 }
 

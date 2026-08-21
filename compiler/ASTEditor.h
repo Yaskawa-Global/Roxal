@@ -40,6 +40,7 @@ public:
     virtual std::any visit(ptr<ast::MatchStatement> ast);
     virtual std::any visit(ptr<ast::WithStatement> ast);
     virtual std::any visit(ptr<ast::RaiseStatement> ast);
+    virtual std::any visit(ptr<ast::AssertStatement> ast);
     virtual std::any visit(ptr<ast::Function> ast);
     virtual std::any visit(ptr<ast::Parameter> ast);
     virtual std::any visit(ptr<ast::Assignment> ast);
@@ -128,6 +129,7 @@ public:
     std::any visit(ptr<roxal::ast::MatchStatement> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::WithStatement> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::RaiseStatement> ast) override { if(m_f) m_f(ast); return{}; }
+    std::any visit(ptr<roxal::ast::AssertStatement> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Function> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Parameter> ast) override { if(m_f) m_f(ast); return{}; }
     std::any visit(ptr<roxal::ast::Assignment> ast) override { if(m_f) m_f(ast); return{}; }

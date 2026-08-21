@@ -1,0 +1,60 @@
+// The `assert` statement: a passing assert is a no-op; a failing one raises an
+// AssertionError whose message shows the expression as written and, for a
+// comparison, what each side actually was.
+var a = 2
+var b = 3
+
+assert a < b
+assert a + 1 == b
+assert(a < b)
+assert a < b, 'a should be less'
+assert 'ell' in 'hello'
+print('passed')
+
+try:
+  assert a == b, 'numbers must match'
+except e :AssertionError:
+  print(string(e))
+  print('expression=' + e.detail['expression'])
+  print('left=' + e.detail['left'] + ' right=' + e.detail['right'])
+  print('message=' + e.detail['message'])
+
+try:
+  assert 'hello' == 'hellp'
+except e:
+  print(string(e))
+
+try:
+  assert [1, 2] == [1, 3]
+except e:
+  print(string(e))
+
+try:
+  assert(a > b, 'paren form')
+except e:
+  print(string(e))
+
+// a non-comparison condition reports no operands
+try:
+  assert false
+except e:
+  print(string(e))
+
+// AssertionError is a direct subtype of exception, so a RuntimeException
+// handler must not swallow it
+try:
+  try:
+    assert a == b
+  except e :RuntimeException:
+    print('should not catch')
+except e :AssertionError:
+  print('outer caught it')
+
+// operands are evaluated exactly once
+var calls = 0
+func bump() -> int:
+  calls = calls + 1
+  return 1
+
+assert bump() == 1
+print('evaluations=' + calls)

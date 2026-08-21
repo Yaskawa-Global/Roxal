@@ -1,0 +1,1077 @@
+# testing — a unit-test framework for Roxal.
+#
+# Tests are ordinary functions marked with an annotation; the runner finds them
+# by reflecting over the module (see the `inspect` module), so nothing has to be
+# registered by hand:
+#
+#   import testing.*
+#
+#   @fixture('module')
+#   func channel():
+#     var ch = connect('localhost:50051')
+#     cleanup(func(): ch.close())      # torn down when the module's tests end
+#     return ch
+#
+#   @test
+#   func ping(channel):                # a parameter is filled by the fixture of that name
+#     assert channel.ping() == 'pong'
+#
+#   run()                              # discovers, runs and reports; returns the failure count
+#
+# `run()` only runs when the module containing it is the one being executed, so
+# importing a test module from a driver does not set it going.  A driver runs
+# several modules by naming them: run([suite_a, suite_b]).
+#
+# Fixtures are local to the module that declares them, so two test modules may
+# each declare a `client` without colliding.  To share one set across modules,
+# put them in a module of their own and name it as a provider -- and any module
+# may specialise a shared fixture by declaring one of the same name:
+#
+#   run([suite_a, suite_b], fixtures=[common_fixtures])
+#
+# A test passes only if its teardown does too: a cleanup that raises fails the
+# test it belongs to, and one from a wider scope is reported against the module
+# or the session, so a failing teardown can never leave a run green.
+#
+# Selecting what to run, and how much it reports, is available both as
+# arguments to run() and as command-line flags (-k, -t, -x, -q, -l, --timeout,
+# --color, --no-times); see _apply_args below for the full list.
+#
+# Everything runs on the calling thread.  Test bodies are not handed to an actor:
+# a test module's own module-level variables are ordinary state that only its
+# own thread may touch, and event/signal handlers a test registers must be
+# delivered on the thread that registered them.
+#
+# A test that overruns its timeout is interrupted wherever it is -- computing,
+# sleeping or waiting on an event -- with one exception: a test blocked inside a
+# native call (a socket read, a blocking RPC) cannot be interrupted until that
+# call returns.
+
+import inspect
+
+# ---- annotations -----------------------------------------------------------
+# These are inert to the compiler; the runner reads them back at runtime.
+#
+#   @test                     mark a function as a test
+#   @test(timeout=2s)         fail the test if it has not finished in time
+#   @test(tags=['slow'])      label it for selection with -t
+#   @fixture                  a value a test asks for by parameter name
+#   @fixture('module')        ...built once per module ('test', 'module', 'session')
+#   @cases([[1, 2, 3], ...])  run the test once per element, as name[0], name[1], ...
+#   @skip('reason')           do not run it
+#   @xfail('reason')          expect it to fail; a pass is reported as XPASS
+#
+# The compiler accepts any annotation, so a misspelled one would silently do
+# nothing; discovery reports a name close to one of these as the likely typo.
+
+
+# ---- exceptions ------------------------------------------------------------
+
+type SkipTest object extends ProgramException
+  # raised by skip(); reported as a skipped test rather than a failure
+
+
+# ---- results ---------------------------------------------------------------
+
+type Result object:
+  # the outcome of one test
+  var name :string = ''
+  var status :string = ''    # pass | fail | skip | xfail | xpass | timeout
+  var message :string = ''
+  var location :string = ''
+  var millis :real = 0.0
+
+  proc init(*):
+    """construct a Result, properties as named arguments"""
+
+
+# ---- timeouts --------------------------------------------------------------
+# A timeout has to interrupt a test that may be computing, sleeping or waiting,
+# so it arrives as an event and the runner runs the test under `until`.  The
+# timer is an actor because only a separate thread can still count while the
+# test has the main thread.  Nothing here touches the dataflow graph, so a test
+# of signals and networks sees only its own nodes.
+
+type _TestTimeout event      # timer -> runner: this test has run out of time
+type _CancelTimeout event    # runner -> timer: the test finished, stand down
+type _TimerReady event       # timer -> runner: my cancel handler is registered
+
+const _SLICE_MS = 5          # how often the timer looks for a cancellation
+
+type _Timer actor:
+  private var _cancels :int = 0
+
+  proc setup():
+    """count cancellations, from now until the process ends.
+
+    A count rather than a flag, and never reset: a cancellation can reach the
+    actor while the next arm() is still queued behind the running one, and a
+    flag cleared per arm would lose it -- leaving that arm to sleep out its
+    whole timeout.  Each arm() says which cancellation number it waits for, so
+    one arriving early still counts against the right arm.
+
+    Registering the handler once, before any arm is queued, is also what keeps
+    it from racing: an actor registers handlers on its own thread, when it gets
+    to them."""
+    when _CancelTimeout occurs as e:
+      _cancels = _cancels + 1
+    emit _TimerReady()
+
+  func arm(ms :int, stop_at :int) -> bool:
+    """announce a timeout after ms, unless cancellation number stop_at has been
+    seen by then; true if announced.  Sleeping in slices is what makes a
+    cancellation land promptly -- events are delivered at instruction
+    boundaries, including while sleeping"""
+    var waited = 0
+    while waited < ms:
+      if _cancels >= stop_at:
+        return false
+      wait(ms=_SLICE_MS)
+      waited = waited + _SLICE_MS
+    if _cancels >= stop_at:
+      return false
+    emit _TestTimeout()
+    return true
+
+
+# ---- runner state (single-threaded: only the calling thread touches it) -----
+
+var _timer = nil
+var _cancels_sent :int = 0    # how many _CancelTimeout events this run has emitted
+var _fixtures = {}            # the running module's own fixtures, by name
+var _shared_fixtures = {}     # fixtures from provider modules, visible to every module
+var _fixture_values = {}      # scope_name -> {name: value}
+var _cleanups = {}            # scope_name -> list of callables, run in reverse
+var _current_scope = 'test'
+var _finished = false
+var _outcome_status = ''
+var _outcome_message = ''
+var _outcome_location = ''
+
+const _SCOPES = ['test', 'module', 'session']
+
+
+# ---- small helpers ---------------------------------------------------------
+
+func _scope_rank(scope_name :string) -> int:
+  if scope_name == 'session':
+    return 2
+  if scope_name == 'module':
+    return 1
+  return 0
+
+
+func _repeat(s :string, n :int) -> string:
+  var out = ''
+  var i = 0
+  while i < n:
+    out = out + s
+    i = i + 1
+  return out
+
+
+func _pad(s :string, width :int) -> string:
+  if len(s) >= width:
+    return s
+  return s + _repeat(' ', width - len(s))
+
+
+func _join(items :list, sep :string) -> string:
+  var out = ''
+  var first = true
+  for item in items:
+    if not first:
+      out = out + sep
+    out = out + string(item)
+    first = false
+  return out
+
+
+func _to_ms(v, default_ms :int = 0) -> int:
+  """a duration as milliseconds: a time quantity (2s, 500ms) or a number of seconds"""
+  if v is nil:
+    return default_ms
+  if v is quantity:
+    return int(v.milliseconds)
+  return int(real(v) * 1000.0)
+
+
+func _fmt_millis(ms :real) -> string:
+  if ms >= 1000.0:
+    return string(int(ms) / 1000) + '.' + string((int(ms) rem 1000) / 100) + ' s'
+  if ms >= 1.0:
+    return string(int(ms)) + ' ms'
+  return '<1 ms'
+
+
+func _module_name(mod) -> string:
+  """a module's bare name, from its '<type module name>' rendering"""
+  return _type_name_of_type(mod)
+
+
+func _type_name(v) -> string:
+  """the bare name of a value's type ('AssertionError' from '<type object AssertionError>')"""
+  var s = string(typeof(v))
+  if len(s) > 0 and s[len(s)-1] == '>':
+    s = s[0..len(s)-2]
+  var last = ''
+  for part in s.split(' '):
+    last = part
+  return last
+
+
+func _matches(name :string, pattern :string) -> bool:
+  """a name filter: a regular expression, matched anywhere in the test's name,
+  so a plain substring selects by substring and 'echo|ping' selects either"""
+  if pattern == '':
+    return true
+  return name.search(pattern) >= 0
+
+
+# ---- public API ------------------------------------------------------------
+
+proc skip(reason :string = ''):
+  """abandon the running test, reporting it as skipped rather than failed"""
+  raise SkipTest(reason)
+
+
+proc fail(message :string = 'failed'):
+  """fail the running test with a message"""
+  raise AssertionError(message)
+
+
+proc cleanup(fn):
+  """register a teardown to run when the current scope_name ends -- the test, or the
+  fixture's scope_name when called while a fixture is being built.  Cleanups run in
+  reverse order of registration, and run even if the test fails"""
+  _cleanups[_current_scope].append(fn)
+
+
+func assert_raises(exc_type, fn):
+  """call fn, requiring it to raise an exception of exc_type; returns the
+  exception so its message can be inspected"""
+  try:
+    fn()
+  except e:
+    if e is exc_type:
+      return e
+    var got = 'expected ' + _type_name_of_type(exc_type) + ', got ' + _type_name(e) + ': ' + string(e)
+    raise AssertionError(got)
+  var missing = 'expected ' + _type_name_of_type(exc_type) + ', but nothing was raised'
+  raise AssertionError(missing)
+
+
+func _type_name_of_type(t) -> string:
+  var s = string(t)
+  if len(s) > 0 and s[len(s)-1] == '>':
+    s = s[0..len(s)-2]
+  var last = ''
+  for part in s.split(' '):
+    last = part
+  return last
+
+
+type approx object:
+  # compare numbers with a tolerance: assert measured == approx(1.0, tol=1e-6)
+  var value = 0.0
+  var tol :real = 1e-9
+  var rel :real = 0.0
+
+  proc init(value, tol :real = 1e-9, rel :real = 0.0):
+    this.value = value
+    this.tol = tol
+    this.rel = rel
+
+  func _close(a :real, b :real) -> bool:
+    var limit = tol
+    var scale = a
+    if scale < 0.0:
+      scale = -scale
+    if rel > 0.0 and rel * scale > limit:
+      limit = rel * scale
+    var d = a - b
+    if d < 0.0:
+      d = -d
+    return d <= limit
+
+  func operator==(other) -> bool:
+    if other is list:
+      if not (value is list) or len(other) != len(value):
+        return false
+      var i = 0
+      for el in other:
+        if not _close(real(value[i]), real(el)):
+          return false
+        i = i + 1
+      return true
+    return _close(real(value), real(other))
+
+  func operator!=(other) -> bool:
+    return not (this == other)
+
+  implicit func operator string() -> string:
+    return 'approx(' + string(value) + ')'
+
+
+# ---- discovery -------------------------------------------------------------
+
+type _TestCase object:
+  var name :string = ''
+  var fn = nil
+  var params = []            # parameter names, in declaration order
+  var defaults = []          # whether each parameter has a default
+  var args = []              # values supplied by @cases, positionally
+  var named = {}             # values supplied by @cases, by name
+  var timeout_ms :int = -1   # -1: use the run's default
+  var tags = []
+  var skip_reason = nil
+  var xfail :bool = false
+  var xfail_reason :string = ''
+
+  proc init(*):
+    """construct a _TestCase, properties as named arguments"""
+
+
+const _TESTING_ANNOTATIONS = ['test', 'fixture', 'cases', 'skip', 'xfail']
+
+# Annotations the language and its tools define; never mistaken for ours.
+const _KNOWN_ANNOTATIONS = ['doc', 'builtin', 'suffix', 'strict', 'nonstrict',
+                            'cfunc', 'nolift', 'cstruct', 'ctype', 'ros',
+                            'df', 'dataflow_diagram', 'deprecated']
+
+
+func _edit_distance(a :string, b :string) -> int:
+  """how many single-character edits separate two names"""
+  var la = len(a)
+  var lb = len(b)
+  if la == 0:
+    return lb
+  if lb == 0:
+    return la
+  var prev = []
+  var j = 0
+  while j <= lb:
+    prev.append(j)
+    j = j + 1
+  var i = 1
+  while i <= la:
+    var cur = [i]
+    j = 1
+    while j <= lb:
+      var cost = 1
+      if a[i-1] == b[j-1]:
+        cost = 0
+      var best = prev[j] + 1                       # delete
+      if cur[j-1] + 1 < best:
+        best = cur[j-1] + 1                        # insert
+      if prev[j-1] + cost < best:
+        best = prev[j-1] + cost                    # substitute
+      cur.append(best)
+      j = j + 1
+    prev = cur
+    i = i + 1
+  return prev[lb]
+
+
+func _misspelled_annotation(name :string):
+  """the testing annotation `name` is probably a misspelling of, or nil.
+
+  An unknown annotation is accepted silently by the compiler, so a mistyped
+  @fixure would otherwise do nothing at all and surface much later as a missing
+  fixture, blaming the test rather than the typo."""
+  if name in _TESTING_ANNOTATIONS or name in _KNOWN_ANNOTATIONS:
+    return nil
+  if len(name) < 3:
+    return nil
+  for known in _TESTING_ANNOTATIONS:
+    if _edit_distance(name, known) <= 2:
+      return known
+  return nil
+
+
+proc _check_annotation_names(member_name :string, sig):
+  for ann in sig.annotations:
+    var suggestion = _misspelled_annotation(ann.name)
+    if suggestion is not nil:
+      var msg = "'" + member_name + "' is annotated @" + ann.name + ', which is not a testing annotation -- did you mean @' + suggestion + '?'
+      raise ProgramException(msg)
+
+
+func _sig_params(sig) -> list:
+  var names = []
+  for p in sig.params:
+    names.append(p.name)
+  return names
+
+
+func _sig_defaults(sig) -> list:
+  var flags = []
+  for p in sig.params:
+    flags.append(p.has_default)
+  return flags
+
+
+proc _register_fixture(name :string, fn, sig, into :dict, owner :string):
+  """record one fixture in a layer.  Declaring the same name twice in one
+  module is an error; a module redeclaring a shared fixture is not -- its own
+  definition simply shadows the shared one.
+
+  `owner` identifies where the fixture was declared, and becomes part of the
+  key its built value is cached under: a scope is a lifetime, not an identity,
+  so two modules that each declare a session-scoped fixture of the same name
+  have two distinct fixtures, and neither is the shared one of that name."""
+  var scope_name = 'test'
+  var ann = sig.annotation('fixture')
+  var given = ann.arg(0)
+  if given is nil:
+    given = ann.arg('for')
+  if given is not nil:
+    scope_name = string(given)
+  if not (scope_name in _SCOPES):
+    var bad = "fixture '" + name + "' has unknown scope '" + scope_name + "' (expected 'test', 'module' or 'session')"
+    raise ProgramException(bad)
+  if name in into:
+    raise ProgramException("fixture '" + name + "' is declared more than once")
+  into[name] = {'fn': fn, 'scope': scope_name, 'params': _sig_params(sig),
+                'key': owner + ':' + name}
+
+
+func _fixture_spec(name :string):
+  """the fixture of this name: the running module's own first, then the shared
+  ones, so a module can specialise a shared fixture by redeclaring it"""
+  if name in _fixtures:
+    return _fixtures[name]
+  if name in _shared_fixtures:
+    return _shared_fixtures[name]
+  return nil
+
+
+func _has_fixture(name :string) -> bool:
+  return name in _fixtures or name in _shared_fixtures
+
+
+func _cases_of(sig) -> list:
+  """the argument sets a @cases annotation asks for, or [] when there is none"""
+  var ann = sig.annotation('cases')
+  if ann is nil:
+    return []
+  var given = ann.arg(0)
+  if given is nil or not (given is list):
+    raise ProgramException('@cases expects one list of cases')
+  return given
+
+
+func _make_case(base_name :string, fn, sig, index :int, case_value) -> _TestCase:
+  var tc = _TestCase(name=base_name, fn=fn, params=_sig_params(sig),
+                     defaults=_sig_defaults(sig))
+
+  var test_ann = sig.annotation('test')
+  if test_ann is not nil:
+    tc.timeout_ms = _to_ms(test_ann.arg('timeout'), -1)
+    var tags = test_ann.arg('tags')
+    if tags is not nil and tags is list:
+      tc.tags = tags
+
+  var skip_ann = sig.annotation('skip')
+  if skip_ann is not nil:
+    var reason = skip_ann.arg(0)
+    if reason is nil:
+      reason = ''
+    tc.skip_reason = string(reason)
+
+  var xfail_ann = sig.annotation('xfail')
+  if xfail_ann is not nil:
+    tc.xfail = true
+    var xreason = xfail_ann.arg(0)
+    if xreason is not nil:
+      tc.xfail_reason = string(xreason)
+
+  if index >= 0:
+    tc.name = base_name + '[' + string(index) + ']'
+    if case_value is list:
+      tc.args = case_value
+    else:
+      if case_value is dict:
+        tc.named = case_value
+      else:
+        tc.args = [case_value]
+
+  return tc
+
+
+func _discover(mod, fixtures_into :dict, owner :string) -> list:
+  """the tests declared in a module, registering its fixtures into the given
+  layer as a side effect"""
+  var cases = []
+  for m in inspect.members(mod):
+    if m.kind != 'func' and m.kind != 'proc':
+      continue
+    var sigs = inspect.signatures(m.value)
+    if len(sigs) == 0:
+      continue
+    if len(sigs) > 1:
+      var sig0 = sigs[0]
+      if sig0.has('test') or sig0.has('fixture'):
+        var over = "'" + m.name + "' is overloaded; a test or fixture must have a single signature"
+        raise ProgramException(over)
+      continue
+    var sig = sigs[0]
+    _check_annotation_names(m.name, sig)
+    if sig.has('fixture'):
+      _register_fixture(m.name, m.value, sig, fixtures_into, owner)
+      continue
+    if not sig.has('test'):
+      continue
+    var case_values = _cases_of(sig)
+    if len(case_values) == 0:
+      cases.append(_make_case(m.name, m.value, sig, -1, nil))
+    else:
+      var i = 0
+      for cv in case_values:
+        cases.append(_make_case(m.name, m.value, sig, i, cv))
+        i = i + 1
+  return cases
+
+
+# ---- fixtures --------------------------------------------------------------
+
+func _fixture_value(name :string, requested_by :string, requester_scope :string):
+  """the value of a fixture, building it (and anything it depends on) once per
+  its scope_name"""
+  var spec = _fixture_spec(name)
+  if spec is nil:
+    var unknown = "no fixture named '" + name + "' (needed by " + requested_by + ')'
+    raise ProgramException(unknown)
+  var scope_name = spec['scope']
+
+  if _scope_rank(scope_name) < _scope_rank(requester_scope):
+    var mismatch = "fixture '" + name + "' is " + scope_name + '-scoped, so ' + requested_by + ' (' + requester_scope + '-scoped) cannot depend on it'
+    raise ProgramException(mismatch)
+
+  # Cache by the fixture's identity, not its bare name
+  var cache_key = spec['key']
+  var cache = _fixture_values[scope_name]
+  if cache_key in cache:
+    return cache[cache_key]
+
+  # build its own dependencies first, then the fixture itself, with cleanups
+  # registered while it runs attributed to its scope_name
+  var args = []
+  for param in spec['params']:
+    args.append(_fixture_value(param, "fixture '" + name + "'", scope_name))
+
+  var previous = _current_scope
+  _current_scope = scope_name
+  var value = nil
+  try:
+    value = inspect.call(spec['fn'], args, {})
+  except e:
+    _current_scope = previous
+    raise
+  _current_scope = previous
+
+  cache[cache_key] = value
+  return value
+
+
+func _resolve_args(tc :_TestCase) -> list:
+  """the argument list for a test: values from @cases first, then fixtures"""
+  var args = []
+  var i = 0
+  for param in tc.params:
+    var have = false
+    var chosen = nil
+    if i < len(tc.args):
+      chosen = tc.args[i]
+      have = true
+    if not have and param in tc.named:
+      chosen = tc.named[param]
+      have = true
+    if not have and _has_fixture(param):
+      chosen = _fixture_value(param, "test '" + tc.name + "'", 'test')
+      have = true
+    if not have:
+      # A test's parameters are its fixtures, so an unmatched one is a mistake
+      # worth naming rather than something to quietly leave to a default.
+      var nofix = "no fixture named '" + param + "' (needed by test '" + tc.name + "')"
+      raise ProgramException(nofix)
+    args.append(chosen)
+    i = i + 1
+  return args
+
+
+func _run_cleanups(scope_name :string) -> list:
+  """run a scope's cleanups, most recent first, and return what went wrong.
+  A failing cleanup never stops the others -- the rest of the teardown still has
+  to happen -- but it must not be swallowed either: a suite whose teardown fails
+  is not a suite that passed"""
+  var failures = []
+  var pending = _cleanups[scope_name]
+  _cleanups[scope_name] = []
+  var i = len(pending) - 1
+  while i >= 0:
+    try:
+      pending[i]()
+    except e:
+      failures.append('cleanup failed: ' + string(e))
+    i = i - 1
+  return failures
+
+
+proc _ensure_timer():
+  """start the timeout actor, once, and wait until its cancel handler is live"""
+  if _timer is nil:
+    # register the readiness handler BEFORE asking the actor to set up, so the
+    # announcement cannot arrive before there is anything listening for it
+    var ready = anyof(_TimerReady)
+    _timer = _Timer()
+    _timer.setup()
+    var got = wait(for=ready)
+
+
+func _teardown_scope(scope_name :string) -> list:
+  """run a scope's cleanups and discard its fixture values; returns failures"""
+  var failures = _run_cleanups(scope_name)
+  _fixture_values[scope_name] = {}
+  return failures
+
+
+# ---- running one test ------------------------------------------------------
+
+func _basename(path :string) -> string:
+  """the file name alone: the path depends on how the run was invoked"""
+  var slash = -1
+  var i = 0
+  while i < len(path):
+    if path[i] == '/':
+      slash = i
+    i = i + 1
+  if slash >= 0:
+    return path[slash+1..]
+  return path
+
+
+func _location_of(e) -> string:
+  """where an exception was raised, as file:line -- reported against the
+  innermost frame that is NOT this module, so that skip()/fail() and a fixture
+  error point at the test rather than at the machinery that raised them"""
+  var frames = e.stackTrace
+  if frames is nil or len(frames) == 0:
+    return ''
+  var i = len(frames) - 1
+  while i >= 0:
+    var file = _basename(string(frames[i]['filename']))
+    if file != 'testing.rox':
+      return file + ':' + string(frames[i]['line'])
+    i = i - 1
+  return ''
+
+
+proc _invoke(tc :_TestCase, args :list):
+  """run one test body, recording its outcome.  A timeout arrives as a
+  ConditionalInterrupt from the enclosing `until`, which must pass through"""
+  try:
+    ignore(inspect.call(tc.fn, args, {}))
+    _outcome_status = 'pass'
+  except e :ConditionalInterrupt:
+    raise                       # the timeout: let `until` end the statement
+  except e :SkipTest:
+    _outcome_status = 'skip'
+    _outcome_message = string(e)
+  except e :AssertionError:
+    _outcome_status = 'fail'
+    _outcome_message = string(e)
+    _outcome_location = _location_of(e)
+  except e:
+    _outcome_status = 'fail'
+    _outcome_message = 'raised ' + _type_name(e) + ': ' + string(e)
+    _outcome_location = _location_of(e)
+  _finished = true
+
+
+func _run_one(tc :_TestCase, default_timeout_ms :int) -> Result:
+  _outcome_status = ''
+  _outcome_message = ''
+  _outcome_location = ''
+  _finished = false
+
+  if tc.skip_reason is not nil:
+    return Result(name=tc.name, status='skip', message=tc.skip_reason)
+
+  var started = Time.steady_now()
+
+  # Fixture failures are the fixture's fault, not the test's, but they still
+  # fail the tests that asked for them -- and they must not abort the run.
+  var args = []
+  try:
+    args = _resolve_args(tc)
+  except e:
+    var elapsed = Time.steady_now().since(started).total_millis()
+    var setup_cleanups = _teardown_scope('test')
+    var setup_msg = 'fixture error: ' + string(e)
+    if len(setup_cleanups) > 0:
+      setup_msg = setup_msg + '\n  ' + _join(setup_cleanups, '\n  ')
+    return Result(name=tc.name, status='fail', millis=elapsed,
+                  message=setup_msg, location=_location_of(e))
+
+  var timeout_ms = tc.timeout_ms
+  if timeout_ms < 0:
+    timeout_ms = default_timeout_ms
+
+  var armed = nil
+  if timeout_ms > 0:
+    _ensure_timer()
+    armed = _timer.arm(timeout_ms, _cancels_sent + 1)
+    _invoke(tc, args) until _TestTimeout
+  else:
+    _invoke(tc, args)
+
+  var elapsed = Time.steady_now().since(started).total_millis()
+
+  if _finished and timeout_ms > 0:
+    emit _CancelTimeout()
+    _cancels_sent = _cancels_sent + 1
+    # Only a test that ran right up to its deadline can have raced the timer
+    # into announcing a timeout the `until` above no longer covers.  In that
+    # case wait for the timer to report what it did and, if it did fire, let
+    # the stale event be delivered while no `until` is active -- an event with
+    # no handler is dropped -- so it cannot interrupt the next test.  Tests
+    # that finished comfortably in time skip all of this.
+    if elapsed >= real(timeout_ms - 2 * _SLICE_MS):
+      if bool(armed):
+        wait(ms=1)
+  var cleanup_failures = _teardown_scope('test')
+
+  if not _finished:
+    return Result(name=tc.name, status='timeout', millis=elapsed,
+                  message='timeout after ' + _fmt_millis(real(timeout_ms)))
+
+  var status = _outcome_status
+  var message = _outcome_message
+  if tc.xfail:
+    if status == 'fail':
+      status = 'xfail'
+      message = tc.xfail_reason
+    else:
+      if status == 'pass':
+        status = 'xpass'
+        message = tc.xfail_reason
+
+  # A test whose teardown failed has not passed: the cleanup is part of it.
+  if len(cleanup_failures) > 0:
+    var note = _join(cleanup_failures, '\n  ')
+    if status == 'pass' or status == 'skip' or status == 'xfail':
+      status = 'fail'
+      message = note
+      if _outcome_location != '':
+        _outcome_location = ''
+    else:
+      message = message + '\n  ' + note
+
+  return Result(name=tc.name, status=status, message=message,
+                location=_outcome_location, millis=elapsed)
+
+
+# ---- reporting -------------------------------------------------------------
+
+const _RESET = "\x1b[0m"
+const _RED = "\x1b[31m"
+const _GREEN = "\x1b[32m"
+const _YELLOW = "\x1b[33m"
+
+func _colour(text :string, code :string, enabled :bool) -> string:
+  if not enabled:
+    return text
+  return code + text + _RESET
+
+
+func _status_label(status :string, colour :bool) -> string:
+  if status == 'pass':
+    return _colour('PASS', _GREEN, colour)
+  if status == 'skip':
+    return _colour('SKIP', _YELLOW, colour)
+  if status == 'xfail':
+    return _colour('XFAIL', _YELLOW, colour)
+  if status == 'timeout':
+    return _colour('TIMEOUT', _RED, colour)
+  if status == 'xpass':
+    return _colour('XPASS', _RED, colour)
+  return _colour('FAIL', _RED, colour)
+
+
+func _is_failure(status :string) -> bool:
+  return status == 'fail' or status == 'timeout' or status == 'xpass'
+
+
+proc _report_line(r :Result, times :bool, colour :bool):
+  var line = '  ' + _pad(_status_label(r.status, colour), 10) + r.name
+  if times:
+    line = line + ' (' + _fmt_millis(r.millis) + ')'
+  if r.status == 'skip' and r.message != '':
+    line = line + ' -- ' + r.message
+  if r.status == 'xfail' and r.message != '':
+    line = line + ' -- ' + r.message
+  print(line)
+
+
+proc _report_failure(r :Result, colour :bool):
+  print('')
+  print(_colour(_status_label(r.status, false) + ' ' + r.name, _RED, colour))
+  var indent = '  '
+  if r.location != '':
+    print(indent + r.location + ': ' + r.message)
+  else:
+    print(indent + r.message)
+
+
+func _summary(results :list, elapsed_ms :real, times :bool, colour :bool) -> int:
+  var passed = 0
+  var failed = 0
+  var skipped = 0
+  var xfailed = 0
+  for r in results:
+    match r.status:
+      case 'pass':
+        passed = passed + 1
+      case 'skip':
+        skipped = skipped + 1
+      case 'xfail':
+        xfailed = xfailed + 1
+      default:
+        failed = failed + 1
+
+  var parts = [string(passed) + ' passed']
+  if failed > 0:
+    parts.append(string(failed) + ' failed')
+  if skipped > 0:
+    parts.append(string(skipped) + ' skipped')
+  if xfailed > 0:
+    parts.append(string(xfailed) + ' xfailed')
+
+  var line = _join(parts, ', ')
+  if times:
+    line = line + ' (' + _fmt_millis(elapsed_ms) + ')'
+  print('')
+  if failed > 0:
+    print(_colour(line, _RED, colour))
+  else:
+    print(_colour(line, _GREEN, colour))
+  return failed
+
+
+# ---- command line ----------------------------------------------------------
+
+type _Options object:
+  var select :string = ''
+  var tags = []
+  var stop_on_fail :bool = false
+  var verbose :bool = true
+  var times :bool = true
+  var colour :bool = false
+  var list_only :bool = false
+  var timeout_ms :int = 0
+
+  proc init(*):
+    """construct an _Options, properties as named arguments"""
+
+
+func _apply_args(opts :_Options) -> _Options:
+  """let command-line flags override the call's settings:
+     -k REGEX    name filter        -t TAG    tag filter
+     -x          stop on failure    -q        one character per test
+     -l          list, do not run   --color   colourise
+     --no-times  omit durations     --timeout SECONDS"""
+  if not defined('args'):
+    return opts
+  var i = 0
+  while i < len(args):
+    var a = string(args[i])
+    var takes_value = (a == '-k' or a == '-t' or a == '--timeout')
+    var value = ''
+    if takes_value:
+      if i + 1 >= len(args):
+        print("testing: " + a + " needs a value")
+        return opts
+      value = string(args[i+1])
+      i = i + 1
+    match a:
+      case '-k':
+        opts.select = value
+      case '-t':
+        opts.tags.append(value)
+      case '--timeout':
+        opts.timeout_ms = int(real(value) * 1000.0)
+      case '-x':
+        opts.stop_on_fail = true
+      case '-q':
+        opts.verbose = false
+      case '-l':
+        opts.list_only = true
+      case '--color', '--colour':
+        opts.colour = true
+      case '--no-times':
+        opts.times = false
+    i = i + 1
+  return opts
+
+
+func _selected(tc :_TestCase, opts :_Options) -> bool:
+  if not _matches(tc.name, opts.select):
+    return false
+  if len(opts.tags) == 0:
+    return true
+  for want in opts.tags:
+    if want in tc.tags:
+      return true
+  return false
+
+
+# ---- run -------------------------------------------------------------------
+
+func run(modules = nil, fixtures = nil, timeout = 30s, select :string = '', tags :list = [],
+         stop_on_fail :bool = false, verbose :bool = true, times :bool = true,
+         colour :bool = false, do_exit :bool = true) -> int:
+  """discover and run the tests in one or more modules, report them, and return
+  the number of failures.
+
+  With no `modules`, runs the tests of the module that called run() -- but only
+  when that module is the one being executed, so a test module imported by
+  another script stays quiet.  Pass a module (or a list of them) to run them
+  regardless, which is how a driver script aggregates several test modules.
+
+  Each module's fixtures are its own, so two modules may declare a fixture of
+  the same name without colliding.  To share one set of fixtures across several
+  test modules, put them in a module of their own and name it in `fixtures`;
+  every module in the run can then ask for them, and any module may specialise
+  one by declaring a fixture of the same name itself.
+
+  Durations are quantities (2s, 500ms) or plain numbers of seconds.  Command
+  line flags override these arguments; see _apply_args for the list.  Unless
+  do_exit is false, a run with failures ends the process with status 1"""
+
+  var mods = modules
+  if mods is nil:
+    var caller = inspect.calling_module(1)
+    if caller != inspect.main_module():
+      return 0            # imported, not run
+    mods = [caller]
+  else:
+    if not (mods is list):
+      mods = [mods]
+
+  var opts = _Options(select=select, tags=tags, stop_on_fail=stop_on_fail,
+                      verbose=verbose, times=times, colour=colour,
+                      timeout_ms=_to_ms(timeout, 0))
+  opts = _apply_args(opts)
+
+  # fresh state for this run
+  _fixtures = {}
+  _shared_fixtures = {}
+  _fixture_values = {'test': {}, 'module': {}, 'session': {}}
+  _cleanups = {'test': [], 'module': [], 'session': []}
+  _current_scope = 'test'
+
+  var results = []
+  var started = Time.steady_now()
+  var stopped = false
+
+  # Provider modules contribute their fixtures to every module in the run.
+  # Their own tests are not collected: a provider is setup, not a suite.
+  var providers = fixtures
+  if providers is nil:
+    providers = []
+  if not (providers is list):
+    providers = [providers]
+  for provider in providers:
+    var ignored = _discover(provider, _shared_fixtures, 'shared')
+
+  for mod in mods:
+    if stopped:
+      jump run_done
+    # A module's own fixtures are local to it, so two modules may each declare
+    # a fixture of the same name, and either may shadow a shared one.
+    _fixtures = {}
+    var cases = []
+    try:
+      cases = _discover(mod, _fixtures, _module_name(mod))
+    except e:
+      # A malformed module must not abandon the run: report it and carry on.
+      results.append(Result(name=_module_name(mod) + ' (collection)', status='fail',
+                            message=string(e), location=_location_of(e)))
+      if opts.verbose:
+        _report_line(results[len(results)-1], opts.times, opts.colour)
+      continue
+    var selected = []
+    for tc in cases:
+      if _selected(tc, opts):
+        selected.append(tc)
+
+    if opts.list_only:
+      for tc in selected:
+        print(tc.name)
+      continue
+
+    if opts.verbose:
+      var label = _module_name(mod) + ': ' + string(len(selected)) + ' test'
+      if len(selected) != 1:
+        label = label + 's'
+      print(label)
+
+    for tc in selected:
+      var r = _run_one(tc, opts.timeout_ms)
+      results.append(r)
+      if opts.verbose:
+        _report_line(r, opts.times, opts.colour)
+      else:
+        print(_short_mark(r.status), end='', flush=true)
+      if opts.stop_on_fail and _is_failure(r.status):
+        stopped = true
+        jump module_done
+    label module_done
+
+    var mod_failures = _teardown_scope('module')
+    if len(mod_failures) > 0:
+      results.append(Result(name=_module_name(mod) + ' (teardown)', status='fail',
+                            message=_join(mod_failures, '\n  ')))
+      if opts.verbose:
+        _report_line(results[len(results)-1], opts.times, opts.colour)
+
+  label run_done
+
+  var run_failures = _teardown_scope('session')
+  for leftover in _teardown_scope('module'):
+    run_failures.append(leftover)
+  if len(run_failures) > 0:
+    results.append(Result(name='session (teardown)', status='fail',
+                          message=_join(run_failures, '\n  ')))
+    if opts.verbose:
+      _report_line(results[len(results)-1], opts.times, opts.colour)
+
+  if opts.list_only:
+    return 0
+
+  if not opts.verbose:
+    print('')
+
+  for r in results:
+    if _is_failure(r.status):
+      _report_failure(r, opts.colour)
+
+  var elapsed = Time.steady_now().since(started).total_millis()
+  var failures = _summary(results, elapsed, opts.times, opts.colour)
+
+  if failures > 0 and do_exit:
+    exit(1)
+  return failures
+
+
+func _short_mark(status :string) -> string:
+  if status == 'pass':
+    return '.'
+  if status == 'skip':
+    return 's'
+  if status == 'xfail':
+    return 'x'
+  if status == 'timeout':
+    return 'T'
+  return 'F'

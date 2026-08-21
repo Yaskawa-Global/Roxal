@@ -1,0 +1,2 @@
+// `assert` is a hard keyword: it may not be used as an identifier.
+var assert = 1

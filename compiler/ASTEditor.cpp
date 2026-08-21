@@ -420,6 +420,11 @@ std::any ASTEditor::visit(ptr<ast::RaiseStatement> ast)
     return {};
 }
 
+std::any ASTEditor::visit(ptr<ast::AssertStatement> ast)
+{
+    return {};
+}
+
 std::any ASTEditor::visit(ptr<ast::Function> ast)
 {
     //ustring name;

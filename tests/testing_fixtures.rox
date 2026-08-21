@@ -1,0 +1,42 @@
+// Fixtures: a test asks for one by parameter name, they compose, they are
+// built once per scope, and their cleanups run in reverse order.
+import testing.*
+
+var log = []
+
+@fixture
+func base():
+  log.append('build base')
+  cleanup(func(): log.append('drop base'))
+  return 'B'
+
+@fixture
+func derived(base):
+  log.append('build derived')
+  cleanup(func(): log.append('drop derived'))
+  return base + '+D'
+
+@fixture('module')
+func once_per_module():
+  log.append('build module-scoped')
+  cleanup(func(): log.append('drop module-scoped'))
+  return 'M'
+
+@test
+func first(derived, once_per_module):
+  assert derived == 'B+D'
+  assert once_per_module == 'M'
+
+@test
+func second(base, once_per_module):
+  assert base == 'B'
+  assert once_per_module == 'M'
+
+@test
+func needs_unknown(nosuchfixture):
+  fail('never runs')
+
+var failures = run(times=false, do_exit=false)
+print('failures=' + string(failures))
+for line in log:
+  print(line)

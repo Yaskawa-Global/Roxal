@@ -80,6 +80,7 @@ class TryStatement;
 class MatchStatement;
 class WithStatement;
 class RaiseStatement;
+class AssertStatement;
 class Function;
 class Parameter;
 class Assignment;
@@ -144,6 +145,7 @@ public:
     virtual std::any visit(ptr<MatchStatement> ast) = 0;
     virtual std::any visit(ptr<WithStatement> ast) = 0;
     virtual std::any visit(ptr<RaiseStatement> ast) = 0;
+    virtual std::any visit(ptr<AssertStatement> ast) = 0;
     virtual std::any visit(ptr<Function> ast) = 0;
     virtual std::any visit(ptr<Parameter> ast) = 0;
     virtual std::any visit(ptr<Assignment> ast) = 0;
@@ -333,6 +335,7 @@ struct Statement : public AST {
         AdheringIf,
         Try,
         Raise,
+        Assert,
         Match,
         With
     };
@@ -517,6 +520,22 @@ struct RaiseStatement : public Statement {
     RaiseStatement() : Statement(StmtType::Raise) {}
 
     std::optional<ptr<ast::Expression>> exception;
+
+    virtual std::any accept(ASTVisitor& v);
+    virtual void output(std::ostream& os, int indent) const;
+
+    void acceptChildren(ASTVisitor& v, Anys& results);
+};
+
+
+// `assert cond` / `assert cond, msg`.  The compiler decomposes a comparison
+// condition so a failure can report both operand values.
+struct AssertStatement : public Statement {
+    AssertStatement() : Statement(StmtType::Assert) {}
+
+    ptr<ast::Expression> condition;
+    std::optional<ptr<ast::Expression>> message;
+    bool parenForm { false };   // written as assert(cond, msg)
 
     virtual std::any accept(ASTVisitor& v);
     virtual void output(std::ostream& os, int indent) const;

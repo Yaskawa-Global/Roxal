@@ -1,0 +1,8 @@
+func alpha
+proc beta
+func gamma
+const LIMIT
+type Widget
+var counter
+module inspect
+gamma() = 2

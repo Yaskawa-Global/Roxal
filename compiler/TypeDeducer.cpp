@@ -674,6 +674,13 @@ std::any TypeDeducer::visit(ptr<ast::RaiseStatement> ast)
     return results;
 }
 
+std::any TypeDeducer::visit(ptr<ast::AssertStatement> ast)
+{
+    ast::Anys results {};
+    ast->acceptChildren(*this, results);
+    return results;
+}
+
 
 std::any TypeDeducer::visit(ptr<ast::Function> ast)
 {

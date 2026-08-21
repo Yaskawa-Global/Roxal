@@ -1,0 +1,13 @@
+// Fixtures across several test modules: each module's own fixtures are local to
+// it, so two modules may declare the same name; fixtures shared by a provider
+// module are available to all of them, and any module may shadow one.
+import testing.*
+import testing_fixmod_shared
+import testing_fixmod_a
+import testing_fixmod_b
+
+var failures = run([testing_fixmod_a, testing_fixmod_b],
+                   fixtures=[testing_fixmod_shared],
+                   times=false, do_exit=false)
+print('failures=' + string(failures))
+print('provider log=' + string(testing_fixmod_shared.log))

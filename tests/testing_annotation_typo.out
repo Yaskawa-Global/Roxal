@@ -1,0 +1,7 @@
+  FAIL      testing_annotation_typo (collection)
+
+FAIL testing_annotation_typo (collection)
+  testing_annotation_typo.rox:14: 'base' is annotated @fixure, which is not a testing annotation -- did you mean @fixture?
+
+0 passed, 1 failed
+failures=1

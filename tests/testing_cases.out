@@ -1,0 +1,16 @@
+testing_cases: 7 tests
+  PASS      adds[0]
+  PASS      adds[1]
+  FAIL      adds[2]
+  PASS      measures[0]
+  PASS      measures[1]
+  PASS      single_value[0]
+  PASS      single_value[1]
+
+FAIL adds[2]
+  testing_cases.rox:8: assertion failed: a + b == expected
+  left:  0
+  right: 1
+
+6 passed, 1 failed
+failures=1

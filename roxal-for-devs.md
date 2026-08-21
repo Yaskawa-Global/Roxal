@@ -1289,6 +1289,7 @@ The built-in exception types form a small hierarchy rooted at `exception`:
 | `FileIOException` | fileio errors, e.g. `read_line` on a binary file (subtype of `RuntimeException`) |
 | `ProgramException` | application-level failures |
 | `ConditionalInterrupt` | an `until` condition becoming true |
+| `AssertionError` | a failed `assert` (a *direct* subtype of `exception`, so an `except e :RuntimeException:` around the code under test cannot swallow it) |
 
 For example, dividing by zero raises a catchable `ZeroDivisionError`:
 
@@ -1299,6 +1300,53 @@ for d in [1, 0, 2]:
   except e :ZeroDivisionError:
     print('cannot divide by zero')
 ```
+
+
+### Assertions
+
+`assert` checks that a condition holds and raises an `AssertionError` if it does
+not.  It is a statement, not a function, which is what lets the compiler report
+*why* it failed:
+
+```php
+var actual = 'ping'
+assert actual == expected, 'reply should be pong'
+```
+
+```
+assertion failed: actual == expected
+  left:  'ping'
+  right: 'pong'
+  reply should be pong
+```
+
+The failure message names the expression as it was written and, when the
+condition is a comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`, `is`, `in`,
+`not in`), the value of each side — the thing you actually want to know.  Each
+operand is evaluated exactly once, so `assert next() == 3` consumes one item.
+The trailing message is optional.
+
+Both spellings are accepted, and unparsing reproduces whichever was written:
+
+```php
+assert a < b                 // Python style
+assert(a < b, 'too big')     // C style
+```
+
+The raised `AssertionError` is an ordinary catchable exception.  `string(e)`
+gives the message above, and `e.detail` carries the pieces for programmatic use:
+`expression`, `left` and `right` (when the condition was a comparison), and
+`message` (when one was supplied).
+
+```php
+try:
+  assert a == b
+except e :AssertionError:
+  print(e.detail['left'])
+```
+
+Assertions are always compiled in — there is no flag that strips them — so use
+them for conditions that must hold, not for input validation you expect to fail.
 
 
 ## Events
@@ -1699,6 +1747,58 @@ x = compute() if cond          // assignment is gated; if cond is false, x is un
 ```
 
 `if` and `until` cannot be used together on the same statement.
+
+
+## Testing (the `testing` module)
+
+`testing` is a unit-test framework written in Roxal.  Tests are ordinary
+functions marked with an annotation, and the runner finds them by reflecting
+over the module, so nothing has to be registered by hand.  A test asks for the
+things it needs by parameter name, and a *fixture* of that name supplies them —
+along with the teardown for whatever it set up.
+
+```php
+import testing.*
+
+@fixture('module')                 // built once for this module's tests
+func channel():
+  var ch = connect('localhost:50051')
+  cleanup(func(): ch.close())      // runs when the module's tests end
+  return ch
+
+@test
+func ping(channel):
+  assert channel.ping() == 'pong'
+
+@test(timeout=2s)
+func echo_roundtrip(channel):
+  assert channel.echo('hi').text == 'hi'
+
+run()        // discovers, runs and reports; exits non-zero if anything failed
+```
+
+```
+my_tests: 2 tests
+  PASS      ping (1 ms)
+  FAIL      echo_roundtrip (<1 ms)
+
+FAIL echo_roundtrip
+  my_tests.rox:17: assertion failed: channel.echo('hi').text == 'hi'
+  left:  'hi!'
+  right: 'hi'
+
+1 passed, 1 failed (20 ms)
+```
+
+Beyond `@test` and `@fixture` there are `@cases` (one run per argument set),
+`@skip` and `@xfail`; fixtures come in `'test'`, `'module'` and `'session'`
+scopes and may be shared across test modules; a test that overruns its
+`timeout=` is interrupted and reported rather than hanging the run; and tests
+can be selected by name or tag, from `run()` arguments or command-line flags.
+
+Full documentation — the annotations, fixture scoping and sharing, teardown
+semantics, the async helpers and every command-line flag — is in the comment
+header of `modules/testing.rox`.
 
 
 ## Advanced: Compute Server

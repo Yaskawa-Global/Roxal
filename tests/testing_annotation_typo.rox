@@ -1,0 +1,15 @@
+// An unknown annotation is accepted silently by the compiler, so a misspelled
+// testing annotation would otherwise do nothing and surface much later as a
+// missing fixture.  Discovery names it instead.
+import testing.*
+
+@fixure
+func base():
+  return 'BASE'
+
+@test
+func uses_base(base):
+  assert base == 'BASE'
+
+var failures = run(times=false, do_exit=false)
+print('failures=' + string(failures))

@@ -1,0 +1,43 @@
+// inspect.signatures() reports parameters, return types and annotations of a
+// callable, one Signature per overload, with annotation arguments evaluated.
+import inspect
+
+@test(timeout=2s, tags=['slow', 'net'], retries=-1, fallback=nil)
+func alpha(a :int, b :string = 'x', ...rest) -> bool:
+  """a documented function"""
+  return true
+
+proc plain():
+  _
+
+func over(x :int):
+  return 1
+
+func over(x :string, y :int):
+  return 2
+
+var s = inspect.signatures(alpha)[0]
+print('name=' + s.name)
+print('is_proc=' + s.is_proc)
+print('returns=' + s.return_types)
+print('params=' + s.param_names())
+for p in s.params:
+  print('  ' + p.name + ' type=' + string(p.param_type) + ' default=' + p.has_default + ' variadic=' + p.variadic)
+
+var t = s.annotation('test')
+print('timeout=' + t.arg('timeout'))
+print('timeout is time=' + t.arg('timeout').is_time)
+print('tags=' + t.arg('tags'))
+print('retries=' + t.arg('retries'))
+print('fallback=' + string(t.arg('fallback')) + ' present=' + string('fallback' in t.named))
+print('missing=' + string(t.arg('nope')))
+print('missing with default=' + t.arg('nope', 7))
+print('has test=' + s.has('test') + ' has fixture=' + s.has('fixture'))
+print('doc=' + s.annotation('doc').arg(0))
+
+print('plain is_proc=' + inspect.signatures(plain)[0].is_proc)
+
+var overloads = inspect.signatures(over)
+print('overloads=' + len(overloads))
+for o in overloads:
+  print('  over' + o.param_names())

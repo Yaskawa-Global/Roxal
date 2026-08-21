@@ -1,0 +1,41 @@
+// The testing module: discovery by annotation, and how each outcome reports.
+import testing.*
+
+@test
+func passes():
+  assert 1 + 1 == 2
+
+@test
+func fails():
+  var got = 'ping'
+  assert got == 'pong', 'reply should be pong'
+
+@test
+proc also_runs_as_proc():
+  assert true
+
+@test
+@skip('needs hardware')
+proc skipped():
+  fail('never runs')
+
+@test
+@xfail('known broken')
+func expected_to_fail():
+  assert 1 == 2
+
+@test
+@xfail('should have been fixed')
+func unexpectedly_passes():
+  assert true
+
+@test
+func explicit_skip():
+  skip('not today')
+
+@test
+func explicit_fail():
+  fail('gave up')
+
+var failures = run(times=false, do_exit=false)
+print('failures=' + string(failures))

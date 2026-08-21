@@ -115,6 +115,7 @@ public:
     virtual std::any visitDefault_case(RoxalParser::Default_caseContext *context);
     virtual std::any visitWith_stmt(RoxalParser::With_stmtContext *context);
     virtual std::any visitRaise_stmt(RoxalParser::Raise_stmtContext *context);
+    virtual std::any visitAssert_stmt(RoxalParser::Assert_stmtContext *context);
     virtual std::any visitExcept_clause(RoxalParser::Except_clauseContext *context);
     virtual std::any visitFinally_clause(RoxalParser::Finally_clauseContext *context);
 
