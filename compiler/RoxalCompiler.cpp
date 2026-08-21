@@ -7329,9 +7329,6 @@ bool RoxalCompiler::namedVariable(const ustring& name, bool assign, bool asSigna
         bool inActorMethod = inTypeScope() && asTypeScope(typeScope())->isActor &&
                              (asFuncScope(funcScope())->functionType == FunctionType::Method ||
                               asFuncScope(funcScope())->functionType == FunctionType::Initializer);
-        if (inActorMethod && exists && !isModuleConst) {
-            error("Actor methods cannot access module variable '"+toUTF8StdString(name)+"'; use a module constant instead.");
-        }
         if (asFuncScope(funcScope())->functionType != FunctionType::Module || exists)
             setOp = OpCode::SetModuleVar;
         else
@@ -7406,6 +7403,15 @@ bool RoxalCompiler::namedVariable(const ustring& name, bool assign, bool asSigna
                 }
                 return true;
             }
+        }
+
+        // Actor methods may not access mutable module state, but an actor's own
+        // member has lexical precedence over an unrelated module variable with
+        // the same name. Apply the actor restriction only after direct member
+        // resolution has failed and the name will actually fall back to the
+        // module binding.
+        if (inActorMethod && exists && !isModuleConst) {
+            error("Actor methods cannot access module variable '"+toUTF8StdString(name)+"'; use a module constant instead.");
         }
 
         // For closures inside methods (e.g. when handlers), check if 'this' is available as an upvalue

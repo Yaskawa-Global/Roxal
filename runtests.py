@@ -480,7 +480,6 @@ doom_tests = ['doom_wad', 'doom_gfx', 'doom_render', 'doom_game', 'doom_sound', 
 # extends+implements / 6+7 @strict must require var
 failing_tests = [
     'const_shadow_param', 'const_shadow_local', 'const_shadow_member',
-    'actor_member_modvar_collision',
     'forward_extends_property', 'forward_implements_incomplete_err',
     'strict_implicit_var_err', 'strict_implicit_then_var_err',
 ]
