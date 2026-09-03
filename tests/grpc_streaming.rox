@@ -1,7 +1,7 @@
 import roxal_examples.*
 
 // Test server streaming RPC
-var svc = EverythingService("127.0.0.1:50051")
+var svc = EverythingService("__GRPC_TEST_ADDR__")
 
 // Request 5 streaming responses
 var responseSignal = svc.ServerStream(count=5)

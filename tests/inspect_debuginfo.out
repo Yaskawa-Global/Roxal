@@ -1,0 +1,18 @@
+true
+1
+0
+[7, 8, 9, 10, 11, 12, 13]
+inner slot=9 flags=0 type= ranged=true
+i slot=8 flags=0 type= ranged=true
+__index__ slot=7 flags=16 type= ranged=true
+__len__ slot=6 flags=16 type= ranged=true
+__iterable__ slot=5 flags=16 type= ranged=true
+lst slot=4 flags=0 type= ranged=true
+x slot=3 flags=0 type= ranged=true
+a slot=1 flags=1 type=int ranged=true
+b slot=2 flags=1 type= ranged=true
+up captured is_local=1
+up tag is_local=1
+inner2 flags=0
+tag flags=6
+captured flags=2

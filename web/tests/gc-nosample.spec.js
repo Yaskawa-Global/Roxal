@@ -44,7 +44,7 @@ test('counter4 with the source view (no diagram sampling)', async ({ page }) => 
         if (crashes.length)
             throw new Error(`crash after ${Math.round((Date.now() - start) / 1000)}s: ${crashes[0]}`);
         const n = await page.evaluate(() =>
-            document.querySelector('.output')?.textContent?.split('\n').length ?? 0);
+            document.querySelector('.out')?.textContent?.split('\n').length ?? 0);
         if (n !== lastCount) { lastCount = n; lastProgress = Date.now(); }
         expect(Date.now() - lastProgress, 'VM still producing output').toBeLessThan(60000);
     }

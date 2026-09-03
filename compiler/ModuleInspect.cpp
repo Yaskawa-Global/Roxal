@@ -1,4 +1,5 @@
 #include "ModuleInspect.h"
+#include "debug/ValueRender.h"
 #include "Annotations.h"
 #include "VM.h"
 #include "Object.h"
@@ -1151,6 +1152,8 @@ void ModuleInspect::registerBuiltins(VM& vm)
     link("parse_statement", [this](VM&, ArgsView a) { return inspect_parse_statement_builtin(a); });
     link("parse_declaration", [this](VM&, ArgsView a) { return inspect_parse_declaration_builtin(a); });
 
+    link("render", [this](VM&, ArgsView a) { return inspect_render_builtin(a); });
+    link("debug_info", [this](VM&, ArgsView a) { return inspect_debuginfo_builtin(a); });
     link("members", [this](VM&, ArgsView a) { return inspect_members_builtin(a); });
     link("signatures", [this](VM&, ArgsView a) { return inspect_signatures_builtin(a); });
     link("call", [this](VM&, ArgsView a) { return inspect_call_builtin(a); });
@@ -1678,6 +1681,87 @@ Value ModuleInspect::signatureValue(ObjFunction* fn)
     return sigV;
 }
 
+Value ModuleInspect::inspect_debuginfo_builtin(ArgsView args)
+{
+    if (args.empty())
+        throw std::invalid_argument("inspect.debug_info expects a function or closure");
+    Value v = args[0];
+    ObjFunction* fn = nullptr;
+    if (isClosure(v))
+        fn = asFunction(asClosure(v)->function);
+    else if (isFunction(v))
+        fn = asFunction(v);
+    if (!fn || !fn->chunk)
+        throw std::invalid_argument("inspect.debug_info expects a function or closure");
+
+    // Nested container construction holds fresh Values in C++ locals across
+    // allocations -- cover it (wasm precise-GC safe; same pattern as
+    // inspect_members).
+    SimpleMarkSweepGC::GCNoParkScope nativeCover;
+
+    auto mkstr = [](const char* s) { return Value::stringVal(toUnicodeString(s)); };
+
+    Value dictVal { Value::objVal(newDictObj()) };
+    ObjDict* d = asDict(dictVal);
+    Value stmtsVal { Value::objVal(newListObj()) };
+    ObjList* stmts = asList(stmtsVal);
+    Value localsVal { Value::objVal(newListObj()) };
+    ObjList* locals = asList(localsVal);
+    Value upsVal { Value::objVal(newListObj()) };
+    ObjList* ups = asList(upsVal);
+
+    if (fn->chunk->debugInfo) {
+        const auto& di = *fn->chunk->debugInfo;
+        for (const auto& s : di.stmts) {
+            Value eV { Value::objVal(newDictObj()) };
+            ObjDict* ed = asDict(eV);
+            ed->store(mkstr("offset"), Value::intVal(s.offset));
+            ed->store(mkstr("line"), Value::intVal(s.line));
+            ed->store(mkstr("col"), Value::intVal(s.column));
+            ed->store(mkstr("kind"), Value::intVal(s.kind));
+            stmts->append(eV);
+        }
+        for (const auto& l : di.locals) {
+            Value eV { Value::objVal(newDictObj()) };
+            ObjDict* ed = asDict(eV);
+            ed->store(mkstr("name"), Value::stringVal(l.name));
+            ed->store(mkstr("slot"), Value::intVal(l.slot));
+            ed->store(mkstr("start"), Value::intVal(l.startOffset));
+            ed->store(mkstr("end"), Value::intVal(l.endOffset));
+            ed->store(mkstr("flags"), Value::intVal(l.flags));
+            ed->store(mkstr("type"), Value::stringVal(l.typeName));
+            locals->append(eV);
+        }
+        for (const auto& u : di.upvalues) {
+            Value eV { Value::objVal(newDictObj()) };
+            ObjDict* ed = asDict(eV);
+            ed->store(mkstr("name"), Value::stringVal(u.name));
+            ed->store(mkstr("index"), Value::intVal(u.index));
+            ed->store(mkstr("is_local"), Value::intVal(u.isLocal));
+            ups->append(eV);
+        }
+    }
+    d->store(mkstr("stmts"), stmtsVal);
+    d->store(mkstr("locals"), localsVal);
+    d->store(mkstr("upvalues"), upsVal);
+    return dictVal;
+}
+
+Value ModuleInspect::inspect_render_builtin(ArgsView args)
+{
+    if (args.empty())
+        throw std::invalid_argument("inspect.render expects a value");
+
+    RenderOptions opts;
+    int32_t maxChars    = args.getInt(1, 512);
+    int32_t maxChildren = args.getInt(2, 100);
+    int32_t depth       = args.getInt(3, 1);
+    opts.maxStringChars = maxChars    < 0 ? 0 : (size_t)maxChars;
+    opts.maxChildren    = maxChildren < 0 ? 0 : (size_t)maxChildren;
+    opts.maxDepth       = depth       < 0 ? 0 : (size_t)depth;
+    return Value::stringVal(toUnicodeString(renderValue(args[0], opts)));
+}
+
 Value ModuleInspect::inspect_members_builtin(ArgsView args)
 {
     if (args.size() < 1 || !isModuleType(args[0]))
@@ -1864,7 +1948,7 @@ Value ModuleInspect::inspect_call_builtin(ArgsView args)
         throw std::invalid_argument("inspect.call: value is not callable dynamically");
 
     // Hand the call to the dispatch loop rather than re-entering execute():
-    // a nested interpreter cannot yield (so it breaks runFor()), and an
+    // a nested interpreter cannot yield (so it breaks bounded slices), and an
     // exception raised inside one unwinds straight past the boundary.  As an
     // ordinary frame the callee behaves like any other call -- it can yield,
     // and its exceptions reach the caller's handlers.

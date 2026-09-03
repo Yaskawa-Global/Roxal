@@ -1,7 +1,7 @@
 import roxal_examples.*
 
 // Requires scripts/grpc_everything_server.py running against compiler/grpc/protos/roxal_examples.proto
-var svc = EverythingService("127.0.0.1:50051", { 'timeout_ms': 5000 })
+var svc = EverythingService("__GRPC_TEST_ADDR__", { 'timeout_ms': 5000 })
 
 var payload = Everything(
     f64=1.5, f32=2.5,

@@ -723,6 +723,33 @@ void SimpleMarkSweepGC::compactSegmentsLocked()
     }
 }
 
+size_t SimpleMarkSweepGC::persistentRootCount() const
+{
+    std::lock_guard<std::mutex> lock(persistentRootsMutex_);
+    return persistentRoots_.size();
+}
+
+SimpleMarkSweepGC::CollectionDeferralScope::CollectionDeferralScope()
+{
+    SimpleMarkSweepGC::instance().collectionDeferralDepth_.fetch_add(
+        1, std::memory_order_acq_rel);
+}
+
+SimpleMarkSweepGC::CollectionDeferralScope::~CollectionDeferralScope()
+{
+    SimpleMarkSweepGC& gc = SimpleMarkSweepGC::instance();
+    if (gc.collectionDeferralDepth_.fetch_sub(1, std::memory_order_seq_cst) != 1)
+        return;   // still nested
+    // Last scope out publishes the latched request, if any.  By now the
+    // compiled result is in its stable root, or the failed compile's locals
+    // are already destroyed -- either way the collection about to run sees a
+    // consistent world.  seq_cst pairs with requestCollect()'s re-check (see
+    // there): a request landing between the decrement and this exchange is
+    // published by exactly one of the two.
+    if (gc.deferredCollectionPending_.exchange(false, std::memory_order_seq_cst))
+        gc.requestCollect();
+}
+
 void SimpleMarkSweepGC::requestCollect() {
     if (!gcEnabled_.load(std::memory_order_acquire)) {
         return;
@@ -730,6 +757,25 @@ void SimpleMarkSweepGC::requestCollect() {
     // Never wake/collect against a half-constructed VM (see registerAllocation).
     if (!VM::constructed()) {
         return;
+    }
+    // Latch rather than publish while a preparation/compilation scope is
+    // open.  Deliberately BEFORE the byte-counter bookkeeping below: the
+    // request has not been consumed, so the allocation accounting that would
+    // have triggered it must stay intact for the republished request.
+    if (collectionDeferralDepth_.load(std::memory_order_seq_cst) > 0) {
+        deferredCollectionPending_.store(true, std::memory_order_seq_cst);
+        // Dekker pairing with ~CollectionDeferralScope, which decrements the
+        // depth and THEN exchanges the pending flag.  Without this re-check a
+        // requester could observe depth > 0, be descheduled, and store the
+        // flag after the last scope had already decremented and found it
+        // clear -- leaving a latched request no scope will ever publish.
+        // Both sides seq_cst: at least one of them must see the other's
+        // write.  If both do, requestCollect() below dedups on the CAS.
+        if (collectionDeferralDepth_.load(std::memory_order_seq_cst) > 0)
+            return;
+        if (!deferredCollectionPending_.exchange(false, std::memory_order_seq_cst))
+            return;   // the scope took it; it is publishing
+        // fall through: the last scope is gone and this request is ours to publish
     }
     std::uint64_t allocated = bytesAllocatedSinceLastCollect_.load(std::memory_order_relaxed);
     bool expected = false;
@@ -1365,7 +1411,9 @@ void SimpleMarkSweepGC::registerPersistentRoot(GCRootBase* root)
     debug_assert_msg(!inGCYieldSectionOnThisThread(),
                      "persistent roots may not be created inside an RT yield section");
     std::lock_guard<std::mutex> lock(persistentRootsMutex_);
-    persistentRoots_.insert(root);
+    const auto [it, inserted] = persistentRoots_.insert(root);
+    (void)it;
+    debug_assert_msg(inserted, "persistent root registered twice");
 }
 
 void SimpleMarkSweepGC::unregisterPersistentRoot(GCRootBase* root)
@@ -1376,17 +1424,47 @@ void SimpleMarkSweepGC::unregisterPersistentRoot(GCRootBase* root)
     debug_assert_msg(!inGCYieldSectionOnThisThread(),
                      "persistent roots may not be destroyed inside an RT yield section");
     std::lock_guard<std::mutex> lock(persistentRootsMutex_);
-    persistentRoots_.erase(root);
+    const size_t erased = persistentRoots_.erase(root);
+    debug_assert_msg(erased == 1, "persistent root unregistered while absent");
 }
 
-GCRootBase::GCRootBase()
+bool GCRootBase::registerRoot()
 {
+    debug_assert_msg(!registered_, "persistent root registration guard duplicated");
+    if (registered_)
+        return false;
     SimpleMarkSweepGC::instance().registerPersistentRoot(this);
+    registered_ = true;
+    return true;
+}
+
+void GCRootBase::unregisterRoot()
+{
+    debug_assert_msg(registered_, "persistent root registration guard unbalanced");
+    if (!registered_)
+        return;
+    SimpleMarkSweepGC::instance().unregisterPersistentRoot(this);
+    registered_ = false;
+}
+
+GCRootBase::Registration::Registration(GCRootBase& root)
+{
+    if (root.registerRoot())
+        root_ = &root;
+}
+
+GCRootBase::Registration::~Registration()
+{
+    if (root_)
+        root_->unregisterRoot();
 }
 
 GCRootBase::~GCRootBase()
 {
-    SimpleMarkSweepGC::instance().unregisterPersistentRoot(this);
+    // A derived root must own a last-member Registration guard.  Unregistering
+    // here would be too late: the derived payload has already been destroyed.
+    debug_assert_msg(!registered_,
+                     "persistent root destroyed without its registration guard");
 }
 
 void SimpleMarkSweepGC::externalParticipantEnter(std::uint64_t id)
@@ -1428,6 +1506,8 @@ void SimpleMarkSweepGC::externalParticipantSafepoint(std::uint64_t id)
 __attribute__((no_sanitize_address))
 #if defined(__clang__)
 __attribute__((no_sanitize("thread")))
+#elif defined(__GNUC__)
+__attribute__((no_sanitize_thread))
 #endif
 #endif
 void SimpleMarkSweepGC::shadowScanParkedStacks(std::uint64_t epoch) {
@@ -1504,8 +1584,17 @@ void SimpleMarkSweepGC::shadowScanParkedStacks(std::uint64_t epoch) {
         for (std::uintptr_t a = sp; a + sizeof(std::uintptr_t) <= base;
              a += sizeof(std::uintptr_t)) {
             // Rule (ii): raw pointer (incl. interior) at native word size.
+            // Under TSan the reads must not go through memcpy: the libc
+            // interceptor reports them even inside this no_sanitize
+            // function (the documented SafeBlocked noisy window -- the park
+            // handshake, not C++ synchronization, freezes these words).
+            // Volatile word loads are aligned here (sp was word-aligned).
             std::uintptr_t w;
+#if defined(__SANITIZE_THREAD__)
+            w = *reinterpret_cast<const volatile std::uintptr_t*>(a);
+#else
             std::memcpy(&w, reinterpret_cast<const void*>(a), sizeof(w));
+#endif
             ++words;
             if (ObjControl* c = lookup(w)) {
                 ++rawHits;
@@ -1520,7 +1609,11 @@ void SimpleMarkSweepGC::shadowScanParkedStacks(std::uint64_t epoch) {
                 continue;
             }
             std::uint64_t w64;
+#if defined(__SANITIZE_THREAD__) && UINTPTR_MAX == UINT64_MAX
+            w64 = *reinterpret_cast<const volatile std::uint64_t*>(a);
+#else
             std::memcpy(&w64, reinterpret_cast<const void*>(a), sizeof(w64));
+#endif
             if ((w64 & kObjPattern) == kObjPattern) {
                 const auto payload = static_cast<std::uintptr_t>(w64 & kPayloadMask);
                 if (ObjControl* c = lookup(payload)) {
@@ -2000,12 +2093,13 @@ void SimpleMarkSweepGC::visitRoots(ValueVisitor& visitor) {
     VM& vm = VM::instance();
 
     // The ThreadManager index is the SOLE interpreter-root
-    // source -- every Thread self-registers at construction (main, init,
-    // REPL, dataflow engine, actor workers, yielded FuncNode execution
-    // threads, compute workers), so the old vm.threads / replThread /
-    // dataflowEngineThread / VM::thread special-case gathering (and its
-    // blind spots) is gone.  World is stopped here; the manager's mutex
-    // additionally excludes construction/destruction races.
+    // source -- every Thread is registered by the Thread::create factory
+    // (main, init, REPL, dataflow engine, actor workers, yielded FuncNode
+    // execution threads, compute workers), so the old vm.threads /
+    // replThread / dataflowEngineThread / VM::thread special-case gathering
+    // (and its blind spots) is gone.  World is stopped here; the manager's
+    // mutex excludes registration races, and each weak entry is locked so a
+    // Thread mid-destruction is skipped rather than traced.
     ThreadManager::instance().forEachThread([&](Thread& t) {
         visitThreadRoots(t, visitor);
     });
@@ -2083,9 +2177,8 @@ void SimpleMarkSweepGC::visitRoots(ValueVisitor& visitor) {
     visitStrongValue(visitor, vm.combinatorRelayFunction);
     visitStrongValue(visitor, vm.initString);
 
-    // RT REPL pending closure (in-flight between setupLine and runFor)
-    if (vm.pendingRTClosure_.isObj())
-        visitStrongValue(visitor, vm.pendingRTClosure_);
+    // Launch preludes no longer live here: a prelude receiver belongs to the
+    // launch that will run it, rooted by that launch's prepared record.
 
     for (const auto& typeEntry : vm.builtinMethods) {
         for (const auto& methodEntry : typeEntry.second) {
@@ -2348,7 +2441,29 @@ bool SimpleMarkSweepGC::runCoordinationSelfTest(std::chrono::milliseconds durati
     std::atomic<std::uint64_t> polls{0};
     std::atomic<std::uint64_t> blockScopes{0};
     std::atomic<std::uint64_t> allocs{0};
+    std::atomic<std::uint64_t> rootedCollections{0};
+    std::atomic<std::uint64_t> rootLifecycleCycles{0};
+    std::atomic<std::uint64_t> rootTraceCalls{0};
+    std::atomic<std::uint64_t> rootFailures{0};
     std::atomic<int> running{0};
+
+    size_t persistentRootsBefore = 0;
+    {
+        std::lock_guard<std::mutex> rootsLock(persistentRootsMutex_);
+        persistentRootsBefore = persistentRoots_.size();
+    }
+
+    constexpr std::uint64_t kRootProbeLive = 0x726f6f742d6c6976ULL;
+    struct RootLifecycleProbe {
+        std::atomic<std::uint64_t>* traceCalls;
+        std::atomic<std::uint64_t>* failures;
+        std::uint64_t sentinel;
+    };
+    auto traceProbe = +[](ValueVisitor&, const RootLifecycleProbe& probe) {
+        probe.traceCalls->fetch_add(1, std::memory_order_relaxed);
+        if (probe.sentinel != 0x726f6f742d6c6976ULL)
+            probe.failures->fetch_add(1, std::memory_order_relaxed);
+    };
 
     // "RT" workers: yield sections racing requestCollect.  The in-section
     // allocation exercises the deferred-wake path (a threshold crossing
@@ -2406,6 +2521,71 @@ bool SimpleMarkSweepGC::runCoordinationSelfTest(std::chrono::milliseconds durati
         running.fetch_sub(1, std::memory_order_relaxed);
     };
 
+    // The string's only strong MARK root during each requested collection is
+    // this heap-resident TracedMember.  The weak Value keeps the control block
+    // available for a safe post-collection liveness check without adding a
+    // mark edge of its own.
+    auto rootedValueWorker = [&] {
+        running.fetch_add(1, std::memory_order_relaxed);
+        ExternalParticipant participant(*this);
+        TracedMember<Value> root;
+        std::uint64_t i = 0;
+        while (!stop.load(std::memory_order_relaxed)) {
+            Value value = Value::stringVal(ustring::fromUTF8(
+                "st-root-" + std::to_string(i)));
+            Value weak = value.weakRef();
+            root = value;
+            value = Value::nilVal();
+
+            const std::uint64_t beforeEpoch = currentEpoch();
+            requestCollect();
+            while (currentEpoch() == beforeEpoch &&
+                   !stop.load(std::memory_order_relaxed)) {
+                participant.pollSafepointIfRequested();
+                std::this_thread::sleep_for(10us);
+            }
+            participant.pollSafepointIfRequested();
+
+            if (currentEpoch() != beforeEpoch) {
+                Value promoted = weak.strongRef();
+                if (promoted.isNil() || !isString(promoted))
+                    rootFailures.fetch_add(1, std::memory_order_relaxed);
+                else
+                    rootedCollections.fetch_add(1, std::memory_order_relaxed);
+            }
+            root = Value::nilVal();
+            ++i;
+        }
+        running.fetch_sub(1, std::memory_order_relaxed);
+    };
+
+    // These probes intentionally contain no Values and use no mutator
+    // participant.  Their registration/unregistration therefore races root
+    // scans directly, proving the registry can observe only fully initialized
+    // TracedMember/TracedRef payloads and tracers.
+    auto rootLifecycleWorker = [&] {
+        running.fetch_add(1, std::memory_order_relaxed);
+        while (!stop.load(std::memory_order_relaxed)) {
+            {
+                RootLifecycleProbe probe { &rootTraceCalls, &rootFailures,
+                                           kRootProbeLive };
+                TracedMember<RootLifecycleProbe> root {
+                    std::move(probe), traceProbe };
+                if (root->sentinel != kRootProbeLive)
+                    rootFailures.fetch_add(1, std::memory_order_relaxed);
+            }
+            {
+                RootLifecycleProbe target { &rootTraceCalls, &rootFailures,
+                                            kRootProbeLive };
+                TracedRef<RootLifecycleProbe> root { target, traceProbe };
+                if (target.sentinel != kRootProbeLive)
+                    rootFailures.fetch_add(1, std::memory_order_relaxed);
+            }
+            rootLifecycleCycles.fetch_add(1, std::memory_order_relaxed);
+        }
+        running.fetch_sub(1, std::memory_order_relaxed);
+    };
+
     std::vector<std::thread> workers;
     {
         // The driving thread is typically a REGISTERED script thread (this
@@ -2421,6 +2601,8 @@ bool SimpleMarkSweepGC::runCoordinationSelfTest(std::chrono::milliseconds durati
         workers.emplace_back(participantWorker, 0, false);
         workers.emplace_back(participantWorker, 1, true);
         workers.emplace_back(participantWorker, 2, true);
+        workers.emplace_back(rootedValueWorker);
+        workers.emplace_back(rootLifecycleWorker);
 
         // Driver: request collections as fast as they can complete.
         const auto deadline = steady_clock::now() + duration;
@@ -2454,6 +2636,11 @@ bool SimpleMarkSweepGC::runCoordinationSelfTest(std::chrono::milliseconds durati
         after.sectionCollectorViolations - before.sectionCollectorViolations;
     const std::uint32_t sectionsAtRest =
         rtSectionCount_.load(std::memory_order_seq_cst);
+    size_t persistentRootsAfter = 0;
+    {
+        std::lock_guard<std::mutex> rootsLock(persistentRootsMutex_);
+        persistentRootsAfter = persistentRoots_.size();
+    }
 
     bool pass = true;
     if (collections == 0) {
@@ -2472,6 +2659,28 @@ bool SimpleMarkSweepGC::runCoordinationSelfTest(std::chrono::milliseconds durati
                   << " at rest (leaked yield section)" << std::endl;
         pass = false;
     }
+    if (rootedCollections.load(std::memory_order_relaxed) == 0) {
+        std::cerr << "GC self-test FAILED: typed root did not span a collection"
+                  << std::endl;
+        pass = false;
+    }
+    if (rootLifecycleCycles.load(std::memory_order_relaxed) == 0 ||
+        rootTraceCalls.load(std::memory_order_relaxed) == 0) {
+        std::cerr << "GC self-test FAILED: root lifecycle worker made no progress"
+                  << std::endl;
+        pass = false;
+    }
+    if (rootFailures.load(std::memory_order_relaxed) != 0) {
+        std::cerr << "GC self-test FAILED: " << rootFailures.load()
+                  << " typed-root liveness/lifecycle failure(s)" << std::endl;
+        pass = false;
+    }
+    if (persistentRootsAfter != persistentRootsBefore) {
+        std::cerr << "GC self-test FAILED: persistent root count changed from "
+                  << persistentRootsBefore << " to " << persistentRootsAfter
+                  << std::endl;
+        pass = false;
+    }
 
     // Counters go to stderr: the script-facing entry point
     // (sys._runtests('gc_coordination')) prints a deterministic verdict on
@@ -2484,6 +2693,8 @@ bool SimpleMarkSweepGC::runCoordinationSelfTest(std::chrono::milliseconds durati
               << polls.load() << " participant polls, "
               << blockScopes.load() << " block scopes, "
               << allocs.load() << " allocations, "
+              << rootedCollections.load() << " rooted collections, "
+              << rootLifecycleCycles.load() << " root lifecycle cycles, "
               << violations << " violations" << std::endl;
     return pass;
 }

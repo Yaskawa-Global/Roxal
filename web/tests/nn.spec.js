@@ -44,7 +44,10 @@ test('a digit drawn in the panel is classified by ai.nn', async ({ page }) => {
     await expect(page.locator('.mnist-hint')).toContainText('inferences');
 
     // Clear resets the verdict through the store, not just the canvas.
-    await page.getByRole('button', { name: 'clear' }).click();
+    // Scoped to the panel: the output and console panes have clear buttons
+    // of their own, and once inference actually runs all three are on the
+    // page at once.
+    await page.locator('.mnist-actions').getByRole('button', { name: 'clear' }).click();
     await expect(page.locator('.mnist-digit')).toHaveText('–');
 });
 

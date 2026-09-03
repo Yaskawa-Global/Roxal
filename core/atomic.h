@@ -18,6 +18,7 @@
 #include <set>
 #include <map>
 #include <unordered_map>
+#include <algorithm>
 #include <mutex>
 #include <stack>
 #include <deque>
@@ -186,6 +187,17 @@ public:
     {
         std::lock_guard<std::mutex> lock(m_lock);
         v.push_back(value);
+    }
+
+    // Remove every element the predicate accepts, under the lock.  Returns
+    // how many were removed.
+    template <typename Pred>
+    size_t erase_if(Pred pred)
+    {
+        std::lock_guard<std::mutex> lock(m_lock);
+        const size_t before = v.size();
+        v.erase(std::remove_if(v.begin(), v.end(), pred), v.end());
+        return before - v.size();
     }
 
     // Append multiple elements efficiently in one lock

@@ -346,7 +346,7 @@ struct Obj {
     {
         // release + acquire-on-zero: same death protocol as Obj::decRef,
         // guarding the control block's storage
-        if (control->weak.fetch_sub(1,std::memory_order_release) == 1) {
+        if (control->weak.fetch_sub(1, refReleaseOrder) == 1) {
             std::atomic_thread_fence(std::memory_order_acquire);
             delete[] reinterpret_cast<char*>(control);
         }
@@ -491,7 +491,7 @@ inline void delObj(T* o) {
 #endif
     SimpleMarkSweepGC::instance().unregisterAllocation(ctrl);
     o->~T();
-    if (ctrl->weak.fetch_sub(1, std::memory_order_release) == 1) {
+    if (ctrl->weak.fetch_sub(1, refReleaseOrder) == 1) {
         std::atomic_thread_fence(std::memory_order_acquire);
 #if defined(ROXAL_GC_FORENSICS) && !defined(ROXAL_GC_FORENSICS_FIELDS_ONLY)
         if (roxalForensicQuarantine(ctrl, deadType, deadBytes))
@@ -907,6 +907,29 @@ struct ObjDict : public Obj
         // can't just iterate over the entries directly, as we want to preserve order according to m_keys
         for(auto it=data_->m_keys.cbegin(); it!=data_->m_keys.cend(); it++)
             keyvalues.push_back(std::pair<Value,Value>(*it,data_->entries.at(*it)));
+        return keyvalues;
+    }
+
+    // Bounded enumeration: at most maxItems leading entries (insertion order).
+    // For bounded-work consumers (debugger previews, later DAP variable
+    // paging) that must not copy -- or refcount-touch -- an entire huge dict
+    // the way items()/keys() do.
+    std::vector<std::pair<Value,Value>> itemsPrefix(size_t maxItems) const {
+        return itemsRange(0, maxItems);
+    }
+
+    // Bounded page [start, start+maxItems) in insertion order -- the
+    // debugger's paged variables view: a huge dict costs O(page), never
+    // O(n).
+    std::vector<std::pair<Value,Value>> itemsRange(size_t start, size_t maxItems) const {
+        std::vector<std::pair<Value,Value>> keyvalues {};
+        const auto& order = data_->m_keys;
+        if (start >= order.size())
+            return keyvalues;
+        const size_t end = std::min(start + maxItems, order.size());
+        keyvalues.reserve(end - start);
+        for (size_t i = start; i < end; ++i)
+            keyvalues.push_back(std::pair<Value,Value>(order[i], data_->entries.at(order[i])));
         return keyvalues;
     }
 
@@ -2486,7 +2509,10 @@ struct ActorInstance : public Obj
     std::mutex queueMutex;
     std::condition_variable queueConditionVar;
 
-    std::thread::id thread_id;
+    // Written by the actor worker at startup, read by any caller deciding
+    // self-call vs queueCall: must be atomic (TSan-verified race otherwise --
+    // a torn read could misroute a cross-actor call as a self-call).
+    std::atomic<std::thread::id> thread_id { std::thread::id{} };
     weak_ptr<Thread> thread;
     std::atomic<bool> alive{false}; // true while actor OS thread is running; guards queueCall
 

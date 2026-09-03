@@ -19,7 +19,10 @@ bool isCallableValue(const Value& value);
 std::string describeValueType(const Value& value, std::string* docOut = nullptr);
 
 std::vector<SymbolEntry> collectModuleEntries(ObjModuleType* module);
-std::vector<SymbolEntry> collectPropertyEntries(ObjObjectType* type);
+// maxEntries bounds the walk for bounded-work consumers (debugger previews);
+// default collects everything.
+std::vector<SymbolEntry> collectPropertyEntries(ObjObjectType* type,
+                                                size_t maxEntries = (size_t)-1);
 std::vector<SymbolEntry> collectMethodEntries(ObjObjectType* type);
 
 std::string formatSymbolEntries(const std::vector<SymbolEntry>& entries,

@@ -595,7 +595,7 @@ void roxal::Value::decWeakObj()
     if (!isObj() && !isBoxable())
         throw std::runtime_error("Can't decWeak non-object type "+typeName());
     #endif
-    if (asControl()->weak.fetch_sub(1,std::memory_order_release) == 1) {
+    if (asControl()->weak.fetch_sub(1, refReleaseOrder) == 1) {
         std::atomic_thread_fence(std::memory_order_acquire);
         delete[] reinterpret_cast<char*>(asControl());
     }
@@ -3854,7 +3854,7 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
                 slot.clearSignal();
                 slot.value = v;
             }
-            ptr<Thread> newThread = make_ptr<Thread>();
+            ptr<Thread> newThread = Thread::create(VM::currentOrDefaultDomain(), ThreadKind::Actor);
             // Keep the thread alive by registering it with the VM.  Without
             // this the Thread object would be destroyed immediately after
             // deserialization, causing std::terminate since the underlying

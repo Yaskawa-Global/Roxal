@@ -95,7 +95,7 @@ test('counter4 survives a GC soak with mark verification on', async ({ page }) =
     await page.getByRole('button', { name: /^Run$/ }).click();
 
     const outputLines = () => page.evaluate(() =>
-        document.querySelector('.output')?.textContent?.split('\n').length ?? 0);
+        document.querySelector('.out')?.textContent?.split('\n').length ?? 0);
 
     const start = Date.now();
     let lastCount = await outputLines();
@@ -146,4 +146,112 @@ test('counter4 survives a GC soak with mark verification on', async ({ page }) =
     }
 
     expect(crashes, 'no wasm faults during the soak').toEqual([]);
+});
+
+// Soak WHILE STOPPED AT A BREAKPOINT.  Nothing else exercises this scenario:
+// the world is frozen mid-frame with live inspection handles rooted in the
+// debug handle table, while the excluded control actor churns allocations
+// (every store call builds dicts/lists) and collections run against that
+// exact shape.  Same forensics gating and crash/ASan capture as the soak
+// above.
+test('inspection soak while stopped at a breakpoint', async ({ page }) => {
+    test.setTimeout(300000);
+    const QUERY = process.env.GC_SOAK_QUERY ?? '?gcthreshold=4194304&fcflags=15';
+    const SOAK_MS = Number(process.env.GC_DEBUG_SOAK_MS ?? 45000);
+
+    const crashes = [];
+    page.on('pageerror', e => crashes.push(`pageerror: ${e?.message || String(e)}`));
+    const log = [];
+    page.on('console', m => {
+        const t = m.text();
+        log.push(`[${m.type()}] ${t}`);
+        if (log.length > 120) log.shift();
+        if (/memory access out of bounds|unreachable|alignfault|unaligned|worker sent an error|AddressSanitizer/i.test(t))
+            crashes.push(`console: ${t}`);
+    });
+
+    await page.addInitScript(() => {
+        localStorage.setItem('roxal-ide-last-file', 'oven.rox');
+    });
+    await page.goto('/' + QUERY);
+    await expect(page.locator('.tab.active')).toHaveText(/oven\.rox/, { timeout: 90000 });
+    await expect(page.locator('.v.big')).toHaveText('20.0°', { timeout: 60000 });
+
+    const hasForensics = await page.evaluate(() => {
+        try { window.__rox.ccall('roxal_forensic_count', 'number', [], []); return true; }
+        catch { return false; }
+    });
+    test.skip(!hasForensics, 'wasm build lacks ROXAL_GC_FORENSICS');
+
+    await page.evaluate(() => window.monaco.editor.getEditors()[0].getModel().setValue(
+        ['var big = []',
+         'for i in range(..<5000):',
+         "  big.append('item-' + string(i))",
+         'var t = 0',
+         'for i in range(..<200000):',
+         '  t = t + 1',
+         '  wait(ms=20)',
+         'print(t)',
+         ''].join('\n')));
+
+    await page.locator('.debug-toggle').click();
+    await page.evaluate(() => window.__roxalDebug.toggleBreakpoint(6));
+    await page.getByRole('button', { name: /^Run$/ }).click();
+    await expect(page.locator('.debug-status')).toContainText('stopped (breakpoint)',
+                                                              { timeout: 60000 });
+
+    const diagCollections = () => page.evaluate(() => {
+        const d = window.__rox.ccall('roxal_diag', 'string', [], []);
+        return Number(/collections=(\d+)/.exec(d)?.[1] ?? -1);
+    });
+    const collectionsBefore = await diagCollections();
+
+    // Hammer the inspection surface from the page: every call allocates on
+    // both sides of the store bridge, and the big list's variable pages are
+    // rebuilt each time -- steady allocation pressure against the frozen
+    // world, with the handle table as the only root for the page Values.
+    const soakOnce = () => page.evaluate(async () => {
+        const dbg = window.__rox.roxalStore('debug');
+        const st = await dbg.call('state');
+        if (!st.stopped) return { ok: false, why: 'not stopped' };
+        const stack = await dbg.call('stack', st.thread_id);
+        if (!stack.ok || !stack.frames.length) return { ok: false, why: 'no frames' };
+        const scopes = await dbg.call('scopes', stack.frames[0].id);
+        const modScope = scopes.scopes.find(s => s.name === 'Module');
+        if (!modScope) return { ok: false, why: 'no module scope' };
+        const vars = await dbg.call('variables', modScope.ref, 0, 0);
+        const big = (vars.variables || []).find(v => v.name === 'big');
+        if (big && big.ref) {
+            for (let start = 0; start < 5000; start += 200)
+                await dbg.call('variables', big.ref, start, 200);
+        }
+        return { ok: true, line: st.line };
+    });
+
+    const start = Date.now();
+    let rounds = 0;
+    while (Date.now() - start < SOAK_MS) {
+        const r = await soakOnce();
+        expect(r.ok, JSON.stringify(r)).toBe(true);
+        expect(r.line).toBe(6);
+        rounds++;
+        if (crashes.length) break;
+    }
+    const collectionsAfter = await diagCollections();
+    const forensics = await page.evaluate(() =>
+        window.__rox.ccall('roxal_forensic_count', 'number', [], []));
+
+    console.log(`debug soak: ${rounds} rounds, collections ${collectionsBefore} -> ${collectionsAfter}`);
+    expect(crashes, crashes.join('\n')).toHaveLength(0);
+    expect(forensics).toBe(0);
+    // The soak must have actually collected while stopped, or it proved
+    // nothing (fail loudly rather than pass vacuously).
+    expect(collectionsAfter).toBeGreaterThan(collectionsBefore);
+
+    // The frozen world is intact: continue, and the program advances.
+    await page.evaluate(() => window.__roxalDebug.toggleBreakpoint(6));
+    await page.evaluate(() => window.__roxalDebug.dbgAction('continue'));
+    await expect(page.locator('.debug-status')).toContainText('running', { timeout: 30000 });
+    expect(await page.evaluate(() =>
+        window.__rox.ccall('roxal_forensic_count', 'number', [], []))).toBe(0);
 });

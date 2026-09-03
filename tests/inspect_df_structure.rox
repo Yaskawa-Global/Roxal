@@ -36,11 +36,25 @@ func plus1(v :int) -> int:
 
 var c = clock(10)
 var p = plus1(c)
+
+// Wait for the tick to PROPAGATE rather than for a fixed stretch of wall
+// clock: a fixed wait asserts how fast the machine is, and fails on a loaded
+// one for reasons that have nothing to do with what this test is about.  The
+// value itself is still asserted by the prints below, so a propagation that
+// never happens times out here and prints the wrong thing.
+proc settled(was :int):
+  for i in range(..<400):
+    if int(p) != was:
+      return
+    wait(ms=5)
+
 var ignored = len(p.network().nodes)
+var before = int(p)
 c.tick()
-wait(us=150000)
+settled(before)
 print("{int(c)} {int(p)}")
 var alsoIgnored = len(inspect.signals())
+before = int(p)
 c.tick()
-wait(us=150000)
+settled(before)
 print("{int(c)} {int(p)}")

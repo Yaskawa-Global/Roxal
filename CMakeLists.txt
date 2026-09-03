@@ -450,6 +450,18 @@ set(COMPILER_SOURCES
     compiler/Chunk.cpp
     compiler/CallableInfo.cpp
     compiler/Introspection.cpp
+    compiler/debug/ValueRender.cpp
+    compiler/debug/StopCoordinator.cpp
+    compiler/debug/DebugInfo.cpp
+    compiler/debug/ModuleDebugIndex.cpp
+    compiler/debug/BreakpointManager.cpp
+    compiler/debug/DebugWorker.cpp
+    compiler/debug/DebugHandleTable.cpp
+    compiler/debug/DebugInspector.cpp
+    compiler/ModuleDebug.cpp
+    compiler/debug/dap/DapCodec.cpp
+    compiler/debug/dap/DapSession.cpp
+    compiler/debug/dap/DapStdioAdapter.cpp
     compiler/BuiltinModule.cpp
     compiler/Object.cpp
     compiler/OverloadResolver.cpp
@@ -461,6 +473,9 @@ set(COMPILER_SOURCES
     compiler/ThreadManager.cpp
     compiler/Thread.cpp
     compiler/VM.cpp
+    compiler/EmbeddedRuntime.cpp
+    compiler/PreparedProgram.cpp
+    compiler/ReplSession.cpp
     compiler/linenoise.c
 )
 
@@ -775,6 +790,23 @@ target_compile_options(roxalcore PRIVATE
     $<$<CONFIG:DEBUG>:-fPIC -Wno-attributes -Werror=return-type -g -fmax-errors=1>
     $<$<CONFIG:RELEASE>:-O3>
 )
+
+# Phase-A characterization of the current public execution lifetimes.  This
+# intentionally remains a native host test; Phase G adds the cross-platform
+# periodic-driver harness for the replacement API.
+if(NOT EMSCRIPTEN)
+    add_executable(roxal_execution_contract_test
+        tests/embedded_execution_contract_test.cpp)
+    target_link_libraries(roxal_execution_contract_test PRIVATE roxalcore)
+    add_test(NAME RoxalExecutionContract COMMAND roxal_execution_contract_test)
+
+    # The embedding contract, exercised by a standalone host that owns the
+    # process -- not from inside an outer Roxal run, which would force the
+    # harness into arrangements no real embedding makes.
+    add_executable(roxal_embedded_host_harness tests/embedded_host_harness.cpp)
+    target_link_libraries(roxal_embedded_host_harness PRIVATE roxalcore)
+    add_test(NAME RoxalEmbeddedHost COMMAND roxal_embedded_host_harness)
+endif()
 
 # Compile definitions come from roxal_abi (linked PUBLIC above) — the single shared
 # source of truth, so roxalcore, the roxal exe, and the qt plugin can never diverge.

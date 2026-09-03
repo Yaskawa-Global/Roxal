@@ -1,0 +1,53 @@
+import inspect.*
+
+# scalars
+print(inspect.render(42))
+print(inspect.render(3.5))
+print(inspect.render(true))
+print(inspect.render(nil))
+
+# strings, with clipping
+print(inspect.render('hello'))
+print(inspect.render('abcdefghij', max_chars=4))
+
+# lists: preview, child cap, depth cap
+print(inspect.render([1, 2, 3]))
+print(inspect.render([1, 2, 3, 4, 5], max_children=3))
+print(inspect.render([[1, 2], [3, 4]]))
+print(inspect.render([[1, 2], [3, 4]], depth=2))
+
+# dict preview
+print(inspect.render({'a': 1, 'b': 2}))
+
+# object instance: declared backing fields, no getters
+type Point object:
+  var x = 1
+  var y = 2
+
+var p = Point()
+print(inspect.render(p))
+print(inspect.render([p]))
+
+# enum scalar
+type Color enum: red, green, blue
+print(inspect.render(Color.green))
+
+# functions render as opaque markers
+func add1(n):
+  return n + 1
+print(inspect.render(add1))
+
+# escaping keeps previews one-line
+print(inspect.render("a\nb\tc\\d'e"))
+
+# dict child cap with remainder count
+print(inspect.render({'a': 1, 'b': 2}, max_children=1))
+
+# actors are opaque, never called into
+type Wk actor:
+  func p() -> int:
+    return 1
+
+var wk = Wk()
+print(inspect.render(wk))
+print(inspect.render([wk]))

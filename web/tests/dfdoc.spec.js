@@ -87,8 +87,10 @@ test('a composed diagram: flip-flops as nodes', async ({ page }) => {
         .toBeVisible({ timeout: 30000 });
     console.log('COMPONENTS ok');
 
+    // counter4.rox marks `value` (the packed count) as its probe, so the
+    // harness prints that output alone.
     await page.locator('button.run').click();
-    await expect(page.locator('.out')).toContainText('q1 = ', { timeout: 60000 });
+    await expect(page.locator('.out')).toContainText('value = ', { timeout: 60000 });
     await expect(page.locator('.react-flow__edge-text').first())
         .toContainText(/true|false/, { timeout: 30000 });
     console.log('COMPOSED-RUN ok');

@@ -19,7 +19,9 @@ public:
     ~ModuleWeb() override;
 
     void registerBuiltins(VM& vm) override;
+
     void onModuleLoaded(VM& vm) override;
+    void onScriptStart(VM& vm) override;
     void onScriptComplete(VM& vm) override;
     void onModuleUnloading(VM& vm) override;
 
@@ -29,6 +31,7 @@ private:
     Value moduleTypeValue;   // ObjModuleType*
 
     Value expose_builtin(ArgsView args);
+    void exposeDebugControl(VM& vm);
     Value notify_builtin(ArgsView args);
     Value serve_builtin(ArgsView args);
     Value stop_builtin(ArgsView args);

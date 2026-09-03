@@ -122,7 +122,7 @@ Value ModuleFileIO::fileio_open_builtin(ArgsView args)
 // read-after-write ordering holds regardless of mode). async=false — the
 // default — then awaits the future inside the VM dispatcher, so the script
 // sees a plain synchronous call while the OS thread stays unblocked (an RT
-// runFor() returns immediately, a host UI loop keeps pumping). async=true
+// the slice returns immediately, a host UI loop keeps pumping). async=true
 // returns the future for explicit pipelining (fire-and-forget writes from an
 // RT loop), to be consumed with wait(for=...).
 static bool asyncArg(const ArgsView& args, size_t index)

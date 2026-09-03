@@ -1,0 +1,8 @@
+// Debugger stop-barrier self-tests.
+_runtests('debug_stop')
+// The first suite leaves a breakpoint stop ACTIVE with a live inspection
+// handle; this script-level gc() runs a REAL collection during the stop
+// (outside any native's wasm GCNoParkScope), and the second suite proves
+// it, reinspects the handle, and resumes.
+gc()
+_runtests('debug_stop_gc')

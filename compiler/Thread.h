@@ -8,6 +8,7 @@
 #include <condition_variable>
 
 #include "ThreadManager.h"
+#include "ExecutionDomain.h"
 #include <optional>
 
 #include "core/atomic.h"
@@ -21,22 +22,104 @@ namespace roxal {
 
 class Thread
   : public enable_ptr_from_this<Thread> {
+    // Only Thread::create may construct:
+    // registration must happen AFTER the strong owner exists so the
+    // ThreadManager index can hold weak references that safely produce
+    // strong leases.  The private key makes any stray direct construction
+    // a compile error.
+    struct CreateKey { explicit CreateKey() = default; };
 public:
-    Thread()
+    Thread(CreateKey, ptr<ExecutionDomain> execDomain, ThreadKind threadKind)
       : threadSleep(false), osthread(nullptr), state(State::Constructed), execute_depth(0),
         exceptionJumpPending(false), nativeCallDepth(0) {
+        domain = std::move(execDomain);
+        kind = threadKind;
         thisid = nextId.fetch_add(1);
         actor = false;
         quit = false;
         result = ExecutionStatus::OK;
         frames.reserve(256);
         actorInstanceRaw.store(nullptr, std::memory_order_relaxed);
-        // Every Thread self-registers in the complete non-owning
-        // index (the collector's sole interpreter-root source).
-        ThreadManager::instance().registerThread(this);
     }
     Thread(Thread&) = delete;
     virtual ~Thread();
+
+    // The only construction path: builds the Thread, then registers a weak
+    // reference (plus id/domain/kind metadata) in the complete non-owning
+    // ThreadManager index -- the collector's sole interpreter-root source.
+    static ptr<Thread> create(ptr<ExecutionDomain> domain, ThreadKind kind);
+
+    // The execution domain this thread belongs to (never null after create).
+    // Carries the shared interrupt/control word; later debugger phases hang
+    // the stop admission gate and failure state off it.
+    ptr<ExecutionDomain> domain;
+    ThreadKind kind { ThreadKind::Main };
+
+    // ---- Debugger stop state ----
+    // Execution ownership lets the coordinator acknowledge an IDLE thread
+    // externally (CAS Idle -> StoppedExternal proves nobody is inside it;
+    // the execute-entry gate then blocks re-entry until release).  Only the
+    // owning thread stores Executing/Idle; only the coordinator CASes
+    // Idle -> StoppedExternal and releases StoppedExternal -> Idle.
+    enum class DebugOwnership : uint8_t { Idle = 0, Executing = 1, StoppedExternal = 2 };
+    std::atomic<DebugOwnership> debugOwnership { DebugOwnership::Idle };
+    // Last stop epoch this thread acknowledged (release-published; the
+    // acknowledgement doubles as the publication fence for this thread's
+    // frames/stack).
+    std::atomic<uint64_t> debugAckEpoch { 0 };
+    // Owner-thread-only nesting counter for execute() re-entry (admission
+    // and ownership are managed only at the outermost level).
+    int debugExecNesting { 0 };
+    // >0 while this thread is inside a gate-counted dataflow evaluation
+    // section (island eval / node init).  The cooperative stop point defers
+    // parking while set: the node completes (bounded work), the gate count
+    // drops, and the thread parks at its next boundary: cooperative stop
+    // checks happen BETWEEN FuncNode evaluations, never while holding the
+    // engine's eval mutex.
+    int dataflowEvalDepth { 0 };
+
+    // Monotonic activation-id source for this thread's frames.
+    uint64_t nextActivationId { 1 };
+
+    // Debug-excluded: this thread is a debugger/IDE SERVICE thread -- it
+    // must keep running through stop epochs (never a member, never trapped
+    // by breakpoints/steps) so the host UI stays serviceable while the
+    // debuggee is stopped.  Only for threads that mutate no debuggee state
+    // (the web Debug control actor, the IDE bootstrap); the dataflow engine
+    // is stopped, never excluded.
+    // Set by the thread itself (a native call) before debugging starts;
+    // read cross-thread by the stop coordinator.
+    std::atomic<bool> debugExcluded { false };
+
+    // One-shot resume suppression: set when this thread traps at a
+    // statement boundary, so releasing the stop does not immediately
+    // re-trap the same (chunk, statement, activation); cleared after one
+    // skip.
+    const void* debugSuppressChunk { nullptr };
+    uint32_t debugSuppressStmt { 0xffffffffu };
+    uint64_t debugSuppressActivation { 0 };
+
+    // Step state: armed/cancelled ONLY through StopCoordinator (armStep in
+    // stepAndResume, cancelStepIfArmed at stop commit,
+    // disarm-after-publication at the boundary) so the paired slow-path
+    // demand can never leak or double-count.  Anchored on the ORIGIN
+    // FRAME'S ACTIVATION, not raw frame depth: a recycled depth with a
+    // different activation must not satisfy Next/Out.
+    enum class DebugStepMode : uint8_t { None = 0, In, Next, Out };
+    DebugStepMode debugStepMode { DebugStepMode::None };
+    uint64_t debugStepActivation { 0 };   // origin frame's activation id
+    uint32_t debugStepOriginIndex { 0 };  // origin frame's physical index
+
+    // RAII for execute()'s ownership/nesting bookkeeping (constructed right
+    // after debug admission; the dtor runs on every return path).
+    struct DebugExecScope {
+        Thread& t;
+        explicit DebugExecScope(Thread& t) : t(t) { ++t.debugExecNesting; }
+        ~DebugExecScope() {
+            if (--t.debugExecNesting == 0)
+                t.debugOwnership.store(DebugOwnership::Idle, std::memory_order_release);
+        }
+    };
 
     uint64_t id() { return thisid; }
 
@@ -55,6 +138,13 @@ public:
 
     // is this thread associated with an actor instance?
     bool isActorThread() const { return actor; }
+
+    // Identity of the associated actor instance, for COMPARE-ONLY use (the
+    // debugger control-capability check) -- never dereference through this.
+    const void* actorIdentity() const {
+        return static_cast<const void*>(
+            actorInstanceRaw.load(std::memory_order_acquire));
+    }
 
     static void resetIdCounter(uint64_t value=1) { nextId.store(value); }
 
@@ -194,7 +284,7 @@ public:
     int execute_depth;
 
     // RT hosts set this on a Thread they drive from a real-time loop (e.g.
-    // via runFor): when a GC collection is requested, execute() YIELDS back
+    // via a bounded slice): when a GC collection is requested, execute() YIELDS back
     // to the host instead of parking at the stop-the-world safepoint (a
     // parked RT thread would trip the host's hardware watchdog, and inside
     // an RT GC-yield section it would deadlock the collection barrier).

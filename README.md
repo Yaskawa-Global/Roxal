@@ -17,6 +17,7 @@ Features:
   - Distribuited Compute (instantiate actors remotely)
   - VM integratable into Real-time control loops via runFor(deadline)
   - Bundled OpenCV 5 & Qt 6 bindings
+  - DAP Debugging interface & VSCode extension (syntax colouring & completion, debug breakpoints, stepping, variables view & hover, catch errors & exceptions)
 
 See [Roxal-for-devs](roxal-for-devs.md) for an overview.
 

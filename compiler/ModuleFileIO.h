@@ -40,7 +40,7 @@ public:
 
 private:
     // Await `future` inside the VM dispatcher (sys.wait(for=)'s machinery):
-    // parks the Roxal thread, NOT the OS thread — under runFor() the thread
+    // parks the Roxal thread, NOT the OS thread — under a bounded slice the thread
     // reports not-runnable and resumes on a later call; a host UI loop keeps
     // pumping. This is what makes async=false LOOK synchronous to the script
     // while the I/O worker does the actual work. Returns the resolved value

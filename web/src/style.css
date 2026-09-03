@@ -360,3 +360,30 @@ h2 { font-size: 13px; color: #88c0d0; }
 .df-menu button { text-align: left; background: none; border: 0; color: #d8dee9;
                   padding: .3rem .55rem; border-radius: 4px; cursor: pointer; font-size: 12px; }
 .df-menu button:hover { background: #2e3440; color: #67e8f9; }
+
+/* --- debugger ------------------------------------------------------------ */
+.bp-glyph::before {
+    content: '●'; color: #e5534b; font-size: 10px;
+    display: inline-block; margin-left: 5px;
+}
+.debug-stop-glyph::before {
+    content: '▶'; color: #d4a72c; font-size: 10px;
+    display: inline-block; margin-left: 3px;
+}
+.debug-stop-line { background: rgba(212, 167, 44, 0.15); }
+.debug-toggle { margin-left: 0.4rem; }
+.debug-toggle.active { outline: 1px solid #d4a72c; }
+.debug-panel {
+    display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;
+    font-size: 12px; padding: 0.3rem 0.5rem;
+    border: 1px solid #3334; border-radius: 4px; margin: 0.25rem 0;
+}
+.debug-status { font-family: ui-monospace, monospace; }
+.debug-actions button { margin-right: 0.25rem; }
+.debug-detail { display: flex; gap: 1rem; width: 100%; }
+.debug-stack { list-style: none; margin: 0; padding: 0; font-family: ui-monospace, monospace; }
+.debug-stack i { opacity: 0.6; font-style: normal; margin-left: 0.4rem; }
+.debug-vars { border-collapse: collapse; font-family: ui-monospace, monospace; }
+.debug-vars td { padding: 0 0.6rem 0 0; }
+.debug-vars .v-type { opacity: 0.55; }
+.debug-vars .v-val { white-space: pre; }

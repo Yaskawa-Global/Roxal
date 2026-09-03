@@ -21,6 +21,7 @@
 
 #include "ASTGenerator.h"
 #include "TypeDeducer.h"
+#include "debug/ModuleDebugIndex.h"
 #include "VM.h"
 #include "Error.h"
 #include "OverloadResolver.h"
@@ -84,7 +85,7 @@ static unsigned long currentProcessId()
     return static_cast<unsigned long>(::getpid());
 #endif
 }
-constexpr std::uint32_t ModuleCacheVersion = 60;   // 60: scoped AST attribution changes serialized Chunk line/column tables
+constexpr std::uint32_t ModuleCacheVersion = 62;   // 62: debug-tier byte in the cache header (61: chunk debug metadata tables)
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -95,7 +96,12 @@ std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath
     if (stem.empty())
         stem = sourcePath.filename().string();
 
-    std::string cacheFilename = "." + stem + ".roc";
+    // The debug tier is part of the artifact identity: stripped and debug
+    // caches get distinct filenames so alternating --no-debug-info runs do
+    // not thrash each other's artifacts.  The header tier byte remains as
+    // the integrity check.
+    std::string cacheFilename = "." + stem
+        + (RoxalCompiler::debugInfoDefault() ? "" : ".nodebug") + ".roc";
     return directory / cacheFilename;
 }
 
@@ -340,6 +346,15 @@ Value RoxalCompiler::compile(std::istream& source, const std::string& name,
         //std::cout << "\n" << interpreter.stackAsString(false) << std::endl;
     }
 
+    // Debug index registration: every function in the freshly compiled
+    // graph, keyed by source identity, with the full translation-unit text
+    // retained for later source requests.
+    if (debugInfoEnabled_ && isFunction(function)) {
+        std::string text = (ast != nullptr && ast->source) ? *ast->source
+                                                           : std::string();
+        ModuleDebugIndex::instance().registerFunctionGraph(function, std::move(text));
+    }
+
     return function;
 }
 
@@ -382,6 +397,7 @@ Value RoxalCompiler::loadFileCache(const std::filesystem::path& sourcePath) cons
 
         ModuleInfo module{};
         module.cachePath = cachePath;
+        module.resolvedPath = resolved;   // lets the debug index retain source text
         return loadModuleFromCache(module);
     } catch (...) {
         return Value::nilVal();
@@ -752,7 +768,11 @@ void RoxalCompiler::reconcileModuleReferences(const Value& function) const
             }
         }
 
-        // Also process functions stored in paramDefaultFunc (parameter default value functions)
+        // Also process functions stored in paramDefaultFunc (parameter default value functions).
+        // (This worklist interleaves canonicalization mutations into its traversal, so it
+        // stays hand-rolled -- but its REACHABILITY contract is the same as
+        // ModuleDebugIndex::forEachFunctionInGraph: chunk constants + paramDefaultFunc.
+        // Keep them in sync.)
         for (auto& kv : fn->paramDefaultFunc) {
             if (isFunction(kv.second)) {
                 enqueueFunction(kv.second);
@@ -964,6 +984,11 @@ std::any RoxalCompiler::visit(ptr<ast::File> ast)
     SourceNodeScope sourceScope(*this, ast);
     Anys results {};
 
+    // Debug metadata: the module/top-level chunk gets its FunctionEntry at
+    // offset 0 like every function chunk (so stop-on-entry works at top
+    // level) -- BEFORE the forward-declaration hoist emits any bytes.
+    recordFunctionEntryStmt();
+
     // Hoist top-level type declarations: emit "create empty placeholder type
     // and bind to module slot" for each TypeDecl directly in the file body,
     // before any other module-level code runs. The actual TypeDecl bodies
@@ -1028,6 +1053,7 @@ std::any RoxalCompiler::visit(ptr<ast::File> ast)
     for (auto& declOrStmt : ast->declsOrStmts) {
         if (std::holds_alternative<ptr<Declaration>>(declOrStmt)) {
             auto decl = std::get<ptr<Declaration>>(declOrStmt);
+            markStmtStart(decl);   // debug metadata: top-level statement boundary
             results.push_back(decl->accept(*this));
             if (auto typeDecl = dynamic_ptr_cast<ast::TypeDecl>(decl)) {
                 auto it = topLevelNode.find(typeDecl.get());
@@ -1035,8 +1061,11 @@ std::any RoxalCompiler::visit(ptr<ast::File> ast)
                     emitForwardTypeRelink(linkNodes, it->second);
             }
         }
-        else if (std::holds_alternative<ptr<Statement>>(declOrStmt))
-            results.push_back(std::get<ptr<Statement>>(declOrStmt)->accept(*this));
+        else if (std::holds_alternative<ptr<Statement>>(declOrStmt)) {
+            auto& stmt = std::get<ptr<Statement>>(declOrStmt);
+            markStmtStart(stmt);   // debug metadata: top-level statement boundary
+            results.push_back(stmt->accept(*this));
+        }
         else
             throw std::runtime_error("unimplemented accept() alternative");
     }
@@ -2698,7 +2727,7 @@ void RoxalCompiler::recordDeclAnnotations(const ustring& name,
         return;
     // Only top-level declarations: a local has no module slot to hang them off,
     // and a nested type declaration's name is not a module name (its
-    // annotations are Phase-5 territory, along with type properties).
+    // annotations are not handled yet, along with type properties).
     if (asFuncScope(funcScope())->scopeDepth != 0 || !(*scope())->isModule())
         return;
 
@@ -3140,7 +3169,7 @@ std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
 std::any RoxalCompiler::visit(ptr<ast::PropertyAccessor> ast)
 {
     SourceNodeScope sourceScope(*this, ast);
-    // TODO: Implement in Phase 6 - generate code for property accessors
+    // TODO: generate code for property accessors
     // For now, just return empty so compilation succeeds
     return {};
 }
@@ -3153,7 +3182,20 @@ std::any RoxalCompiler::visit(ptr<ast::Suite> ast)
 
     enterLocalScope();
     scanBlockDeclarations(ast->declsOrStmts);
-    ast->acceptChildren(*this, results);
+    // Explicit child loop (mirrors Suite::acceptChildren) so each
+    // block-level statement records its boundary in the debug metadata.
+    for (auto& declOrStmt : ast->declsOrStmts) {
+        if (std::holds_alternative<ptr<Declaration>>(declOrStmt)) {
+            auto& d = std::get<ptr<Declaration>>(declOrStmt);
+            markStmtStart(d);
+            results.push_back(d->accept(*this));
+        } else if (std::holds_alternative<ptr<Statement>>(declOrStmt)) {
+            auto& s = std::get<ptr<Statement>>(declOrStmt);
+            markStmtStart(s);
+            results.push_back(s->accept(*this));
+        } else
+            throw std::runtime_error("unimplemented accept() alternative");
+    }
     exitLocalScope();
     return results;
 }
@@ -5668,7 +5710,7 @@ std::any RoxalCompiler::visit(ptr<ast::Call> ast)
             {
                 // Walk the compile-time extends chain to find the first
                 // level that declares the method (matches the runtime
-                // shadow-by-name semantics from Phase 2).
+                // shadow-by-name semantics).
                 std::vector<ptr<type::Type>> methodFTs;
                 ptr<type::Type> walked = recvType;
                 while (walked && walked->obj.has_value() && methodFTs.empty()) {
@@ -6408,6 +6450,14 @@ Value RoxalCompiler::loadModuleFromCache(const ModuleInfo& module) const
         if (!cacheStream || version != ModuleCacheVersion)
             return Value::nilVal();
 
+        // Debug tier is part of cache compatibility: a stripped cache must
+        // not satisfy a debug-enabled run (silently removing debugger
+        // support), nor a debug cache a stripped run.  Mismatch recompiles.
+        uint8_t cachedDebugTier = 0;
+        cacheStream.read(reinterpret_cast<char*>(&cachedDebugTier), 1);
+        if (!cacheStream || cachedDebugTier != (debugInfoEnabled_ ? 1 : 0))
+            return Value::nilVal();
+
         uint8_t flags = 0;
         cacheStream.read(reinterpret_cast<char*>(&flags), sizeof(flags));
         if (!cacheStream)
@@ -6488,33 +6538,38 @@ Value RoxalCompiler::loadModuleFromCache(const ModuleInfo& module) const
                 collectGlobal(name);
 
             if (!importedGlobals.empty()) {
-                std::unordered_set<ObjFunction*> visited;
-                std::vector<ObjFunction*> stack;
-                auto enqueue = [&](const Value& fnVal) {
-                    if (!isFunction(fnVal))
-                        return;
-                    ObjFunction* f = asFunction(fnVal);
-                    if (visited.insert(f).second)
-                        stack.push_back(f);
-                };
-                enqueue(value);
-                while (!stack.empty()) {
-                    ObjFunction* f = stack.back();
-                    stack.pop_back();
+                // Shared function-graph walker: an inline walk over the
+                // constants alone silently misses default-argument functions.
+                ModuleDebugIndex::forEachFunctionInGraph(value, [&](ObjFunction* f) {
                     if (isModuleType(f->moduleType)) {
                         ObjModuleType* mt = asModuleType(f->moduleType);
                         for (const auto& entry : importedGlobals) {
                             mt->vars.store(toUnicodeString(entry.first), entry.second, true);
                         }
                     }
-                    if (f->chunk) {
-                        for (auto& c : f->chunk->constants)
-                            enqueue(c);
-                    }
-                }
+                });
             }
         }
         reconcileModuleReferences(value);
+
+        // Debug index registration for cache-loaded graphs -- AFTER
+        // successful reconciliation, so a failed load can never replace the
+        // previous valid generation.  The deserialized chunks carry their
+        // debug tables; retained text comes from the source file when the
+        // path is known.  There is no per-module/session ownership of the
+        // returned generation token yet: supersede-on-reregister and
+        // shutdown clearAll() are the retirement paths.
+        if (debugInfoEnabled_ && isFunction(value)) {
+            std::string text;
+            if (!module.resolvedPath.empty()) {
+                std::ifstream tf(module.resolvedPath, std::ios::binary);
+                if (tf)
+                    text.assign(std::istreambuf_iterator<char>(tf),
+                                std::istreambuf_iterator<char>());
+            }
+            ModuleDebugIndex::instance().registerFunctionGraph(value, std::move(text));
+        }
+
         return value;
     } catch (...) {
         return Value::nilVal();
@@ -6546,6 +6601,8 @@ void RoxalCompiler::storeModuleCache(const ModuleInfo& module, const Value& func
 
         cacheStream.write(ModuleCacheMagic, sizeof(ModuleCacheMagic));
         cacheStream.write(reinterpret_cast<const char*>(&ModuleCacheVersion), sizeof(ModuleCacheVersion));
+        const uint8_t debugTier = debugInfoEnabled_ ? 1 : 0;
+        cacheStream.write(reinterpret_cast<const char*>(&debugTier), 1);
         uint8_t flags = currentModuleHasDynamicImport ? 0x1 : 0x0;
         cacheStream.write(reinterpret_cast<const char*>(&flags), sizeof(flags));
         if (currentModuleHasDynamicImport) {
@@ -6614,7 +6671,12 @@ void RoxalCompiler::enterModuleScope(const ustring& packageName,
         ObjModuleType* moduleType = asModuleType(moduleScope->moduleType);
         std::string sourceUtf8 = toUTF8StdString(sourceName);
         bool assigned = false;
-        if (!sourceUtf8.empty()) {
+        // Synthetic source names ("cli", REPL fragments, submitted strings)
+        // must not be absolutized into fake filesystem paths: only a name
+        // that actually resolves to a file gets one.
+        std::error_code existsEc;
+        if (!sourceUtf8.empty()
+            && std::filesystem::exists(sourceUtf8, existsEc) && !existsEc) {
             std::error_code ec;
             std::filesystem::path candidate = std::filesystem::absolute(sourceUtf8, ec);
             if (!ec) {
@@ -6710,6 +6772,10 @@ void RoxalCompiler::enterFuncScope(Value moduleType, const ustring& funcName, Fu
 
     lexicalScopes.push_back(funcScope);
 
+    // Debug metadata: a FunctionEntry statement at offset 0 gives
+    // stop-on-entry and a legal breakpoint on the declaration line.
+    recordFunctionEntryStmt();
+
     #ifdef DEBUG_TRACE_SCOPES
     std::cout << "enterFuncScope(" << toUTF8StdString(funcName) << ",funcType=" << toString(funcType) << ")" << std::endl;
     outputScopes();
@@ -6728,6 +6794,10 @@ void RoxalCompiler::exitFuncScope()
     #ifdef DEBUG_TRACE_SCOPES
     std::cout << "exitFuncScope(" << toUTF8StdString(asFuncScope(funcScope())->function->name) << ")" << std::endl;
     #endif
+
+    // Debug metadata: record the locals still live at function end
+    // (parameters, depth-0 body locals) and the upvalue table.
+    flushFuncDebugInfo();
 
     lexicalScopes.pop_back();
 
@@ -6770,6 +6840,9 @@ void RoxalCompiler::exitLocalScope()
 
     while (!locals.empty()
            && locals.back().depth > asFuncScope(funcScope())->scopeDepth) {
+
+        // Debug metadata: the live range ends where the slot is popped.
+        recordLocalDebug(locals.back(), static_cast<uint16_t>(locals.size() - 1));
 
         std::string popComment { "local "+toUTF8StdString(locals.back().name)+" depth:"+std::to_string(locals.back().depth) };
 
@@ -6976,6 +7049,110 @@ void RoxalCompiler::emitTypeName(const ast::TypeName& components)
     for (size_t i = 1; i < components.size(); i++) {
         uint16_t nameConst = identifierConstant(components[i]);
         emitOpArgsBytes(OpCode::GetProp, nameConst);
+    }
+}
+
+ustring RoxalCompiler::varTypeSpecDisplayName(const std::optional<VarTypeSpec>& t)
+{
+    if (!t.has_value())
+        return ustring();
+    if (std::holds_alternative<type::BuiltinType>(*t))
+        return toUnicodeString(to_string(std::get<type::BuiltinType>(*t)));
+    return ast::joinTypeName(std::get<ast::TypeName>(*t));
+}
+
+void RoxalCompiler::markStmtStart(const ptr<ast::AST>& node)
+{
+    if (!debugInfoEnabled_ || !node)
+        return;
+    auto chunk = currentChunk();
+    if (!chunk->debugInfo)
+        chunk->debugInfo = make_ptr<DebugInfo>();
+    const uint32_t offset = static_cast<uint32_t>(chunk->code.size());
+    // Consecutive STATEMENT boundaries at one offset collapse (declarations
+    // that emit no code); the FIRST entry wins.  A FunctionEntry at offset 0
+    // deliberately coexists with the first statement's boundary there.
+    auto& stmts = chunk->debugInfo->stmts;
+    if (!stmts.empty() && stmts.back().offset == offset
+        && stmts.back().kind == uint8_t(DebugStmtKind::StatementStart))
+        return;
+    stmts.push_back(DebugStmtEntry{ offset,
+                                    int32_t(node->interval.first.line),
+                                    int32_t(node->interval.first.pos),
+                                    uint8_t(DebugStmtKind::StatementStart) });
+}
+
+void RoxalCompiler::recordFunctionEntryStmt()
+{
+    if (!debugInfoEnabled_)
+        return;
+    auto chunk = currentChunk();
+    if (!chunk->debugInfo)
+        chunk->debugInfo = make_ptr<DebugInfo>();
+    chunk->debugInfo->stmts.push_back(
+        DebugStmtEntry{ 0,
+                        int32_t(currentNode()->interval.first.line),
+                        int32_t(currentNode()->interval.first.pos),
+                        uint8_t(DebugStmtKind::FunctionEntry) });
+}
+
+void RoxalCompiler::recordLocalDebug(const Local& local, uint16_t slot)
+{
+    // Slot 0 of a plain function is the unnamed callee slot; methods name it
+    // "this" and it IS recorded.
+    if (!debugInfoEnabled_ || local.name.isEmpty())
+        return;
+    auto chunk = currentChunk();
+    if (!chunk->debugInfo)
+        chunk->debugInfo = make_ptr<DebugInfo>();
+    DebugLocalVarInfo info;
+    info.name = local.name;
+    info.slot = slot;
+    info.startOffset = local.debugStartOffset;
+    info.endOffset = static_cast<uint32_t>(chunk->code.size());
+    info.flags = uint8_t((local.isParam ? DebugLocalParam : 0)
+                       | (local.isCaptured ? DebugLocalCaptured : 0)
+                       | (local.isConst ? DebugLocalConst : 0)
+                       | (local.isTypeConst ? DebugLocalTypeConst : 0));
+    // Compiler-generated iteration/desugaring temps (dunder-named): flagged
+    // so debugger UIs can hide them while keeping them addressable.
+    if (local.name.startsWith(ustring("__")))
+        info.flags |= DebugLocalSynthetic;
+    info.typeName = varTypeSpecDisplayName(local.type);
+    // Parameter types live on the function type, not the compiler Local.
+    if (local.isParam && info.typeName.isEmpty() && slot >= 1) {
+        ObjFunction* fn = asFunction(asFuncScope(funcScope())->function);
+        if (fn->funcType.has_value() && fn->funcType.value()
+            && fn->funcType.value()->func.has_value()) {
+            const auto& params = fn->funcType.value()->func->params;
+            const size_t pi = size_t(slot) - 1;   // slot 1..arity
+            if (pi < params.size() && params[pi].has_value()
+                && params[pi]->type.has_value() && params[pi]->type.value())
+                info.typeName = toUnicodeString(params[pi]->type.value()->toString());
+        }
+    }
+    chunk->debugInfo->locals.push_back(std::move(info));
+}
+
+void RoxalCompiler::flushFuncDebugInfo()
+{
+    if (!debugInfoEnabled_)
+        return;
+    auto fs = asFuncScope(funcScope());
+    // Locals still live at function end: parameters and depth-0 body locals
+    // (deeper scopes were recorded when exitLocalScope popped them).
+    for (size_t i = 0; i < fs->locals.size(); ++i)
+        recordLocalDebug(fs->locals[i], static_cast<uint16_t>(i));
+    if (fs->upvalues.empty())
+        return;
+    auto chunk = currentChunk();
+    if (!chunk->debugInfo)
+        chunk->debugInfo = make_ptr<DebugInfo>();
+    for (size_t i = 0; i < fs->upvalues.size(); ++i) {
+        const auto& u = fs->upvalues[i];
+        chunk->debugInfo->upvalues.push_back(
+            DebugUpvalueInfo{ u.name, static_cast<uint16_t>(i),
+                              uint8_t(u.isLocal ? 1 : 0) });
     }
 }
 
@@ -7200,7 +7377,8 @@ int16_t RoxalCompiler::resolveLocal(Scope scopeState, const ustring& name)
 }
 
 
-int RoxalCompiler::addUpvalue(Scope scopeState, uint8_t index, bool isLocal)
+int RoxalCompiler::addUpvalue(Scope scopeState, uint8_t index, bool isLocal,
+                              const ustring& name)
 {
     //std::cout << (&(*scopeState) - &(*states.begin())) << " addUpvalue(" << index << " " << (isLocal ? "local" : "notlocal") << ")" << std::endl;
     int upvalueCount = asFunction(asFuncScope(scopeState)->function)->upvalueCount;
@@ -7217,7 +7395,7 @@ int RoxalCompiler::addUpvalue(Scope scopeState, uint8_t index, bool isLocal)
         return 0;
     }
 
-    upvalues.push_back(Upvalue(index, isLocal));
+    upvalues.push_back(Upvalue(index, isLocal, name));
 
     // std::cout << "Upvalues: ";
     // for(int i=0; i<upvalues.size();i++) {
@@ -7254,7 +7432,7 @@ int16_t RoxalCompiler::resolveUpvalue(Scope scopeState, const ustring& name)
         #else
         asFuncScope(enclosingFuncScope(scopeState))->locals[local].isCaptured = true;
         #endif
-        return addUpvalue(scopeState, uint8_t(local), true);
+        return addUpvalue(scopeState, uint8_t(local), true, name);
     }
 
     int upvalue = resolveUpvalue(enclosingFuncScope(scopeState), name);
@@ -7262,7 +7440,7 @@ int16_t RoxalCompiler::resolveUpvalue(Scope scopeState, const ustring& name)
         #ifdef DEBUG_TRACE_NAME_RESOLUTION
         std::cout << " - found " << upvalue << std::endl;
         #endif
-        return addUpvalue(scopeState, uint8_t(upvalue), false);
+        return addUpvalue(scopeState, uint8_t(upvalue), false, name);
     }
 
     #ifdef DEBUG_TRACE_NAME_RESOLUTION
@@ -7716,6 +7894,9 @@ void RoxalCompiler::defineVariable(uint16_t moduleVar, bool isConst)
     if (asFuncScope(funcScope())->scopeDepth > 0) {
         // mark initialized
         asFuncScope(funcScope())->locals.back().depth = asFuncScope(funcScope())->scopeDepth;
+        // debug metadata: the local's live range starts here
+        asFuncScope(funcScope())->locals.back().debugStartOffset =
+            static_cast<uint32_t>(currentChunk()->code.size());
         return;
     }
 

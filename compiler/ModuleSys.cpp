@@ -1,10 +1,15 @@
 #include "ModuleSys.h"
 #include "Annotations.h"
 #include "VM.h"
+#include "debug/StopCoordinator.h"
+#include "debug/ModuleDebugIndex.h"
+#include "debug/BreakpointManager.h"
+#include "debug/DebugInspector.h"
 #include "Object.h"
 #include "Chunk.h"
 #include "SimpleMarkSweepGC.h"
 #include "ThreadManager.h"
+#include <core/Output.h>
 #include "core/AST.h"
 #include <core/json5.h>
 #include <core/TimePoint.h>
@@ -29,6 +34,7 @@
 #include <cstdint>
 #include <algorithm>
 #include <chrono>
+#include <thread>
 #include <vector>
 #include <cctype>
 #include <cstdio>
@@ -42,6 +48,20 @@
 #include <numeric>
 
 using namespace roxal;
+
+// Cross-native state for the debug_stop -> gc() -> debug_stop_gc scenario
+// (a collection requested inside a wasm native can never run under
+// GCNoParkScope, so the suite splits across a native-return boundary).
+namespace {
+struct DebugGcSplitState {
+    bool prepared { false };
+    int32_t listChild { 0 };
+    uint64_t collectionsBefore { 0 };
+    std::string key;
+};
+DebugGcSplitState s_debugGcSplit;
+roxal::TracedMember<roxal::Value> s_debugGcSplitFuture;
+} // namespace
 
 namespace {
 
@@ -1408,6 +1428,20 @@ void ModuleSys::registerBuiltins(VM& vm)
         addSys("_threadid", [this](VM& vm, ArgsView a){ return threadid_builtin(vm,a); });
         addSys("_stackdepth", [this](VM& vm, ArgsView a){ return stackdepth_builtin(vm,a); });
         addSys("_runtests", [this](VM& vm, ArgsView a){ return runtests_builtin(vm,a); });
+        addSys("_test_block", [](VM&, ArgsView a){
+            // Test-only: a genuinely blocking, uncontrolled native (no GC
+            // poll, no park, no cooperative stop point) -- exercises the
+            // debugger stop coordinator's must-wait-for-native behavior.
+            std::this_thread::sleep_for(std::chrono::milliseconds(a.getInt(0, 0)));
+            return Value::nilVal();
+        });
+        addSys("_test_debug_exclude", [](VM&, ArgsView){
+            // Test-only: mark the calling thread debug-excluded -- the web
+            // Debug/IDE service-thread shape.
+            if (VM::thread)
+                VM::thread->debugExcluded.store(true, std::memory_order_release);
+            return Value::nilVal();
+        });
         addSys("_invoke_method", [this](VM& vm, ArgsView a){ return invoke_method_builtin(vm,a); });
         addSys("_watch_property", [this](VM& vm, ArgsView a){ return watch_property_builtin(vm,a); });
         addSys("_watch_count", [this](VM& vm, ArgsView a){ return watch_count_builtin(vm,a); });
@@ -2302,12 +2336,43 @@ Value ModuleSys::watch_count_builtin(VM& vm, ArgsView args)
     return Value(static_cast<int32_t>(s_watchCounters[id]->load(std::memory_order_relaxed)));
 }
 
+namespace {
+
+// These suites compile a snippet and then drive it by hand -- bounded
+// execute() slices, a controller stopping it mid-flight.  That is exactly
+// "prepare a program on this thread without running it", so they use the same
+// primitive a debugger launch does.
+ExecutionStatus setupTestProgram(VM& vm, std::istream& source,
+                                 const std::string& name)
+{
+    ProgramOptions options;
+    options.sourceName = name;
+    return vm.stageProgramSync(source, std::move(options));
+}
+
+} // namespace
+
 Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
 {
     if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("_runtests expects single string argument");
 
     auto suite = toUTF8StdString(asStringObj(args[0])->s);
+
+    // Resume the CURRENT thread's suspended execution for a bounded time --
+    // what the dataflow engine does to a FuncNode body that yielded.  These
+    // suites test what that does to an execution: a debugger stop makes it
+    // report Paused, a short deadline makes it yield with its frames intact,
+    // invokeClosure completes across several of them.
+    auto driveSlice = [&vm](TimeDuration budget)
+            -> std::pair<ExecutionStatus, Value> {
+        if (!vm.hasMoreWork())
+            return { ExecutionStatus::OK, Value::nilVal() };
+        auto [status, value] = vm.execute(TimePoint::currentTime() + budget);
+        if (vm.hasRuntimeError())
+            return { ExecutionStatus::RuntimeError, Value::nilVal() };
+        return { status, value };
+    };
 
     auto printLine = [](std::string text) {
         text.push_back('\n');
@@ -2363,6 +2428,1142 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
     else if (suite == "orient") {
         reportResults(testOrientConversions());
     }
+    else if (suite == "debug_stop") {
+        // Debugger stop-barrier self-tests: epoch formation, quiescence,
+        // rollback, host hold-generation contract.
+        // The calling thread is the CONTROLLER (excluded from epoch
+        // membership -- it drives the coordinator from inside this native).
+        int passes = 0;
+        int fails = 0;
+        auto reportTest = [&](const std::string& name, bool passed, const std::string& detail = "") {
+            std::string line = "Test: " + name + " " +
+                               (passed ? "passed" : "FAILED");
+            if (!detail.empty())
+                line += " - " + detail;
+            printLine(std::move(line));
+            if (passed) passes++; else fails++;
+        };
+
+        struct MockHost : DebugHostControl {
+            std::atomic<int> holds{0}, stops{0}, conts{0}, failsN{0}, ends{0};
+            std::atomic<bool> rejectNext{false};
+            DebugHostResult onDebugHoldRequested(const DebugHoldRequest&) noexcept override
+                { holds++;
+                  return rejectNext.exchange(false) ? DebugHostResult::Rejected
+                                                    : DebugHostResult::Queued; }
+            void onDebugStopped(const DebugStopNotice&) noexcept override { stops++; }
+            void onDebugContinueRequested(const DebugContinueNotice&) noexcept override { conts++; }
+            void onDebugStopFailed(const DebugStopFailure&) noexcept override { failsN++; }
+            void onDebugSessionEnded(const DebugSessionEnd&) noexcept override { ends++; }
+        } mock;
+        auto& coord = vm.stopCoordinator();
+        coord.setHostControl(&mock);
+        const auto stopBudget = TimeDuration::milliSecs(3000);
+        // The suite's outer thread is wedged in this native for the whole
+        // run: register it as the excluded controller so stops completed on
+        // the debug worker treat it correctly too.  The thread-level flag
+        // matters as well once the suite returns with a stop still active
+        // (the gc-split scenario): the SCRIPT continues on this thread and
+        // must run through the loop-top stop point.
+        coord.setExcludedThread(VM::thread ? VM::thread.get() : nullptr);
+        if (VM::thread)
+            VM::thread->debugExcluded.store(true, std::memory_order_release);
+
+        // 1. Basic stop/resume: engine thread parks, idle threads are
+        //    acknowledged externally, dataflow admission refuses tickFor.
+        {
+            auto out = coord.requestStop(DebugStopReason::Pause, stopBudget);
+            const bool stoppedOk = out.stopped && coord.isStopped();
+            bool tickPaused = false;
+            if (auto* eng = vm.dataflowEngineForDebug())
+                tickPaused = (eng->tickFor(TimeDuration::milliSecs(1))
+                              == df::DataflowEngine::TickResult::Paused);
+            coord.resume();
+            const bool resumed = !coord.isStopped();
+            reportTest("stop_resume_basic", stoppedOk && tickPaused && resumed, out.failure);
+        }
+
+        // 2. A sleeping actor is woken, acknowledges at its loop top (sleep
+        //    deadline untouched), and resumes sleeping after release.
+        {
+            auto savedThread = VM::thread;
+            std::stringstream source;
+            source << "type Npr actor:\n"
+                   << "  proc nap():\n"
+                   << "    wait(ms=250)\n"
+                   << "var n = Npr()\n"
+                   << "n.nap()\n";
+            bool ok = false;
+            std::string detail;
+            if (setupTestProgram(vm, source, "debug_stop_napper") == ExecutionStatus::OK) {
+                auto [er, _] = vm.execute();
+                // Restore the CONTROLLER identity before requesting the stop:
+                // the outer script's thread is mid-native (this very call) and
+                // is excluded as the controller; the fresh setup thread is now
+                // idle and gets acknowledged externally.
+                VM::thread = savedThread;
+                if (er == ExecutionStatus::OK) {
+                    auto out = coord.requestStop(DebugStopReason::Pause, stopBudget);
+                    ok = out.stopped;
+                    detail = out.failure;
+                    coord.resume();
+                } else detail = "script failed";
+            } else detail = "compile failed";
+            VM::thread = savedThread;
+            reportTest("stop_sleeping_actor", ok, detail);
+        }
+
+        // 3. A deadline-yielded call: while stopped, a slice returns Paused
+        //    (never OK/Yielded), and after release the call completes with
+        //    the stack balanced.
+        {
+            auto savedThread = VM::thread;
+            std::stringstream source;
+            source << "func slowSum(x: int) -> int:\n"
+                   << "  var sum = 0\n"
+                   << "  for i in range(..<20000):\n"
+                   << "    sum = sum + 1\n"
+                   << "  return sum + x\n";
+            bool ok = false;
+            std::string detail;
+            if (setupTestProgram(vm, source, "debug_stop_slow") == ExecutionStatus::OK) {
+                ObjModuleType* modType = vm.moduleType();
+                auto [er, _] = vm.execute();
+                auto closureOpt = modType->vars.load(toUnicodeString("slowSum"));
+                if (er == ExecutionStatus::OK && closureOpt.has_value() && isClosure(closureOpt.value())) {
+                    const size_t before = VM::thread->stackDepth();
+                    auto deadline = TimePoint::currentTime() + TimeDuration::microSecs(50);
+                    auto [res, val] = vm.invokeClosure(asClosure(closureOpt.value()),
+                                                       {Value::intVal(7)}, deadline);
+                    // Controller identity for the stop request (see napper
+                    // test); the yielded fresh thread is acknowledged
+                    // externally with its frames intact.
+                    ptr<Thread> freshThread = VM::thread;
+                    VM::thread = savedThread;
+                    auto out = coord.requestStop(DebugStopReason::Pause, stopBudget);
+                    VM::thread = freshThread;
+                    auto [pausedRes, pv] = driveSlice(TimeDuration::milliSecs(5));
+                    coord.resume();
+                    ExecutionStatus finalRes = ExecutionStatus::Yielded;
+                    Value finalVal = Value::nilVal();
+                    for (int i = 0; i < 200 && isSuspended(finalRes); ++i) {
+                        auto [r, v] = driveSlice(TimeDuration::milliSecs(10));
+                        finalRes = r; finalVal = v;
+                    }
+                    const size_t after = VM::thread->stackDepth();
+                    ok = res == ExecutionStatus::Yielded && out.stopped
+                         && pausedRes == ExecutionStatus::Paused
+                         && finalRes == ExecutionStatus::OK
+                         && finalVal.isInt() && finalVal.asInt() == 20007
+                         && after == before;
+                    detail = "yield=" + std::to_string(res == ExecutionStatus::Yielded)
+                           + " stopped=" + std::to_string(out.stopped)
+                           + " paused=" + std::to_string(pausedRes == ExecutionStatus::Paused)
+                           + " final=" + std::to_string((int)finalRes)
+                           + " stackDelta=" + std::to_string((long long)after - (long long)before);
+                } else detail = "setup/exec failed";
+            } else detail = "compile failed";
+            VM::thread = savedThread;
+            reportTest("runfor_paused_then_completes", ok, detail);
+        }
+
+        // 4. Step-resume shape: releasing without the hold keeps the hold
+        //    generation; the next stop opens no new hold; a normal continue
+        //    releases exactly once.
+        {
+            auto o1 = coord.requestStop(DebugStopReason::Pause, stopBudget);
+            const int holdsAfterFirst = mock.holds.load();
+            coord.resume(/*releaseHold=*/false);   // step shape
+            const int contsAfterStep = mock.conts.load();
+            auto o2 = coord.requestStop(DebugStopReason::Pause, stopBudget);
+            const int holdsAfterSecond = mock.holds.load();
+            coord.resume(/*releaseHold=*/true);
+            reportTest("step_keeps_hold_generation",
+                       o1.stopped && o2.stopped
+                       && holdsAfterSecond == holdsAfterFirst   // no new hold
+                       && contsAfterStep == mock.conts.load() - 1,  // exactly one continue at the end
+                       o1.failure + o2.failure);
+        }
+
+        // 5. Timeout rollback: a thread wedged "in native" (deterministic
+        //    seam: ownership forced Executing) fails the stop, which names
+        //    it, rolls back, and leaves the system fully usable; a thread
+        //    registered during the next stop starts pre-acknowledged.
+        {
+            auto laggard = Thread::create(vm.defaultDomain(), ThreadKind::Actor);
+            laggard->debugOwnership.store(Thread::DebugOwnership::Executing,
+                                          std::memory_order_release);
+            auto bad = coord.requestStop(DebugStopReason::Pause, TimeDuration::milliSecs(120));
+            const bool failedProperly = !bad.stopped && !coord.isStopped()
+                && bad.failure.find("actor thread") != std::string::npos
+                && mock.failsN.load() == 1;
+            laggard->debugOwnership.store(Thread::DebugOwnership::Idle,
+                                          std::memory_order_release);
+
+            auto good = coord.requestStop(DebugStopReason::Pause, stopBudget);
+            auto late = Thread::create(vm.defaultDomain(), ThreadKind::Actor);
+            const bool preAcked = good.stopped
+                && late->debugAckEpoch.load(std::memory_order_acquire) >= coord.currentEpoch()
+                && late->debugOwnership.load(std::memory_order_acquire)
+                       == Thread::DebugOwnership::StoppedExternal;
+            coord.resume();
+            const bool released = late->debugOwnership.load(std::memory_order_acquire)
+                                      == Thread::DebugOwnership::Idle;
+            reportTest("timeout_rollback_names_thread", failedProperly, bad.failure);
+            reportTest("registration_gate_preacks", preAcked && released, good.failure);
+        }
+
+        // 6a. A stop RACING active host-driven ticking of a real periodic
+        //     network: the gate's increment-then-recheck admission means the
+        //     stop either waits out an in-flight tick or the tick sees
+        //     closed -- and after commit every tick reports Paused.
+        {
+            auto savedThread = VM::thread;
+            std::stringstream source;
+            source << "var c = clock(20)\n"
+                   << "var d = c + 1\n";
+            bool ok = false; std::string detail;
+            if (setupTestProgram(vm, source, "debug_stop_net") == ExecutionStatus::OK) {
+                auto [er, _] = vm.execute();
+                VM::thread = savedThread;
+                auto* eng = vm.dataflowEngineForDebug();
+                if (er == ExecutionStatus::OK && eng) {
+                    StopCoordinator::StopOutcome out;
+                    std::atomic<bool> stopDone{false};
+                    std::thread stopper([&]{
+                        // Carry the controller identity: the outer script's
+                        // main thread is wedged inside THIS native (spinning
+                        // tickFor below) and must be the excluded controller,
+                        // exactly as a debug-worker-driven stop would treat
+                        // the thread it operates on behalf of.
+                        VM::thread = savedThread;
+                        out = coord.requestStop(DebugStopReason::Pause, stopBudget);
+                        stopDone.store(true, std::memory_order_release);
+                    });
+                    int iters = 0;
+                    while (!stopDone.load(std::memory_order_acquire) && iters < 1000000) {
+                        (void)eng->tickFor(TimeDuration::milliSecs(1));
+                        ++iters;
+                    }
+                    stopper.join();
+                    const bool stillPaused =
+                        eng->tickFor(TimeDuration::milliSecs(1))
+                            == df::DataflowEngine::TickResult::Paused;
+                    coord.resume();
+                    const bool resumedTicks =
+                        eng->tickFor(TimeDuration::milliSecs(1))
+                            != df::DataflowEngine::TickResult::Paused;
+                    ok = out.stopped && stillPaused && resumedTicks;
+                    detail = out.failure;
+                } else detail = "setup/exec failed";
+            } else detail = "compile failed";
+            VM::thread = savedThread;
+            reportTest("stop_races_active_tickfor", ok, detail);
+        }
+
+        // 6b. An actor wedged in a genuinely blocking native: the stop must
+        //     NOT commit while the native runs (execution ownership blocks
+        //     external acknowledgement) -- it commits only once the thread
+        //     reaches a cooperative stop point after the native returns.
+        {
+            auto savedThread = VM::thread;
+            std::stringstream source;
+            source << "type Blk actor:\n"
+                   << "  proc block():\n"
+                   << "    _test_block(300)\n"
+                   << "var blk = Blk()\n"
+                   << "blk.block()\n";
+            bool ok = false; std::string detail;
+            if (setupTestProgram(vm, source, "debug_stop_blocker") == ExecutionStatus::OK) {
+                auto [er, _] = vm.execute();
+                VM::thread = savedThread;
+                if (er == ExecutionStatus::OK) {
+                    // Let the actor definitely enter the native first.
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    const TimePoint t0 = TimePoint::currentTime();
+                    auto out = coord.requestStop(DebugStopReason::Pause, stopBudget);
+                    const auto waitedMs =
+                        (TimePoint::currentTime() - t0).microSecs() / 1000;
+                    coord.resume();
+                    ok = out.stopped && waitedMs >= 150;
+                    detail = out.failure + " waited>=150ms="
+                           + std::to_string(waitedMs >= 150);
+                } else detail = "script failed";
+            } else detail = "compile failed";
+            VM::thread = savedThread;
+            reportTest("stop_waits_for_blocking_native", ok, detail);
+        }
+
+        // 6c. Host rejection of the hold notification: recorded and
+        //     surfaced, but Roxal still quiesces (the stop succeeds).
+        {
+            mock.rejectNext.store(true);
+            auto out = coord.requestStop(DebugStopReason::Pause, stopBudget);
+            coord.resume();
+            reportTest("hold_rejected_still_stops",
+                       out.stopped && !mock.rejectNext.load(), out.failure);
+        }
+
+        // 6d. Stop while one actor awaits another's future (awaiter parked
+        //     on the future, provider parked in sleep); after release the
+        //     call chain completes with the right value.
+        {
+            auto savedThread = VM::thread;
+            std::stringstream source;
+            source << "type Bp actor:\n"
+                   << "  func slow() -> int:\n"
+                   << "    wait(ms=200)\n"
+                   << "    return 7\n"
+                   << "type Ap actor:\n"
+                   << "  func get(b:Bp) -> int:\n"
+                   << "    return b.slow()\n"
+                   << "var bp = Bp()\n"
+                   << "var ap = Ap()\n"
+                   << "var fut = ap.get(bp)\n";
+            bool ok = false; std::string detail;
+            if (setupTestProgram(vm, source, "debug_stop_await") == ExecutionStatus::OK) {
+                ObjModuleType* modType = vm.moduleType();
+                auto [er, _] = vm.execute();
+                VM::thread = savedThread;
+                if (er == ExecutionStatus::OK) {
+                    auto out = coord.requestStop(DebugStopReason::Pause, stopBudget);
+                    coord.resume();
+                    bool valueOk = false;
+                    auto fOpt = modType->vars.load(toUnicodeString("fut"));
+                    if (fOpt.has_value() && isFuture(fOpt.value())) {
+                        auto& f = asFuture(fOpt.value())->future;
+                        if (f.valid()
+                            && f.wait_for(std::chrono::milliseconds(2000))
+                                   == std::future_status::ready) {
+                            Value v = f.get();
+                            valueOk = v.isInt() && v.asInt() == 7;
+                        }
+                    }
+                    ok = out.stopped && valueOk;
+                    detail = out.failure + " value_ok=" + std::to_string(valueOk);
+                } else detail = "script failed";
+            } else detail = "compile failed";
+            VM::thread = savedThread;
+            reportTest("stop_while_awaiting_future", ok, detail);
+        }
+
+        // 6e. Regression: DebugInfo deserialization bounds come from the
+        //     compiler's table limits, never code size -- a Release-build
+        //     function can have many parameters and almost no bytecode, and
+        //     its valid cache must round-trip.
+        {
+            DebugInfo di;
+            for (int i = 0; i < 40; ++i) {
+                DebugLocalVarInfo l;
+                l.name = toUnicodeString("p" + std::to_string(i));
+                l.slot = uint16_t(i + 1);
+                l.flags = DebugLocalParam;
+                di.locals.push_back(std::move(l));
+            }
+            std::stringstream ss;
+            di.serialize(ss);
+            DebugInfo back;
+            bool ok = true;
+            try { back.deserialize(ss, /*codeSize=*/3); }
+            catch (...) { ok = false; }
+            reportTest("debuginfo_param_heavy_roundtrip",
+                       ok && back.locals.size() == 40,
+                       "locals=" + std::to_string(back.locals.size()));
+        }
+
+        // 6f. The module top-level chunk carries a FunctionEntry at offset
+        //     0, and synthetic fragments ("cli")
+        //     coexist in the debug index under content-stable keys instead
+        //     of retiring one another.
+        {
+            auto savedThread = VM::thread;
+            const std::string src1 = "var tl1 = 1\n";
+            const std::string src2 = "var tl2 = 2\n";
+            bool ok = false;
+            std::string detail;
+            std::stringstream s1(src1), s2(src2);
+            if (setupTestProgram(vm, s1, "cli") == ExecutionStatus::OK) {
+                auto [e1, r1] = vm.execute();
+                (void)r1;
+                VM::thread = savedThread;
+                if (e1 == ExecutionStatus::OK && setupTestProgram(vm, s2, "cli") == ExecutionStatus::OK) {
+                    auto [e2, r2] = vm.execute();
+                    (void)r2; (void)e2;
+                    VM::thread = savedThread;
+                    auto k1 = ModuleDebugIndex::stableSourceKey("cli", src1);
+                    auto k2 = ModuleDebugIndex::stableSourceKey("cli", src2);
+                    auto v1 = ModuleDebugIndex::instance().lookupBySource(k1);
+                    auto v2 = ModuleDebugIndex::instance().lookupBySource(k2);
+                    const bool coexist = v1.has_value() && v2.has_value()
+                                         && v1->generation != v2->generation;
+                    bool entry0 = false;
+                    if (v2.has_value() && isList(v2->functions)
+                        && asList(v2->functions)->length() > 0) {
+                        Value rootFn = asList(v2->functions)->getElement(0);
+                        if (isFunction(rootFn) && asFunction(rootFn)->chunk
+                            && asFunction(rootFn)->chunk->debugInfo) {
+                            const auto& st = asFunction(rootFn)->chunk->debugInfo->stmts;
+                            entry0 = !st.empty() && st[0].offset == 0
+                                     && st[0].kind == uint8_t(DebugStmtKind::FunctionEntry);
+                        }
+                    }
+                    ok = coexist && entry0;
+                    detail = "coexist=" + std::to_string(coexist)
+                           + " entry0=" + std::to_string(entry0);
+                } else detail = "setup2 failed";
+            } else detail = "setup1 failed";
+            VM::thread = savedThread;
+            reportTest("toplevel_entry_and_stable_identity", ok, detail);
+        }
+
+        // 6g. End to end: an actor hits a source breakpoint (async
+        //     publication, worker-completed stop), step-next lands on the
+        //     next line WITHOUT releasing the hold, and clearing the
+        //     breakpoint at the current statement + resuming lets the call
+        //     finish with the right result.
+        {
+            auto savedThread = VM::thread;
+            const std::string src =
+                "type Wkr actor:\n"
+                "  func work() -> int:\n"
+                "    wait(ms=150)\n"
+                "    var acc = 0\n"
+                "    for i in range(..<200):\n"
+                "      acc = acc + 1\n"
+                "      acc = acc + 2\n"
+                "    return acc\n"
+                "var w = Wkr()\n"
+                "var res = w.work()\n";
+            bool ok = false; std::string detail;
+            std::stringstream s(src);
+            if (setupTestProgram(vm, s, "cli") == ExecutionStatus::OK) {
+                ObjModuleType* modType = vm.moduleType();
+                auto [er, r0] = vm.execute();
+                (void)r0;
+                VM::thread = savedThread;
+                bool bindOk = false, stopOk = false, stepOk = false, valOk = false;
+                if (er == ExecutionStatus::OK) {
+                    const std::string key = ModuleDebugIndex::stableSourceKey("cli", src);
+                    auto bound = BreakpointManager::instance().setBreakpoints(key, {6});
+                    bindOk = bound.size() == 1 && bound[0].verified
+                             && bound[0].boundLine == 6;
+                    for (int i = 0; i < 400 && !coord.isStopped(); ++i)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    auto si = coord.stoppedInfo();
+                    stopOk = si.has_value()
+                             && si->reason == DebugStopReason::Breakpoint
+                             && si->line == 6;
+                    ptr<Thread> wt;
+                    if (si.has_value())
+                        for (auto& lt : ThreadManager::instance()
+                                            .snapshotLeases(vm.defaultDomain()->id()))
+                            if (lt->id() == si->threadId) { wt = lt; break; }
+                    if (stopOk && wt) {
+                        coord.stepAndResume(*wt, Thread::DebugStepMode::Next);
+                        for (int i = 0; i < 400 && !coord.isStopped(); ++i)
+                            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                        auto si2 = coord.stoppedInfo();
+                        stepOk = si2.has_value()
+                                 && si2->reason == DebugStopReason::Step
+                                 && si2->line == 7;
+                    }
+                    BreakpointManager::instance().setBreakpoints(key, {});
+                    if (coord.isStopped())
+                        coord.resume();
+                    auto fOpt = modType->vars.load(toUnicodeString("res"));
+                    if (fOpt.has_value() && isFuture(fOpt.value())) {
+                        auto& f = asFuture(fOpt.value())->future;
+                        if (f.valid()
+                            && f.wait_for(std::chrono::milliseconds(3000))
+                                   == std::future_status::ready) {
+                            Value v = f.get();
+                            valOk = v.isInt() && v.asInt() == 600;
+                        }
+                    }
+                    ok = bindOk && stopOk && stepOk && valOk;
+                    detail = "bind=" + std::to_string(bindOk)
+                           + " stop=" + std::to_string(stopOk)
+                           + " step=" + std::to_string(stepOk)
+                           + " val=" + std::to_string(valOk);
+                } else detail = "script failed";
+            } else detail = "compile failed";
+            VM::thread = savedThread;
+            reportTest("breakpoint_step_end_to_end", ok, detail);
+        }
+
+        // 9. Inspection: stackTrace/scopes/variables over a stopped epoch
+        //    through DebugInspector, opaque handle lifecycle (exhaustion,
+        //    wrong-epoch, resume staleness), and a full GC while stopped
+        //    with live inspection handles.
+        {
+            auto savedThread = VM::thread;
+            const std::string src =
+                "var gmod = 42\n"
+                "type Wk actor:\n"
+                "  func quick() -> int:\n"
+                "    return 7\n"
+                "  func work(a :int) -> int:\n"
+                "    wait(ms=150)\n"
+                "    var cap = a * 2\n"
+                "    func inner(b :int) -> int:\n"
+                "      var lst = []\n"
+                "      for i in range(..<1000):\n"
+                "        lst.append(i)\n"
+                "      var d = {}\n"
+                "      d['self'] = d\n"
+                "      var t = cap + b\n"
+                "      return t\n"
+                "    return inner(5)\n"
+                "var w = Wk()\n"
+                "var res2 = w.quick()\n"
+                "var res = w.work(3)\n";
+            bool okA = false, okB = false, okC = false;
+            std::string detailA = "no stop", detailB = "no stop", detailC = "no stop";
+            std::stringstream s9(src);
+            if (setupTestProgram(vm, s9, "cli") == ExecutionStatus::OK) {
+                ObjModuleType* modType = vm.moduleType();
+                auto [er, r0] = vm.execute();
+                (void)r0;
+                VM::thread = savedThread;
+                if (er == ExecutionStatus::OK) {
+                    const std::string key = ModuleDebugIndex::stableSourceKey("cli", src);
+                    auto bound = BreakpointManager::instance().setBreakpoints(key, {15});
+                    const bool bindOk = bound.size() == 1 && bound[0].verified
+                                        && bound[0].boundLine == 15;
+                    for (int i = 0; i < 400 && !coord.isStopped(); ++i)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    auto si = coord.stoppedInfo();
+                    const bool stopOk = si.has_value() && coord.isStopped();
+
+                    DebugInspector insp(coord);
+                    int32_t listChild = 0;
+                    bool exhaustOk = false, wrongEpochOk = false, gcOk = false;
+                    if (stopOk) {
+                        // -- stack / scopes / variables --
+                        bool thrOk = false;
+                        for (auto& td : insp.threads())
+                            thrOk |= (td.threadId == si->threadId);
+                        auto frames = insp.stackTrace(si->threadId, 0, 0);
+                        const bool framesOk = frames.size() >= 2
+                            && frames[0].name == "inner" && frames[0].line == 15
+                            && frames[1].name == "work";
+                        bool localsOk = false, upOk = false, modOk = false;
+                        bool pageOk = false, cycleOk = false, futOk = false;
+                        if (framesOk) {
+                            int32_t locH = 0, upH = 0, modH = 0;
+                            for (auto& sc : insp.scopes(frames[0].handle)) {
+                                if (sc.name == "Locals") locH = sc.variablesHandle;
+                                else if (sc.name == "Upvalues") upH = sc.variablesHandle;
+                                else if (sc.name == "Module") modH = sc.variablesHandle;
+                            }
+                            if (locH) {
+                                int32_t dictChild = 0;
+                                bool tOk = false, bOk = false, noSynth = true;
+                                for (auto& v : insp.variables(locH, 0, 0)) {
+                                    if (v.name == "t") tOk = (v.value == "11");
+                                    else if (v.name == "b") bOk = (v.value == "5");
+                                    else if (v.name == "lst") listChild = v.childHandle;
+                                    else if (v.name == "d") dictChild = v.childHandle;
+                                    // compiler temps (loop __iterable__/__index__)
+                                    // are filtered by default
+                                    if (v.synthetic || v.name.rfind("__", 0) == 0)
+                                        noSynth = false;
+                                }
+                                localsOk = tOk && bOk && listChild != 0 && dictChild != 0
+                                           && noSynth;
+                                // paged element access: O(page), not O(n)
+                                auto page = insp.variables(listChild, 500, 3);
+                                pageOk = page.size() == 3 && page[0].name == "[500]"
+                                         && page[0].value == "500" && page[2].value == "502";
+                                // cyclic dict: bounded render, expandable child
+                                if (dictChild) {
+                                    auto dk = insp.variables(dictChild, 0, 0);
+                                    cycleOk = dk.size() == 1 && dk[0].name == "'self'"
+                                              && dk[0].childHandle != 0;
+                                }
+                            }
+                            if (upH)
+                                for (auto& v : insp.variables(upH, 0, 0))
+                                    if (v.name == "cap") upOk = (v.value == "6");
+                            if (modH) {
+                                int32_t futH = 0, fut2H = 0;
+                                for (auto& v : insp.variables(modH, 0, 0)) {
+                                    if (v.name == "gmod") modOk = (v.value == "42");
+                                    else if (v.name == "res") futH = v.childHandle;
+                                    else if (v.name == "res2") fut2H = v.childHandle;
+                                }
+                                if (futH && fut2H) {
+                                    // in-flight call future: polled only;
+                                    // paging honors [start, start+count)
+                                    // for the fixed child lists too
+                                    auto fk = insp.variables(futH, 0, 0);
+                                    const bool pendOk = fk.size() == 1
+                                        && fk[0].name == "state"
+                                        && fk[0].value == "pending"
+                                        && insp.variables(futH, 1, 1).empty();
+                                    auto rk = insp.variables(fut2H, 0, 0);
+                                    auto rp = insp.variables(fut2H, 1, 1);
+                                    const bool readyOk = rk.size() == 2
+                                        && rk[0].value == "ready"
+                                        && rk[1].name == "value" && rk[1].value == "7"
+                                        && rp.size() == 1 && rp[0].name == "value"
+                                        && rp[0].value == "7";
+                                    futOk = pendOk && readyOk;
+                                }
+                            }
+                        }
+                        // Tier 1 path evaluation at the same stop
+                        bool evalOk = false;
+                        if (framesOk) {
+                            auto frames2 = insp.stackTrace(si->threadId, 0, 1);
+                            if (!frames2.empty()) {
+                                const int32_t fh = frames2[0].handle;
+                                auto e1 = insp.evaluate(fh, "t");
+                                auto e2 = insp.evaluate(fh, "cap");
+                                auto e3 = insp.evaluate(fh, "gmod");
+                                auto e4 = insp.evaluate(fh, "lst[500]");
+                                auto e5 = insp.evaluate(fh, "d['self']");
+                                auto e6 = insp.evaluate(fh, "nosuch");
+                                auto e7 = insp.evaluate(fh, "b.x");
+                                auto e8 = insp.evaluate(fh, "1 + 2");
+                                // Absent key = error (not nil), overflow
+                                // literal rejected, an incompatible key
+                                // type fails cleanly
+                                auto e9 = insp.evaluate(fh, "d['nope']");
+                                auto e10 = insp.evaluate(fh, "lst[18446744073709551616]");
+                                auto e11 = insp.evaluate(fh, "d[0]");
+                                evalOk = e1.ok && e1.value == "11"
+                                      && e2.ok && e2.value == "6"
+                                      && e3.ok && e3.value == "42"
+                                      && e4.ok && e4.value == "500"
+                                      && e5.ok && e5.childHandle != 0
+                                      && !e6.ok && !e7.ok && !e8.ok
+                                      && !e9.ok && e9.error == "key not found"
+                                      && !e10.ok && !e11.ok;
+                            }
+                        }
+                        okA = bindOk && thrOk && framesOk && localsOk && upOk
+                              && modOk && pageOk && cycleOk && futOk && evalOk;
+                        detailA = "bind=" + std::to_string(bindOk)
+                                + " thr=" + std::to_string(thrOk)
+                                + " frames=" + std::to_string(framesOk)
+                                + " locals=" + std::to_string(localsOk)
+                                + " up=" + std::to_string(upOk)
+                                + " mod=" + std::to_string(modOk)
+                                + " page=" + std::to_string(pageOk)
+                                + " cycle=" + std::to_string(cycleOk)
+                                + " fut=" + std::to_string(futOk)
+                                + " eval=" + std::to_string(evalOk);
+
+                        // -- handle lifecycle while stopped --
+                        auto& table = coord.handleTable();
+                        const size_t savedMax = table.maxHandles();
+                        table.setMaxHandles(table.size());   // cap == current
+                        DebugHandle extra;
+                        extra.kind = DebugHandleKind::Variable;
+                        extra.epoch = coord.currentEpoch();
+                        exhaustOk = (table.create(extra) == 0);
+                        table.setMaxHandles(savedMax);
+                        wrongEpochOk = listChild != 0
+                            && !table.lookup(listChild, coord.currentEpoch() + 1).has_value()
+                            && table.lookup(listChild, coord.currentEpoch()).has_value();
+
+                        // (The real full-collection-during-stop coverage
+                        // lives in the debug_stop_gc suite: a collection
+                        // requested inside THIS native can never run on
+                        // wasm, where every builtin executes under
+                        // GCNoParkScope -- worse, the pending request would
+                        // park every later-created context.)
+                        if (listChild != 0) {
+                            auto page2 = insp.variables(listChild, 500, 1);
+                            gcOk = page2.size() == 1 && page2[0].value == "500";
+                        }
+                    }
+
+                    BreakpointManager::instance().setBreakpoints(key, {});
+                    const size_t preClear = coord.handleTable().size();
+                    if (coord.isStopped())
+                        coord.resume();
+                    const bool staleOk = preClear > 0
+                        && coord.handleTable().size() == 0
+                        && !coord.handleTable()
+                                .lookup(listChild, coord.currentEpoch()).has_value();
+                    okB = exhaustOk && wrongEpochOk && staleOk;
+                    detailB = "exhaust=" + std::to_string(exhaustOk)
+                            + " epoch=" + std::to_string(wrongEpochOk)
+                            + " stale=" + std::to_string(staleOk);
+
+                    bool valOk = false;
+                    auto fOpt = modType->vars.load(toUnicodeString("res"));
+                    if (fOpt.has_value() && isFuture(fOpt.value())) {
+                        auto& f = asFuture(fOpt.value())->future;
+                        if (f.valid()
+                            && f.wait_for(std::chrono::milliseconds(3000))
+                                   == std::future_status::ready) {
+                            Value v = f.get();
+                            valOk = v.isInt() && v.asInt() == 11;
+                        }
+                    }
+                    okC = gcOk && valOk;
+                    detailC = "reread=" + std::to_string(gcOk)
+                            + " val=" + std::to_string(valOk);
+                } else { detailA = detailB = detailC = "script failed"; }
+            } else { detailA = detailB = detailC = "compile failed"; }
+            VM::thread = savedThread;
+            reportTest("inspect_stack_variables", okA, detailA);
+            reportTest("inspect_handle_lifecycle", okB, detailB);
+            reportTest("inspect_reread_and_completion", okC, detailC);
+        }
+
+        // 10. A breakpoint hit PREEMPTS an armed step: the next stop reports
+        //     Breakpoint (not Step), the commit-time sweep
+        //     cancels the step, and no demand leaks (the slow-path interrupt
+        //     bit is fully released once breakpoints clear).
+        {
+            auto savedThread = VM::thread;
+            const std::string src =
+                "type S actor:\n"
+                "  func go() -> int:\n"
+                "    wait(ms=150)\n"
+                "    var a = 1\n"
+                "    var b = 2\n"
+                "    var c = 3\n"
+                "    return a + b + c\n"
+                "var s = S()\n"
+                "var r = s.go()\n";
+            bool ok = false; std::string detail;
+            std::stringstream s10(src);
+            if (setupTestProgram(vm, s10, "cli") == ExecutionStatus::OK) {
+                ObjModuleType* modType = vm.moduleType();
+                auto [er, r0] = vm.execute();
+                (void)r0;
+                VM::thread = savedThread;
+                if (er == ExecutionStatus::OK) {
+                    const std::string key = ModuleDebugIndex::stableSourceKey("cli", src);
+                    BreakpointManager::instance().setBreakpoints(key, {4, 5});
+                    for (int i = 0; i < 400 && !coord.isStopped(); ++i)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    auto si = coord.stoppedInfo();
+                    const bool stop1Ok = si.has_value()
+                        && si->reason == DebugStopReason::Breakpoint && si->line == 4;
+                    bool stop2Ok = false, bitClear = false, valOk = false;
+                    ptr<Thread> wt;
+                    if (si.has_value())
+                        for (auto& lt : ThreadManager::instance()
+                                            .snapshotLeases(vm.defaultDomain()->id()))
+                            if (lt->id() == si->threadId) { wt = lt; break; }
+                    if (stop1Ok && wt) {
+                        coord.stepAndResume(*wt, Thread::DebugStepMode::Next);
+                        for (int i = 0; i < 400 && !coord.isStopped(); ++i)
+                            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                        auto si2 = coord.stoppedInfo();
+                        // the breakpoint on line 5 preempts the step
+                        stop2Ok = si2.has_value()
+                                  && si2->reason == DebugStopReason::Breakpoint
+                                  && si2->line == 5;
+                    }
+                    BreakpointManager::instance().setBreakpoints(key, {});
+                    // step cancelled by the commit sweep + breakpoints
+                    // cleared => zero slow-path demand, bit released
+                    bitClear = (vm.defaultDomain()->interrupts().load()
+                                & ExecutionDomain::IntrDebugSlowPath) == 0;
+                    if (coord.isStopped())
+                        coord.resume();
+                    auto fOpt = modType->vars.load(toUnicodeString("r"));
+                    if (fOpt.has_value() && isFuture(fOpt.value())) {
+                        auto& f = asFuture(fOpt.value())->future;
+                        if (f.valid()
+                            && f.wait_for(std::chrono::milliseconds(3000))
+                                   == std::future_status::ready) {
+                            Value v = f.get();
+                            valOk = v.isInt() && v.asInt() == 6;
+                        }
+                    }
+                    ok = stop1Ok && stop2Ok && bitClear && valOk
+                         && !coord.isStopped();
+                    detail = "stop1=" + std::to_string(stop1Ok)
+                           + " bpPreempts=" + std::to_string(stop2Ok)
+                           + " bitClear=" + std::to_string(bitClear)
+                           + " val=" + std::to_string(valOk);
+                } else detail = "script failed";
+            } else detail = "compile failed";
+            VM::thread = savedThread;
+            reportTest("step_preempted_by_breakpoint", ok, detail);
+        }
+
+        // 11. Outstanding breakpoint requests survive source SUPERSESSION
+        //     (same content re-registered): the old
+        //     generation's armed chunks are cleared through the manager's
+        //     strong chunk leases (no use-after-free even once the old
+        //     function graph is retired and collected) and the request
+        //     rebinds onto the new generation.
+        {
+            auto savedThread = VM::thread;
+            const std::string src =
+                "type R actor:\n"
+                "  func go() -> int:\n"
+                "    wait(ms=150)\n"
+                "    var a = 40\n"
+                "    return a + 2\n"
+                "var q = R()\n"
+                "var r = q.go()\n";
+            bool ok = false; std::string detail;
+            const std::string key = ModuleDebugIndex::stableSourceKey("cli", src);
+            std::stringstream s11a(src);
+            if (setupTestProgram(vm, s11a, "cli") == ExecutionStatus::OK) {
+                auto [er1, r1] = vm.execute();
+                (void)r1;
+                VM::thread = savedThread;
+                bool bind1 = false, stop2 = false, valOk = false;
+                if (er1 == ExecutionStatus::OK) {
+                    // let the first run finish before arming
+                    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+                    auto b1 = BreakpointManager::instance().setBreakpoints(key, {4});
+                    bind1 = b1.size() == 1 && b1[0].verified && b1[0].boundLine == 4;
+                    // SAME source again: same stable key => supersede; the
+                    // registration hook rebinds (old arms cleared, new armed)
+                    std::stringstream s11b(src);
+                    if (setupTestProgram(vm, s11b, "cli") == ExecutionStatus::OK) {
+                        ObjModuleType* modType = vm.moduleType();
+                        auto [er2, r2] = vm.execute();
+                        (void)r2;
+                        VM::thread = savedThread;
+                        // (No in-native collection here: on wasm every
+                        // builtin runs under GCNoParkScope, so a requested
+                        // collection cannot run and instead PARKS every
+                        // later-created context -- the strong chunk leases
+                        // are the UAF protection, and the sanitizer legs
+                        // plus the debug_stop_gc suite cover collection
+                        // behavior.)
+                        if (er2 == ExecutionStatus::OK) {
+                            for (int i = 0; i < 400 && !coord.isStopped(); ++i)
+                                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                            auto si = coord.stoppedInfo();
+                            stop2 = si.has_value()
+                                    && si->reason == DebugStopReason::Breakpoint
+                                    && si->line == 4;
+                            BreakpointManager::instance().setBreakpoints(key, {});
+                            if (coord.isStopped())
+                                coord.resume();
+                            auto fOpt = modType->vars.load(toUnicodeString("r"));
+                            if (fOpt.has_value() && isFuture(fOpt.value())) {
+                                auto& f = asFuture(fOpt.value())->future;
+                                if (f.valid()
+                                    && f.wait_for(std::chrono::milliseconds(3000))
+                                           == std::future_status::ready) {
+                                    Value v = f.get();
+                                    valOk = v.isInt() && v.asInt() == 42;
+                                }
+                            }
+                        }
+                    }
+                }
+                ok = bind1 && stop2 && valOk;
+                detail = "bind=" + std::to_string(bind1)
+                       + " rebindStop=" + std::to_string(stop2)
+                       + " val=" + std::to_string(valOk);
+            } else detail = "compile failed";
+            BreakpointManager::instance().setBreakpoints(key, {});
+            VM::thread = savedThread;
+            reportTest("rebind_supersede_gc", ok, detail);
+        }
+
+        // 12. A breakpoint hit on an RT (deadline) slice publishes the trap
+        //     with atomics only (no worker mutex/wake);
+        //     the worker's armed-mode timed poll completes the stop.
+        {
+            auto savedThread = VM::thread;
+            std::stringstream source;
+            const std::string src =
+                "func slowLoop() -> int:\n"
+                "  var sum = 0\n"
+                "  for i in range(..<20000):\n"
+                "    sum = sum + 1\n"
+                "  return sum\n";
+            source << src;
+            bool ok = false; std::string detail;
+            if (setupTestProgram(vm, source, "debug_stop_rt") == ExecutionStatus::OK) {
+                ObjModuleType* modType = vm.moduleType();
+                auto [er, r0] = vm.execute();
+                (void)r0;
+                auto closureOpt = modType->vars.load(toUnicodeString("slowLoop"));
+                if (er == ExecutionStatus::OK && closureOpt.has_value()
+                    && isClosure(closureOpt.value())) {
+                    const std::string key =
+                        ModuleDebugIndex::stableSourceKey("debug_stop_rt", src);
+                    auto bound = BreakpointManager::instance().setBreakpoints(key, {5});
+                    const bool bindOk = bound.size() == 1 && bound[0].verified
+                                        && bound[0].boundLine == 5;
+                    auto deadline = TimePoint::currentTime() + TimeDuration::microSecs(50);
+                    auto [res, val] = vm.invokeClosure(asClosure(closureOpt.value()),
+                                                       {}, deadline);
+                    (void)val;
+                    bool sawPaused = false, stopOk = false, valOk = false;
+                    ExecutionStatus finalRes = res;
+                    Value finalVal = Value::nilVal();
+                    // Drive RT slices until the trap publishes (Paused) and
+                    // the worker's poll commits the stop.  Bounded by the
+                    // script's own completion, not a fixed slice count --
+                    // sanitizer builds run the loop an order of magnitude
+                    // slower.
+                    for (int i = 0; i < 4000 && !coord.isStopped(); ++i) {
+                        if (!sawPaused) {
+                            auto [r, v] = driveSlice(TimeDuration::milliSecs(2));
+                            (void)v;
+                            if (r == ExecutionStatus::Paused)
+                                sawPaused = true;
+                            else if (r == ExecutionStatus::OK)
+                                break;   // completed without the trap: fail
+                        } else {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                        }
+                    }
+                    auto si = coord.stoppedInfo();
+                    stopOk = si.has_value()
+                             && si->reason == DebugStopReason::Breakpoint
+                             && si->line == 5;
+                    BreakpointManager::instance().setBreakpoints(key, {});
+                    ptr<Thread> freshThread = VM::thread;
+                    VM::thread = savedThread;
+                    if (coord.isStopped())
+                        coord.resume();
+                    VM::thread = freshThread;
+                    for (int i = 0; i < 200 && isSuspended(finalRes); ++i) {
+                        auto [r, v] = driveSlice(TimeDuration::milliSecs(10));
+                        finalRes = r; finalVal = v;
+                    }
+                    valOk = finalRes == ExecutionStatus::OK
+                            && finalVal.isInt() && finalVal.asInt() == 20000;
+                    ok = bindOk && sawPaused && stopOk && valOk;
+                    detail = "bind=" + std::to_string(bindOk)
+                           + " rtPaused=" + std::to_string(sawPaused)
+                           + " stop=" + std::to_string(stopOk)
+                           + " val=" + std::to_string(valOk);
+                } else detail = "setup/exec failed";
+            } else detail = "compile failed";
+            VM::thread = savedThread;
+            reportTest("rt_slice_breakpoint", ok, detail);
+        }
+
+        // 13. A debug-excluded SERVICE thread runs straight through a
+        //     committed stop (never a member, never parked) -- the web
+        //     IDE/Debug-actor liveness shape -- while ordinary threads stay
+        //     frozen.
+        {
+            auto savedThread = VM::thread;
+            const std::string src =
+                "type Svc actor:\n"
+                "  private var count :int = 0\n"
+                "  proc mark():\n"
+                "    _test_debug_exclude()\n"
+                "  proc spin():\n"
+                "    for i in range(..<300):\n"
+                "      count = count + 1\n"
+                "      wait(ms=10)\n"
+                "type Wkr actor:\n"
+                "  func work() -> int:\n"
+                "    wait(ms=250)\n"
+                "    return 42\n"
+                "var s = Svc()\n"
+                "s.mark()\n"
+                "s.spin()\n"
+                "var w = Wkr()\n"
+                "var res = w.work()\n";
+            bool ok = false; std::string detail;
+            std::stringstream s13(src);
+            if (setupTestProgram(vm, s13, "cli") == ExecutionStatus::OK) {
+                ObjModuleType* modType = vm.moduleType();
+                auto [er, r0] = vm.execute();
+                (void)r0;
+                VM::thread = savedThread;
+                if (er == ExecutionStatus::OK) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+                    auto out = coord.requestStop(DebugStopReason::Pause, stopBudget);
+                    bool progressed = false, stillStopped = false, valOk = false;
+                    if (out.stopped) {
+                        auto readCount = [&]() -> int64_t {
+                            auto sv = modType->vars.load(toUnicodeString("s"));
+                            if (!sv.has_value() || !isActorInstance(sv.value()))
+                                return -1;
+                            auto* slot = asActorInstance(sv.value())->findProperty(
+                                toUnicodeString("count").hashCode());
+                            if (!slot)
+                                return -1;
+                            Value c = slot->value;   // plain slot read (store precedent)
+                            return c.isInt() ? c.asInt() : -1;
+                        };
+                        const int64_t c1 = readCount();
+                        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                        const int64_t c2 = readCount();
+                        progressed = c1 >= 0 && c2 > c1;
+                        stillStopped = coord.isStopped();
+                        coord.resume();
+                    }
+                    auto fOpt = modType->vars.load(toUnicodeString("res"));
+                    if (fOpt.has_value() && isFuture(fOpt.value())) {
+                        auto& f = asFuture(fOpt.value())->future;
+                        if (f.valid()
+                            && f.wait_for(std::chrono::milliseconds(3000))
+                                   == std::future_status::ready) {
+                            Value v = f.get();
+                            valOk = v.isInt() && v.asInt() == 42;
+                        }
+                    }
+                    ok = out.stopped && progressed && stillStopped && valOk;
+                    detail = "stopped=" + std::to_string(out.stopped)
+                           + " progressed=" + std::to_string(progressed)
+                           + " held=" + std::to_string(stillStopped)
+                           + " val=" + std::to_string(valOk);
+                } else detail = "script failed";
+            } else detail = "compile failed";
+            VM::thread = savedThread;
+            reportTest("excluded_thread_runs_through_stop", ok, detail);
+        }
+
+        // 8. Exactly-once hold-generation contract across the whole suite:
+        //    14 running->held transitions, 14 continues, 17 stopped notices
+        //    (6g and the step-preemption test each contribute one hold, TWO
+        //    stops -- step/second-breakpoint keep the hold generation -- and
+        //    one continue; inspection, rebind, and RT-slice one of each),
+        //    1 failure, 0 session ends.
+        reportTest("hold_notice_contract",
+                   mock.holds.load() == 15 && mock.conts.load() == 15
+                   && mock.stops.load() == 18 && mock.failsN.load() == 1
+                   && mock.ends.load() == 0,
+                   "holds=" + std::to_string(mock.holds.load())
+                   + " conts=" + std::to_string(mock.conts.load())
+                   + " stops=" + std::to_string(mock.stops.load())
+                   + " fails=" + std::to_string(mock.failsN.load()));
+
+        // 14. Prepare the CROSS-BOUNDARY collection scenario: leave a
+        //     breakpoint stop ACTIVE with a live inspection handle, then
+        //     RETURN from this native.  The suite script runs gc() at
+        //     SCRIPT level -- outside any native's GCNoParkScope, so it
+        //     truly collects on wasm too -- and the debug_stop_gc suite
+        //     then proves the collection happened and the handle survived,
+        //     resumes, and completes the program.
+        {
+            auto savedThread = VM::thread;
+            const std::string src =
+                "type G actor:\n"
+                "  func work() -> int:\n"
+                "    wait(ms=150)\n"
+                "    var lst = []\n"
+                "    for i in range(..<1000):\n"
+                "      lst.append(i)\n"
+                "    var t = len(lst)\n"
+                "    return t\n"
+                "var g = G()\n"
+                "var res = g.work()\n";
+            bool ok = false; std::string detail;
+            std::stringstream s14(src);
+            if (setupTestProgram(vm, s14, "cli") == ExecutionStatus::OK) {
+                ObjModuleType* modType = vm.moduleType();
+                auto [er, r0] = vm.execute();
+                (void)r0;
+                VM::thread = savedThread;
+                if (er == ExecutionStatus::OK) {
+                    const std::string key = ModuleDebugIndex::stableSourceKey("cli", src);
+                    auto bound = BreakpointManager::instance().setBreakpoints(key, {7});
+                    (void)bound;
+                    for (int i = 0; i < 400 && !coord.isStopped(); ++i)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    auto si = coord.stoppedInfo();
+                    DebugInspector insp(coord);
+                    int32_t listChild = 0;
+                    if (si.has_value()) {
+                        auto frames = insp.stackTrace(si->threadId, 0, 1);
+                        if (!frames.empty()) {
+                            for (auto& sc : insp.scopes(frames[0].handle))
+                                if (sc.name == "Locals")
+                                    for (auto& v : insp.variables(sc.variablesHandle, 0, 0))
+                                        if (v.name == "lst")
+                                            listChild = v.childHandle;
+                        }
+                    }
+                    s_debugGcSplit.prepared = coord.isStopped() && listChild != 0;
+                    s_debugGcSplit.listChild = listChild;
+                    s_debugGcSplit.key = key;
+                    s_debugGcSplit.collectionsBefore =
+                        SimpleMarkSweepGC::instance().coordinationStats().collections;
+                    auto fOpt = modType->vars.load(toUnicodeString("res"));
+                    if (fOpt.has_value())
+                        s_debugGcSplitFuture = fOpt.value();
+                    ok = s_debugGcSplit.prepared;
+                    detail = "stop=" + std::to_string(coord.isStopped())
+                           + " handle=" + std::to_string(listChild != 0);
+                } else detail = "script failed";
+            } else detail = "compile failed";
+            VM::thread = savedThread;
+            reportTest("gc_split_prepared", ok, detail);
+        }
+
+        // Excluded-controller registration stays ARMED: the suite script's
+        // main thread must run gc() and the debug_stop_gc native while the
+        // prepared stop is still active.  debug_stop_gc clears it.
+        coord.setHostControl(nullptr);   // the mock dies with this frame
+        printLine("Debug stop tests: Passed " + std::to_string(passes)
+                  + " failed " + std::to_string(fails));
+    }
+    else if (suite == "debug_stop_gc") {
+        // Second half of the cross-boundary collection scenario: the suite
+        // script ran gc() at script level between the two natives, with the
+        // prepared breakpoint stop still active.
+        int passes = 0;
+        int fails = 0;
+        auto reportTest = [&](const std::string& name, bool passed, const std::string& detail = "") {
+            std::string line = "Test: " + name + " " +
+                               (passed ? "passed" : "FAILED");
+            if (!detail.empty())
+                line += " - " + detail;
+            printLine(std::move(line));
+            if (passed) passes++; else fails++;
+        };
+        auto& coord = vm.stopCoordinator();
+        {
+            const uint64_t collectionsNow =
+                SimpleMarkSweepGC::instance().coordinationStats().collections;
+            const bool collected =
+                s_debugGcSplit.prepared
+                && collectionsNow > s_debugGcSplit.collectionsBefore;
+            bool handleOk = false, valOk = false;
+            if (s_debugGcSplit.prepared) {
+                DebugInspector insp(coord);
+                auto page = insp.variables(s_debugGcSplit.listChild, 500, 1);
+                handleOk = page.size() == 1 && page[0].value == "500";
+                BreakpointManager::instance().setBreakpoints(s_debugGcSplit.key, {});
+            }
+            // Resume UNCONDITIONALLY: the first suite leaves a breakpoint
+            // stop active on purpose, and if gc_split_prepared failed the
+            // stop may still be there with every actor parked in it.
+            if (coord.isStopped())
+                coord.resume();
+            if (s_debugGcSplit.prepared) {
+                Value fv = *s_debugGcSplitFuture;
+                if (isFuture(fv)) {
+                    auto& f = asFuture(fv)->future;
+                    if (f.valid()
+                        && f.wait_for(std::chrono::milliseconds(3000))
+                               == std::future_status::ready) {
+                        Value v = f.get();
+                        valOk = v.isInt() && v.asInt() == 1000;
+                    }
+                }
+            }
+            reportTest("gc_during_stop_real_collection",
+                       collected && handleOk && valOk,
+                       "collected=" + std::to_string(collected)
+                       + " handle=" + std::to_string(handleOk)
+                       + " val=" + std::to_string(valOk));
+            s_debugGcSplitFuture = Value::nilVal();
+            s_debugGcSplit.prepared = false;
+        }
+        coord.setExcludedThread(nullptr);
+        if (VM::thread)
+            VM::thread->debugExcluded.store(false, std::memory_order_release);
+        printLine("Debug stop GC tests: Passed " + std::to_string(passes)
+                  + " failed " + std::to_string(fails));
+    }
     else if (suite == "rt_execution") {
         // RT Execution tests for tickFor() deadline-aware execution
         int passes = 0;
@@ -2376,10 +3577,6 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
             printLine(std::move(line));
             if (passed) passes++; else fails++;
         };
-
-        // Clear synchronous-execution guard so runFor() works from within
-        // this test builtin (no FC/RoxalLoop running during tests).
-        vm.setSynchronousExecution(false);
 
         auto& engine = *df::DataflowEngine::instance();
         engine.clear();
@@ -2501,7 +3698,7 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
         // Test 7: Direct invokeClosure yields on short deadline
         // Test the VM's invokeClosure directly rather than through FuncNode
         {
-            // Save the current thread state - setup() will replace it
+            // Save the current thread state - preparation will replace it
             auto savedThread = VM::thread;
 
             // Compile and execute a script that defines a slow function
@@ -2512,13 +3709,13 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                    << "    sum = sum + i\n"
                    << "  return sum + x\n";
 
-            auto setupResult = vm.setup(source, "rt_closure_yield");
+            auto setupResult = setupTestProgram(vm, source, "rt_closure_yield");
             if (setupResult != ExecutionStatus::OK) {
                 VM::thread = savedThread;
                 reportTest("invokeClosure_yields", false, "Failed to compile");
             } else {
                 // Get module type from the thread's frame BEFORE execute completes
-                // After setup(), thread has one frame with the main closure
+                // After preparation, thread has one frame with the main closure
                 ObjModuleType* modType = vm.moduleType();
 
                 // Execute the script to define the function
@@ -2560,7 +3757,7 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                    << "    sum = sum + i\n"
                    << "  return sum + x\n";
 
-            auto setupResult = vm.setup(source, "rt_closure_resume");
+            auto setupResult = setupTestProgram(vm, source, "rt_closure_resume");
             if (setupResult != ExecutionStatus::OK) {
                 VM::thread = savedThread;
                 reportTest("invokeClosure_resume_completes", false, "Failed to compile");
@@ -2587,7 +3784,7 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                         } else {
                             // Resume with generous deadline - should complete
                             // 10000 iterations may take 200-500ms, so give plenty of time
-                            auto [remaining, _] = vm.runFor(TimeDuration::milliSecs(1000));
+                            auto [remaining, _] = driveSlice(TimeDuration::milliSecs(1000));
                             bool completed = (remaining == ExecutionStatus::OK);
 
                             VM::thread = savedThread;
@@ -2610,7 +3807,7 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                    << "    sum = sum + i\n"
                    << "  return sum + x\n";
 
-            auto setupResult = vm.setup(source, "rt_multi_resume");
+            auto setupResult = setupTestProgram(vm, source, "rt_multi_resume");
             if (setupResult != ExecutionStatus::OK) {
                 VM::thread = savedThread;
                 reportTest("invokeClosure_multi_resume", false, "Failed to compile");
@@ -2635,7 +3832,7 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                         const int maxIterations = 10000; // 50000 iterations needs more resume cycles
 
                         for (int i = 0; i < maxIterations && result == ExecutionStatus::Yielded; ++i) {
-                            auto [res, _] = vm.runFor(TimeDuration::microSecs(100)); // Give more time per cycle
+                            auto [res, _] = driveSlice(TimeDuration::microSecs(100)); // Give more time per cycle
                             result = res;
                             if (result == ExecutionStatus::Yielded)
                                 yieldCount++;
@@ -2664,7 +3861,7 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                    << "    sum = sum + i\n"
                    << "  return sum\n";
 
-            auto setupResult = vm.setup(source, "rt_state_preserve");
+            auto setupResult = setupTestProgram(vm, source, "rt_state_preserve");
             if (setupResult != ExecutionStatus::OK) {
                 VM::thread = savedThread;
                 reportTest("closure_state_preserved", false, "Failed to compile");
@@ -2687,7 +3884,7 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
 
                         const int maxIterations = 1000;
                         for (int i = 0; i < maxIterations && result == ExecutionStatus::Yielded; ++i) {
-                            auto [res, val] = vm.runFor(TimeDuration::microSecs(100));
+                            auto [res, val] = driveSlice(TimeDuration::microSecs(100));
                             result = res;
                             returnVal = val;  // Capture return value when completed
                         }
@@ -2697,7 +3894,7 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                             reportTest("closure_state_preserved", false,
                                 "Did not complete, result=" + std::to_string(static_cast<int>(result)));
                         } else {
-                            // Return value is now captured from runFor()
+                            // Return value is now captured from the slice
                             int64_t expectedSum = 499500; // sum of 0..999
 
                             bool correctValue = returnVal.isInt() && returnVal.asInt() == expectedSum;
@@ -2730,7 +3927,7 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                    << "    sum = sum + i\n"
                    << "  return sum + x\n";
 
-            auto setupResult = vm.setup(source, "df_closure_yield");
+            auto setupResult = setupTestProgram(vm, source, "df_closure_yield");
             if (setupResult != ExecutionStatus::OK) {
                 VM::thread = savedThread;
                 reportTest("df_closure_yields", false, "Failed to compile");
@@ -2788,7 +3985,7 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                    << "    sum = sum + i\n"
                    << "  return sum + x\n";
 
-            auto setupResult = vm.setup(source, "df_closure_resume");
+            auto setupResult = setupTestProgram(vm, source, "df_closure_resume");
             if (setupResult != ExecutionStatus::OK) {
                 VM::thread = savedThread;
                 reportTest("df_closure_resume_completes", false, "Failed to compile");
@@ -2853,7 +4050,7 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                    << "    sum = sum + i\n"
                    << "  return sum + x\n";
 
-            auto setupResult = vm.setup(source, "df_multi_resume");
+            auto setupResult = setupTestProgram(vm, source, "df_multi_resume");
             if (setupResult != ExecutionStatus::OK) {
                 VM::thread = savedThread;
                 reportTest("df_closure_multi_resume", false, "Failed to compile");
@@ -2927,7 +4124,7 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                    << "    sum = sum + i\n"
                    << "  return sum + x\n";
 
-            auto setupResult = vm.setup(source, "df_output_check");
+            auto setupResult = setupTestProgram(vm, source, "df_output_check");
             if (setupResult != ExecutionStatus::OK) {
                 VM::thread = savedThread;
                 reportTest("df_closure_output_correct", false, "Failed to compile");
@@ -3014,7 +4211,7 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                    << "  var w = WaitWorker()\n"
                    << "  return wait(for=w.delayed(123, 2))\n";
 
-            auto setupResult = vm.setup(source, "rt_wait_future");
+            auto setupResult = setupTestProgram(vm, source, "rt_wait_future");
             if (setupResult != ExecutionStatus::OK) {
                 VM::thread = savedThread;
                 reportTest("wait_future_yields", false, "Failed to compile");
@@ -3043,7 +4240,7 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                             Value resumeVal = returnVal;
                             const int maxIterations = 200;
                             for (int i = 0; i < maxIterations && resumeResult == ExecutionStatus::Yielded; ++i) {
-                                auto [res, val] = vm.runFor(TimeDuration::milliSecs(10));
+                                auto [res, val] = driveSlice(TimeDuration::milliSecs(10));
                                 resumeResult = res;
                                 resumeVal = val;
                                 if (resumeResult == ExecutionStatus::Yielded)
@@ -3076,7 +4273,7 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                    << "  var w = WaitWorker2()\n"
                    << "  return wait(1ms, for=w.delayed(234, 2))\n";
 
-            auto setupResult = vm.setup(source, "rt_wait_delay_future");
+            auto setupResult = setupTestProgram(vm, source, "rt_wait_delay_future");
             if (setupResult != ExecutionStatus::OK) {
                 VM::thread = savedThread;
                 reportTest("wait_delay_future_yields", false, "Failed to compile");
@@ -3105,7 +4302,7 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                             Value resumeVal = returnVal;
                             const int maxIterations = 200;
                             for (int i = 0; i < maxIterations && resumeResult == ExecutionStatus::Yielded; ++i) {
-                                auto [res, val] = vm.runFor(TimeDuration::milliSecs(10));
+                                auto [res, val] = driveSlice(TimeDuration::milliSecs(10));
                                 resumeResult = res;
                                 resumeVal = val;
                                 if (resumeResult == ExecutionStatus::Yielded)
@@ -3140,7 +4337,7 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                    << "  var y = x + 1\n"
                    << "  return y\n";
 
-            auto setupResult = vm.setup(source, "rt_stack_balance");
+            auto setupResult = setupTestProgram(vm, source, "rt_stack_balance");
             if (setupResult != ExecutionStatus::OK) {
                 VM::thread = savedThread;
                 reportTest("invokeClosure_stack_balance", false, "Failed to compile");
@@ -3176,7 +4373,7 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
         }
 
         // Same contract across a deadline yield: the frame created by
-        // invokeClosure completes inside runFor(), where the entry point's
+        // invokeClosure completes inside a driven slice, where the entry point's
         // epilogue can't reach it -- CallFrame::unwindOnReturn is what makes
         // opReturn unwind it at the real completion site.
         {
@@ -3189,7 +4386,7 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                    << "    sum = sum + 1\n"
                    << "  return sum + x\n";
 
-            auto setupResult = vm.setup(source, "rt_stack_balance_resume");
+            auto setupResult = setupTestProgram(vm, source, "rt_stack_balance_resume");
             if (setupResult != ExecutionStatus::OK) {
                 VM::thread = savedThread;
                 reportTest("invokeClosure_yield_resume_balance", false, "Failed to compile");
@@ -3210,7 +4407,7 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                     ExecutionStatus finalRes = res;
                     Value finalVal = val;
                     for (int i = 0; i < 200 && finalRes == ExecutionStatus::Yielded; ++i) {
-                        auto [r, v] = vm.runFor(TimeDuration::milliSecs(10));
+                        auto [r, v] = driveSlice(TimeDuration::milliSecs(10));
                         finalRes = r; finalVal = v;
                     }
                     const size_t after = VM::thread->stackDepth();
@@ -3227,6 +4424,53 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
             }
         }
 
+        // Lifting a dataflow func EVALUATES it once, on this thread, to give
+        // the node its first output.  When that first evaluation raises, the
+        // runtime-error path has already reset this thread's stack and
+        // frames -- so the lift site must not go on to pop the operands it
+        // pushed.  Popping them walked below the stack base: "Stack
+        // underflow" in a debug build, and in a release build an unguarded
+        // read of stack[-1], which is a real out-of-bounds access (found by
+        // AddressSanitizer under wasm, where it trapped).
+        {
+            auto savedThread = VM::thread;
+            engine.clear();
+
+            std::stringstream source;
+            source << "func tally(v :int, into :list) -> int:\n"
+                   << "  into.append(v)\n"
+                   << "  return len(into)\n"
+                   << "var c = clock(10)\n"
+                   << "var acc = [1, 2]\n"
+                   << "var out = tally(c, acc)\n";
+
+            bool threw = false;
+            size_t depthAfter = 0;
+            ExecutionStatus execResult = ExecutionStatus::OK;
+            if (setupTestProgram(vm, source, "rt_lift_init_raises") == ExecutionStatus::OK) {
+                try {
+                    auto [r, v] = vm.execute();
+                    execResult = r;
+                    (void)v;
+                } catch (const std::exception&) {
+                    threw = true;   // the debug build's underflow guard fired
+                }
+                depthAfter = VM::thread ? VM::thread->stackDepth() : 0;
+            }
+            vm.clearRuntimeErrorFlag();
+            VM::thread = savedThread;
+            engine.clear();
+
+            // An underflow shows up either as that throw, or as a stack depth
+            // that wrapped around when stackTop went below the buffer's start.
+            reportTest("lift_init_error_stack_balance",
+                       !threw && execResult == ExecutionStatus::RuntimeError
+                           && depthAfter < 1024,
+                       "threw=" + std::to_string(threw)
+                       + ", result=" + std::to_string(static_cast<int>(execResult))
+                       + ", depth=" + std::to_string(depthAfter));
+        }
+
         // And invokeMethod: same slot-ownership contract for [receiver, args]
         // (qt property dispatch is the production caller).
         {
@@ -3239,7 +4483,7 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                    << "    return y\n"
                    << "var inst = Balance()\n";
 
-            auto setupResult = vm.setup(source, "rt_stack_balance_method");
+            auto setupResult = setupTestProgram(vm, source, "rt_stack_balance_method");
             if (setupResult != ExecutionStatus::OK) {
                 VM::thread = savedThread;
                 reportTest("invokeMethod_stack_balance", false, "Failed to compile");
@@ -3272,7 +4516,6 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
         }
 
         engine.clear();
-        vm.setSynchronousExecution(true); // restore guard
         printLine("RT Execution tests: Passed " + std::to_string(passes) +
                   " failed " + std::to_string(fails));
     }
@@ -3356,13 +4599,32 @@ Value ModuleSys::gc_builtin(VM& vm, ArgsView args)
     SimpleMarkSweepGC& collector = SimpleMarkSweepGC::instance();
     collector.requestCollect();
 
-    // From inside an RT GC-yield section (a host RT slice executing script
-    // via runFor), gc() is ASYNCHRONOUS: parking at the safepoint here would
+    // From inside an RT GC-yield section (a host driving script execution in
+    // bounded slices), gc() is ASYNCHRONOUS: parking at the safepoint here would
     // deadlock against the collection barrier waiting on our own section.
     // The request is made; the slice yields right after this call and the
     // collection runs off-RT.  Returns 0 (nothing freed synchronously).
     if (SimpleMarkSweepGC::inGCYieldSectionOnThisThread()) {
         return Value::intVal(0);
+    }
+
+    // Another thread may be compiling, in which case the request above was
+    // LATCHED, not published, and the safepoint below would find nothing to
+    // wait for.  gc() promises "collected" on return, so wait for the last
+    // preparation scope to publish it.
+    //
+    // While waiting, PARK for any collection already in flight rather than
+    // merely sleeping.  A collection that began before the compile started
+    // waits for this thread to reach a safepoint; the compiling thread
+    // parks for that collection at its next poll; and the deferral cannot
+    // lift until the compile ends.  A thread that only slept here would
+    // close that loop into a deadlock.
+    while (collector.collectionDeferred()) {
+        if (VM::thread && (collector.isCollectionRequested()
+                           || collector.isCollectionInProgress()))
+            collector.safepoint(*VM::thread);
+        else
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     if (VM::thread) {
@@ -3434,7 +4696,7 @@ static constexpr uint8_t SerializeMagic = 0x52;        // 'R'
 // 4: ObjModuleType's record grew declAnnotations (annotations on top-level
 // var/const/type declarations).  A serialized function embeds its module type
 // via ObjFunction::write, so the shared writeValue() stream changed shape.
-static constexpr uint32_t SerializeFormatVersion = 4;
+static constexpr uint32_t SerializeFormatVersion = 5;   // 5: Chunk debug metadata
 
 Value ModuleSys::serialize_builtin(VM& vm, ArgsView args)
 {

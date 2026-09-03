@@ -63,6 +63,27 @@ private:
 inline SnapshotEpochTracker snapshotEpochTracker;
 
 
+// The refcount death protocol, shared by every strong and weak release:
+// each decrement is a release, and the decrement that reaches zero is
+// followed by an acquire fence before the object is torn down.  That is
+// the shared_ptr protocol, and it is correct as written -- but
+// ThreadSanitizer does not model fences, so it cannot see the acquire
+// side and reports the tear-down as racing the other threads' releases.
+// Under TSan the decrement itself carries the acquire (the same
+// instruction on x86); the fence stays, so no build changes semantics.
+#if defined(__SANITIZE_THREAD__)
+#define ROXAL_TSAN 1
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define ROXAL_TSAN 1
+#endif
+#endif
+#ifdef ROXAL_TSAN
+inline constexpr std::memory_order refReleaseOrder = std::memory_order_acq_rel;
+#else
+inline constexpr std::memory_order refReleaseOrder = std::memory_order_release;
+#endif
+
 struct ObjControl {
     std::atomic_int32_t strong;
     std::atomic_int32_t weak;

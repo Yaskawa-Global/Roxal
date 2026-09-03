@@ -952,6 +952,12 @@ void Chunk::serialize(std::ostream& out, roxal::ptr<SerializationContext> ctx) c
         out.write(reinterpret_cast<char*>(&line), 4);
         out.write(reinterpret_cast<char*>(&col), 4);
     }
+
+    // Debug metadata, behind a one-byte tier prefix (0 = none).
+    uint8_t debugTier = debugInfo ? 1 : 0;
+    out.write(reinterpret_cast<char*>(&debugTier), 1);
+    if (debugInfo)
+        debugInfo->serialize(out);
 }
 
 void Chunk::deserialize(std::istream& in, roxal::ptr<SerializationContext> ctx)
@@ -985,5 +991,22 @@ void Chunk::deserialize(std::istream& in, roxal::ptr<SerializationContext> ctx)
         in.read(reinterpret_cast<char*>(&line), 4);
         in.read(reinterpret_cast<char*>(&col), 4);
         lineTable.push_back(LineEntry{off,line,col});
+    }
+
+    // Debug metadata (tier-prefixed; 0 = none).  Bounds-validated against
+    // the code size just read.  A truncated stream or an unknown tier is
+    // corruption and must throw -- silently treating it as "no debug data"
+    // would strip debugger support without a trace.
+    uint8_t debugTier = 0;
+    in.read(reinterpret_cast<char*>(&debugTier), 1);
+    if (!in)
+        throw std::runtime_error("Chunk: truncated before debug-metadata tier");
+    if (debugTier > 1)
+        throw std::runtime_error("Chunk: unknown debug-metadata tier");
+    if (debugTier == 1) {
+        debugInfo = make_ptr<DebugInfo>();
+        debugInfo->deserialize(in, codeSize);
+    } else {
+        debugInfo.reset();
     }
 }

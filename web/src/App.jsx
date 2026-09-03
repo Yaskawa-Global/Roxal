@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { startRoxal, runScript, scriptParked, ensureServices } from './roxal.js';
+import { startRoxal, runScript, scriptParked, ensureServices, stopCurrent } from './roxal.js';
 import { warmNnProvider } from './nn-provider.js';
 import Editor, { disposeModel } from './Editor.jsx';
 import TanksPanel from './TanksPanel.jsx';
@@ -9,6 +9,7 @@ const Tanks3D = lazy(() => import('./Tanks3D.jsx'));
 // Lazy like Tanks3D: React Flow only loads for users who open a diagram.
 const DfEditor = lazy(() => import('./DfEditor.jsx'));
 import { isDiagramSource, dfCall } from './dfdoc.js';
+import { armDebugSession, DebugStoreAdapter } from './debug.js';
 import { useRoxal, useRoxalStore } from './roxal-react.js';
 // The demos are PLAIN .rox files -- editable in any editor, with Roxal syntax
 // rather than a JavaScript string. Vite's ?raw suffix hands us their text; the
@@ -316,12 +317,37 @@ function Repl({ evalLine }) {
 
 export default function App() {
     const [rox, setRox] = useState(null);
+    // The VM, reachable from code whose closure predates it.  Boot is one
+    // long async function started on the FIRST render, so every helper it
+    // calls sees the `rox` of that render -- null -- however far into the
+    // boot the call happens.  Set alongside the state, never after it.
+    const roxRef = useRef(null);
     const [error, setError] = useState(null);
     const [output, setOutput] = useState('');
     const [running, setRunning] = useState(false);
     const [runError, setRunError] = useState(null);
     // A finished batch script is not a failure -- it just has no live app.
     const [runBenign, setRunBenign] = useState(false);
+
+    // --- debugger (demo integration) ----------------------------------------
+    const [debugOn, setDebugOn] = useState(false);
+    const [bps, setBps] = useState({});          // file -> [lines]
+    // Mirror of `bps` for the run path.  A run is started from a closure
+    // captured when it was REQUESTED, but its pre-run breakpoint push
+    // happens seconds later, after the old program has been displaced --
+    // and set_breakpoints REPLACES the whole set for a source, so pushing
+    // a stale snapshot silently erases every breakpoint set in between.
+    const bpsRef = useRef({});
+    const [dbgStop, setDbgStop] = useState(null);        // last stop state()
+    const [dbgInfo, setDbgInfo] = useState(null);        // {frames, vars}
+    const [dbgLive, setDbgLive] = useState(false);       // the session store answers
+    const dbgAdapter = useMemo(() => (rox ? new DebugStoreAdapter(rox) : null), [rox]);
+    const dbgStopKeyRef = useRef('');
+    // Mirror of dbgStop for the run path (closures there are older than
+    // the state they need to read).
+    const dbgStopRef = useRef(null);
+    const debugOnRef = useRef(false);
+    debugOnRef.current = debugOn;
 
     // Workspace state. Monaco models are the source of truth for content; this
     // component tracks which files exist, which are open, and which is active.
@@ -364,7 +390,7 @@ export default function App() {
     const outputRef = useRef('');
     // Deliberately exposed, like window.monaco: browser tests and console
     // debugging reach stores through it instead of simulating UI.
-    useEffect(() => { window.__rox = rox; }, [rox]);
+    useEffect(() => { roxRef.current = rox; window.__rox = rox; }, [rox]);
     // 'clear' hides everything before the mark -- the VM-side buffer only
     // grows, so clearing is a display offset, not a truncation.
     const [outputClearAt, setOutputClearAt] = useState(0);
@@ -385,6 +411,16 @@ export default function App() {
     // restart already in progress -- two recoveries racing leaves the second
     // one queued behind the first one's parked script, i.e. never running.
     const busyRef = useRef(false);
+    // Runs are serialized AND supersedable.  Starting a run is a sequence of
+    // waits (displace the old program, restore services, wait for the new one
+    // to expose its store) that lasts up to 20s for a batch script, which
+    // never exposes anything.  Anything the user asks for during that window
+    // -- press Run again, switch debugging on -- must displace the pending
+    // run, not be dropped because "a run is in progress": each request takes
+    // a sequence number, the superseded one bails at its next wait point, and
+    // the new one begins only once it has unwound.
+    const runSeqRef = useRef(0);
+    const runChainRef = useRef(Promise.resolve());
 
     const filePath = name => DATA_DIR + '/' + name;
     const modelText = name => {
@@ -444,6 +480,7 @@ export default function App() {
                     expectStore: 'workspace',
                     onOutput: text => { outputRef.current = text; setOutput(text); },
                 });
+                roxRef.current = rox;
                 setRox(rox);
                 const ws = rox.roxalStore('workspace');
 
@@ -511,7 +548,7 @@ export default function App() {
                     // and finished, which is success, not a boot failure. Its
                     // prints are in the output pane; put the services back.
                     if (!(e.scriptEnded && e.rc === 0)) throw e;
-                    await ensureServices(rox, BOOTSTRAP);
+                    await ensureServicesUnarmed();
                 }
                 setPanel(pickPanel(rox));
                 setGeneration(g => g + 1);
@@ -526,8 +563,21 @@ export default function App() {
     // button and by opening a file. `source` exists because a just-opened file
     // is not yet readable from React state; `save` is false for that case,
     // since the text came off disk unchanged.
-    async function runNamed(name, { source, save = true } = {}) {
-        if (!workspace || !name) return;
+    function runNamed(name, opts = {}) {
+        const seq = ++runSeqRef.current;            // supersedes any pending run
+        const p = runChainRef.current.catch(() => {}).then(() => startRun(name, seq, opts));
+        runChainRef.current = p.catch(() => {});
+        return p;
+    }
+
+    async function startRun(name, seq, { source, save = true, debug = debugOn } = {}) {
+        const superseded = () => runSeqRef.current !== seq;
+        if (superseded()) return;               // a newer request owns the UI state
+        if (!workspace || !name) {              // nothing to run: release the UI
+            busyRef.current = false;
+            setRunning(false);
+            return;
+        }
         // A script that loads a model will block the VM inside Model() until
         // the runtime is there; start fetching it now so that wait is short.
         if ((source ?? modelText(name)).includes('ai.nn')) warmNnProvider();
@@ -536,11 +586,28 @@ export default function App() {
         setRunBenign(false);
         busyRef.current = true;
         try {
-            // Save is a store call, so the services have to be alive before it --
-            // otherwise Run wedges on its own first step when the previous script
-            // has ended.
-            await ensureServices(rox, BOOTSTRAP);
+            // A debug run first RELEASES any active stop: a breakpoint-stopped
+            // program cannot answer the displace handshake below.  Only when
+            // one is actually held, and never unbounded: a store call to a
+            // store nobody services does not fail, it waits out the bridge's
+            // 20s timeout -- which is exactly how long the restart then took.
+            if (debug && dbgAdapter && dbgStopRef.current) {
+                try {
+                    await Promise.race([dbgAdapter.resume(),
+                                        new Promise(r => setTimeout(r, 2000))]);
+                } catch { /* no session */ }
+                setDbgStop(null); setDbgInfo(null); dbgStopKeyRef.current = '';
+            }
+            // Displace whatever owns the VM FIRST (a running batch script
+            // never parks, so services could not come back while it runs),
+            // then restore services -- Save is a store call and wedges
+            // without them.
+            await stopCurrent(rox);
+            if (superseded()) return;
+            await ensureServicesUnarmed();
+            if (superseded()) return;
             if (save) await saveFile(workspace, name);        // Run implies Save
+            if (superseded()) return;
             let text = source ?? modelText(name);
             if (isDiagramSource(text)) {
                 // A diagram file only *defines* its component; running it means
@@ -562,21 +629,51 @@ export default function App() {
                 text = h.source;
             }
             // diagrams run under their FULL path so sibling /data modules
-            // (composed sub-diagrams) resolve on import
-            await runScript(rox, text, { expectStore: 'workspace',
-                                         name: isDiagramSource(text) ? filePath(name) : name });
+            // (composed sub-diagrams) resolve on import.  Under a debug
+            // session the `debug` store re-exposes at SCRIPT START (before
+            // the first user statement), so it is the start signal even for
+            // a batch script that will park at a breakpoint.
+            if (debug) {
+                // Configuration BARRIER (native singletons persist across
+                // runs): stop-on-fatal and the breakpoint requests are
+                // armed before the source is submitted, so they bind at
+                // compile time -- before the first user statement can run,
+                // fail, or pass a breakpoint line.
+                rox.ccall('roxal_debug_arm', null, ['number'], [1]);
+                rox.ccall('roxal_debug_set_breakpoints', null, ['string', 'string'],
+                          [name, (bpsRef.current[name] ?? []).join(',')]);
+            }
+            // expectStore is decided at SUBMIT time from the CURRENT armed
+            // state (ref, not closure): if debugging was toggled on while
+            // this run's pre-steps were in flight, the run inherits the
+            // armed session (its script start exposes the debug store) and
+            // must key on that -- watching workspace would time out.
+            const debugNow = debug || debugOnRef.current;
+            await runScript(rox, text, { expectStore: debugNow ? 'debug' : 'workspace',
+                                         assumeStopped: !scriptParked(rox),
+                                         name: isDiagramSource(text) ? filePath(name) : name,
+                                         superseded });
             setPanel(pickPanel(rox));
             setGeneration(g => g + 1);
         } catch (e) {
+            // Displaced by a newer request: it owns the UI state and the
+            // services from here on -- saying anything would be a lie about a
+            // run the user replaced on purpose.
+            if (e && e.superseded) return;
             setRunError(String(e.message || e));
             setRunBenign(Boolean(e.scriptEnded) && e.rc === 0);
             // A script that ended (batch script, or an error before serve) left
             // nothing parked. Put the IDE's own services back so the menus,
             // console and Run keep working.
-            try { await ensureServices(rox, BOOTSTRAP); } catch { /* reported above */ }
+            try { await ensureServicesUnarmed(); } catch { /* reported above */ }
         } finally {
-            busyRef.current = false;
-            setRunning(false);
+            // Only the CURRENT run may declare the IDE idle; a superseded one
+            // would otherwise blink the button and open a window for the
+            // liveness watchdog to re-park under its successor.
+            if (!superseded()) {
+                busyRef.current = false;
+                setRunning(false);
+            }
         }
     }
 
@@ -617,7 +714,7 @@ export default function App() {
         const id = setInterval(async () => {
             if (running || busyRef.current || scriptParked(rox)) return;
             try {
-                if (await ensureServices(rox, BOOTSTRAP)) setGeneration(g => g + 1);
+                if (await ensureServicesUnarmed()) setGeneration(g => g + 1);
             } catch { /* next tick tries again */ }
         }, 1000);
         return () => clearInterval(id);
@@ -638,7 +735,7 @@ export default function App() {
     async function onMenu(action) {
         if (!workspace) return;
         try {
-            await ensureServices(rox, BOOTSTRAP);
+            await ensureServicesUnarmed();
             if (action.kind === 'new') {
                 let name = window.prompt('New file name', 'untitled.rox');
                 if (!name) return;
@@ -733,7 +830,7 @@ export default function App() {
                 // The app itself will not come back (it may not even park).
                 // Services still must, or the console dies with it.
                 try {
-                    await ensureServices(rox, BOOTSTRAP);
+                    await ensureServicesUnarmed();
                     note = '\n(fatal error — app stopped; IDE services restarted)';
                 } catch {
                     note = '\n(fatal error — restart failed: ' + String(e2.message || e2) + ')';
@@ -747,6 +844,136 @@ export default function App() {
         const printed = outputRef.current.slice(before).replace(/^\[stderr\] /gm, '');
         return (printed + (err || '') + note).trimEnd();
     }
+
+    // The IDE's own bootstrap must never look like a debuggable program:
+    // when debugging is on, disarm the session around re-parking it, so its
+    // run exposes no debug store (dbgLive then reads the truth).
+    // Returns what ensureServices reports: true if it had to re-park the
+    // bootstrap, which the liveness watchdog uses to refresh the panel.
+    async function ensureServicesUnarmed() {
+        const vm = roxRef.current;
+        if (!vm) return false;
+        if (debugOnRef.current) armDebugSession(vm, false);
+        try { return await ensureServices(vm, BOOTSTRAP); }
+        finally { if (debugOnRef.current) armDebugSession(vm, true); }
+    }
+
+    // Toggling debugging arms/disarms the host session flag.  A program only
+    // becomes debuggable when it STARTS under an armed session (the control
+    // actor is constructed at script start), so toggling ON restarts the
+    // active file -- that is what "debug this" means here.  Toggling OFF
+    // releases a live stop so the program cannot be left frozen.
+    async function toggleDebug() {
+        if (!rox) return;
+        const on = !debugOn;
+        setDebugOn(on);
+        if (!on) {
+            // Release any active stop WHILE STILL ARMED (the control natives
+            // reject once the session is disarmed), then disarm -- which
+            // also tears down debugger policy host-side.  Bounded, and only
+            // when something is actually held: an unanswered store call
+            // waits out the bridge's 20s timeout, and switching debugging
+            // off must never take 20 seconds.
+            const held = dbgStopRef.current;
+            setDbgStop(null); setDbgInfo(null); setDbgLive(false);
+            dbgStopRef.current = null;
+            if (held) {
+                try {
+                    await Promise.race([dbgAdapter?.resume(),
+                                        new Promise(r => setTimeout(r, 2000))]);
+                } catch { /* not stopped */ }
+            }
+            armDebugSession(rox, false);
+            return;
+        }
+        armDebugSession(rox, true);
+        // Host-level policy armed immediately: even a run already in flight
+        // (which then inherits the session) gets stop-on-fatal.
+        try { rox.ccall('roxal_debug_arm', null, ['number'], [1]); } catch { /* boot race */ }
+        // Unconditional: a run still waiting to start is superseded by this
+        // one, and runNamed displaces whatever owns the VM.  Gating on "busy"
+        // silently dropped the toggle for exactly the case that needs it --
+        // a batch program, whose start-wait runs the full deadline.
+        if (active)
+            runNamed(active, { debug: true }).catch(() => {});
+    }
+
+    function toggleBreakpoint(line) {
+        if (!debugOnRef.current || !active) return;
+        setBps(prev => {
+            const cur = new Set(prev[active] ?? []);
+            if (cur.has(line)) cur.delete(line); else cur.add(line);
+            const next = { ...prev, [active]: [...cur].sort((a, b) => a - b) };
+            bpsRef.current = next;
+            // Live edit through the persistent native requests: rebinds the
+            // running session AND pre-configures the next run.
+            try {
+                rox.ccall('roxal_debug_set_breakpoints', null, ['string', 'string'],
+                          [active, next[active].join(',')]);
+            } catch { /* not fatal for the UI */ }
+            return next;
+        });
+    }
+
+    // Stop-state poll: cheap state() calls while debugging; on a NEW stop,
+    // fetch the stack + top-frame locals once.
+    useEffect(() => {
+        if (!debugOn || !dbgAdapter) return;
+        let cancelled = false;
+        const timer = setInterval(async () => {
+            try {
+                const st = await dbgAdapter.state();
+                if (cancelled) return;
+                setDbgLive(true);
+                if (st && st.stopped) {
+                    setDbgStop(st); dbgStopRef.current = st;
+                    const key = `${st.epoch}:${st.thread_id}:${st.line}:${st.reason}`;
+                    if (dbgStopKeyRef.current !== key) {
+                        dbgStopKeyRef.current = key;
+                        const info = await dbgAdapter.describeStop(st);
+                        if (cancelled) return;
+                        if (info) setDbgInfo(info);
+                        else dbgStopKeyRef.current = '';   // transient: retry next poll
+                    }
+                } else {
+                    dbgStopKeyRef.current = '';
+                    setDbgStop(null); setDbgInfo(null); dbgStopRef.current = null;
+                }
+            } catch {
+                // Store not alive (no script running yet / just ended).
+                if (cancelled) return;
+                setDbgStop(null); setDbgInfo(null); setDbgLive(false);
+                dbgStopRef.current = null;
+                // A debug-run batch script ends DETACHED (runScript returned
+                // at start); when nothing is parked any more, put the IDE
+                // services back or the console/menus stay dead.
+                if (!busyRef.current && rox && !scriptParked(rox)) {
+                    busyRef.current = true;
+                    try { await ensureServicesUnarmed(); } catch { /* next poll */ }
+                    finally { busyRef.current = false; }
+                }
+            }
+        }, 400);
+        return () => { cancelled = true; clearInterval(timer); };
+    }, [debugOn, dbgAdapter, rox]);
+
+    async function dbgAction(kind) {
+        if (!dbgAdapter) return;
+        try {
+            if (kind === 'pause') await dbgAdapter.pause();
+            else if (kind === 'continue') await dbgAdapter.resume();
+            else if (dbgStop) await dbgAdapter.step(dbgStop.thread_id, kind);
+            // No optimistic clear: the panel is poll-driven, and each stop
+            // carries a distinct epoch, so a re-fired breakpoint on the same
+            // line still refreshes (clearing here raced the poll, which
+            // could re-show the stale stop and swallow the next one).
+        } catch { /* surfaces via the poll */ }
+    }
+
+    // Browser tests drive the debugger through this handle rather than
+    // simulating gutter clicks (the same policy as window.monaco).
+    if (typeof window !== 'undefined')
+        window.__roxalDebug = { toggleBreakpoint, dbgAction, stop: dbgStop, info: dbgInfo };
 
     return (
         <main>
@@ -796,8 +1023,47 @@ export default function App() {
                             </span>}
                         <button className="run" disabled={!rox || running || !active}
                                 onClick={rerun}>{running ? 'running…' : 'Run'}</button>
+                        <button className={'debug-toggle' + (debugOn ? ' active' : '')}
+                                disabled={!rox}
+                                title="Toggle debugging: click the editor gutter to set breakpoints, then Run"
+                                onClick={toggleDebug}>{debugOn ? '🐞 debugging' : '🐞'}</button>
                         {runError && <span className={runBenign ? 'run-note' : 'run-error'}>{runError}</span>}
                     </div>
+                    {debugOn &&
+                        <div className="debug-panel">
+                            <span className="debug-status">
+                                {dbgStop
+                                    ? `⏸ stopped (${dbgStop.reason}) at ${dbgStop.source || '?'}:${dbgStop.line}`
+                                    : dbgLive
+                                        ? 'running — gutter click sets a breakpoint'
+                                        : running
+                                            ? 'starting under the debugger…'
+                                            : 'no debuggable program — press Run'}
+                            </span>
+                            <span className="debug-actions">
+                                {dbgStop ? <>
+                                    <button onClick={() => dbgAction('continue')}>▶ continue</button>
+                                    <button onClick={() => dbgAction('next')}>⤵ over</button>
+                                    <button onClick={() => dbgAction('in')}>⬇ in</button>
+                                    <button onClick={() => dbgAction('out')}>⬆ out</button>
+                                </> : <button disabled={!dbgLive}
+                                              onClick={() => dbgAction('pause')}>⏸ pause</button>}
+                            </span>
+                            {dbgStop && dbgInfo &&
+                                <div className="debug-detail">
+                                    <ul className="debug-stack">
+                                        {dbgInfo.frames.slice(0, 6).map(f =>
+                                            <li key={f.id}>{f.name} <i>{f.source}:{f.line}</i></li>)}
+                                    </ul>
+                                    <table className="debug-vars"><tbody>
+                                        {dbgInfo.vars.slice(0, 12).map(v =>
+                                            <tr key={v.name}>
+                                                <td>{v.name}</td><td className="v-type">{v.type}</td>
+                                                <td className="v-val">{v.value}</td>
+                                            </tr>)}
+                                    </tbody></table>
+                                </div>}
+                        </div>}
                     {active
                         ? (activeView === 'diagram' && df
                             ? <Suspense fallback={<p className="loading">loading the diagram editor…</p>}>
@@ -825,6 +1091,11 @@ export default function App() {
                                           setDirtyTabs(d => (d[name] ? d : { ...d, [name]: true }));
                                       }}
                                       service={ide}
+                                      breakpoints={debugOn ? (bps[active] ?? []) : null}
+                                      stopLine={debugOn && dbgStop
+                                                && dbgStop.source === active
+                                                ? dbgStop.line : null}
+                                      onToggleBreakpoint={debugOn ? toggleBreakpoint : null}
                                       height="100%" />)
                         : <p className="loading">no file open — File → New…</p>}
                 </section>

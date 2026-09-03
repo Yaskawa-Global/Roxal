@@ -60,10 +60,26 @@ struct CallFrame {
     // completed call leaks its frame (the dataflow engine evaluates every
     // script node this way -- the leak killed the engine thread at the
     // 16384-slot stack limit).  The flag makes opReturn unwind such frames on
-    // return, which also covers calls that complete later via runFor() after a
+    // return, which also covers calls that complete later in a slice after a
     // deadline/future yield -- a path the entry point's own epilogue never
     // sees.
     bool unwindOnReturn { false }; // set by invokeClosure/invokeMethod on the frame they push
+
+    // ---- Debugger ----
+    // Monotonic per-thread activation identity: stable across frame-vector
+    // relocation and distinguishes a recycled depth from the same live
+    // activation.  Assigned LAZILY on first debugger observation (zero cost
+    // when no debugger work is armed); 0 = not yet assigned.
+    uint64_t activationId { 0 };
+    // Statement-boundary window cache: the current statement's [start, next)
+    // offsets.  Hot boundary test = two integer compares; a miss (or a
+    // control-flow jump) re-locates with one binary search, and the rare
+    // FIRE re-locates once more for the statement index.  Deliberately
+    // small (the frame's chunk never changes, so no chunk pointer; the
+    // index is recomputed on fire): CallFrame sits on the hottest push/pop
+    // path and its size is benchmark-gated.
+    uint32_t dbgStmtStart { 0xffffffffu };
+    uint32_t dbgStmtNext { 0 };
 };
 
 } // namespace roxal

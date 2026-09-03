@@ -2,6 +2,7 @@
 
 #include "Object.h"
 #include "SimpleMarkSweepGC.h"
+#include "debug/StopCoordinator.h"
 #include "VM.h"   // defines CallFrame (Thread.h only forward-declares it)
 
 namespace roxal {
@@ -12,13 +13,34 @@ ThreadManager& ThreadManager::instance()
     return manager;
 }
 
-void ThreadManager::registerThread(Thread* t)
+void ThreadManager::registerThread(const ptr<Thread>& t)
 {
     if (!t) {
         return;
     }
+    Entry entry;
+    entry.ref = t;
+    entry.id = t->id();
+    entry.domainId = t->domain ? t->domain->id() : 0;
+    entry.kind = t->kind;
     std::lock_guard<std::mutex> lock(mutex_);
-    threads_.insert(t);
+    // Domain admission gate: a thread created while a stop epoch is
+    // forming/active starts pre-acknowledged and externally stopped -- the
+    // execute-entry gate keeps it from running user code until release, so
+    // a new thread can never escape the epoch.
+    // Under the registry mutex, so a concurrent coordinator snapshot sees
+    // either no entry or a fully pre-acknowledged one.
+    if (t->domain && t->domain->admissionClosed.load(std::memory_order_acquire)) {
+        t->debugOwnership.store(Thread::DebugOwnership::StoppedExternal,
+                                std::memory_order_release);
+        t->debugAckEpoch.store(t->domain->stopEpoch.load(std::memory_order_acquire),
+                               std::memory_order_release);
+        // ...and lease it into the epoch so membership stays strongly
+        // retained.
+        if (auto* coord = t->domain->coordinator.load(std::memory_order_acquire))
+            coord->addLateEpochLease(t);
+    }
+    threads_.emplace(t.get(), std::move(entry));
 }
 
 void ThreadManager::unregisterThread(Thread* t)
@@ -28,6 +50,51 @@ void ThreadManager::unregisterThread(Thread* t)
     }
     std::lock_guard<std::mutex> lock(mutex_);
     threads_.erase(t);
+}
+
+std::vector<ptr<Thread>> ThreadManager::snapshotThreads()
+{
+    std::vector<ptr<Thread>> leases;
+    std::lock_guard<std::mutex> lock(mutex_);
+    leases.reserve(threads_.size());
+    for (auto it = threads_.begin(); it != threads_.end(); ) {
+        if (auto t = it->second.ref.lock()) {
+            leases.push_back(std::move(t));
+            ++it;
+        } else {
+            // Dying Thread whose destructor has not reached unregister yet
+            // (or is blocked on this mutex): prune -- it can never be locked
+            // again, and erasing here keeps snapshots O(live).
+            it = threads_.erase(it);
+        }
+    }
+    return leases;
+}
+
+std::vector<ptr<Thread>> ThreadManager::snapshotLeases(uint64_t domainId)
+{
+    std::vector<ptr<Thread>> leases;
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto it = threads_.begin(); it != threads_.end(); ) {
+        if (auto t = it->second.ref.lock()) {
+            if (it->second.domainId == domainId)
+                leases.push_back(std::move(t));
+            ++it;
+        } else {
+            it = threads_.erase(it);   // dying Thread: prune (see snapshotThreads)
+        }
+    }
+    return leases;
+}
+
+void ThreadManager::wakeAll()
+{
+    // Strong leases first; wake outside the registry mutex so a Thread's
+    // own wake/sleep mutex never nests inside the registry lock.
+    auto leases = snapshotThreads();
+    for (auto& t : leases) {
+        t->wake();
+    }
 }
 
 std::size_t ThreadManager::threadCount() const
@@ -43,7 +110,14 @@ void ThreadManager::finalizeActor(ActorInstance* inst)
     if (!inst) {
         return;
     }
-    if (auto t = inst->thread.lock()) {
+    // The weak back-reference is read only under queueMutex (Thread::join
+    // clears it there); the lock is released before joining.
+    ptr<Thread> t;
+    {
+        std::lock_guard<std::mutex> lock { inst->queueMutex };
+        t = inst->thread.lock();
+    }
+    if (t) {
         t->join(inst);
     }
     delObj(inst);

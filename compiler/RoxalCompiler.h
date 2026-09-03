@@ -41,6 +41,12 @@ public:
     void setModulePaths(const std::vector<std::string>& modulePaths);
     void setReplMode(bool replMode);
     void setCacheReadEnabled(bool enabled);
+    // Process-wide debug-metadata default (the CLI's --no-debug-info clears
+    // it); every compiler instance snapshots it at construction.  The debug
+    // tier is part of the .roc cache header, so a stripped cache can never
+    // satisfy a debug-enabled run or vice versa -- mismatches recompile.
+    static void setDebugInfoDefault(bool on) { s_debugInfoDefault = on; }
+    static bool debugInfoDefault() { return s_debugInfoDefault; }
     void setCacheWriteEnabled(bool enabled);
     void setModuleResolverVM(VM* vm);
     bool replMode() const { return replModeFlag; }
@@ -207,13 +213,18 @@ protected:
         bool isTypeConst;   // var x: const T — type is const, but var is reassignable
         bool isParam { false }; // immutable binding (cannot reassign) but value is not const
         std::optional<VarTypeSpec> type;
+        // Debug metadata: chunk offset at which this local became
+        // initialized (defineVariable); its live range ends where it is
+        // popped (exitLocalScope) or at function end.
+        uint32_t debugStartOffset { 0 };
     };
 
     struct Upvalue {
-        Upvalue(uint8_t i, bool islocal)
-            : index(i), isLocal(islocal) {}
+        Upvalue(uint8_t i, bool islocal, const ustring& n = ustring())
+            : index(i), isLocal(islocal), name(n) {}
         uint8_t index;
         bool isLocal;
+        ustring name;   // debug metadata
     };
 
 
@@ -735,7 +746,20 @@ protected:
 
     void addLocal(const ustring& name, std::optional<VarTypeSpec> type = std::nullopt);
     int16_t resolveLocal(Scope scopeState, const ustring& name);
-    int addUpvalue(Scope scopeState, uint8_t index, bool isLocal);
+    int addUpvalue(Scope scopeState, uint8_t index, bool isLocal,
+                   const ustring& name);
+
+    // ---- Debug metadata emission ----
+    // Statement boundaries, local live ranges and upvalue names accumulate
+    // in Chunk::debugInfo during compilation; always on by default
+    // (--no-debug-info wiring arrives with the cache-tier work).
+    void markStmtStart(const ptr<ast::AST>& node);  // block-level statement boundary
+    void recordFunctionEntryStmt();                 // offset 0 of a fresh function chunk
+    void recordLocalDebug(const Local& local, uint16_t slot);
+    void flushFuncDebugInfo();                      // remaining locals + upvalues at func end
+    static ustring varTypeSpecDisplayName(const std::optional<VarTypeSpec>& t);
+    inline static bool s_debugInfoDefault { true };
+    bool debugInfoEnabled_ { s_debugInfoDefault };
     int16_t resolveUpvalue(Scope scopeState, const ustring& name);
     // ---- forward-declared type linkage ----
     // Top-level type names are forward-referenceable through the placeholders

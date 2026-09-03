@@ -35,6 +35,9 @@
 #include "RuntimeConfig.h"
 #include "SimpleMarkSweepGC.h"
 #include "web/WebHostLoop.h"
+#include "ModuleDebug.h"
+#include "debug/BreakpointManager.h"
+#include "debug/StopCoordinator.h"
 #include "../dataflow/DataflowEngine.h"
 #include "Object.h"
 #include <core/AST.h>
@@ -98,11 +101,22 @@ int runSource(std::istream& source, const std::string& name,
         VM& vm = VM::instance();
         if (trace) std::cerr << "[trace] appendModulePaths()" << std::endl;
         vm.appendModulePaths(modulePaths);
+        // In this embedding the debugger's only controller is the control
+        // actor the web module builds for a program started under an armed
+        // session.  Breakpoint requests outlive the run they were made for,
+        // so without this gate a request could trap a program that has no
+        // debugger attached -- and a parked debuggee answers nothing, not
+        // even a request to exit, so it would stay frozen for good.
+        vm.stopCoordinator().setControllerPresentPredicate(
+            &ModuleDebug::controlActorPresent);
         if (trace) std::cerr << "[trace] run()" << std::endl;
-        const ExecutionStatus status = vm.run(source, name);
-        if (trace) std::cerr << "[trace] run() returned" << std::endl;
+        roxal::ProgramOptions programOptions;
+        programOptions.sourceName = name;
+        const ExecutionStatus status =
+            vm.executeProgramSync(source, std::move(programOptions));
+        if (trace) std::cerr << "[trace] executeProgramSync() returned" << std::endl;
 
-        // VM::run() calls markMainThread(), which latches the FIRST caller. Record
+        // Execution calls markMainThread(), which latches the FIRST caller. Record
         // what it settled on: under PROXY_TO_PTHREAD that must be this worker.
         int info = g_threadInfo.load(std::memory_order_relaxed);
         if (VM::onMainThread()) info |= kInfoVMMainThread;
@@ -157,6 +171,14 @@ void serveInbox() {
         }
         std::istringstream in{job.first};
         const int rc = runSource(in, job.second, modulePathsFor(job.second, {"/stdlib"}));
+        // An interrupted (roxal_interrupt_script) or exit()ed script leaves
+        // the exit flag latched and the dataflow engine's run loop stopped;
+        // both must reset or every LATER script is stillborn/signal-dead.
+        {
+            VM& vm = VM::instance();
+            vm.clearExitFlag();
+            vm.restartDataflowEngineIfStopped();
+        }
         g_lastResult.store(rc, std::memory_order_relaxed);
         // Release-store LAST: a poller that sees the new count must also see the
         // result and all output written before it.
@@ -248,6 +270,68 @@ void roxal_submit_source(const char* source, const char* name) {
     }
     g_inboxCv.notify_one();
 }
+
+// Arm (or disarm) a debugger session for subsequent runs: while armed,
+// importing `web` exposes the debugger services at import time, so a batch
+// script is debuggable with no source modification beyond the import.
+EMSCRIPTEN_KEEPALIVE
+void roxal_debug_session(int on) {
+    roxal::ModuleDebug::setSessionPending(on != 0);
+}
+
+// Hard-displace the CURRENT script: request a clean VM exit of this run
+// (the runner resets the flag and the dataflow engine before the next job).
+// The graceful path is roxal_request_stop (wakes a web.serve() park); this
+// is the escalation for a batch script that owns the VM.
+EMSCRIPTEN_KEEPALIVE
+void roxal_interrupt_script(void) {
+    VM::instance().requestExit(0);
+}
+
+// Pre-run debugger configuration.  Configuring from JS after the run has
+// started is inherently racy -- short programs finish, early lines pass,
+// fatal errors fire before the store answers.  Breakpoint requests and the
+// stop-on-fatal policy PERSIST in the native singletons across runs, so
+// arming them from the host BEFORE submitting the source is a true
+// configuration barrier: they bind at compile time, before the first user
+// statement.  Callable from the browser thread (mutator cover).
+EMSCRIPTEN_KEEPALIVE
+void roxal_debug_arm(int stopOnFatal) {
+    roxal::ScopedGCMutatorCover cover;
+    auto& coord = roxal::VM::instance().stopCoordinator();
+    coord.ensureWorker();
+    coord.setStopOnFatal(stopOnFatal != 0);
+}
+
+EMSCRIPTEN_KEEPALIVE
+void roxal_debug_set_breakpoints(const char* file, const char* linesCsv) {
+    roxal::ScopedGCMutatorCover cover;
+    std::vector<int> lines;
+    if (linesCsv) {
+        const char* p = linesCsv;
+        while (*p) {
+            int v = 0; bool any = false;
+            while (*p >= '0' && *p <= '9') { v = v * 10 + (*p - '0'); ++p; any = true; }
+            if (any) lines.push_back(v);
+            if (*p) ++p;
+        }
+    }
+    roxal::BreakpointManager::instance().setBreakpoints(file ? file : "", lines);
+}
+
+// ANTLR4's runtime is cross-built separately and WITHOUT AddressSanitizer.
+// libc++ container-overflow detection needs every translation unit that
+// touches a container to be instrumented, so a partially instrumented build
+// reports false positives on ANTLR's parse-tree vectors -- which would bury
+// any real finding.  Only compiled into sanitizer builds.
+#if defined(__has_feature)
+#  if __has_feature(address_sanitizer)
+extern "C" const char* __asan_default_options()
+{
+    return "detect_container_overflow=0";
+}
+#  endif
+#endif
 
 // Ask the serve loop to stop once the queue drains.
 EMSCRIPTEN_KEEPALIVE

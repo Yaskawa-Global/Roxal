@@ -1,0 +1,64 @@
+// debug — the debugger control surface.
+//
+// INTERNAL: these calls drive the whole-program stop machinery and are meant
+// for debugger service contexts (the web IDE's Debug actor, an embedding's
+// control script), not application code.  A thread that calls exclude()
+// keeps RUNNING through debugger stops -- that is the point for a service
+// thread, and a bug for anything that touches program state.
+
+@builtin
+func session_pending() -> bool:
+  """True when the embedding armed a debugger session for this run."""
+
+@builtin
+proc exclude():
+  """Mark the calling thread as a debugger service thread: it runs straight
+  through stop epochs (never stopped, never trapped by breakpoints)."""
+
+@builtin
+proc arm(stop_on_fatal :bool = true):
+  """Start the debug worker and enable stop-on-fatal-error."""
+
+@builtin
+func set_breakpoints(path :string, lines :list) -> list:
+  """Replace the breakpoint set for one source; returns a list of line/verified dicts."""
+
+@builtin
+func locations(path :string, line :int, end_line :int) -> list:
+  """Breakpointable lines of a source within a range."""
+
+@builtin
+func pause() -> bool:
+  """Request a stop of the whole program."""
+
+@builtin
+func resume() -> bool:
+  """Release the current stop."""
+
+@builtin
+func step(thread_id :int, mode :string) -> bool:
+  """Arm a step ('in'/'next'/'out') on a stopped thread and resume."""
+
+@builtin
+func state() -> dict:
+  """The current stop state: stopped, reason, thread_id, source, line, text."""
+
+@builtin
+func threads() -> list:
+  """The stopped threads of the current epoch: a list of id/name dicts."""
+
+@builtin
+func stack(thread_id :int, start :int, levels :int) -> list:
+  """Stack frames of a stopped thread, innermost first."""
+
+@builtin
+func scopes(frame_id :int) -> list:
+  """Variable scopes of a stack frame: a list of name/ref dicts."""
+
+@builtin
+func variables(ref :int, start :int, count :int) -> list:
+  """One page of a scope's or value's children."""
+
+@builtin
+func evaluate(frame_id :int, expr :string) -> dict:
+  """Tier 1 path evaluation against a stopped frame."""

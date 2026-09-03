@@ -20,9 +20,15 @@ NN_LFS_TIMEOUT_SECS = 60
 DOOM_TIMEOUT_SECS = 60
 # Width of the test name column when printing results
 TEST_NAME_WIDTH = 32
-GRPC_TEST_ADDR = "127.0.0.1:50051"
-COMPUTE_TEST_ADDR = "127.0.0.1:56925"
-COMPUTE_TEST_ADDR_2 = "127.0.0.1:56926"
+# Below the ephemeral range (32768-60999) so an outbound connection's client
+# port can never collide, and deliberately NOT gRPC's conventional 50051: a
+# server already listening there (a pendant, another dev tool) accepts
+# rebinding, so the tests would silently interleave with it and fail in
+# whichever way the race landed.
+GRPC_TEST_ADDR = "127.0.0.1:28927"
+GRPC_TEST_ADDR_PLACEHOLDER = "__GRPC_TEST_ADDR__"
+COMPUTE_TEST_ADDR = "127.0.0.1:28925"
+COMPUTE_TEST_ADDR_2 = "127.0.0.1:28926"
 COMPUTE_TEST_ADDR_PLACEHOLDER = "__COMPUTE_TEST_ADDR__"
 COMPUTE_TEST_ADDR_2_PLACEHOLDER = "__COMPUTE_TEST_ADDR_2__"
 
@@ -298,7 +304,7 @@ tests = [
     'runtime_error_snippet', 'exception_basic', 'exception_typed', 'exception_rethrow', 'exception_string',
     'except_type_mismatch', 'except_type_mismatch_err',
     'zero_division', 'zero_division_uncaught_err', 'zero_division_actor', 'actor_proc_uncaught', 'actor_func_exception_reuse',
-    'stacktrace', 'exception_stacktrace', 'object_user_ref_cycle', 'gc_list_cycle', 'gc_liveness',
+    'stacktrace', 'exception_stacktrace', 'object_user_ref_cycle', 'gc_list_cycle', 'gc_liveness', 'actor_registry_stress',
     'property_count', 'property_accessor', 'property_accessor_oneliner', 'dict_property_getters', 'cmdline_execute', 'repl_run', 'invalid_option', 'fileio_basic', 'fileio_binary',
     'fileio_read_binary', 'fileio_write_binary', 'fileio_actor_write', 'fileio_delete', 'fileio_extra', 'fileio_packed',
     'fileio_sync', 'fileio_async_param', 'fileio_list_dir',
@@ -360,7 +366,9 @@ dds_tests = ['dds_bounded_ok', 'dds_bounded_fail', 'dds_complex_smoke', 'dds_arr
              'dds_ros_import', 'dds_ros_signal_roundtrip', 'dds_ros_camerainfo',
              'dds_signal_keepall', 'dds_signal_keeplast', 'dds_ros_signal_lift',
              'dds_writer_signal_shared', 'dds_close_subtree']
-regex_tests = ['regex_test']
+regex_tests = ['regex_test',
+               # selects @test funcs by name PATTERN (a regex): needs the engine
+               'testing_select']
 inspect_tests = [
     'inspect_parse', 'inspect_fields', 'inspect_walk', 'inspect_parent',
     'inspect_positions', 'inspect_comments', 'inspect_schema',
@@ -370,11 +378,13 @@ inspect_tests = [
     'inspect_unparse', 'inspect_edit', 'inspect_fragments',
     'inspect_fragment_err', 'inspect_unparse_err', 'inspect_roundtrip_corpus',
     'inspect_compile', 'inspect_compile_err', 'inspect_annot_roundtrip',
+    'inspect_render', 'inspect_debuginfo', 'inspect_debuginfo_params', 'debug_stop',
+    'debug_exclude_guard',
     # the assert statement
     'assert_stmt', 'assert_uncaught', 'assert_identifier', 'assert_unparse',
     # the testing module (a unit-test framework written in Roxal)
     'testing_basic', 'testing_fixtures', 'testing_cases', 'testing_exceptions',
-    'testing_select', 'testing_timeout', 'testing_import_guard',
+    'testing_timeout', 'testing_import_guard',
     'testing_shared_fixtures', 'testing_session_fixtures',
     'testing_cleanup_failure', 'testing_annotation_typo',
     # runtime reflection (live objects, not source text)
@@ -493,6 +503,9 @@ tests += compute_server_tests
 long_running_tests = [
     'gc_stress',
     'const_mvcc_stress',
+    # 22 timing-heavy debugger self-tests (stop budgets, worker polls,
+    # sleeps): ~3s standalone, over the default 5s under load.
+    'debug_stop',
 ]
 
 # doom example tests (examples/doom in-development port; only run with --all)
@@ -964,6 +977,17 @@ try:
 
         run_testrox = testrox
         compute_server_offsets = {}
+        if test.startswith('grpc_'):
+            with open(testrox, 'r', encoding='utf-8') as handle:
+                source = handle.read().replace(GRPC_TEST_ADDR_PLACEHOLDER,
+                                               GRPC_TEST_ADDR)
+            temp_handle = tempfile.NamedTemporaryFile(
+                mode='w', suffix='.rox', prefix=f'{test}_', dir=test_dir,
+                delete=False, encoding='utf-8'
+            )
+            with temp_handle:
+                temp_handle.write(source)
+            run_testrox = temp_handle.name
         if test in compute_server_tests:
             with open(testrox, 'r', encoding='utf-8') as handle:
                 source = handle.read()

@@ -1,0 +1,16 @@
+// The debugger control surface is a HOST capability: with no armed session
+// (and no host-constructed control actor), application code cannot
+// self-exclude from stop-all semantics or drive the debugger.
+import debug
+var got = 'unset'
+try:
+  debug.exclude()
+  got = 'allowed'
+except e:
+  got = 'refused'
+print(got)
+try:
+  debug.pause()
+  print('pause allowed')
+except e2:
+  print('pause refused')

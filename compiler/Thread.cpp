@@ -67,6 +67,56 @@ ustring remoteMethodNameForCall(const ActorInstance::MethodCallInfo& callInfo)
 }
 #endif
 
+namespace {
+// Debugger execution-ownership claim for the actor thread's dispatch
+// section.  Without it, bound-native calls -- including the dataflow
+// engine's permanent run() -- execute with ownership Idle, so the stop
+// coordinator could acknowledge the thread EXTERNALLY while it was still
+// running native code, and commit a stop under it.
+// Claims Executing for the iteration's work (parking first if externally
+// stopped) and bumps the exec-nesting counter so a nested execute()'s own
+// scope cannot reset ownership mid-section.  Ownership returns to Idle only
+// at the queue wait, which is exactly when external acknowledgement is valid.
+struct ActorDispatchOwnership {
+    Thread& t;
+    ActorDispatchOwnership(Thread& t, VM& vm) : t(t) {
+        for (;;) {
+            auto own = t.debugOwnership.load(std::memory_order_acquire);
+            if (own == Thread::DebugOwnership::StoppedExternal) {
+                // Externally acknowledged while idle: park until release
+                // (no-op if the stop is already releasing), then retry --
+                // the release path CASes ownership back to Idle.
+                vm.debugStopParkIfRequested();
+                std::this_thread::yield();
+                continue;
+            }
+            auto expect = Thread::DebugOwnership::Idle;
+            if (own == Thread::DebugOwnership::Executing
+                || t.debugOwnership.compare_exchange_strong(
+                       expect, Thread::DebugOwnership::Executing,
+                       std::memory_order_acq_rel))
+                break;
+        }
+        ++t.debugExecNesting;
+    }
+    ~ActorDispatchOwnership() {
+        if (--t.debugExecNesting == 0)
+            t.debugOwnership.store(Thread::DebugOwnership::Idle,
+                                   std::memory_order_release);
+    }
+};
+} // namespace
+
+ptr<Thread> Thread::create(ptr<ExecutionDomain> domain, ThreadKind kind)
+{
+    // Promote to a strong owner FIRST, then register: the index stores a
+    // weak reference taken from the live strong pointer, so a registry
+    // reader can never observe a Thread whose ownership does not exist yet.
+    ptr<Thread> t = make_ptr<Thread>(CreateKey{}, std::move(domain), kind);
+    ThreadManager::instance().registerThread(t);
+    return t;
+}
+
 Thread::~Thread()
 {
     // Unregister from the thread index FIRST: the collector must never see
@@ -249,12 +299,21 @@ void Thread::join(ActorInstance* actorInstOverride)
 
         osthread = nullptr;
         state = State::Completed;
+
+        // Still under the join-once lock: the losing joiner may be the actor
+        // finalizer, which destroys `inst` the moment its join returns, so
+        // the lock is what orders this clear before that destructor.  The
+        // back-reference is a plain weak_ptr (no GC refcount, so within the
+        // region contract) that is read and cleared only under queueMutex
+        // once the instance has escaped its spawner.
+        if (inst) {
+            std::lock_guard<std::mutex> lock { inst->queueMutex };
+            inst->thread.reset();
+        }
     }
 
-    // Reference cleanup outside the blocked region (Value assignments touch
-    // GC refcounts, which the region contract forbids).
-    if (inst)
-        inst->thread.reset();
+    // Value cleanup outside the blocked region (Value assignments touch GC
+    // refcounts, which the region contract forbids).
     actorInstance = Value::nilVal();
     actorInstanceRaw.store(nullptr, std::memory_order_release);
     actor = false;
@@ -272,7 +331,15 @@ void Thread::act(Value actorInstance)
     // Mark actor as alive before spawning the OS thread so that any queueCall()
     // arriving between now and the thread's first iteration doesn't see alive=false
     // and silently drop the call.
-    asActorInstance(actorInstance)->alive.store(true, std::memory_order_release);
+    ActorInstance* spawnInst = asActorInstance(actorInstance);
+    spawnInst->alive.store(true, std::memory_order_release);
+
+    // Publish worker-identity fields from the SPAWNING side, before the OS
+    // thread exists and before the instance can escape: worker-side stores
+    // raced concurrent readers -- weak_ptr assignment is not atomic (TSan
+    // finding).  The worker publishes only the atomic thread_id.
+    spawnInst->thread = ptr_from_this();
+    actorInstanceRaw.store(spawnInst, std::memory_order_release);
 
     osthread = make_ptr<std::thread>([this]() {
         // Actors always run on their own NON-RT thread (see
@@ -310,13 +377,12 @@ void Thread::act(Value actorInstance)
                 return;
             }
             ActorInstance* actorInst = asActorInstance(actorVal);
-            // Store a raw pointer while the actor is unquestionably alive so
-            // the finalizer can still signal the worker after the weak handle
-            // goes dead.  The join path clears the cache again once teardown is
-            // complete.
-            actorInstanceRaw.store(actorInst, std::memory_order_release);
-            actorInst->thread_id = std::this_thread::get_id(); // store actor's thread in instance
-            actorInst->thread = ptr_from_this();
+            // actorInstanceRaw (the finalizer's raw handle) and the weak
+            // thread handle were published by the SPAWNING side in act(),
+            // before this thread existed -- publishing them here raced
+            // concurrent readers (weak_ptr assignment is not atomic).
+            // thread_id is ours to publish: atomic release, readers acquire.
+            actorInst->thread_id.store(std::this_thread::get_id(), std::memory_order_release);
 
             vm.resetStack();
             // frame local 0 is actor 'this' instance for actor method (as for object methods)
@@ -339,13 +405,31 @@ void Thread::act(Value actorInstance)
                     actorInst->queueConditionVar.wait(lock,[&]()
                     {
                         // wake when quitting, when a method is queued, when
-                        // events are pending, or when a GC needs this thread
-                        // to reach its poll (top of loop)
+                        // events are pending, when a GC needs this thread to
+                        // reach its poll (top of loop), or when a debugger
+                        // stop needs this thread's acknowledgement
                         return quit || !actorInst->callQueue.empty() || !pendingEvents.empty()
-                            || SimpleMarkSweepGC::instance().isCollectionRequested();
+                            || SimpleMarkSweepGC::instance().isCollectionRequested()
+                            || vm.debugStopRequested();
                     });
-                    if (!actorInst->callQueue.empty()) {
+                    // While a debugger stop is pending, leave queued calls
+                    // queued: the park below acknowledges the epoch, and the
+                    // calls run only after release.  EXCEPT debug-excluded
+                    // service actors: they keep dispatching through stops --
+                    // the web Debug store is serviced exactly here while
+                    // everything else is frozen.
+                    const bool stopHold = vm.debugStopRequested()
+                        && !debugExcluded.load(std::memory_order_relaxed);
+                    if (!stopHold && !actorInst->callQueue.empty()) {
                         callInfo = actorInst->callQueue.pop();
+                        // Root the popped call IMMEDIATELY -- a stop can race
+                        // this window and the ownership claim below may park;
+                        // on precise-GC wasm an untracked C++ local would be
+                        // invisible to the collector.  These are the traced
+                        // fields visitSingleThreadRoots already walks.
+                        currentActorCall = callInfo.callee;
+                        currentActorArgs = callInfo.args;
+                        currentActorFuture = callInfo.returnFuture;
                     }
                     // Only break on quit if there is no call to process: if a call
                     // was already popped from the queue we must execute it (and
@@ -354,6 +438,23 @@ void Thread::act(Value actorInstance)
                     if (quit && !callInfo.valid())
                         break;
                 }
+
+                // Debugger stop: acknowledge and park (OUTSIDE queueMutex --
+                // never acknowledge holding a lock).  Queued calls stay
+                // queued and are dispatched only after release.
+                if (vm.debugStopRequested() && !callInfo.valid()
+                    && !debugExcluded.load(std::memory_order_relaxed)) {
+                    vm.debugStopParkIfRequested();
+                    continue;
+                }
+
+                // Claim debugger execution ownership for this iteration's
+                // dispatch work (event processing + the queued call,
+                // including direct bound-native invocations such as the
+                // dataflow engine's run() loop): while claimed, the stop
+                // coordinator cannot acknowledge this thread externally --
+                // it must wait for a cooperative stop point.
+                ActorDispatchOwnership dispatchOwnership(*this, vm);
 
                 if (!this->actorInstance.isAlive()) {
                     quit = true;
@@ -820,7 +921,7 @@ void Thread::act(Value actorInstance)
             }
 
             auto& vm { VM::instance() };
-            // runtimeError() = report + runtimeErrorFlag + wake every thread,
+            // runtimeError() = report + IntrRuntimeError interrupt bit + wake every thread,
             // the same orderly-shutdown sequence this catch used to do by
             // hand (with consistent formatting and script location when one
             // is available).

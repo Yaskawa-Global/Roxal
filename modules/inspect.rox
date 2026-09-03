@@ -1443,3 +1443,27 @@ func node_fields(kind:string) -> list:
   return _node_fields[kind]
 
 # ==== END GENERATED ====
+
+@builtin
+func render(value, max_chars:int=512, max_children:int=100, depth:int=1) -> string:
+  """bounded, side-effect-free one-line preview of any value, for debugger and
+  tooling use.  Never invokes user code (no operator->string dispatch, no
+  getters -- object previews read declared backing fields, so a computed
+  property may show a stale backing value), never resolves futures (shown as
+  <future pending>/<future ready>), never calls into actors, and never samples
+  signals.  Containers preview up to max_children elements to nesting depth
+  `depth` (deeper containers summarize as e.g. List(1000)); strings clip at
+  max_chars code units; cycles render as '...'.
+  Note: passing a signal directly lifts this call into a dataflow node, as any
+  plain function call with a signal argument does -- signals inside containers
+  render as an opaque <signal>"""
+
+@builtin
+func debug_info(f):
+  """statement/local/upvalue debug metadata for a function or closure, as a
+  dict with keys 'stmts' (dicts of offset, line, col, kind), 'locals' (dicts
+  of name, slot, start, end, flags, type) and 'upvalues' (dicts of name,
+  index, is_local).  kind: 0 = statement start, 1 = function entry.  flags
+  bits: 1 = param, 2 = captured, 4 = const, 8 = type-const, 16 = synthetic
+  (compiler-generated temp; hidden by debugger UIs).  Offsets are
+  internal bytecode offsets, stable only within one build of the language"""

@@ -1,0 +1,48 @@
+# Debug metadata tables, readable from plain scripts via
+# inspect.debug_info() -- statement boundaries, local live ranges with
+# slots/flags/types, upvalue names.  Goldens avoid raw bytecode offsets where
+# possible (lines/names/flags are stable; offsets shift with codegen).
+import inspect.*
+
+func outer(a:int, b) -> int:
+  var x = a + 1
+  var lst = []
+  for i in range(..<3):
+    var inner = i * 2
+    lst.append(inner)
+  return x + b
+
+var di = inspect.debug_info(outer)
+
+# statements: a function-entry record first, then one per block statement
+print(len(di['stmts']) > 3)
+print(di['stmts'][0]['kind'])
+print(di['stmts'][0]['offset'])
+var lines = []
+for s in di['stmts']:
+  if not (s['line'] in lines):
+    lines.append(s['line'])
+print(lines)
+
+# locals: names, slots, flags (1=param 2=captured 4=const 8=type-const),
+# declared type names, and sane ranges
+for l in di['locals']:
+  print(l['name'] + ' slot=' + string(l['slot']) + ' flags=' + string(l['flags']) + ' type=' + l['type'] + ' ranged=' + string(l['end'] >= l['start']))
+
+# upvalues: a closure capturing an enclosing local reports its name
+func make():
+  var captured = 5
+  const tag = 'k'
+  func inner2():
+    return captured + len(tag)
+  return inner2
+
+var f2 = make()
+var di2 = inspect.debug_info(f2)
+for u in di2['upvalues']:
+  print('up ' + u['name'] + ' is_local=' + string(u['is_local']))
+
+# and the capturing function's locals carry the captured flag bit
+var dim = inspect.debug_info(make)
+for l in dim['locals']:
+  print(l['name'] + ' flags=' + string(l['flags']))

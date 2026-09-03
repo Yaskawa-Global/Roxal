@@ -5,6 +5,8 @@
 
 #include <core/common.h>
 #include "Value.h"
+#include "debug/DebugInfo.h"
+#include "debug/BreakpointRuntime.h"
 
 
 namespace roxal {
@@ -176,6 +178,19 @@ public:
     };
 
     ustring sourceName; // name of source file
+
+    // Source-debugging metadata: statement boundaries, local live ranges,
+    // upvalue names.  Nullable -- absent when compiled with debug info
+    // disabled.  Serialized with the chunk (module cache / compute payloads
+    // / generic serialization) behind a one-byte tier prefix; Value-free,
+    // so no GC involvement.
+    roxal::ptr<DebugInfo> debugInfo;
+
+    // Debugger breakpoint words: NEVER serialized -- bytecode and
+    // serialized artifacts are byte-for-byte independent of installed
+    // breakpoints.  Owned by the BreakpointManager; published with release,
+    // read with acquire (see BreakpointRuntime.h).
+    std::atomic<ChunkBreakpoints*> breakpointsRaw { nullptr };
 
     void write(uint8_t byte, int line, int column, const std::string& comment = "");
     void write(OpCode byte, int line, int column, const std::string& comment = "") { write(uint8_t(byte), line, column, comment); }

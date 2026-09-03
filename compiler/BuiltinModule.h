@@ -41,11 +41,28 @@ public:
     // Use for: registering special VM pointers, starting background threads.
     virtual void onModuleLoaded(VM& vm) {}
 
-    // Called when the top-level script run completes (end of VM::run()), while
-    // the VM and any host runtime are still alive. Use for teardown that MUST NOT
+    // Called when the top-level script run completes, while the VM and any
+    // host runtime are still alive. Use for teardown that MUST NOT
     // happen at VM-destructor/atexit time — e.g. destroying GUI toolkit objects
     // whose platform/thread-local state is gone by then.
     virtual void onScriptComplete(VM& vm) {}
+
+    /// Called at the START of every script launch, on the executing thread,
+    /// before the first user statement.  Fragments do not fire it: a session
+    /// fragment continues its session rather than launching a script.
+    ///
+    /// MUST BE BOUNDED.  Under an embedded driver this runs inside the
+    /// activation slice, so whatever it does is charged to the host's control
+    /// cycle.  Anything unbounded belongs in onModuleLoaded() or behind a
+    /// queue the host drains on its own thread.
+    ///
+    /// The web module is the one deliberate exception: with a debug session
+    /// pending it spawns the debugger control actor's thread here, because
+    /// the script must be debuggable from its first statement and a later
+    /// slice would leave an entry breakpoint unarmed.  One thread creation,
+    /// once per launch, only under a debugger -- and no real-time embedding
+    /// loads that module.
+    virtual void onScriptStart(VM& vm) {}
 
     // Called during VM shutdown, before destructor.
     // Use for: stopping background threads, cleanup.

@@ -27,7 +27,11 @@ enum class FuncExecResult {
     NotExecuted,   // Inputs unchanged (pure function optimization)
     Completed,     // Executed and finished
     Yielded,       // VM yielded mid-execution (deadline exceeded)
-    Error          // Runtime error during execution
+    Error,         // Runtime error during execution
+    Paused         // Debugger stop acknowledged mid-execution: same state
+                   // retention as Yielded (closure/Thread/call state live),
+                   // but resumption comes from the stop release, not the
+                   // time budget
 };
 
 // State for resuming a yielded func node execution

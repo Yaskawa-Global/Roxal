@@ -1,0 +1,6 @@
+func mid(x :int) -> int:
+  var lst = [1, 2, 3]
+  return lst[x]
+
+var r = mid(10)
+print(r)

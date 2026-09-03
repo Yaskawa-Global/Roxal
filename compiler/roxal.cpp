@@ -29,6 +29,7 @@
 #include "RoxalCompiler.h"
 
 #include "VM.h"
+#include "debug/dap/DapStdioAdapter.h"
 #include "Error.h"
 #include "SimpleMarkSweepGC.h"
 #include "Object.h"
@@ -471,7 +472,14 @@ static int repl()
                     std::stringstream scriptStream;
                     scriptStream << script.rdbuf();
                     try {
-                        vm.runLine(scriptStream, false, displayPath);
+                        // A file loaded into the REPL is a FRAGMENT of the
+                        // session: it sees what earlier input declared, and
+                        // what it declares stays visible afterwards.
+                        roxal::FragmentOptions options;
+                        options.sourceName = displayPath;
+                        options.replMode = false;
+                        vm.defaultReplSession().evaluateFragmentSync(scriptStream,
+                                                                     options);
                     } catch (std::exception& e) {
                         std::cerr << "Error: " << e.what() << std::endl;
                     }
@@ -524,7 +532,7 @@ static int repl()
                 stream.str("");
                 stream.clear();
                 stream << buffer << std::flush;
-                vm.runLine(stream);
+                vm.defaultReplSession().evaluateFragmentSync(stream);
             } catch (std::exception& e) {
                 std::cerr << "Error: " << e.what() << std::endl;
             }
@@ -586,7 +594,9 @@ static ExecutionStatus runFile(const std::string& path,
         // Add the folder containing the script to the search paths
         vm->appendModulePaths({relativePath.string()});
         vm->appendModulePaths(modulePaths);
-        return vm->run(sourcestream, filePath.string());
+        roxal::ProgramOptions options;
+        options.sourceName = filePath.string();
+        return vm->executeProgramSync(sourcestream, std::move(options));
     } catch (std::exception& e) {
         throw std::runtime_error("Error running file '" + filePath.string() + "': " + e.what());
     }
@@ -634,8 +644,10 @@ static ExecutionStatus precompileFile(const std::string& path,
         // Add the folder containing the script to the search paths
         vm->appendModulePaths({relativePath.string()});
         vm->appendModulePaths(modulePaths);
-        // Use setup() to compile without executing
-        return vm->setup(sourcestream, filePath.string());
+        // Compile without executing.
+        roxal::ProgramOptions options;
+        options.sourceName = filePath.string();
+        return vm->stageProgramSync(sourcestream, std::move(options));
     } catch (std::exception& e) {
         throw std::runtime_error("Error precompiling file '" + filePath.string() + "': " + e.what());
     }
@@ -650,7 +662,9 @@ static ExecutionStatus runString(const std::string& source,
     std::signal(SIGINT, sigint_handler);
     vm.setDisassemblyOutput(outputBytecodeDisassembly);
     vm.appendModulePaths(modulePaths);
-    return vm.run(sourcestream, "cli");
+    roxal::ProgramOptions options;
+    options.sourceName = "cli";
+    return vm.executeProgramSync(sourcestream, std::move(options));
 }
 
 
@@ -785,9 +799,12 @@ int main(int argc, const char* argv[])
         ("execute,e", po::value<std::string>(), "execute code supplied as a string")
         ("nocache", "disable reading and writing .roc cache files")
         ("recompile", "ignore existing .roc cache files but write new ones")
+        ("no-debug-info", "compile without debug metadata tables (smaller caches; source-level debugging unavailable)")
         ("dis", "output dissasembly of VM bytecodes during compilation")
         ("precompile", "compile script and all imports without executing (ensures .roc cache files exist)")
         ("check", "parse, type-check and compile without executing; never reads or writes .roc caches")
+        ("dap", "run as a Debug Adapter Protocol server over stdio (for IDE debugging)")
+        ("dap-wait", "like --dap, and stop at the first statement (stop-on-entry)")
         ("ast", "parse only and output text Abstract Syntax Tree (AST)")
         ("astgraph", po::value< std::vector<std::string> >(), "parse only and output GraphViz dot file")
         ("gc-threshold", po::value<long long>(), gcOptionHelp.c_str())
@@ -910,6 +927,8 @@ int main(int argc, const char* argv[])
     // and writing a .roc as a side effect of a read-only check is unwanted.
     const bool disableCache = vmap.count("nocache") > 0 || vmap.count("check") > 0;
     const bool forceRecompile = (!disableCache) && vmap.count("recompile") > 0;
+    if (vmap.count("no-debug-info") > 0)
+        RoxalCompiler::setDebugInfoDefault(false);
     VM::CacheMode cacheMode = VM::CacheMode::Normal;
     if (disableCache)
         cacheMode = VM::CacheMode::NoCache;
@@ -1016,6 +1035,18 @@ int main(int argc, const char* argv[])
         if (res != ExecutionStatus::OK)
             return 1;
     }
+    else if ((vmap.count("dap") || vmap.count("dap-wait"))
+             && vmap.count("input-file") == 0) {
+        // DAP server with no script argument: the client's launch request
+        // supplies the program (the normal IDE shape).
+        if (vmap.count("dis")) {
+            std::cerr << "Error: --dis cannot be combined with --dap (stdout carries protocol frames)" << std::endl;
+            return 1;
+        }
+        VM::instance().setCacheMode(cacheMode);
+        DapStdioAdapter adapter({}, vmap.count("dap-wait") > 0, modulePaths);
+        return adapter.run();
+    }
     else if (vmap.count("input-file") == 0) {
         VM& vm = VM::instance();
         vm.setCacheMode(cacheMode);
@@ -1059,6 +1090,20 @@ int main(int argc, const char* argv[])
                 if (res != ExecutionStatus::OK)
                     return 1;
                 std::cout << "Check passed: " << filename << std::endl;
+            }
+            else if (vmap.count("dap") || vmap.count("dap-wait")) {
+                // DAP server mode.  Mutually exclusive with --dis:
+                // disassembly writes to stdout, which now carries protocol
+                // frames.
+                if (vmap.count("dis")) {
+                    std::cerr << "Error: --dis cannot be combined with --dap (stdout carries protocol frames)" << std::endl;
+                    return 1;
+                }
+                VM::instance().setCacheMode(cacheMode);
+                VM::instance().setScriptArguments(scriptArgs);
+                DapStdioAdapter adapter(filename, vmap.count("dap-wait") > 0,
+                                        modulePaths);
+                return adapter.run();
             }
             else {
                 bool outputBytecodeDisassembly = (vmap.count("dis") > 0);

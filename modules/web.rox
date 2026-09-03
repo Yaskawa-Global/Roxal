@@ -43,6 +43,7 @@
 import inspect
 import fileio
 import dfdoc
+import debug
 
 @builtin
 proc expose(name:string, obj):
@@ -393,7 +394,54 @@ type Df actor:
     except e:
       return {'ok': false, 'error': string(e)}
 
+# Debugger control surface. Every method runs on this actor's own thread,
+# which the host marks debug-excluded at spawn -- before the actor is
+# runnable, so a breakpoint bound ahead of the run can never trap the
+# debugger's own service thread. Being excluded, it keeps servicing the UI
+# while the debuggee is stopped: the store's calls are the ONLY inbound work
+# the host pump runs during a stop.
+type Debug actor:
+  func arm(stop_on_fatal :bool = true) -> dict:
+    debug.arm(stop_on_fatal)
+    return {'ok': true}
+
+  func set_breakpoints(path :string, lines :list) -> dict:
+    return {'ok': true, 'breakpoints': debug.set_breakpoints(path, lines)}
+
+  func locations(path :string, line :int, end_line :int) -> dict:
+    return {'ok': true, 'lines': debug.locations(path, line, end_line)}
+
+  func pause() -> dict:
+    return {'ok': debug.pause()}
+
+  func resume() -> dict:
+    return {'ok': debug.resume()}
+
+  func step(thread_id :int, mode :string = 'next') -> dict:
+    return {'ok': debug.step(thread_id, mode)}
+
+  func state() -> dict:
+    return debug.state()
+
+  func threads() -> dict:
+    return {'ok': true, 'threads': debug.threads()}
+
+  func stack(thread_id :int) -> dict:
+    return {'ok': true, 'frames': debug.stack(thread_id, 0, 0)}
+
+  func scopes(frame_id :int) -> dict:
+    return {'ok': true, 'scopes': debug.scopes(frame_id)}
+
+  func variables(ref :int, start :int = 0, count :int = 0) -> dict:
+    return {'ok': true, 'variables': debug.variables(ref, start, count)}
+
+  func evaluate(frame_id :int, expr :string) -> dict:
+    return debug.evaluate(frame_id, expr)
+
 proc _ensure_ide():
   expose("ide", Ide())
   expose("workspace", Workspace())
   expose("df", Df())
+  # (The "debug" control store is HOST-constructed and exposed by the web
+  # module's C++ side under an armed session -- never from script code, so
+  # the control capability is unforgeable.)

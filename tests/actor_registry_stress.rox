@@ -1,0 +1,18 @@
+# Thread-registry stress: churn actor threads while forcing collections, so
+# registration/destruction race snapshotting and the collector's weak-entry
+# traversal.  gc() also drains actor finalization
+# (lifecycle joins) every round, so dying Threads overlap fresh ones.
+type Worker actor:
+  func ping(x:int) -> int:
+    return x + 1
+
+var total = 0
+for round in range(..<20):
+  var ws = []
+  for i in range(..<8):
+    ws.append(Worker())
+  for w in ws:
+    total = total + w.ping(1)
+  ws = []
+  gc()
+print(total)

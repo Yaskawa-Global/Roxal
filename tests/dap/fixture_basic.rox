@@ -1,0 +1,8 @@
+func work(n :int) -> int:
+  var total = 0
+  for i in range(..<n):
+    total = total + i
+  return total
+
+var result = work(10)
+print("result={result}")

@@ -550,13 +550,16 @@ FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline
         DataflowThreadGuard dfGuard;
         auto result = vm.invokeClosure(asClosure(closure), args, deadline);
 
-        if (result.first == ExecutionStatus::Yielded) {
-            // VM yielded due to deadline - save state for resumption
+        if (roxal::isSuspended(result.first)) {
+            // VM yielded (deadline) or was debugger-paused -- identical state
+            // retention either way: closure, Thread and call state stay live
+            // for resumption.
             m_funcYieldState.active = true;
             m_funcYieldState.inputValues = inputValues;
             m_funcYieldState.executionThread = VM::thread;
             m_funcYieldState.executionTime = time;
-            return FuncExecResult::Yielded;
+            return result.first == ExecutionStatus::Paused ? FuncExecResult::Paused
+                                                           : FuncExecResult::Yielded;
         }
 
         if (result.first != ExecutionStatus::OK) {
@@ -676,14 +679,22 @@ FuncExecResult FuncNode::resumeExecution(TimePoint deadline)
     auto savedThread = VM::thread;
     VM::thread = m_funcYieldState.executionThread;
 
-    auto remaining = deadline - TimePoint::currentTime();
     DataflowThreadGuard dfGuard;
-    auto [result, returnValue] = vm.runFor(remaining);
+    // Continue the suspended body on the thread it left.  execute() declines
+    // on its own when a collection is pending and this thread must not delay
+    // it, reporting Yielded, which resumption handles like any other.
+    auto [result, returnValue] = vm.hasMoreWork()
+        ? vm.execute(deadline)
+        : std::make_pair(ExecutionStatus::OK, Value::nilVal());
+    if (vm.hasRuntimeError())
+        result = ExecutionStatus::RuntimeError;
 
-    if (result == ExecutionStatus::Yielded) {
-        // Still not complete - keep yield state active
+    if (roxal::isSuspended(result)) {
+        // Still not complete (deadline yield or debugger pause) -- keep the
+        // yield state active; resumption retains identical state.
         VM::thread = savedThread;
-        return FuncExecResult::Yielded;
+        return result == ExecutionStatus::Paused ? FuncExecResult::Paused
+                                                 : FuncExecResult::Yielded;
     }
 
     // Execution completed - process outputs

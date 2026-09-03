@@ -41,8 +41,20 @@ NEVER adapt the expected output or error files to match known bugs - the expecte
 If you add Value members to VM and related structures, don't forget to add them to the GC tracing in SimpleMarkSweepGC.cpp if appropriate.
 
 Read the conversions.md for information about type conversions (as needed) and/or `implementation-notes.md` about the implementation generally.
+For running the VM inside another program (the execution API, driver slices, debugger holds), see `embedding.md`.
+
+---
 
 Approach your work as an experienced software architect.  Prefer architecturally sound refactoring over shallow fixes that only address the immediate need but increase technical debt.
 If you run into a bug or unforeseen issue with something you're implementing that points at a potential design flaw or might hint at potential simplification or refactoring, stop to explain and discuss before proceeding to add complexity.
 
+When planning, report discovered bugs, don't work-around them for the planned feature.
+
 See also `roxal-for-devs.md`
+
+## Git hygiene
+
+NEVER use `git add -A` or `git add .` (even with pathspecs): this working tree
+carries many local untracked files (scratch scripts, logs, model payloads --
+some multi-GB).  Stage files EXPLICITLY by name, and review `git status
+--short` for unintended additions before every commit.

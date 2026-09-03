@@ -545,8 +545,72 @@ bool DataflowEngine::serviceBackgroundIslands(TimePoint& soonestDue)
 }
 
 
+namespace {
+// Counted gate section plus the thread's dataflowEvalDepth marker: while
+// held, the owning thread defers debugger parking until the bounded node
+// work completes (it may hold m_evalMutex), and the stop epoch cannot
+// commit (gate active > 0).
+struct DebugGateWorkScope {
+    df::DataflowEngine::DebugGate& g;
+    explicit DebugGateWorkScope(df::DataflowEngine::DebugGate& gate) : g(gate) {
+        // Mandatory work (node init, script-thread evaluate) must not run
+        // during an ESTABLISHED stop: wait for reopen instead of bypassing
+        // closed admission.  Exceptions that proceed immediately: a nested
+        // section (the outer entry pre-dates the close and holds the active
+        // count, so waiting would deadlock the forming stop), and RT slices
+        // (must never block; they observe Paused at the execute entry
+        // before ever reaching here during an established stop).
+        const bool nested = roxal::VM::thread
+                            && roxal::VM::thread->dataflowEvalDepth > 0;
+        const bool rt = roxal::SimpleMarkSweepGC::inGCYieldSectionOnThisThread()
+                        || (roxal::VM::thread && roxal::VM::thread->rtYieldOnGC);
+        for (;;) {
+            g.enterCounted();
+            if (!g.closed() || nested || rt)
+                break;
+            g.leaveCounted();
+            roxal::SimpleMarkSweepGC::GCSafeBlockScope block;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        if (roxal::VM::thread)
+            roxal::VM::thread->dataflowEvalDepth++;
+    }
+    ~DebugGateWorkScope() {
+        if (roxal::VM::thread)
+            roxal::VM::thread->dataflowEvalDepth--;
+        g.leaveCounted();
+    }
+};
+
+// Rejectable gate section (increment -> recheck -> back out).
+// Held across the ENTIRE mutation path -- including network rebuilds and
+// island setup, not just the island evaluation -- so a stop that raced the
+// admission check either sees the count or the entrant sees closed.
+struct DebugGateTryScope {
+    df::DataflowEngine::DebugGate& g;
+    bool entered;
+    explicit DebugGateTryScope(df::DataflowEngine::DebugGate& gate)
+        : g(gate), entered(gate.tryEnter()) {
+        if (entered && roxal::VM::thread)
+            roxal::VM::thread->dataflowEvalDepth++;
+    }
+    ~DebugGateTryScope() {
+        if (entered) {
+            if (roxal::VM::thread)
+                roxal::VM::thread->dataflowEvalDepth--;
+            g.leaveCounted();
+        }
+    }
+};
+} // namespace
+
 void DataflowEngine::run() {
     m_shouldStop = false;
+    m_runLoopActive.store(true, std::memory_order_release);
+    struct LoopFlag {
+        std::atomic<bool>& f;
+        ~LoopFlag() { f.store(false, std::memory_order_release); }
+    } loopFlag { m_runLoopActive };
 
     // GC coverage for the whole loop.  The engine's actor thread reaches here
     // via a boundNative dispatch (no VM::execute frame) and is normally
@@ -587,6 +651,12 @@ void DataflowEngine::run() {
 
     while (!m_shouldStop) {
         gcPoll();   // no engine Value locals held here: safe park point
+
+        // Debugger stop point: the engine actor thread acknowledges here (no
+        // engine locks held, no Value locals).  Evaluation admission is
+        // closed separately via debugGate; queued event updates stay queued
+        // and drain after release.
+        roxal::VM::instance().debugStopParkIfRequested();
 
         if (m_networkModified) {
             buildNetworkCacheData();
@@ -693,6 +763,13 @@ void DataflowEngine::run() {
 
 void DataflowEngine::tick(bool waitForTickStart)
 {
+    // Debugger admission: increment-then-recheck, held across the WHOLE
+    // tick body (rebuild included) so a stop racing this entry either sees
+    // the active count or we see closed and do nothing.
+    DebugGateTryScope debugAdmission(debugGate);
+    if (!debugAdmission.entered)
+        return;
+
     // Engine-thread periodic driver (run() and the _dataflow_tick() request
     // path are the only callers).  Serialize against event-driven island
     // evaluation and a host's tickFor; a contended wait is covered as
@@ -922,8 +999,16 @@ void DataflowEngine::rtLintIslands()
 
 DataflowEngine::TickResult DataflowEngine::tickFor(TimeDuration budget)
 {
+    // Debugger admission: increment-then-recheck, held across the whole
+    // host tick (rebuild, resume path, island loop).  A host-driven tick
+    // observes a stop as a first-class status -- Paused, not Busy or
+    // Complete -- and resumes doing work after release.
+    DebugGateTryScope debugAdmission(debugGate);
+    if (!debugAdmission.entered)
+        return TickResult::Paused;
+
     // The host is driving the periodic schedule from here on: the engine's
-    // own run()/runFor() loops must stop ticking periodic islands (see
+    // own driver loops must stop ticking periodic islands (see
     // m_hostDriven) or the two drivers race on the same islands.
     if (!m_hostDriven.exchange(true, std::memory_order_relaxed))
         m_rtLintPending.store(true, std::memory_order_relaxed);    // first latch: lint the already-built network (on the engine thread)
@@ -1024,11 +1109,11 @@ DataflowEngine::TickResult DataflowEngine::tickFor(TimeDuration budget)
         TimePoint islandTime = resolveEvaluationTime(islandsCopy[i], m_tickStart);
         auto result = evaluateIsland(islandsCopy[i], islandTime, deadline);
 
-        if (result == TickResult::Yielded) {
+        if (result == TickResult::Yielded || result == TickResult::Paused) {
             m_yieldState.active = true;
             m_yieldState.islandIndex = i;
             m_yieldState.tickTime = m_tickStart;
-            return TickResult::Yielded;
+            return result;
         }
 
         if (result == TickResult::Error)
@@ -1064,6 +1149,8 @@ DataflowEngine::TickResult DataflowEngine::resumeTickEvaluation(TimePoint deadli
         auto result = m_yieldState.yieldedFunc->resumeExecution(deadline);
         if (result == FuncExecResult::Yielded)
             return TickResult::Yielded;
+        if (result == FuncExecResult::Paused)
+            return TickResult::Paused;   // yield state stays active, position kept
 
         // Same attribution as the fresh-execution site: completing past the
         // deadline means this resume slice was blown by the node.
@@ -1104,9 +1191,9 @@ DataflowEngine::TickResult DataflowEngine::resumeTickEvaluation(TimePoint deadli
         auto result = evaluateIsland(
             islandsCopy[i], islandTime, deadline, startPeriodIndex, startFuncIndex);
 
-        if (result == TickResult::Yielded) {
+        if (result == TickResult::Yielded || result == TickResult::Paused) {
             m_yieldState.islandIndex = i;
-            return TickResult::Yielded;
+            return result;
         }
 
         if (result == TickResult::Error) {
@@ -1135,6 +1222,12 @@ DataflowEngine::TickResult DataflowEngine::evaluateIsland(
 {
     if (island.funcs.empty())
         return TickResult::Complete;
+
+    // Debugger gate: island evaluation is the single funnel for all
+    // evaluation paths (run-tick, tickFor, event-driven, background) --
+    // count it active so a forming stop cannot commit mid-evaluation, and
+    // defer this thread's parking until the bounded work completes.
+    DebugGateWorkScope debugWork(debugGate);
 
     // Only refresh derived signals on first entry (not resume)
     if (startPeriodIndex == 0 && startFuncIndex == 0)
@@ -1200,13 +1293,17 @@ DataflowEngine::TickResult DataflowEngine::evaluateIsland(
                     for (auto& output : func->m_outputs)
                         updateSignalConsumerInputAvailability(output.signal, evaluationTime);
                 }
-                else if (result == FuncExecResult::Yielded) {
-                    // Save position for resume
+                else if (result == FuncExecResult::Yielded
+                         || result == FuncExecResult::Paused) {
+                    // Save position for resume -- IDENTICAL retention for a
+                    // debugger pause: treating Paused as anything but a
+                    // suspension would corrupt resumable state.
                     m_yieldState.periodIndex = periodIdx;
                     m_yieldState.funcIndex = funcIdx;
                     m_yieldState.funcWasExecuting = true;
                     m_yieldState.yieldedFunc = func;
-                    return TickResult::Yielded;
+                    return result == FuncExecResult::Paused ? TickResult::Paused
+                                                            : TickResult::Yielded;
                 }
                 else if (result == FuncExecResult::Error) {
                     return TickResult::Error;
@@ -1278,6 +1375,19 @@ void DataflowEngine::processEventDrivenSignalUpdate(ptr<Signal> signal, TimePoin
         // Rouse the engine thread's idle drain sleep.  State was modified
         // under m_pendingEventMutex, so the waiter's predicate cannot miss it.
         m_pendingEventCv.notify_all();
+        return;
+    }
+
+    // Debugger admission (increment-then-recheck): if closed, requeue for
+    // the post-resume drain instead of evaluating (external producers keep
+    // enqueueing).  The scope is held across the whole evaluation below.
+    DebugGateTryScope debugAdmission(debugGate);
+    if (!debugAdmission.entered) {
+        roxal::Value wrapper = roxal::Value::signalVal(std::move(signal));
+        {
+            std::lock_guard<std::mutex> lock(m_pendingEventMutex);
+            m_pendingEventUpdates.emplace_back(std::move(wrapper), timestamp);
+        }
         return;
     }
 
@@ -1438,7 +1548,7 @@ void DataflowEngine::tracePendingEventUpdates(roxal::ValueVisitor& visitor)
 bool DataflowEngine::processPendingEventUpdates()
 {
     // Single-consumer enforcement: the always-on actor loop and a
-    // host-driven runFor() can call this concurrently, and the batch below
+    // a host-driven tick can call this concurrently, and the batch below
     // lives in a MEMBER -- a second drainer swapping into
     // m_drainingEventUpdates while the first iterates it would clobber the
     // vector under it (lost updates, UAF).  Losing is benign: the winner
@@ -1502,6 +1612,11 @@ void DataflowEngine::initializeNode(const ptr<FuncNode>& node)
     if (!node)
         return;
 
+    // Debugger gate: node initialization evaluates closures on script
+    // threads -- counted (never rejected: dropping an init would corrupt the
+    // network), with parking deferred until this bounded work completes.
+    DebugGateWorkScope debugWork(debugGate);
+
     // Same serialization as evaluate(): runs on SCRIPT threads (func lifts /
     // signal operators) while the engine thread evaluates and the reclaimer
     // thread destroys dead signal wrappers.
@@ -1562,6 +1677,11 @@ void DataflowEngine::initializeNode(const ptr<FuncNode>& node)
 
 void DataflowEngine::evaluate()
 {
+    // Debugger gate: direct script-thread evaluation is counted (never
+    // rejected -- the caller's semantics require the evaluation), with
+    // parking deferred until this bounded work completes.
+    DebugGateWorkScope debugWork(debugGate);
+
     // Runs on SCRIPT threads (func lifts / signal operators) while the
     // engine thread evaluates and the reclaimer thread destroys dead
     // signal wrappers (removeSignal mutates `signals`).  Serialize with

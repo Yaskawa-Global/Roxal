@@ -1,14 +1,19 @@
 {
   "name": "roxal-vscode",
   "displayName": "Roxal",
-  "description": "Basic syntax highlighting for the Roxal language.",
-  "version": "1.0.4",
+  "description": "Syntax highlighting and debugging for the Roxal language.",
+  "version": "1.0.5",
   "publisher": "local",
   "engines": {
     "vscode": "^1.80.0"
   },
   "categories": [
-    "Programming Languages"
+    "Programming Languages",
+    "Debuggers"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onDebugResolve:roxal"
   ],
   "contributes": {
     "languages": [
@@ -24,6 +29,67 @@
         "language": "roxal",
         "scopeName": "source.roxal",
         "path": "./syntaxes/roxal.tmLanguage.json"
+      }
+    ],
+    "breakpoints": [
+      { "language": "roxal" }
+    ],
+    "configuration": {
+      "title": "Roxal",
+      "properties": {
+        "roxal.path": {
+          "type": "string",
+          "default": "roxal",
+          "description": "Path to the roxal executable used for debugging."
+        }
+      }
+    },
+    "debuggers": [
+      {
+        "type": "roxal",
+        "label": "Roxal Debug",
+        "languages": ["roxal"],
+        "configurationAttributes": {
+          "launch": {
+            "required": ["program"],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Path to the .rox script to debug.",
+                "default": "${file}"
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Stop at the first statement.",
+                "default": false
+              },
+              "roxalPath": {
+                "type": "string",
+                "description": "Path to the roxal executable (overrides the roxal.path setting)."
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "roxal",
+            "request": "launch",
+            "name": "Run current Roxal file",
+            "program": "${file}"
+          }
+        ],
+        "configurationSnippets": [
+          {
+            "label": "Roxal: Launch current file",
+            "description": "Debug the .rox file in the active editor",
+            "body": {
+              "type": "roxal",
+              "request": "launch",
+              "name": "Run current Roxal file",
+              "program": "^\"\\${file}\""
+            }
+          }
+        ]
       }
     ]
   }

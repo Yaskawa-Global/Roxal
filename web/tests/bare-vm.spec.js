@@ -17,7 +17,11 @@ test('bare page: counter4 harness with no IDE', async ({ page }) => {
             crashes.push(`console: ${t}`);
     });
 
-    const QUERY = process.env.BARE_QUERY ?? '?gcthreshold=4194304&fcflags=15';
+    // The harness allocates only ~10 KB/s (measured under node against the
+    // same host), so the threshold must be small for the soak to see any
+    // collections at all: 64 KB gives one every few seconds. At the earlier
+    // 4 MB the guard below could never be met.
+    const QUERY = process.env.BARE_QUERY ?? '?gcthreshold=65536&fcflags=15';
     await page.goto('/bare.html' + QUERY);
     await expect.poll(() => page.evaluate(() => window.__bare?.ready === true),
                       { timeout: 90000 }).toBe(true);

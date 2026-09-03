@@ -475,7 +475,7 @@ Value spawnActorForServer(const Value& actorTypeVal, const std::vector<Value>& i
         throw std::runtime_error("SPAWN_ACTOR requires an actor type");
 
     Value actorVal = Value::actorInstanceVal(actorTypeVal);
-    ptr<Thread> newThread = make_ptr<Thread>();
+    ptr<Thread> newThread = Thread::create(VM::currentOrDefaultDomain(), ThreadKind::Actor);
     VM::instance().registerThread(newThread);
     asActorInstance(actorVal)->thread = newThread;
     newThread->act(actorVal);

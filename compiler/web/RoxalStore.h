@@ -124,6 +124,11 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+// Settle a JS store call that no exposed store can service: the promise is
+// rejected at once instead of waiting out the bridge's timeout.
+void rejectStoreCall(uint32_t callId, const std::string& store,
+                     const std::string& method, const std::string& reason);
+
 } // namespace web
 } // namespace roxal
 

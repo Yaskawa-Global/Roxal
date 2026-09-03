@@ -22,11 +22,13 @@ class VM;
 
 class ValueVisitor;
 
-// Self-registering base for typed persistent GC roots (see GCRoots.h for
-// the TracedMember/TracedRef templates built on it).  Lives here so types
-// declared before Value's definition (e.g. SerializationContext) can be
-// roots without an include cycle.  The collector calls traceRoot() during
-// the mark phase (world stopped).
+// Base for typed persistent GC roots (see GCRoots.h for the
+// TracedMember/TracedRef templates built on it).  Lives here so types declared
+// before Value's definition (e.g. SerializationContext) can be roots without
+// an include cycle.  A derived root declares Registration as its LAST data
+// member: that registers only after the traced payload is initialized and
+// unregisters before that payload starts destruction.  The collector calls
+// traceRoot() during the mark phase (world stopped).
 class GCRootBase {
 public:
     GCRootBase(const GCRootBase&) = delete;
@@ -35,8 +37,29 @@ public:
     virtual void traceRoot(ValueVisitor& visitor) const = 0;
 
 protected:
-    GCRootBase();           // registers with SimpleMarkSweepGC
-    virtual ~GCRootBase();  // unregisters
+    GCRootBase() = default;
+    virtual ~GCRootBase();
+
+    class Registration {
+    public:
+        explicit Registration(GCRootBase& root);
+        ~Registration();
+
+        Registration(const Registration&) = delete;
+        Registration& operator=(const Registration&) = delete;
+
+    private:
+        GCRootBase* root_ { nullptr };
+    };
+
+private:
+    friend class Registration;
+    bool registerRoot();
+    void unregisterRoot();
+
+    // Accessed only by the root object's construction/destruction thread.
+    // The persistent-root registry mutex supplies collector synchronization.
+    bool registered_ { false };
 };
 
 // Root discovery: native-frame roots come from CONSERVATIVE scanning of
@@ -95,7 +118,7 @@ public:
 
     // ---- RT GC-yield sections -------------------------------------------
     // A real-time thread (e.g. a host's 1-2ms control-loop callback that
-    // drives tickFor()/runFor()) must NEVER park at a safepoint or block on
+    // drives tickFor()/driveFor()) must NEVER park at a safepoint or block on
     // the collector -- but it does touch GC state (allocates Values, mutates
     // traced containers).  It brackets that work in a *yield section*:
     //
@@ -182,6 +205,54 @@ public:
         GCNoParkScope(const GCNoParkScope&) = delete;
         GCNoParkScope& operator=(const GCNoParkScope&) = delete;
     };
+
+    // ---- Collection deferral (preparation/compilation) ---------------------
+    // A no-park section keeps a compiling thread unparked, so a collection
+    // that has ALREADY been requested simply waits it out -- but the request
+    // is published the moment it is made, and a published request makes every
+    // RT GCYieldScope decline entry.  A host driving control slices would
+    // then skip all GC-touching work for as long as the compile runs.
+    //
+    // Deferral separates "do not collect yet" from "block the collector after
+    // the request is visible": while any scope is alive a tracing collection
+    // request is LATCHED rather than published, so RT slices keep entering.
+    // Refcount retirement and reclamation are untouched -- only tracing
+    // collection waits, which is what compiler temporaries need.  The last
+    // scope to exit publishes one request, by which time the compiled result
+    // is either in a stable root or destroyed with its failed compile.
+    //
+    // Process-wide on purpose: a request from ANY thread is latched, because
+    // the point is that no collection begins while a compile holds Values in
+    // C++ locals.  Compilation is serialized per VM, so the depth is small
+    // and bounded.
+    class CollectionDeferralScope {
+    public:
+        CollectionDeferralScope();
+        ~CollectionDeferralScope();
+        CollectionDeferralScope(const CollectionDeferralScope&) = delete;
+        CollectionDeferralScope& operator=(const CollectionDeferralScope&) = delete;
+    };
+    // True while a request is latched and unpublished.  Observability for
+    // tests and for waiters that must not read "no request pending" as
+    // "no collection needed".
+    bool collectionDeferred() const noexcept {
+        return deferredCollectionPending_.load(std::memory_order_acquire);
+    }
+    bool collectionDeferralActive() const noexcept {
+        return collectionDeferralDepth_.load(std::memory_order_acquire) > 0;
+    }
+
+    // Registered typed roots.  Observability for tests that must prove a
+    // handoff MOVED a root record rather than re-registering it.
+    size_t persistentRootCount() const;
+
+    // Bytes allocated since the last collection.  Observability for tests
+    // that must prove a per-cycle path allocates NOTHING: a real-time host
+    // calls its driver every control period forever, so an allocation there
+    // is a collection the host pays for at a rate it never asked for.
+    std::uint64_t bytesAllocatedSinceCollect() const noexcept {
+        return bytesAllocatedSinceLastCollect_.load(std::memory_order_relaxed);
+    }
 
     // ---- GC-safe blocking regions ------------------------------------------
     // A registered thread about to BLOCK in a call the GC can neither wake
@@ -314,11 +385,12 @@ public:
     // Hammers the coordination machinery from concurrent threads for
     // `duration`: RT yield sections racing requestCollect (incl. the
     // deferred-wake path via in-section allocation), persistent + nested
-    // ExternalParticipants, GCSafeBlockScope, and interned-string churn --
-    // then asserts collections actually ran, sectionCollectorViolations
-    // stayed 0, and all section/park counters returned to rest.  Prints a
-    // summary; returns true on pass.  Exits the process (code 2) if the
-    // barrier deadlocks (workers unjoinable).
+    // ExternalParticipants, GCSafeBlockScope, interned-string churn, precise
+    // typed-root liveness, and root registration lifecycle races -- then
+    // asserts collections actually ran, sectionCollectorViolations stayed 0,
+    // and all section/park/root counters returned to rest.  Prints a summary;
+    // returns true on pass.  Exits the process (code 2) if the barrier
+    // deadlocks (workers unjoinable).
     bool runCoordinationSelfTest(
         std::chrono::milliseconds duration = std::chrono::milliseconds(2000));
 
@@ -436,7 +508,7 @@ private:
         }
     }
     void compactSegmentsLocked();
-    std::mutex persistentRootsMutex_;
+    mutable std::mutex persistentRootsMutex_;
     std::unordered_set<class GCRootBase*> persistentRoots_;
     std::condition_variable safepointCv_;
     std::atomic<std::uint64_t> epoch_{1};
@@ -449,6 +521,9 @@ private:
     // still constructing (requesting then would re-enter VM::instance()
     // mid-initialization); fire on the first allocation after construction.
     std::atomic<bool> deferredAutoTrigger_{false};
+    // Compilation/preparation deferral: see CollectionDeferralScope.
+    std::atomic<int> collectionDeferralDepth_{0};
+    std::atomic<bool> deferredCollectionPending_{false};
     std::atomic<bool> collectionInProgress_{false};
     // Reclaim fence: true from the moment a collection's request flag is
     // cleared until its retired batch has been destroyed.  Parked mutators

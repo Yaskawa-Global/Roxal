@@ -19,6 +19,7 @@ ADOPTED=(
     compiler/grpc/ProtoAdapter.h
     compiler/grpc/Connector.h
     compiler/RoxalCompiler.h
+    compiler/debug/DebugHandleTable.h
 )
 
 files=("$@")

@@ -1,0 +1,19 @@
+42
+3.5
+true
+nil
+'hello'
+'abcd...'
+[1, 2, 3]
+[1, 2, 3, ...+2]
+[List(2), List(2)]
+[[1, 2], [3, 4]]
+{'a': 1, 'b': 2}
+Point{x: 1, y: 2}
+[Point{...}]
+green
+<func add1/1>
+'a\nb\tc\\d\'e'
+{'a': 1, ...+1}
+<actor Wk>
+[<actor Wk>]

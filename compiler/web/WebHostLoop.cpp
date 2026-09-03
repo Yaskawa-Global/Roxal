@@ -29,7 +29,19 @@ struct WebHostLoop : HostEventLoop {
 
     void pump() override
     {
-        if (pumpDepth_ > 0) return;
+        if (pumpDepth_ > 0) {
+            // Nested: a store call's handler is running inside this turn and
+            // has parked on a future -- the model's reply for an ai.nn call
+            // made from a non-actor store method.  The full turn must not
+            // re-enter (the outer turn's containers are mid-mutation), but
+            // the reply it is waiting for arrives on the same inbound queue,
+            // and nothing else can drain it until this handler returns --
+            // which it cannot do until the reply is drained.  So drain
+            // exactly that one kind: resolving a future touches no store
+            // container, and we are inside the outer turn's no-park scope.
+            drainInboundOnly(Inbound::NnResult);
+            return;
+        }
         ++pumpDepth_;
         roxal::web::g_pumpCount.fetch_add(1, std::memory_order_relaxed);
         // Wasm: native pump frames hold Values while store handlers re-enter
@@ -68,7 +80,12 @@ struct WebHostLoop : HostEventLoop {
 
         // Un-park here, after any handler has returned -- doing it inside the
         // handler would be undone by the scope that restores the park on return.
-        if (g_stopRequested.load(std::memory_order_acquire)) {
+        // CONSUME the request (exchange, not load): one requestStop wakes one
+        // park.  A load left the flag set forever when the woken script then
+        // ENDED without another web.serve() -- and every wait() in the NEXT
+        // script (the IDE's Run stops the parked bootstrap first) returned
+        // instantly, so sleeps silently did not sleep.
+        if (g_stopRequested.exchange(false, std::memory_order_acq_rel)) {
             if (Thread* t = VM::thread.get()) t->threadSleep = false;
             return;
         }

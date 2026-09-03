@@ -469,6 +469,13 @@ void resolvePendingCall(uint32_t callId, const std::string& method,
 
 } // namespace
 
+void roxal::web::rejectStoreCall(uint32_t callId, const std::string& store,
+                                 const std::string& method, const std::string& reason)
+{
+    const std::string what = "on store '" + store + "' " + reason;
+    resolvePendingCall(callId, method, nullptr, what.c_str());
+}
+
 WebStoreHub::WebStoreHub() : impl_(std::make_unique<Impl>()) {}
 WebStoreHub::~WebStoreHub() { shutdown(); }
 

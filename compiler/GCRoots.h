@@ -15,8 +15,9 @@
 //         ...
 //     };
 //
-// The wrapper self-registers with the collector on construction and
-// unregisters on destruction; the mark phase traces every registered root.
+// The wrapper self-registers with the collector after its payload/tracer have
+// been initialized and unregisters before either starts destruction; the mark
+// phase traces every registered root.
 // Containers of module-private structs pass a custom tracer function:
 //
 //     TracedMember<std::vector<Binding>> bindings { &traceBindings };
@@ -115,6 +116,8 @@ public:
                       "no GCTraceAdapter<T>: pass a custom tracer "
                       "(TracedMember<T> member { &traceFn };)");
     }
+    TracedMember(T initial, Tracer tracer)
+        : value_(std::move(initial)), tracer_(tracer) {}
     ~TracedMember() override = default;
 
     TracedMember& operator=(const T& v) { value_ = v; return *this; }
@@ -144,6 +147,9 @@ public:
 private:
     T value_ {};
     Tracer tracer_ { nullptr };
+    // MUST remain last: construction registers after value_/tracer_ exist;
+    // reverse destruction unregisters before either is destroyed.
+    Registration registration_ { *this };
 };
 
 // Spec vocabulary: a single retained Value (or other scalar) root.
@@ -186,6 +192,8 @@ public:
 private:
     const T* target_;
     Tracer tracer_ { nullptr };
+    // MUST remain last; see TracedMember::registration_.
+    Registration registration_ { *this };
 };
 
 } // namespace roxal

@@ -16,5 +16,6 @@ Test: wait_future_yields passed - completed=1, result=0, value=123
 Test: wait_delay_future_yields passed - completed=1, result=0, value=234
 Test: invokeClosure_stack_balance passed - stack delta 0 over 8 calls, results ok=1
 Test: invokeClosure_yield_resume_balance passed - yielded=1, result=0, stack delta 0
+Test: lift_init_error_stack_balance passed - threw=0, result=2, depth=0
 Test: invokeMethod_stack_balance passed - stack delta 0 over 8 calls, results ok=1
-RT Execution tests: Passed 19 failed 0
+RT Execution tests: Passed 20 failed 0

@@ -19,7 +19,11 @@
 #include "ExecutionStatus.h"
 #include "OutputRoute.h"
 #include "Thread.h"
+#include "ExecutionDomain.h"
 #include "BuiltinModule.h"
+#include "PreparedProgram.h"
+#include "EmbeddedRuntime.h"
+#include "ReplSession.h"
 #include "LazyModuleRegistry.h"
 // The optional module headers are deliberately NOT included here.  VM.h needs
 // none of them: ModuleFileIO/Regex/Socket/NN/Media are unreferenced in this
@@ -38,7 +42,7 @@
 namespace roxal { struct ObjObjectType; }
 using roxal::ObjObjectType;
 
-namespace df { class DataflowEngine; }
+namespace df { class DataflowEngine; class FuncNode; }
 
 
 namespace roxal {
@@ -51,6 +55,7 @@ class RoxalCompiler;
 // when the features are on; a forward declaration is all a pointer member needs.
 class ModuleGrpc;
 class ModuleDDS;
+class StopCoordinator;   // compiler/debug/StopCoordinator.h
 
 
 // GC coverage for host-thread code that touches GC state OUTSIDE execute():
@@ -97,6 +102,14 @@ class VM
 public:
     friend class Thread;
     friend class ModuleSys;
+    // The VM half of the two execution collaborators: they exist as separate
+    // classes precisely so a host does not see the surface below.
+    friend class EmbeddedRuntime;
+    friend class ReplSession;
+    // Resumes a FuncNode body that yielded, by re-entering execute() on the
+    // thread it left suspended.  Part of the runtime, not an embedding: a
+    // host never continues someone else's half-finished execution.
+    friend class df::FuncNode;
     friend class SimpleMarkSweepGC;
 #ifdef ROXAL_ENABLE_GRPC
     friend class ModuleGrpc;
@@ -136,6 +149,11 @@ public:
     /// services (e.g. the GC auto-trigger) avoid re-entering VM::instance()
     /// while the function-local static is still initializing.
     static bool constructed();
+    /// True once shutdown() has run.  Retained handles (a ReplSession, a
+    /// RunHandle's runtime link) consult this rather than trusting a pointer.
+    bool isShutdown() const noexcept {
+        return shutdownComplete_.load(std::memory_order_acquire);
+    }
 
     VM(VM const&) = delete;
     void operator=(VM const&) = delete;
@@ -199,69 +217,123 @@ public:
 
     // =========================================================================
     // Execution API
+    //
+    // Three ways to run a program, chosen by what the HOST owns:
+    //
+    //   no loop of its own    executeProgramSync()
+    //   a prompt or console   defaultReplSession(), then fragments
+    //   a periodic loop       attachEmbeddedRuntime() + prepareProgram(),
+    //                         then EmbeddedRuntime::submit()/driveFor()
+    //
+    // Exactly one owns execution at a time: once a driver is attached, the
+    // synchronous entry points refuse with Busy.  Note that what ADVANCES a
+    // run in recipes 2 and 3 is not on VM at all -- it is
+    // EmbeddedRuntime::driveFor().  embedding.md writes each recipe out.
     // =========================================================================
 
-    // --- One-shot execution ---
-    /// Compile and run source to completion. Suitable for simple scripts.
-    ExecutionStatus run(std::istream& source, const std::string& sourceName);
+    // --- 1. Run a whole program on the calling thread ---
+    // start:   executeProgramSync()
+    // advance: nothing -- it returns when the program is done
 
-    /// Run `source` as if it were a top-level script, but pre-populate the
-    /// script's module vars from `imports`.  Each Value in `imports` must
-    /// be an ObjModuleType.  Names that the user wrote explicit imports for
-    /// (or declared) take precedence over the pre-import (overwrite=false).
+    /// Compile and run a whole program to completion on the CALLING thread.
+    /// The synchronous shape: a command line, a test, any host that has no
+    /// loop of its own to give the VM.  A host that owns a periodic loop
+    /// prepares off its driver and submits to an embedded runtime instead.
+    ExecutionStatus executeProgramSync(std::istream& source,
+                                       ProgramOptions options);
+
+    // Split form, for a debugger launch that must configure breakpoints
+    // between compilation and the first statement.
+    // start:   stageProgramSync()
+    // advance: executeStagedSync()
+
+    /// Compile a program and stage it on the CALLING thread.  STAGED means:
+    /// compiled, thread bound, preludes complete, body not started.  Preludes
+    /// are the host's own pre-setup and run here, before a debugger can be
+    /// configured and before onScriptStart -- the same order the driver path
+    /// uses -- so a breakpoint or stopOnEntry never lands in host plumbing.
+    /// As opposed to a PreparedProgram handle, nothing is handed back to own.
+    ExecutionStatus stageProgramSync(std::istream& source,
+                                     ProgramOptions options);
+
+    /// Run the program staged on this thread to completion.  Must be called
+    /// on the thread that staged it.
+    ExecutionStatus executeStagedSync();
+
+    // --- 2. Persistent fragment sessions ---
+    // start:   defaultReplSession(), then ReplSession::prepareFragment()
+    // advance: no driver -> ReplSession::evaluateFragmentSync(), which runs
+    //                       the fragment to completion on the CALLING thread
+    //                       using the session's own Thread
+    //          driver    -> EmbeddedRuntime::submit() + driveFor(); the slice
+    //                       binds the SESSION's thread and fires no script
+    //                       start/complete hooks
+    //
+    // A session owns the compiler, module and thread that fragments share --
+    // which is what lets a fragment see what earlier fragments declared,
+    // where a fresh program never does.  Version 1 has one per VM (the
+    // REPL's), created on first use; the shape is already per-session so
+    // more can follow without changing callers.
+    ReplSession createReplSession(ReplOptions options = {});
+    ReplSession defaultReplSession();
+
+    // --- 3. Programs driven by a host loop ---
+    // start:   attachEmbeddedRuntime() once, then prepareProgram() off the
+    //          driver, then EmbeddedRuntime::submit()
+    // advance: EmbeddedRuntime::driveFor(budget), on the driver thread
+    // finish:  RunHandle::wait(), on a NON-driver thread
+
+    // Compiling and starting are separate operations.  prepareProgram()
+    // compiles the source and roots everything the launch will need --
+    // closure, module, imports, prelude receivers -- WITHOUT assigning this
+    // thread's execution state, pushing a frame, running a prelude, or
+    // touching a live run's error state.  The result is a movable handle over
+    // stable heap storage: it survives its producer returning, and survives
+    // collection, because the record carries the launch's only mark root.
+    //
+    // Preparation is a non-driver operation.  It parses, reads and writes the
+    // bytecode cache, allocates, and updates shared registries, so it belongs
+    // on a thread the embedding can afford to spend unbounded time on -- never
+    // inside a control slice.  While it runs, tracing collection is latched
+    // rather than published, so a host driving real-time slices keeps working.
+    PrepareProgramResult prepareProgram(std::istream& source,
+                                        ProgramOptions options);
+
+    // Attaching hands execution ownership to a host that owns a periodic
+    // loop.  It is explicit and unique per VM, and it is a one-way statement
+    // about who runs programs: once attached, the synchronous entry points
+    // (executeProgramSync/stageProgramSync and session evaluation) refuse
+    // with Busy rather than competing with the driver for the same VM.
+    AttachDriverResult attachEmbeddedRuntime(DriverOptions options = {});
+
+    /// Give ownership back.  Refused while a claimed run is still in flight:
+    /// tearing a record out from under a live execution is not a detach.
+    DetachStatus detachEmbeddedRuntime();
+
+    /// Unconditional teardown for host shutdown: cancels whatever the runtime
+    /// still owns -- pending or claimed -- and releases those roots while the
+    /// collector is alive.  A host uses this when it is going away and the
+    /// run's outcome no longer matters.
+    void shutdownEmbeddedRuntime();
+
+    /// The attached runtime, or null when none is.  A NON-OWNING observation:
+    /// the VM owns the runtime, and detach/shutdown destroy it regardless of
+    /// what a host is holding -- otherwise a detached runtime could stay
+    /// alive as a zombie, still holding a driver identity and a pending slot
+    /// while the VM believed nothing was attached.
     ///
-    /// Intended use: embeddings that want to make their standard library
-    /// visible to a user script without forcing the user to write
-    /// `import X.*`.  Equivalent to wrapping the source with `import A.*;
-    /// import B.*;` lines, but doesn't show up in compile errors / source
-    /// lookups.
-    ExecutionStatus runWithImports(std::istream& source,
-                                    const std::string& sourceName,
-                                    const std::vector<Value>& imports);
+    /// Valid only while attached.  A host that caches this across its own
+    /// detachEmbeddedRuntime()/shutdownEmbeddedRuntime() has a dangling
+    /// pointer; re-read it, or check embeddedDriverAttached() first.  (A
+    /// RunHandle, by contrast, may safely outlive the runtime: it holds a
+    /// weak lease that keeps the object alive only for the duration of a
+    /// call, because a host is expected to keep run handles around.)
+    EmbeddedRuntime* embeddedRuntime() const { return embeddedRuntime_.get(); }
+    bool embeddedDriverAttached() const {
+        return embeddedRuntimeAttached_.load(std::memory_order_acquire);
+    }
 
-    /// REPL mode: compile and execute a single line/expression.
-    ExecutionStatus runLine(std::istream& linestream,
-                                  bool replMode=true,
-                                  const std::string& sourceNameOverride="");
-
-    // --- Incremental execution ---
-    // Use setup() + runFor() when you need control over execution timing,
-    // e.g., running Roxal within a host application's main loop.
-
-    /// Compile source and set up initial call frame, but don't execute.
-    /// Returns CompileError on failure, OK on success.
-    /// After setup(), call runFor() repeatedly to execute incrementally.
-    ExecutionStatus setup(std::istream& source, const std::string& sourceName);
-
-    /// setup() variant that pre-populates the script's module type with
-    /// vars copied from each module in `imports` before compilation.
-    /// See runWithImports for rationale.
-    ExecutionStatus setup(std::istream& source, const std::string& sourceName,
-                          const std::vector<Value>& imports);
-
-    /// Register a nullary method to invoke on the script's own VM thread,
-    /// once, immediately after that thread is created and before the script
-    /// body's frame runs (see setup()).  Preludes run in registration order,
-    /// each to completion as its own top-level frame; the list is consumed
-    /// (cleared) by the launch that fires them.
-    ///
-    /// The point is thread affinity: a `when`/reactive handler binds to the
-    /// Roxal `Thread` that registers it.  A host that must install such
-    /// handlers for a script (e.g. FC's `sim.bind()`, whose DDS/camera
-    /// handlers must be owned by the thread that services the script body)
-    /// cannot do so from its bootstrap thread — that thread is torn down
-    /// before the body runs.  Registering the call as a prelude lets it run
-    /// under the correct thread without the user script having to call it.
-    ///
-    /// `receiver` must stay reachable (a GC root) between registration and
-    /// the next run()/runWithImports(); in practice it is, being held by a
-    /// module var passed through `imports`.
-    void addScriptPrelude(const Value& receiver, const ustring& method);
-
-    /// Execute for up to the given duration, then yield.
-    /// Returns: {OK, returnValue} if completed, {Yielded, nil} if budget exhausted or blocked,
-    /// {RuntimeError, nil} on error. Call repeatedly to continue execution.
-    std::pair<ExecutionStatus, Value> runFor(TimeDuration duration);
+    // --- Execution state of the calling thread ---
 
     /// Check if the current thread has more work to do (not completed).
     bool hasMoreWork() const;
@@ -282,25 +354,7 @@ public:
     void setHostEventLoop(ptr<HostEventLoop> loop) { hostEventLoop_ = std::move(loop); }
     const ptr<HostEventLoop>& hostEventLoop() const { return hostEventLoop_; }
 
-    // --- RT REPL integration ---
-    // Use setupLine() on a non-RT thread to compile REPL input, then
-    // runFor() on an RT thread to execute incrementally with a time budget.
-    // setupLine() + runFor() can be used interchangeably with setup() + runFor().
 
-    enum class RTState : int { Idle, Ready, Executing, Yielded };
-
-    /// Compile a REPL line/script and enqueue the closure for execution via runFor().
-    /// Blocks if previous work is still executing (waits for Idle state).
-    /// Uses persistent REPL state (replThread, replModuleValue, compiler).
-    ExecutionStatus setupLine(std::istream& linestream,
-                              bool replMode = true,
-                              const std::string& sourceNameOverride = "");
-
-    /// Current RT coordination state (for diagnostics/coordination).
-    RTState rtState() const { return rtState_.load(std::memory_order_acquire); }
-
-    /// Block until rtState_ becomes Idle (RT thread finished executing).
-    void waitForRTCompletion();
 
     /// Set the RT core index that actor threads should avoid.
     /// Set to -1 (default) to disable actor thread affinity restrictions.
@@ -318,19 +372,14 @@ public:
     /// members were made flag-independent.  See ModuleRobot's static check.
     static std::size_t abiInstanceSize();
 
-    /// Control the synchronous-execution guard that prevents runFor() from
-    /// entering execute() while run()/runLine() owns the VM. Tests that call
-    /// runFor() from within a native builtin can temporarily clear this.
-    void setSynchronousExecution(bool sync) { inSynchronousExecution_.store(sync, std::memory_order_release); }
-
     /// Enable timing instrumentation for native (C++) function calls.
     /// When enabled, calls that exceed the remaining RT budget are logged
     /// with the function name to help identify blocking builtins.
     void setNativeCallTimingEnabled(bool enabled) { nativeCallTimingEnabled_ = enabled; }
 
-    /// After runFor() returns, check if a native call exceeded the RT budget.
+    /// After a slice returns, check if a native call exceeded the RT budget.
     /// Returns the function name and elapsed time, or empty string if no overrun.
-    /// Clears the stored overrun on read. Call from the same thread as runFor().
+    /// Clears the stored overrun on read. Call from the thread that drove it.
     static std::string consumeNativeCallOverrun();
 
     /// Main-thread identity: the host's own thread that runs scripts/REPL
@@ -339,6 +388,22 @@ public:
     /// markMainThread() latches the first calling thread; later calls no-op.
     static void markMainThread();
     static bool onMainThread();
+    // Web liveness: pump the host UI loop briefly while parked in a debug
+    // stop -- see StopCoordinator::ackAndPark's pump-park.
+    void debugStopHostPump();
+    // Spawn an actor thread for a host-constructed actor instance (the
+    // script-instantiation shape: create + register + act).  The web
+    // module builds the debugger control actor this way.
+    // debugExcluded marks the thread BEFORE it becomes runnable -- a
+    // service actor must never be trappable by a prebound breakpoint in
+    // the window before its first method could self-mark.
+    ptr<Thread> spawnActorThread(const Value& actorInstance,
+                                 bool debugExcluded = false);
+    // Re-queue the dataflow engine's run loop if an exit/interrupt stopped
+    // it (the loop is otherwise queued once at construction).  Embeddings
+    // that run scripts sequentially call this between scripts.
+    void restartDataflowEngineIfStopped();
+    bool hasHostEventLoop() const { return hostEventLoop_ != nullptr; }
 
     // =========================================================================
     // Internal call mechanics (used by the above APIs)
@@ -522,8 +587,70 @@ public:
 
     // Request termination of the VM with the given exit code
     void requestExit(int code);
-    inline bool isExitRequested() const { return exitRequested.load(); }
+    // The interrupt word of the CURRENT thread's domain (the service domain's
+    // -- which aliases interrupts_ -- when there is no VM thread, i.e. on a
+    // host thread).  Every flag accessor below goes through this, so a
+    // runtime error or exit raised in a program run's domain is observed by
+    // that run and not by the REPL session or the services.
+    std::atomic<uint32_t>& currentInterrupts() {
+        return thread ? thread->domain->interrupts() : interrupts_;
+    }
+    const std::atomic<uint32_t>& currentInterrupts() const {
+        return thread ? thread->domain->interrupts() : interrupts_;
+    }
+    inline bool isExitRequested() const { return (currentInterrupts().load() & ExecutionDomain::IntrExit) != 0; }
     inline int exitCode() const { return exitCodeValue.load(); }
+
+    // The default execution domain every Thread currently joins.  Its
+    // interrupt word ALIASES VM::interrupts_ (see the member comment), so
+    // these accessors read the VM member directly -- single-load on the hot
+    // paths -- while domain-addressed access (thread->domain->interrupts())
+    // reaches the same word.  Bit-targeted fetch_or/fetch_and so concurrent
+    // setters of OTHER bits are never lost.
+    const ptr<ExecutionDomain>& defaultDomain() const { return defaultDomain_; }
+    // The current VM thread's execution domain, or the default domain when no
+    // VM thread is installed (foreign/host threads).  Work spawned on behalf
+    // of the current context (actor construction, deserialization) inherits
+    // its domain through this, so a non-default domain's children can never
+    // escape into the default domain.
+    static const ptr<ExecutionDomain>& currentOrDefaultDomain() {
+        return thread ? thread->domain : instance().defaultDomain();
+    }
+
+    // ---- Debugger stop machinery ----
+    // Coordinator for the default domain (constructed eagerly with the VM).
+    StopCoordinator& stopCoordinator() { return *stopCoordinator_; }
+    // Fast cooperative-stop-point test: one bit in the interrupt word.
+    inline bool debugStopRequested() const {
+        return (interrupts_.load() & ExecutionDomain::IntrDebugStop) != 0;
+    }
+    // Non-RT acknowledge-and-park for Roxal-owned native loops (the dataflow
+    // engine's run() drain, actor queue idle).  No-op when no stop is
+    // pending, when no VM thread is installed, or inside a gate-counted
+    // dataflow section.
+    void debugStopParkIfRequested();
+    // Statement-boundary check for breakpoints/stepping; returns true when
+    // the thread must trap at the current boundary (a stop has been
+    // published).  Called from the dispatch loop only while
+    // IntrDebugSlowPath is armed.
+    bool debugStatementBoundary(Thread& t, CallFrames::iterator frame, bool canNotify);
+    // Engine access for the coordinator's dataflow admission gate.
+    df::DataflowEngine* dataflowEngineForDebug();
+    inline bool hasRuntimeError() const { return (currentInterrupts().load() & ExecutionDomain::IntrRuntimeError) != 0; }
+    inline void setRuntimeErrorFlag()   { currentInterrupts().fetch_or(ExecutionDomain::IntrRuntimeError); }
+    inline void clearRuntimeErrorFlag() { currentInterrupts().fetch_and(~uint32_t(ExecutionDomain::IntrRuntimeError)); }
+    /// The text of the most recent runtime error, taken (and cleared).  The
+    /// error itself is a flag; this is what an embedding shows a user when a
+    /// run fails.  VM-wide, like the flag: one run at a time is the contract
+    /// that makes that unambiguous until execution domains scope it.
+    std::string takeRuntimeErrorMessage();
+    inline void setExitFlag()           { currentInterrupts().fetch_or(ExecutionDomain::IntrExit); }
+    inline void clearExitFlag()         { currentInterrupts().fetch_and(~uint32_t(ExecutionDomain::IntrExit)); }
+
+    /// Join only the threads of one execution domain: a program run's
+    /// finalizer must not join the REPL session's actors or the service
+    /// threads, whose lifetimes are their own.
+    ExecutionStatus joinDomainThreads(uint64_t domainId);
 
     // Join all currently tracked threads, optionally skipping one by id.
     // Returns ExecutionStatus::RuntimeError if any joined thread failed.
@@ -542,7 +669,7 @@ public:
     // else park the calling Roxal thread (pendingWaitFor + WaitSuspension --
     // sys.wait(for=)'s machinery) and let finalizeWaitSuspension() write the
     // resolved value into the native call's result slot. The OS thread never
-    // blocks: under runFor() the thread reports not-runnable, and a host UI
+    // blocks: under a driven slice the thread reports not-runnable, and a host UI
     // loop keeps pumping. For use by builtins that want synchronous-LOOKING
     // semantics over async work (fileio's async=false, ai.nn's Model.init).
     // Returns the resolved value when already ready, else nil (the dispatch
@@ -553,10 +680,11 @@ public:
     static std::vector<std::string> featureStrings();
     static std::string featureString();
 
-    // Whether the embedding host runs the VM under a real-time scheduler (the
-    // setup()+runFor() pattern on an RT thread). The VM cannot detect this --
-    // it is a property of the host, so the host declares it, before scripts
-    // run. Surfaced to scripts as sys.realtime; defaults to false.
+    // Whether the embedding host runs the VM under a real-time scheduler
+    // (a periodic driver taking bounded slices).
+    // The VM cannot detect this -- it is a property of the host, so the host
+    // declares it, before scripts run.  Surfaced to scripts as sys.realtime;
+    // defaults to false.
     static void setRealtimeHost(bool rt) { realtimeHost_ = rt; }
     static bool isRealtimeHost() { return realtimeHost_; }
 private:
@@ -609,6 +737,38 @@ public:
     void defineBuiltinFunctions();
 
 protected:
+    // --- Runtime collaborators: not host API ---
+    // These take types a host never holds (RunRecord, ReplSessionState) or
+    // leave a half-started execution behind for someone else to advance.
+    // EmbeddedRuntime and ReplSession call them; a host calls those.
+
+    /// Claim a prepared program on the CALLING thread: create its Roxal
+    /// thread, run its preludes, and push the body's frame ready to execute.
+    /// Consumes the handle.  stageProgramSync() is this plus compilation.
+    ExecutionStatus activatePrepared(PreparedProgram program);
+
+    /// Advance one claimed run by at most `budget`, on the calling (driver)
+    /// thread.  Binds the run's Roxal thread on first entry, runs module
+    /// start hooks, then drives the launch's preludes and body incrementally
+    /// -- each under the slice deadline, so no step can overrun the host's
+    /// cycle.  Reached by a host through EmbeddedRuntime::driveFor().
+    SliceResult driveRunSlice(RunRecord& run, TimeDuration budget);
+
+    /// The unbounded half of a run's lifecycle, performed by a NON-driver
+    /// thread once the driver has stopped touching the run: quit and join
+    /// what the launch started, run module completion hooks, and leave no
+    /// state that could contaminate the next submission.  Object destruction
+    /// stays with the collector -- this releases references, it does not
+    /// sweep.  Reached by a host through RunHandle::wait().
+    /// Returns whether the run is to be reported as failed: the execution's
+    /// own failure, or a completion hook that threw during finalization.
+    bool finalizeRunRecord(RunRecord& run, bool failed);
+
+    /// Fragment compilation and evaluation, for ReplSession.
+    void configureFragmentCompiler(RoxalCompiler& compiler, bool replMode);
+    ExecutionStatus evaluateFragmentOnThisThread(ReplSessionState& session,
+                                                 PreparedProgram fragment);
+
     friend class LazyModuleRegistry;  // For lazy module loading
 
     VM();
@@ -620,8 +780,8 @@ protected:
     void ensureDataflowEngineStopped();
 
     /// Low-level dispatch loop. Runs until completion, error, or deadline.
-    /// Prefer runFor() for incremental execution; this is used internally
-    /// by run(), runFor(), and invokeClosure().
+    /// Used by the synchronous entry points, the embedded driver's slice,
+    /// and invokeClosure().
     /// baseFrameDepth: the frame count this execution is considered to have
     /// started at -- it terminates when the frame stack drops BELOW it.
     /// Defaults to the current depth, which is right when execute() is entered
@@ -632,8 +792,6 @@ protected:
                                              size_t baseFrameDepth = SIZE_MAX);
 
     bool outputBytecodeDisassembly;
-    bool lineMode;
-    std::istream* lineStream;
 
     std::vector<std::string> modulePaths {};
     std::vector<std::string> scriptArguments {};
@@ -647,19 +805,43 @@ protected:
 
     atomic_unordered_map<uint64_t, ptr<Thread>> threads;
 
-    // Set when any thread encounters a runtime error so that
-    // all threads can terminate early.
-    std::atomic_bool runtimeErrorFlag {false};
-
-    // Set when exit() builtin is called to terminate the VM.
-    std::atomic_bool exitRequested {false};
+    // Consolidated interrupt/control word (bit layout in
+    // ExecutionDomain::InterruptBit).  Declared BEFORE defaultDomain_, whose
+    // initializer aliases it: the hot dispatch checks load this member
+    // directly (one load), while the domain exposes the same word for
+    // domain-addressed access.  Per-session domains (each owning its own
+    // word) are still to come -- notably one for debugger evaluation, so
+    // its failure/exit state stays isolated from the debuggee's.
+    std::atomic<uint32_t> interrupts_ { 0 };
+    // The default execution domain every Thread currently joins via
+    // Thread::create.
+    ptr<ExecutionDomain> defaultDomain_ { make_ptr<ExecutionDomain>(interrupts_) };
+    // Stop coordinator for the default domain; constructed in the VM
+    // constructor (eager -- no lazy-init races with stop points).
+    std::unique_ptr<StopCoordinator> stopCoordinator_;
     // Set once shutdown() has run; makes teardown idempotent so the static
     // destructor is a no-op after an explicit host-driven shutdown.
     std::atomic_bool shutdownComplete_ {false};
     std::atomic_int exitCodeValue {0};
 
+    // The attached embedded runtime, if a host has claimed execution
+    // ownership.  Owned by the VM: pending and active runs stay rooted
+    // through it even when the host drops every external handle.
+    // shared_ptr so a RunHandle's weak lease can hold the object alive for
+    // the duration of one call after the VM has dropped it (see
+    // RunControl::runtime_).  The VM is still the owner: detach and
+    // shutdown drop it, and nothing else holds it strongly at rest.
+    std::shared_ptr<EmbeddedRuntime> embeddedRuntime_;
+    std::atomic<bool> embeddedRuntimeAttached_ { false };
+
+    // The VM's default fragment session: persistent compiler, module and
+    // thread, all reached through ReplSession rather than as ambient state.
+    std::unique_ptr<ReplSessionState> replSession_;
+    ReplSessionState& ensureReplSession();
+
     // Persistent thread used for REPL execution so that state such as event
-    // handlers persists across entered lines.
+    // handlers persists across entered lines.  Kept as the session's thread;
+    // this alias remains because the collector's thread gathering names it.
     ptr<Thread> replThread;
 
     ObjModuleType* moduleType()
@@ -696,6 +878,12 @@ protected:
     // compilation paths and from compile-vs-reconcile races.
     std::unordered_map<ustring, Value> userModuleRegistry;
     std::mutex userModuleRegistryMutex;
+    // Serializes every compilation -- full programs and session fragments
+    // alike -- because preparation updates module registries, lazy builtin
+    // state, debug indexes and caches that are not safe to update from two
+    // compilers at once.  Producers are off-driver by contract, so blocking
+    // here is acceptable; the driver never takes it.
+    std::mutex preparationMutex_;
     // gRPC / DDS module back-pointers.  Declared UNCONDITIONALLY so the size
     // and field offsets of `class VM` are identical whether or not a TU is
     // compiled with ROXAL_ENABLE_GRPC / ROXAL_ENABLE_DDS.  These pointers gate
@@ -721,25 +909,10 @@ protected:
     // mutation of a shared closure). Dispatch recognises the sentinel by
     // identity of the underlying ObjFunction.
     Value combinatorRelayFunction {}; // ObjFunction
-    Value replModuleValue { Value::nilVal() }; // ObjModuleType
 
-    // Shared compiler instance for both runLine() and setupLine(). Lazy-
-    // initialised on first use and torn down before freeObjects() in
-    // ~VM(). Held by unique_ptr so the type can stay forward-declared in
-    // this header (full definition lives in RoxalCompiler.h).
-    std::unique_ptr<RoxalCompiler> replCompiler_;
-
-    // RT REPL synchronization
-    std::atomic<RTState> rtState_ { RTState::Idle };
-    std::mutex rtMutex_;
-    std::condition_variable rtCondVar_;
-    Value pendingRTClosure_ { Value::nilVal() }; // protected by rtMutex_
+    // Real-time host configuration
     int rtCoreExclusion_ { -1 }; // -1 = disabled (desktop), >=0 = exclude this core for actor threads
 
-    // Host-registered prelude invocations (see addScriptPrelude). Run once,
-    // on the script thread, before the body's frame — then cleared. Empty in
-    // the default build, so behaviour is unchanged.
-    std::vector<std::pair<Value, ustring>> scriptPreludes_;
 
     // Host UI event-loop integration (e.g. Qt). When set (serviced on the main
     // thread only), the dispatch loop pumps the host loop while busy and blocks
@@ -752,11 +925,6 @@ protected:
     // host event loop when on the main thread; otherwise the thread's sleep condvar
     // (the original behavior). Defined in VM.cpp.
     void hostOrCondVarWait(Thread* thread, TimeDuration maxWait);
-
-    // Guard: prevents runFor() from entering execute() while run()/runLine() is executing
-    // synchronously. Handles the case where ax.init() (inside a synchronous --setup script)
-    // starts the WC RoxalLoop whose callback calls runFor().
-    std::atomic<bool> inSynchronousExecution_ { false };
 
     // Native call timing instrumentation.
     // When enabled, callNativeFn() times each C++ native call and warns if it
@@ -871,6 +1039,8 @@ public:
     void cleanupWeakRegistries();
     void unwindFrame();
     void raiseException(Value exc);
+    bool unwindToExceptionHandler(Value& exc); // shared unwinder; true = handler entered
+    void debugFatalStopIfArmed(const std::string& description, Chunk* chunk, size_t instruction); // exception-stop policy
     // Raise a catchable Roxal ZeroDivisionError carrying `msg`. Used by the
     // arithmetic opcodes to convert a native roxal::ZeroDivisionError into an
     // exception user code can try/except, rather than a fatal runtimeError().

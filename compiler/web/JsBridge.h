@@ -209,6 +209,15 @@ using StoreWriteHandler = std::function<void(const std::string& store,
                                              const Value& value)>;
 void setStoreHandlers(StoreCallHandler onCall, StoreWriteHandler onWrite);
 
+// Debug-stop drain policy: while a debugger stop is active, the inbound
+// drain runs ONLY store calls whose target store is ACTOR-backed (queueCall
+// merely enqueues onto the -- excluded -- actor's own thread); DOM
+// callbacks, non-actor store calls, store writes and NN results are
+// deferred until release, because they would execute user code or mutate
+// debuggee-visible state on the pumping thread while the world is frozen.
+using StoreIsActorFn = std::function<bool(const std::string& store)>;
+void setStoreActorPredicate(StoreIsActorFn isActor);
+
 // Installed by the NN bridge (compiler/web/NnBridge.cpp) so drainInbound can
 // route Inbound::NnResult without JsBridge depending on ai.nn. The shutdown
 // hook settles outstanding requests when the bridge tears down.

@@ -56,6 +56,11 @@ std::deque<PendingInbound> g_pending;
 
 StoreCallHandler  g_onStoreCall;
 StoreWriteHandler g_onStoreWrite;
+StoreIsActorFn    g_storeIsActor;
+// Ops held back while a debugger stop is active (VM thread only -- the
+// drain is single-threaded); re-spliced to the FRONT of the pending queue
+// on the first drain after release, preserving order.
+std::deque<PendingInbound> g_deferredInbound;
 NnResultHandler   g_onNnResult;
 NnShutdownHandler g_onNnShutdown;
 
@@ -80,6 +85,11 @@ void queueInboundFromMainThread(Inbound kind, uint32_t id,
     work.args.assign(args, args + len);
     std::lock_guard<std::mutex> lock(g_pendingMutex);
     g_pending.push_back(std::move(work));
+}
+
+void setStoreActorPredicate(StoreIsActorFn isActor)
+{
+    g_storeIsActor = std::move(isActor);
 }
 
 void setStoreHandlers(StoreCallHandler onCall, StoreWriteHandler onWrite)
@@ -418,6 +428,14 @@ void releaseCallback(uint32_t id)
 
 void drainInbound()
 {
+    const bool stopActive = VM::instance().debugStopRequested();
+    if (!stopActive && !g_deferredInbound.empty()) {
+        // Stop released: put the held-back work at the FRONT, in order.
+        std::lock_guard<std::mutex> lock(g_pendingMutex);
+        for (auto it = g_deferredInbound.rbegin(); it != g_deferredInbound.rend(); ++it)
+            g_pending.push_front(std::move(*it));
+        g_deferredInbound.clear();
+    }
     for (;;) {
         PendingInbound work;
         {
@@ -425,6 +443,12 @@ void drainInbound()
             if (g_pending.empty()) return;
             work = std::move(g_pending.front());
             g_pending.pop_front();
+        }
+        if (stopActive
+            && !(work.kind == Inbound::StoreCall && g_storeIsActor
+                 && g_storeIsActor(work.store))) {
+            g_deferredInbound.push_back(std::move(work));
+            continue;
         }
         g_inboundDrained.fetch_add(1, std::memory_order_relaxed);
 
@@ -535,6 +559,8 @@ void shutdown()
     { std::lock_guard<std::mutex> lock(g_pendingMutex); g_pending.clear(); }
     { std::lock_guard<std::mutex> lock(g_cbMutex); g_callbacks.clear(); }
     g_onStoreCall = nullptr;
+    g_storeIsActor = nullptr;
+    g_deferredInbound.clear();
     g_onStoreWrite = nullptr;
     t_deferred.clear();
 }

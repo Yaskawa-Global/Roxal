@@ -1,0 +1,25 @@
+Test: stop_resume_basic passed
+Test: stop_sleeping_actor passed
+Test: runfor_paused_then_completes passed - yield=1 stopped=1 paused=1 final=0 stackDelta=0
+Test: step_keeps_hold_generation passed
+Test: timeout_rollback_names_thread passed - stop timed out waiting for actor thread #6
+Test: registration_gate_preacks passed
+Test: stop_races_active_tickfor passed
+Test: stop_waits_for_blocking_native passed -  waited>=150ms=1
+Test: hold_rejected_still_stops passed
+Test: stop_while_awaiting_future passed -  value_ok=1
+Test: debuginfo_param_heavy_roundtrip passed - locals=40
+Test: toplevel_entry_and_stable_identity passed - coexist=1 entry0=1
+Test: breakpoint_step_end_to_end passed - bind=1 stop=1 step=1 val=1
+Test: inspect_stack_variables passed - bind=1 thr=1 frames=1 locals=1 up=1 mod=1 page=1 cycle=1 fut=1 eval=1
+Test: inspect_handle_lifecycle passed - exhaust=1 epoch=1 stale=1
+Test: inspect_reread_and_completion passed - reread=1 val=1
+Test: step_preempted_by_breakpoint passed - stop1=1 bpPreempts=1 bitClear=1 val=1
+Test: rebind_supersede_gc passed - bind=1 rebindStop=1 val=1
+Test: rt_slice_breakpoint passed - bind=1 rtPaused=1 stop=1 val=1
+Test: excluded_thread_runs_through_stop passed - stopped=1 progressed=1 held=1 val=1
+Test: hold_notice_contract passed - holds=15 conts=15 stops=18 fails=1
+Test: gc_split_prepared passed - stop=1 handle=1
+Debug stop tests: Passed 22 failed 0
+Test: gc_during_stop_real_collection passed - collected=1 handle=1 val=1
+Debug stop GC tests: Passed 1 failed 0

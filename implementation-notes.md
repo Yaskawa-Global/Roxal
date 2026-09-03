@@ -68,6 +68,18 @@ The main execution loop is `VM::execute(TimePoint deadline)`, which processes by
 
 The deadline parameter enables incremental execution for real-time integration, where the VM can be run for a bounded time period and then yield control back to the caller with its state preserved for later resumption.
 
+**Interrupt/control word.** Cross-thread execution-control state lives in one
+`std::atomic<uint32_t> VM::interrupts_` with bits `IntrRuntimeError` ("a thread
+hit a fatal runtime error, everyone terminate early") and `IntrExit` ("exit()
+requested"), plus reserved debugger bits (`IntrDebugStop`, `IntrDebugSlowPath`,
+never set yet). These replaced the former separate `runtimeErrorFlag` /
+`exitRequested` atomic_bools so the dispatch loop's `interInstrWorkPending()`
+check needs one load instead of two. All access goes through inline VM
+accessors (`hasRuntimeError()`, `setRuntimeErrorFlag()`, `isExitRequested()`,
+...) using bit-targeted `fetch_or`/`fetch_and`, so concurrent setters of other
+bits are never lost — and so a later move of the word's ownership (the debugger
+plan's `ExecutionDomain`) only changes the accessor bodies.
+
 **Value-stack balance at re-entrant entry points.**  `opReturn()` unwinds a
 returning frame's slots (callee slot 0, arguments, locals) only when a caller
 frame remains beneath it; outermost frames deliberately keep their slots
@@ -954,7 +966,7 @@ exception through its return future instead.
 unwound exception in `Thread::pendingUncaughtException` before deciding
 what to do. If the thread is an actor thread inside a method invocation
 (`isActorThread() && currentActorCall.isNonNil()`), we skip the global
-`runtimeErrorFlag` and just `resetStack()`. The actor's main loop sees the
+the `IntrRuntimeError` interrupt bit and just `resetStack()`. The actor's main loop sees the
 failed `execute()` result, picks up the saved exception value, and
 fulfils the return promise with it (Roxal exceptions travel through
 futures as plain `Value`s passing `isException(v)` — no `set_exception`).
@@ -1733,6 +1745,28 @@ Operations that can block the thread:
 Blocked threads yield at the deadline and resume when the blocking condition
 clears or time elapses.
 
+**`runFor()` status contract** (for embedding hosts): `OK` = the program
+completed (or errored; check `hasRuntimeError()`); `Yielded` = time budget
+expired, state preserved, call again; `Paused` = a debugger stop is active --
+keep scheduling ticks, they return `Paused` until the stop is released;
+`Busy` = a synchronous execution (`executeProgramSync()`, or a session
+fragment) owns the VM and **no work was done** -- retry on a later cycle.
+`Busy` is deliberately distinct from `OK`: a host must be able to read `OK`
+as completion.
+
+`runFor()` additionally DECLINES its slice when a collection is pending and the
+thread is in a GC yield section or drives an `rtYieldOnGC` thread, returning
+`Yielded` rather than entering `execute()`.  That is the difference between it
+and a bare `execute(deadline)`: a real-time host must not be the reason a
+collection is delayed.  An embedded driver's `driveFor()` makes the same
+check.
+
+**Single-driver embedding contract**: at most ONE host thread (the driver)
+loops `runFor()`/`tickFor()` per VM.  A control host has exactly one driver
+thread; every embedding follows the same restriction.  Two concurrent drivers are
+unsupported -- the synchronous-execution guard, the `Busy` semantics, and
+the debugger's stop protocol all assume a single driver.
+
 ### Output events and embedding
 
 Language output and ordinary Roxal-owned diagnostics share the event model in
@@ -1826,6 +1860,491 @@ from the creating RT thread (on Linux, select `SCHED_OTHER` with priority zero)
 and observe the host's configured RT-core exclusion, following the actor and GC
 worker precedents.
 
+
+## Debugging an Embedded VM
+
+The debugger works without any transport. The same core that the DAP adapter
+(`roxal --dap`) and the browser IDE drive is a plain C++ API, so an embedding
+host can stop a program, inspect it, step it, and — the part that matters for a
+host with machinery attached — be told to apply its own hold while the debugger
+has the program stopped.
+
+[embedding.md](embedding.md) is the host-facing contract: the three recipes and
+the rules to program against. This section is what sits behind them.
+
+The worked example is
+[tests/embedded_host_harness.cpp](tests/embedded_host_harness.cpp) (ctest
+target `RoxalEmbeddedHost`): a synthetic embedding host with a producer thread,
+a driver executing a program in 500&micro;s slices, a bounded output
+destination, and a controller issuing debugger traffic against the live
+program. Anything claimed below is asserted there.
+
+### The shape of an embedding
+
+A host owns a periodic loop, attaches an embedded runtime once, and from then
+on **owns execution**: the synchronous entry points refuse with `Busy` rather
+than competing with the driver for the same VM. The sequence is
+`attachEmbeddedRuntime()` at startup, `prepareProgram()` on a thread that can
+afford unbounded work, `submit()`, `driveFor(budget)` each control period, and
+`RunHandle::wait()` on a non-driver thread; it is written out in
+[embedding.md](embedding.md#3-embedded-driver).
+
+A run has two state machines: `RunPhase`, which only the driver advances, and
+`RunState`, which is what a host observes through its `RunHandle`. They meet at
+exactly one point -- the ownership handover.
+
+```
+  driver thread only                     what the host sees (RunHandle::state)
+  -----------------                      -------------------------------------
+  (submitted)                            Queued
+       |
+       v  first driveFor() claims it
+  Activate     bind thread               Running
+       |
+       v
+  Preludes     one frame per slice        Running
+       |          (host pre-setup; then
+       |           the script-start hooks)
+       |                                  DebugPaused  (stop active; the phase
+       v                                                does not change)
+  Body         bounded slices             Running
+       |
+       v  body returned
+  MainReturned                            MainReturned
+       |
+       v  published ONCE
+  Finished  ------- handover ----->       FinalizationPending
+                                          (failed() says whether
+                                           execution failed)
+                                                |
+            NON-driver thread:                  v
+            join, completion hooks         Finalizing
+                                                |
+                                                v
+                                          Completed / Failed
+                                          (both POST-finalization;
+                                           a throwing completion
+                                           hook also ends in Failed)
+```
+
+`Failed` is never published before finalization. It was once, and that made
+exactly-once observation impossible: a losing finalizer's wait predicate
+accepted `Failed`, so it could return "already finalized" while the winner had
+not begun. The failure now travels on the control (`RunControl::failed_`), and
+the state machine has one pre-finalization terminal state.
+
+The *reason* travels the same way: every failure of a driven run passes
+through one place in `driveRunSlice`, which copies the VM's retained runtime
+error text (`takeRuntimeErrorMessage()`) onto the control as `diagnostic_`. At
+finalization the terminal value is rendered by `renderValue()` -- bounded, no
+user code -- and copied onto the control as `result_`. Both are text; the
+control never holds a `Value`, which is what lets a handle outlive the VM.
+
+The slot is owned until finalization is DONE, not merely until the handover:
+`submit()` and `detachEmbeddedRuntime()` refuse while `finalizing_` holds a
+record, or a second run's terminal transition would overwrite it and the first
+would report `Completed` with none of its joins or hooks having run.
+
+Later slices on a `Finished` run report `Idle`: the terminal transition is
+published once, and the driver stops owning the run at the handover -- which is
+why the finalizer may destroy the record without racing a slice.
+
+On every launch path the order is **preludes, then `onScriptStart`, then the
+body**. Preludes are the host's own pre-setup and are deliberately invisible
+to the debugger: on the staged path breakpoints are configured after staging
+(i.e. after preludes), and on the web path the debugger-control actor is armed
+by `onScriptStart`. So a hook sees the world the body will see, `stopOnEntry`
+lands on the user's first statement, and an exception in a prelude is a launch
+failure rather than a debugger stop.
+
+**Why the split.** Preparation compiles: it parses, reads and writes the
+bytecode cache, allocates, and updates shared registries -- unbounded work with
+no budget parameter, which cannot go in a control cycle. Activation, by
+contrast, must happen on the driver, because the program's Roxal thread has to
+belong to the thread that will execute it. Keeping them apart is what lets a
+host compile off its loop and still execute on it.
+
+**Ownership transfers only on acceptance.** There is no interval in which a
+caller has been told its program was rejected while the VM still holds a
+closure that could execute later. A rejected `PreparedProgram` is still valid
+and can be retried or dropped. Version 1 keeps a single pending slot rather
+than a queue, so rejection is visible and final instead of hidden behind work
+the host cannot see.
+
+**One driver per runtime, latched on first claim.** A second thread calling
+`driveFor()` advances nothing -- deliberately, since the `Busy` semantics and
+the debugger's stop protocol both assume a single driver.
+
+Three rules the slice contract exists to enforce:
+
+- **`DebugPaused` is neither completion nor budget expiry.** It clears when the
+  debugger releases the stop. Keep calling at the normal cadence: a host that
+  treats it as completion tears down a live program, and one that stops calling
+  never sees the resume.
+- **`ExecutionEnded` is an ownership transfer, not completion.** It is published
+  exactly once; the run reaches `Completed` only after a non-driver finalizer
+  has joined the launch's threads and run the completion hooks. Later slices
+  report `Idle`.
+- **Nothing unbounded happens in a slice.** Preludes execute incrementally under
+  the same deadline as the body, and joins, completion hooks and root release
+  belong to the finalizer.
+
+A host driving the dataflow engine does the same with
+`df::DataflowEngine::instance()->tickFor(budget)`, whose `TickResult` carries
+the same distinctions: `Paused` means evaluation admission is closed by a
+debugger stop, `Busy` means the evaluator lock was held and nothing was done.
+
+**The driver is never parked by the debugger, and never delays a collection.**
+A slice observes a stop, acknowledges it, and returns `DebugPaused` rather than
+blocking inside the VM; and with a collection pending it declines the slice
+outright rather than entering `execute()` and making the collector wait. In the
+harness, slices taken during a stop returned in 4-30&micro;s against a
+500&micro;s budget while the driver kept its cadence throughout.
+
+### Other shapes
+
+Not every embedding owns a loop. The synchronous whole program, the split
+debugger launch and the persistent fragment session are written out in
+[embedding.md](embedding.md). Those three are the whole host-facing surface.
+
+Resuming a suspended execution is not a fourth shape, and there is no host
+entry point for it. `invokeClosure(..., deadline)` starts a bounded execution;
+re-entering `execute(deadline)` on the same thread continues one. The dataflow
+engine uses that pair to drive a `FuncNode` whose body yielded, and it is a
+`friend` of `VM` for exactly that reason -- a host never continues someone
+else's half-finished execution.
+
+`execute()` itself declines when a collection is pending and the calling
+thread is in a GC yield section or drives an `rtYieldOnGC` thread. That check
+lives at the entry every bounded caller shares rather than in each caller: a
+real-time caller must not be the reason a collection is delayed, and a caller
+that forgot the check would silently make the collector wait.
+
+### Execution domains
+
+One runtime, one persistent driver -- and under it three kinds of work with
+three lifetimes: service threads (the dataflow engine's actor thread), a REPL
+session whose actors outlive its fragments, and program runs submitted one at
+a time. Each is an `ExecutionDomain`. A domain is an **ownership** grouping,
+not a scheduling one: a program's actors are ordinary concurrent worker
+threads exactly as before, and the driver's slices advance only the run's
+main thread.
+
+- **Creation.** A fresh program's main thread is created in a new domain at
+  activation (`driveRunSlice`'s Activate phase); the actors it spawns inherit
+  it through `currentOrDefaultDomain()`. The REPL session creates one domain
+  with its thread and keeps it across every fragment. Services stay in
+  `defaultDomain_`, as does the whole synchronous/CLI path. Nothing owns a
+  run's domain but its threads -- it dies with the last of them.
+- **Observation.** `execute()` caches its thread's domain word in a local at
+  entry and the per-instruction check reads through that one register-held
+  pointer; the flag accessors go through `currentInterrupts()`. The default
+  domain aliases `VM::interrupts_`, so default-domain threads read the same
+  atomic they always did. Benchmark-gated at zero regression: min-of-10,
+  E-core pinned, `dispatch_micro` -1.9%, `call_micro` -3.4%.
+- **What membership scopes.** The RuntimeError bit and the retained error
+  text live on the domain (a failed run cannot make the next run or the next
+  fragment look failed). `exit()` from a driven run sets its own domain's
+  flag, wakes its own threads, records the code on the domain (surfaced as
+  `RunHandle::exitCode()`), and returns -- no join on the driver, no engine
+  stop. Finalization joins the run's domain (`joinDomainThreads`) and then
+  retires the launch's module from `ObjModuleType::allModules`; fragments
+  never retire. The `StopCoordinator` is re-bound to the active domain at
+  activation, so a stop on a run never reaches the session's actors or the
+  services.
+- **End of execution.** Every join-all first tells the coordinator execution
+  is ending: it refuses new stops (an execution-lifetime gate, reopened at
+  each activation), releases an active stop without releasing the host's
+  hold, and rolls back a stop still forming. Without the gate, threads
+  released to finish their last statements could trap on a still-armed
+  breakpoint and park again under the very join that released them.
+
+### Fragment sessions
+
+A REPL line and a fresh program are different source lifetimes. A fragment
+deliberately sees what earlier fragments declared; a program deliberately does
+not. That distinction is a `ReplSession`, which owns the persistent compiler,
+module and thread that fragments share.
+
+```cpp
+roxal::ReplSession session = vm.defaultReplSession();
+
+std::stringstream line("var x = 5\n");
+session.evaluateFragmentSync(line);             // no driver attached
+
+// With a driver attached, synchronous evaluation refuses -- it would be a
+// second driver on the same VM -- so a fragment goes through the runtime:
+auto fragment = session.prepareFragment(source, options);
+if (fragment.status == roxal::PrepareFragmentStatus::Ready)
+    runtime.submit(std::move(fragment.fragment));
+```
+
+`prepareFragment()` returns `SessionBusy` rather than compiling against state a
+live fragment is still mutating: the session must be idle **before compilation
+starts**, not merely before the compiled closure is handed off. That check is
+made under the producer lock (two producers that both passed an unlocked check
+would both compile), and the in-flight claim it takes belongs to the prepared
+record -- `PreparedExecutionRecord::fragmentClaimHeld` -- which releases it in
+its destructor if the fragment is dropped unexecuted. Activation takes the
+claim over (clears the flag), because by the time a consumed record dies a
+newer fragment may hold the claim, which it must not clear.
+
+Every compilation, fragment or full program, is serialized by
+`VM::preparationMutex_`: they share module registries, lazy builtin state,
+debug indexes and caches. Producers are off-driver by contract, so blocking
+there is acceptable; the driver never takes it.
+
+A fragment activates on its *session's* thread, because handlers and actors an
+earlier fragment registered belong to that thread and must still be serviced.
+It fires no script start/complete hooks and is not joined at the end -- it is a
+continuation of its session, not a script launch, and its actors may outlive it
+on purpose. Its default completion policy is `TopLevelReturned` for the same
+reason, where a fresh program's is `ExecutionDomainQuiescent`.
+
+### Migration from the superseded API
+
+These entry points were removed once their ambiguity had a replacement. The
+table is for reading older code, not for writing new.
+
+| Removed | Use instead |
+| --- | --- |
+| `run(source, name)` | `executeProgramSync(source, {sourceName})` |
+| `runWithImports(source, name, imports)` | `executeProgramSync(source, {sourceName, imports})` |
+| `setup()` + `runPrepared()` | `stageProgramSync()` + `executeStagedSync()` |
+| `setupLine()` + `runFor()` (the RT handoff) | `prepareProgram()` off-driver + `submit()` + `driveFor()` |
+| `runLine(stream)` | `defaultReplSession().evaluateFragmentSync(stream)` |
+| `addScriptPrelude(receiver, method)` | `ProgramOptions::preludes` |
+| `RTState`, `rtState()`, `waitForRTCompletion()` | `RunHandle::state()` / `wait()` |
+
+`runFor()` is gone too. A host that drove `setup()` + `runFor()` on its own
+thread uses an embedded runtime instead: `prepareProgram()` off the driver,
+`submit()`, then `driveFor()` each period.
+
+### Registering for the hold callback
+
+A host with something physical to stop implements `DebugHostControl`
+([compiler/debug/DebugHostControl.h](compiler/debug/DebugHostControl.h)) and
+registers it before execution starts:
+
+```cpp
+struct MyHost : roxal::DebugHostControl {
+    roxal::DebugHostResult onDebugHoldRequested(
+            const roxal::DebugHoldRequest& r) noexcept override {
+        // Bounded and non-blocking: enqueue the hold, do not perform it here.
+        return holdQueue.tryPush(r.holdGeneration)
+                   ? roxal::DebugHostResult::Queued
+                   : roxal::DebugHostResult::Rejected;
+    }
+    void onDebugStopped(const roxal::DebugStopNotice&) noexcept override {}
+    void onDebugContinueRequested(
+            const roxal::DebugContinueNotice&) noexcept override { releaseHold(); }
+    void onDebugStopFailed(const roxal::DebugStopFailure&) noexcept override {}
+    void onDebugSessionEnded(const roxal::DebugSessionEnd&) noexcept override {}
+};
+
+MyHost host;
+vm.stopCoordinator().setHostControl(&host);   // before execution starts
+```
+
+Every method must be bounded, non-blocking, `noexcept`, and must not
+synchronously re-enter Roxal or the debugger. The request carries only copied
+data — no `Value`, no frame pointer, no borrowed string — so it is safe to hand
+to another thread.
+
+What the host is guaranteed:
+
+1. `onDebugHoldRequested` is invoked **exactly once per running-to-held hold
+   generation**, by a non-real-time thread — never by the thread that
+   discovered the stop condition, and never by the driver. The harness asserts
+   both the count and the thread.
+2. `Queued` means the host accepted responsibility for a controlled halt
+   (nominally within about a second). **It does not mean anything is
+   physically stationary**, and the debugger never waits for it. Roxal's own
+   quiescence proceeds concurrently with the host's deceleration.
+3. **Stepping keeps the hold.** Step in/next/out retain the hold generation and
+   produce no continue notice, so stepping can never implicitly restart
+   whatever the host is holding.
+4. A normal continue produces **exactly one** `onDebugContinueRequested`, for
+   that generation.
+5. Terminate, disconnect while stopped, a fatal error, a failed stop and
+   session end never silently release a hold. The corresponding notice is
+   delivered and the host applies its own fail-safe policy.
+6. A `Rejected` return is recorded and surfaced as a debugger warning. Roxal
+   still quiesces; a safety-critical integration should treat rejection as a
+   fault and keep execution stopped.
+
+So the sequence a host sees, with the driver looping the whole time:
+
+```
+   driver: runFor -> Yielded, Yielded, Yielded ...
+   (breakpoint hit, or the host calls requestStop)
+   host:   onDebugHoldRequested(generation N)   <- start the controlled hold
+   host:   onDebugStopped
+   driver: runFor -> Paused, Paused, Paused ... <- cadence kept, no blocking
+   (steps: more Paused; NO continue notice; still generation N)
+   host:   onDebugContinueRequested(generation N)  <- exactly once
+   driver: runFor -> Yielded, Yielded ...
+```
+
+### Stopping, stepping and resuming from the host
+
+The host's controller thread drives the coordinator directly:
+
+```cpp
+auto& coord = vm.stopCoordinator();
+
+// A controller that sits inside a native call (rather than being an
+// independent OS thread) must exclude itself from epoch membership.
+coord.setExcludedThread(roxal::VM::thread ? roxal::VM::thread.get() : nullptr);
+
+auto outcome = coord.requestStop(roxal::DebugStopReason::Host,
+                                 roxal::TimeDuration::milliSecs(3000));
+if (!outcome.stopped) {
+    // Everything was rolled back and no stop event was delivered.
+    // outcome.failure names the thread that did not reach a safe point.
+}
+
+// ... inspect ...
+
+coord.resume();                       // normal continue: releases the hold
+```
+
+Stepping needs the stopped thread, found through the coordinator's leases:
+
+```cpp
+auto info = coord.stoppedInfo();      // reason, threadId, sourceName, line
+roxal::ptr<roxal::Thread> t;
+for (auto& lt : roxal::ThreadManager::instance()
+                    .snapshotLeases(vm.defaultDomain()->id()))
+    if (lt->id() == info->threadId) { t = lt; break; }
+coord.stepAndResume(*t, roxal::Thread::DebugStepMode::Next);   // In / Next / Out
+```
+
+`stepAndResume` resumes **without** releasing the hold generation; the next
+statement boundary satisfying the mode publishes a new stop.
+
+A stop is all-or-nothing. It is reported only once every member thread has
+acknowledged, dataflow admission is closed, and no evaluator is still active.
+A stop that cannot form rolls everything back — acknowledged members are
+released, no stop event is delivered — and names the thread that did not reach
+a safe point.
+
+### Breakpoints
+
+```cpp
+const std::string key = roxal::ModuleDebugIndex::stableSourceKey(name, text);
+auto bound = roxal::BreakpointManager::instance().setBreakpoints(key, {12, 40});
+// bound[i].verified / .boundLine report where each request actually landed.
+```
+
+Two properties that matter to a host:
+
+- **Requests replace the whole set for a source**, DAP-style. Pushing a partial
+  snapshot deletes everything not in it.
+- **Requests are process-wide and outlive the run they were made for.** That is
+  what lets a host configure a program it has not started yet: set the
+  breakpoints, then submit the source, and they bind at compile time — before
+  the first statement runs. It also means a request can bind to a program the
+  host did not intend to debug.
+
+That second property has a sharp edge, so the coordinator has a gate for it:
+
+```cpp
+// Only publish a trap when some controller could release it again.  A plain
+// function pointer, not std::function: the trap path calls it and must not
+// allocate or lock, so the predicate itself must be an atomic read or
+// similarly trivial.
+static bool debuggerAttached() { return g_session.load() != nullptr; }
+vm.stopCoordinator().setControllerPresentPredicate(&debuggerAttached);
+```
+
+A program parked at a breakpoint answers nothing — not a store call, not even
+a request to exit — so a stop that no controller owns freezes it permanently.
+An embedding whose controller comes and goes (a session that can be switched
+off, a UI that can be closed) must install this predicate; traps then stay
+inert while no controller exists, which is what "no debugger attached" should
+mean. The default — no predicate — assumes a controller is always present,
+which is the DAP adapter's case. An in-VM controller thread registered with
+`setExcludedThread` counts as a controller regardless.
+
+### Inspecting a stopped program
+
+```cpp
+roxal::DebugInspector insp(coord);
+for (auto& t : insp.threads()) { /* t.threadId, t.name */ }
+auto frames = insp.stackTrace(info->threadId, /*start=*/0, /*count=*/0);
+for (auto& sc : insp.scopes(frames[0].handle))       // Locals / Upvalues / Module
+    for (auto& v : insp.variables(sc.variablesHandle, 0, 0))
+        use(v.name, v.value, v.childHandle);         // childHandle==0: no children
+auto ev = insp.evaluate(frames[0].handle, "counter.total");
+```
+
+Handles are opaque, monotonic, epoch-stamped session-local ids. They are
+invalidated at the top of every release — continue, step, rollback, session end
+— before any debuggee code runs, so a handle can never read a value from a
+world that has moved on. Variables are paged (`start`, `count`) and rendering
+is bounded, so a large or cyclic structure costs a page, not a traversal.
+
+Evaluation is deliberately restricted to safe reads: identifiers, `.property`,
+`[index]` and `['key']` paths resolved innermost-first through locals,
+upvalues and module variables. It runs no user code and mutates nothing.
+
+### Service threads that must keep running
+
+A host thread that services the debugger itself — a UI actor, a transport
+pump — must not be frozen by the stop it is servicing:
+
+```cpp
+t->debugExcluded.store(true, std::memory_order_release);
+```
+
+Set it **before the thread becomes runnable**. An excluded thread skips every
+stop gate, is exempt from epoch membership and leases, and keeps dequeuing
+work while the world is stopped. Marking a thread from inside its own first
+callback leaves a window in which a breakpoint can trap the very thread that
+would have released it.
+
+### Exceptions and fatal errors
+
+```cpp
+coord.setStopOnFatal(true);
+```
+
+While enabled, a fatal runtime error or a provably uncaught exception
+publishes an `Exception` stop **before** frames are reset, so the failure stays
+inspectable; the stop's `description` carries the message and rendered stack.
+Continue or terminate then performs the normal teardown exactly once. Off by
+default: with no debugger attached, behaviour is unchanged.
+
+### Teardown
+
+`VM::shutdown()` already performs the debugger's half, in the order the
+lifetimes require: notify session end, release any active stop **without**
+releasing the hold (`resume(/*releaseHold=*/false)` — the fail-safe leaves that
+decision with the host), disarm every breakpoint while the coordinator is still
+alive, join the debug worker **before** the debug index drops its roots and the
+collector tears down (the worker is a registered GC mutator for its whole
+life), and only then drop the retained function graphs.
+
+The host's own obligations are therefore small, but real:
+
+- stop issuing controller commands first — a `requestStop` racing shutdown has
+  nothing left to form an epoch over;
+- clear the hook (`coord.setHostControl(nullptr)`) before your
+  `DebugHostControl` object is destroyed, since the coordinator holds it as a
+  non-owning pointer;
+- keep an installed `OutputSink` alive until every VM-owned thread has stopped,
+  for the same reason;
+- expect `onDebugSessionEnded` while a hold is still open, and apply your own
+  fail-safe policy to it. Nothing in Roxal will release that hold for you.
+
+### If you want a protocol instead of an API
+
+`roxal --dap` runs the same core behind a Debug Adapter Protocol adapter on
+stdio, which is what the VS Code extension in `vscode/` launches. An embedding
+that already has its own IPC should use the typed core above rather than
+carrying JSON: the browser IDE does exactly that, exposing the core through a
+`debug` store instead of a socket.
 
 ## Garbage Collection & Thread Coordination
 
@@ -1969,6 +2488,21 @@ garbage with `strong > 0` — so a successful increment re-checks the death
 flag and backs out (the `collecting` CAS makes the undo `decRef` safe
 against double-routing) before vending a strong Value.
 
+Every strong and weak release follows the **shared_ptr death protocol**:
+the decrement is a release, and the decrement that reaches zero is followed
+by an acquire fence before anything reads the object (`Obj::decRef`,
+`Obj::decWeak`, `Value::decWeakObj`, `delObj`, and the batch release in
+`VM::freeObjects`). The fence is what orders *other* threads' last accesses
+before the tear-down: a caller that pops an actor call's future while the
+worker still holds its copy makes the worker's release the final one, and
+the caller's reads reach the collector only through that fence. The
+protocol is correct as written, but ThreadSanitizer does not model fences,
+so a TSan build would report the collector's `dropReferences()`/`delete[]`
+as racing the caller's reads. `refReleaseOrder` (`ObjControl.h`) is
+`acq_rel` under TSan and `release` otherwise; every release site uses it,
+so the sanitizer sees the same edge the hardware does. A new refcount-style
+release must use it too.
+
 The retire queue is an intrusive lock-free CAS chain through
 `ObjControl::retiredObj`/`retireNext` (link-then-publish, so the consumer's
 take-all sees only fully linked chains; the consumer reverses for FIFO).
@@ -2001,7 +2535,14 @@ via `enqueueActorFinalize`; a lazily started lifecycle thread joins the
 actor's worker and destroys the instance. The reclaimer never blocks on a
 thread exit. `Thread::join` is idempotent (join-once under a per-Thread
 mutex, taken inside a `GCSafeBlockScope`), so actor finalization and shutdown
-joins cannot race a double-join.
+joins cannot race a double-join. The join-once lock is also what orders the
+winner's last touch of the instance before the finalizer's destructor: the
+finalizer is the losing joiner, and it destroys the instance the moment its
+join returns, so the winner clears the instance's weak back-reference
+(`ActorInstance::thread`) *inside* the locked region. That back-reference is
+published by the spawner before the instance escapes and thereafter read or
+cleared only under the actor's `queueMutex` (a plain `weak_ptr` is not
+atomic).
 `ThreadManager::waitLifecycleIdle()` drains the queue deterministically —
 `gc()` calls it so actor teardown is complete when `gc()` returns.
 
@@ -2176,6 +2717,31 @@ A `requestCollect()` *from inside* a section defers its thread-waking side
 effects to the next non-RT safepoint poll (`deferredGCWakePending_`) — waking
 sleepers takes locks the RT path must not touch.
 
+#### `CollectionDeferralScope` — compilation latches requests
+
+Preparation (compiling a program or a fragment) holds one of these for its
+whole duration. While the depth is non-zero, `requestCollect()` does not
+publish: it sets `deferredCollectionPending_` and returns, so a host driving
+real-time slices keeps entering its yield sections instead of declining every
+cycle until the compile ends. The last scope out publishes the latched request.
+
+Two details make that correct rather than merely usual:
+
+- **The requester re-checks after latching.** Depth check, then store the
+  flag, then check the depth *again* — seq-cst on both sides, pairing with the
+  destructor's decrement-then-exchange. Without the re-check a requester could
+  read depth > 0, be descheduled, and store the flag after the last scope had
+  decremented and found it clear: a latched request no scope would ever
+  publish. If both sides see each other, both publish, and `requestCollect()`
+  dedups on its CAS.
+- **`gc()` waits it out, and parks while doing so.** A script's `gc()` promises
+  "collected" on return, so with a request latched behind another thread's
+  compile it waits for the scope to lift. It parks at the safepoint for any
+  collection already in flight rather than only sleeping: that collection
+  waits for this thread, the compiling thread parks for that collection, and
+  the deferral cannot lift until the compile ends — a thread that merely slept
+  would close that loop into a deadlock.
+
 #### `GCNoParkScope` — registered but must not park
 
 Keeps the thread's context **unparked** (Running) through nested safepoint
@@ -2250,8 +2816,16 @@ class ModuleFoo : public BuiltinModule {
 };
 ```
 
-The member itself registers/unregisters; forgetting is a compile error, not a
-silent heap corruption. Pair module-held roots with an `onModuleUnloading()`
+The member itself registers/unregisters; forgetting the wrapper is an auditable
+type error rather than a separate registration call that can silently drift.
+Registration is deliberately performed by a guard declared **after** the
+payload and tracer: it registers only once both are initialized, and C++'s
+reverse member destruction unregisters before either is torn down. Do not move
+that guard from the last-member position in a new root wrapper. The
+`gc_coordination` self-test races both `TracedMember` and `TracedRef` lifetimes
+against root scans and checks the registry returns to its starting count.
+
+Pair module-held roots with an `onModuleUnloading()`
 override that clears the containers while the VM object graph is still
 alive — Values lingering into the module destructor decRef objects the
 shutdown sweep already freed. Roots may not be created or destroyed inside an
@@ -2768,3 +3342,43 @@ programmer's responsibility to break explicitly.
   - This is convenient for specifying vector forms of orientations, like the orient() constructor args such as rpy.  So that `orient(rpy=[10deg 20deg 30deg])` is valid and as expected. (the vector values are converted to radians and passed and orient stores a quaternion).
   - It may be convenient for specifying robot joint configuration vectors also (but only if all the joints are of the same type), as in `[10deg 20deg -30deg 0 3.1rad 0]`, but won't help if the joints mix revolute and prismatic, forcing use of a list with comma separator syntax in that case, which can cause confusion
   - matrix and tensor don't have this behaviour
+
+## Deferred cleanups
+
+Issues noticed during the debugger work that are not on any feature's path.
+None affects the debugger's cost model (unattached execution is exactly
+baseline; the attached cost exists only while breakpoints or stepping are
+armed), and none was introduced by it. Recorded here so they are not lost;
+pick them up when a profile or a user asks.
+
+- **C1 -- exception cost on the hot path.** `VM::raiseException` captures a
+  stack trace for *every* raised exception, caught ones included
+  (`VM.cpp:12442`), and each frame's line/column comes from
+  `Chunk::getLine`/`getColumn`, which walk the line table linearly
+  (`Chunk.cpp:57`, `:70`). A script that throws inside a loop pays
+  O(frames x line-table) per iteration. Fix: `upper_bound` on the sorted
+  line table, and capture the trace lazily (at the point an uncaught
+  exception is reported) or only for uncaught ones. Gate: `runtests.py`
+  green and every `.err` golden byte-identical.
+- **C2 -- future rendering is awaited in the wrong layer.** `objToString`
+  resolves a pending future before rendering it (`Object.cpp:7019`), so a
+  leaf renderer with ~74 call sites can block. The await belongs in
+  `toType(ValueType::String, ...)`; `objToString` should render a pending
+  future as `<future pending>`. Language-visible: `print([fut])` would print
+  `[<future pending>]` rather than await; `print(fut)` is already awaited at
+  parameter conversion and stays as it is. Own commit with `.rox` tests,
+  including the nested case.
+- **C3 -- `--dis` prints nothing on a `.roc` cache hit.** The disassembly
+  runs only when compilation happens, so a cached module shows nothing
+  unless `--recompile` is also given. One line in `roxal.cpp` (the
+  `forceRecompile` computation, currently `roxal.cpp:929`) should treat
+  `--dis` as forcing recompilation, plus the help text.
+- **C4 (optional) -- `ExternalParticipant` has no wake mechanism.**
+  `DataflowEngine::wakeDrain()` is an ad-hoc wake for one blocking
+  non-`Thread` participant (`VM.cpp:6507`, `StopCoordinator.cpp:154`); a
+  third such participant would need a third special case. A generalization
+  is a wake callback on `ExternalParticipant` (`SimpleMarkSweepGC.h:88`).
+  If done, specify the callback's lifetime against a participant destroyed
+  while a collection request is in flight, invoke callbacks outside the GC
+  mutex, and prove no callback can take a lock held by a polling
+  participant. Nothing currently needs it.

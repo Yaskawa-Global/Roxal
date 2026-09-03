@@ -126,13 +126,16 @@ std::vector<SymbolEntry> collectModuleEntries(ObjModuleType* module)
     return entries;
 }
 
-std::vector<SymbolEntry> collectPropertyEntries(ObjObjectType* type)
+std::vector<SymbolEntry> collectPropertyEntries(ObjObjectType* type,
+                                                size_t maxEntries)
 {
     std::vector<SymbolEntry> entries;
     if (!type)
         return entries;
 
     for (int32_t hash : type->propertyOrder) {
+        if (entries.size() >= maxEntries)
+            break;
         auto it = type->properties.find(hash);
         if (it == type->properties.end())
             continue;

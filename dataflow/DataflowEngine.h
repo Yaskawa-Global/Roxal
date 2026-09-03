@@ -30,9 +30,13 @@ public:
         Yielded,       // Time budget exhausted mid-evaluation, more work pending
         Overrun,       // Tick exceeded its period - error condition
         Error,         // Runtime error during execution
-        Busy           // Evaluator lock held (event-island evaluation in
+        Busy,          // Evaluator lock held (event-island evaluation in
                        // flight on the engine thread); nothing was done --
                        // an RT host retries next cycle rather than blocking
+        Paused         // Debugger stop: evaluation admission is closed.  Not
+                       // completion and not a budget expiry -- the host keeps
+                       // scheduling ticks and they return Paused until the
+                       // debugger releases
     };
 
     // Access the singleton instance. If \p create is false and the engine has
@@ -72,11 +76,55 @@ public:
 
     // Stop the engine (causes run() to exit)
     void stop();
+    bool runLoopActive() const { return m_runLoopActive.load(std::memory_order_acquire); }
 
     // Wake run()'s idle drain sleep (see m_pendingEventCv).  Called by
     // stop() and by VM::wakeAllThreadsForGC so a dormant engine thread
     // reaches its GC poll / shutdown check promptly.
     void wakeDrain();
+
+    // ---- Debugger evaluation-admission gate ----
+    // Closed by the StopCoordinator when a stop epoch forms; every path that
+    // evaluates islands/nodes either refuses admission (tick/tickFor return
+    // without work / Paused) or counts itself active (island evaluation,
+    // node init), and a complete stop requires closed + zero active.
+    // External producers keep enqueueing while closed; evaluation drains
+    // only after release.
+    // Protocol: the ACTIVE-COUNT INCREMENT is the linearization point.
+    // Every path increments FIRST, then rejectable paths recheck closed and
+    // back out -- so the coordinator's quiesced() == closed && active==0 can
+    // never be observed while an entrant is between its admission check and
+    // its work (the TOCTOU a check-then-count order would allow).  All
+    // operations are seq_cst:
+    // these are per-tick/per-island frequencies, and seq_cst removes any
+    // doubt about the close-store / count-read vs count-add / closed-read
+    // interleaving.
+    class DebugGate {
+    public:
+        void close() { closed_.store(true); }
+        void open()  { closed_.store(false); }
+        bool closed() const { return closed_.load(); }
+        bool quiesced() const { return closed_.load() && active_.load() == 0; }
+        // Rejectable entry (tick/tickFor/event evaluation): increment, then
+        // back out if a stop raced admission.  false = do no work.
+        bool tryEnter() {
+            active_.fetch_add(1);
+            if (closed_.load()) {
+                active_.fetch_sub(1);
+                return false;
+            }
+            return true;
+        }
+        // Unconditional counted entry (node init, script-thread evaluate):
+        // work that must not be dropped; the stop cannot commit until it
+        // leaves.
+        void enterCounted() { active_.fetch_add(1); }
+        void leaveCounted() { active_.fetch_sub(1); }
+    private:
+        std::atomic<bool> closed_ { false };
+        std::atomic<int>  active_ { 0 };
+    };
+    DebugGate debugGate;
 
     // run for single engine tick (GCD of all clock signals)
     //  (if waitForTickStart==true and TimePoint::currentTime() is not yet tick-number*tick-period, wait until then)
@@ -295,6 +343,10 @@ private:
 
     std::atomic<bool> m_networkModified;
     std::atomic<bool> m_shouldStop{false};
+    // True while run() is looping on the engine actor thread.  An exit/
+    // interrupt stops that loop; the embedding re-queues run() for the next
+    // script when this reads false (VM::restartDataflowEngineIfStopped).
+    std::atomic<bool> m_runLoopActive{false};
 
     // Latched true on the first tickFor() call: an embedding host (e.g. an
     // RT control loop) has taken ownership of the PERIODIC schedule.  From

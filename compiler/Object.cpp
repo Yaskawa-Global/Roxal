@@ -562,7 +562,7 @@ void Obj::decRef()
     // thread's writes visible before dropReferences/destruction/free reads
     // them. Increments stay relaxed (they publish nothing). Relaxed here is
     // free on x86 -- which is why only the wasm build ever corrupted.
-    auto prevCount = control->strong.fetch_sub(1, std::memory_order_release);
+    auto prevCount = control->strong.fetch_sub(1, refReleaseOrder);
     if (prevCount <= 1) {
         std::atomic_thread_fence(std::memory_order_acquire);
         if (!control->collecting.exchange(true, std::memory_order_acq_rel)) {
@@ -5063,7 +5063,7 @@ void ActorInstance::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         slot.clearSignal();
         slot.value = v;
     }
-    ptr<Thread> newThread = make_ptr<Thread>();
+    ptr<Thread> newThread = Thread::create(VM::currentOrDefaultDomain(), ThreadKind::Actor);
     // Keep the thread alive by registering it with the VM. Without this the
     // Thread object would be destroyed immediately after deserialization,
     // causing std::terminate since the underlying std::thread is still
@@ -7829,7 +7829,7 @@ Value roxal::makeRemoteActor(const Value& actorType, int64_t remoteId, ptr<Compu
     actor->remoteConn = conn;
     actor->remoteConnHold = conn;
 
-    ptr<Thread> newThread = make_ptr<Thread>();
+    ptr<Thread> newThread = Thread::create(VM::currentOrDefaultDomain(), ThreadKind::Actor);
     VM::instance().registerThread(newThread);
     actor->thread = newThread;
     newThread->act(actorVal);

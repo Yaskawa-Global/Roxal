@@ -114,17 +114,42 @@ export async function startRoxal(source, { expectStore, onOutput, name = '<scrip
  * finish, then submit. Re-exposing the same store name replaces it, so the edited
  * object takes effect rather than the old one being silently reused.
  */
-export async function runScript(rox, source, { expectStore, assumeStopped, name = '<script>' } = {}) {
-    if (!assumeStopped) {
-        const before = rox.ccall('roxal_completed_count', 'number', [], []);
-
-        rox.ccall('roxal_request_stop', null, [], []);   // harmless if nothing is parked
-
-        const stopBy = Date.now() + 10000;
-        while (rox.ccall('roxal_completed_count', 'number', [], []) === before) {
-            if (Date.now() > stopBy) throw new Error('the running script did not stop');
-            await new Promise(r => setTimeout(r, 20));
+/**
+ * Displace whatever script currently owns the VM: ask a web.serve() park to
+ * return (graceful), and if the script is still alive after `graceMs` --
+ * a batch loop never parks in serve -- interrupt it (a clean VM exit of
+ * that run; the host resets state before the next).
+ */
+export async function stopCurrent(rox, { graceMs = 1500, deadlineMs = 12000 } = {}) {
+    const before = rox.ccall('roxal_completed_count', 'number', [], []);
+    if (!scriptParked(rox)) return;                     // nothing alive
+    rox.ccall('roxal_request_stop', null, [], []);
+    const start = Date.now();
+    let escalated = false;
+    while (rox.ccall('roxal_completed_count', 'number', [], []) === before) {
+        if (!escalated && Date.now() - start > graceMs) {
+            rox.ccall('roxal_interrupt_script', null, [], []);
+            escalated = true;
         }
+        if (Date.now() - start > deadlineMs)
+            throw new Error('the running script did not stop');
+        await new Promise(r => setTimeout(r, 20));
+    }
+}
+
+export async function runScript(rox, source,
+                                { expectStore, assumeStopped, name = '<script>',
+                                  superseded } = {}) {
+    // `superseded` lets the caller displace a run that is still waiting
+    // to start.  A batch script never exposes a store, so this wait runs
+    // the full deadline; without a way out, anything the user does in
+    // those 20s (press Run again, switch on debugging) is swallowed.
+    const givenUp = () => Boolean(superseded && superseded());
+    const supersededError = () =>
+        Object.assign(new Error('superseded by a newer run'), { superseded: true });
+    if (givenUp()) throw supersededError();
+    if (!assumeStopped) {
+        await stopCurrent(rox);
     }
 
     const ranBefore = rox.ccall('roxal_completed_count', 'number', [], []);
@@ -155,6 +180,7 @@ export async function runScript(rox, source, { expectStore, assumeStopped, name 
                 : 'the script stopped with an error — see the output pane'),
                 { scriptEnded: true, rc });
         }
+        if (givenUp()) throw supersededError();
         if (Date.now() > deadline) throw new Error('timed out starting the script');
         await new Promise(r => setTimeout(r, 20));
     }

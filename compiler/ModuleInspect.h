@@ -28,6 +28,8 @@ private:
     Value inspect_parse_statement_builtin(ArgsView args);
     Value inspect_parse_declaration_builtin(ArgsView args);
 
+    Value inspect_render_builtin(ArgsView args);
+    Value inspect_debuginfo_builtin(ArgsView args);
     Value inspect_members_builtin(ArgsView args);
     Value inspect_signatures_builtin(ArgsView args);
     Value inspect_call_builtin(ArgsView args);

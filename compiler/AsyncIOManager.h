@@ -75,7 +75,7 @@ public:
     // Takes Value by copy to ensure GC keeps the file object alive
     Value getPendingFuture(Value fileValue);
 
-    // Blocking wait - only use when not in runFor() context
+    // Blocking wait - only use when not driving bounded slices
     void waitForFile(Value fileValue);
 
     // Lifecycle

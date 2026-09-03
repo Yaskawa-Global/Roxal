@@ -19,7 +19,7 @@ test(`ide startup file A/B`, async ({ page }) => {
     const diag = await page.evaluate(() => { try { return window.__rox.ccall('roxal_diag','string',[],[]); } catch { return 'gone'; } });
     const hist = await page.evaluate(() => { try { return window.__rox.ccall('roxal_drain_histogram','string',[],[]); } catch { return 'gone'; } });
     console.log(`RESULT hist=${hist}`);
-    const out = await page.evaluate(() => document.querySelector('.output')?.textContent?.trim().slice(-120) ?? '');
+    const out = await page.evaluate(() => document.querySelector('.out')?.textContent?.trim().slice(-120) ?? '');
     console.log(`RESULT file=${file} crashed=${crashed} output="${out.replace(/\n/g,' | ')}"`);
     console.log(`RESULT diag=${diag}`);
     console.log('RESULT console tail:\n' + conlog.slice(-12).join('\n'));

@@ -41,3 +41,38 @@ test('the IDE survives a script that ends without parking', async ({ page }) => 
     await page.locator('.repl-input').press('Enter');
     await expect(page.locator('.repl-out').first()).toHaveText('42', { timeout: 20000 });
 });
+
+// The same invariant, but on the BOOT path: the remembered file is a batch
+// script, so it completes during boot and leaves nothing parked.  Boot's own
+// recovery has to put the services back -- and it never could, because it
+// runs inside one long async function started on the FIRST render, so every
+// helper it calls sees that render's `rox`, which is null.  The recovery threw
+// a TypeError instead, and the app panel showed it.
+test('the IDE survives BOOTING into a script that ends', async ({ page }) => {
+    test.setTimeout(180000);
+    await page.addInitScript(() => {
+        if (!localStorage.getItem('roxal-ide-last-file'))
+            localStorage.setItem('roxal-ide-last-file', 'oven.rox');
+    });
+    await page.goto('/');
+    await expect(page.locator('.tab.active')).toHaveText(/oven\.rox/, { timeout: 90000 });
+    await expect(page.locator('.v.big')).toHaveText('20.0°', { timeout: 60000 });
+
+    // Make the remembered file a script that runs and ends, and save it.
+    await page.evaluate(() => window.monaco.editor.getEditors()[0].getModel().setValue(
+        ['import web', "print('batch done')", ''].join('\n')));
+    await page.getByRole('button', { name: /^Run$/ }).click();
+    await expect(page.locator('.pane-body.out')).toContainText('batch done', { timeout: 60000 });
+
+    // Boot into it.  The program's own output arrives, and boot recovers.
+    await page.reload();
+    await expect(page.locator('.pane-body.out')).toContainText('batch done', { timeout: 90000 });
+    await expect(page.locator('pre.error')).toHaveCount(0);
+
+    // Services restored: the console evaluates through the compiler again.
+    await expect(async () => {
+        await page.locator('.repl-input').fill('6 * 7');
+        await page.locator('.repl-input').press('Enter');
+        await expect(page.locator('.repl-log')).toContainText('42', { timeout: 4000 });
+    }).toPass({ timeout: 60000, intervals: [3000] });
+});

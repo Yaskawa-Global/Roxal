@@ -21,7 +21,7 @@ constexpr char ComputeMagic[4] = {'R', 'X', 'C', 'S'};
 // 39: ObjModuleType's record grew declAnnotations; the wire ships Values
 // through the same writeValue()/readValue() as the .roc, so peers of different
 // versions would misparse a serialized function's embedded module type.
-constexpr std::uint32_t ComputeVersion = 40;
+constexpr std::uint32_t ComputeVersion = 41;   // 41: Chunk debug metadata
 
 // Default listen port for `roxal --server`
 constexpr std::uint16_t ComputeDefaultPort = 26925;

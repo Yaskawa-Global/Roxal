@@ -32,6 +32,10 @@
 
 #include <core/TimePoint.h>
 #include "VM.h"
+#include "debug/StopCoordinator.h"
+#include "debug/ValueRender.h"
+#include "debug/ModuleDebugIndex.h"
+#include "debug/BreakpointManager.h"
 // VM.h forward-declares the optional modules rather than including them, so the
 // TUs that instantiate or call into one pull in the real headers here.
 #ifdef ROXAL_ENABLE_FILEIO
@@ -46,6 +50,7 @@
 #ifdef ROXAL_ENABLE_REGEX
 #include "ModuleRegex.h"
 #endif
+#include "ModuleDebug.h"
 #ifdef ROXAL_ENABLE_INSPECT
 #include "ModuleInspect.h"
 #endif
@@ -1246,8 +1251,7 @@ void roxal::scheduleEventHandlers(Value eventWeak, ObjEventType* ev, Value event
 
 
 VM::VM()
-    : lineMode(false)
-    , cacheModeSetting(CacheMode::Normal)
+    : cacheModeSetting(CacheMode::Normal)
 {
     stackLimit = configuredStackLimit.load(std::memory_order_relaxed);
     callFrameLimit = configuredCallFrameLimit.load(std::memory_order_relaxed);
@@ -1255,10 +1259,14 @@ VM::VM()
 
     SimpleMarkSweepGC::instance().setVM(this);
 
+    // Debugger stop coordinator for the default domain.  Eager:
+    // cooperative stop points must never race a lazy construction.
+    stopCoordinator_ = std::make_unique<StopCoordinator>(*this, defaultDomain_);
+
     assert(sizeof(Value) == sizeof(uint64_t)); // ensure Value is 64bit
 
-    runtimeErrorFlag = false;
-    exitRequested = false;
+    clearRuntimeErrorFlag();
+    clearExitFlag();
     exitCodeValue = 0;
 
     for (auto& counter : opcodeProfileCounts)
@@ -1306,6 +1314,7 @@ VM::VM()
     #ifdef ROXAL_ENABLE_REGEX
     lazyModuleRegistry.registerFactory("regex", []{ return make_ptr<ModuleRegex>(); });
     #endif
+    lazyModuleRegistry.registerFactory("debug", []{ return make_ptr<ModuleDebug>(); });
     #ifdef ROXAL_ENABLE_INSPECT
     lazyModuleRegistry.registerFactory("inspect", []{ return make_ptr<ModuleInspect>(); });
     #endif
@@ -1339,7 +1348,7 @@ VM::VM()
 
     // Execute builtin module script for sys & math
     // Other modules' .rox files are executed during lazy loading
-    ptr<Thread> initThread = make_ptr<Thread>();
+    ptr<Thread> initThread = Thread::create(defaultDomain_, ThreadKind::Init);
     thread = initThread;
     executeBuiltinModuleScript("sys.rox", getBuiltinModuleType(toUnicodeString("sys")));
 
@@ -1444,7 +1453,7 @@ VM::VM()
     auto dataflowType = newObjectTypeObj(toUnicodeString("_DataflowEngine"), true);
     Value dataflowTypeVal { Value::objVal(std::move(dataflowType)) };
     dataflowEngineActor = Value::actorInstanceVal(dataflowTypeVal);
-    dataflowEngineThread = make_ptr<Thread>();
+    dataflowEngineThread = Thread::create(defaultDomain_, ThreadKind::Dataflow);
     dataflowEngineThread->act(dataflowEngineActor);
 
     // Start the dataflow engine run loop on its actor thread
@@ -1596,6 +1605,27 @@ void VM::shutdown()
     // dropReferences() run so the whole teardown sees it.
     SimpleMarkSweepGC::instance().setShuttingDown(true);
 
+    // Debugger session teardown: tell the host the session is ending
+    // WITHOUT releasing an active motion hold (fail-safe stays with the
+    // host), then release any parked threads so the joins below can
+    // complete.
+    if (stopCoordinator_) {
+        stopCoordinator_->notifySessionEnd();
+        if (stopCoordinator_->isStopped())
+            stopCoordinator_->resume(/*releaseHold=*/false);
+        // Disarm every breakpoint (and release the slow-path demand) while
+        // the coordinator is still alive; this also drops the manager's
+        // chunk leases, so a later VM in the same process cannot see stale
+        // armed state.
+        BreakpointManager::instance().clearAllBreakpoints();
+        // Join the debug worker BEFORE the index drops its roots and the
+        // collector tears down.
+        stopCoordinator_->shutdownWorker();
+    }
+    // Drop the debug index's retained function graphs while the collector
+    // and root registry are still alive.
+    ModuleDebugIndex::instance().clearAll();
+
     // GC coordination observability: one line per run, opt-in via
     // ROXAL_GC_STATS=1 (unconditional output would pollute test stdout).
     // Positive soak evidence -- collections occurred, none on a thread that
@@ -1723,8 +1753,18 @@ void VM::shutdown()
 
     conditionalInterruptClosure = Value::nilVal();
     combinatorRelayFunction = Value::nilVal();
-    replModuleValue = Value::nilVal();
-    pendingRTClosure_ = Value::nilVal();
+    if (replSession_) {
+        ReplSessionValues& values = replSession_->roots.get();
+        values.module = Value::nilVal();
+        values.lastResult = Value::nilVal();
+        replSession_->compiler.reset();
+        replSession_->thread.reset();
+    }
+    // A host may still have an attached driver with pending/active roots.
+    // Clearing it here runs its cancellation while the object graph and the
+    // collector are still alive.
+    shutdownEmbeddedRuntime();
+
 
     // Drop the cross-compiler user-module registry's strong Value refs before
     // freeObjects(). Otherwise its destructor runs after VM destruction has
@@ -1735,9 +1775,11 @@ void VM::shutdown()
         userModuleRegistry.clear();
     }
 
-    // Same concern for the shared REPL compiler — its importedModules map
-    // holds strong Value refs. Destroy it before freeObjects().
-    replCompiler_.reset();
+    // Same concern for the session's compiler — its importedModules map holds
+    // strong Value refs, so it is destroyed before freeObjects().  The
+    // session's own Values were cleared above.
+    if (replSession_)
+        replSession_->compiler.reset();
 
     if (dataflowEngine)
         dataflowEngine->clear();
@@ -1853,73 +1895,75 @@ bool VM::cacheWritesEnabled() const
 
 
 
-ExecutionStatus VM::runWithImports(std::istream& source, const std::string& name,
-                                    const std::vector<Value>& imports)
+
+
+
+// Execute a program previously prepared by stageProgramSync(), with the
+// synchronous-execution bracketing and teardown.  Split out so a debug
+// transport adapter can compile at launch (breakpoints then verify against
+// the compiled module) and start execution at configurationDone.  Must be
+// called on the same thread that prepared it.
+ExecutionStatus VM::stageProgramSync(std::istream& source, ProgramOptions options)
 {
-    // Cover the whole run: compile, execute (parks via its safepoints -- the
-    // participant makes execute skip its own registration), and the
-    // post-execute teardown (joinAllThreads/freeObjects), which otherwise
-    // touches GC state unregistered.  See ScopedGCMutatorCover.
-    ScopedGCMutatorCover gcCover;
+    // Execution ownership belongs to the driver once a host has attached one.
+    if (embeddedRuntimeAttached_.load(std::memory_order_acquire))
+        return ExecutionStatus::Busy;
 
-    // Same shape as run(), but routes through the setup() overload that
-    // pre-populates the script's module type with vars from `imports`.
-    ExecutionStatus setupResult = setup(source, name, imports);
-    if (setupResult != ExecutionStatus::OK)
-        return setupResult;
-
-    markMainThread();
-
-    ExecutionStatus result = ExecutionStatus::OK;
-    inSynchronousExecution_.store(true, std::memory_order_release);
-    try {
-        auto [execResult, value] = execute();
-        result = execResult;
-    } catch (...) {
-        inSynchronousExecution_.store(false, std::memory_order_release);
-        joinAllThreads();
-        thread.reset();
-        freeObjects();
-        throw;
-    }
-    inSynchronousExecution_.store(false, std::memory_order_release);
-
-    ExecutionStatus joinResult = joinAllThreads();
-    if (joinResult != ExecutionStatus::OK || runtimeErrorFlag.load())
-        result = ExecutionStatus::RuntimeError;
-
-    if (exitRequested.load())
-        result = ExecutionStatus::OK;
-
-    thread.reset();
-    freeObjects();
-    return result;
+    clearRuntimeErrorFlag();
+    PrepareProgramResult prepared = prepareProgram(source, std::move(options));
+    // A shut-down VM compiled nothing, so it is not a CompileError: Busy is
+    // the status that says no work was done and the VM is not yours to run.
+    if (prepared.status == PrepareStatus::ShuttingDown)
+        return ExecutionStatus::Busy;
+    if (prepared.status != PrepareStatus::Ready)
+        return ExecutionStatus::CompileError;
+    return activatePrepared(std::move(prepared.program));
 }
 
 
-ExecutionStatus VM::run(std::istream& source, const std::string& name)
+
+ExecutionStatus VM::executeProgramSync(std::istream& source, ProgramOptions options)
 {
-    // Cover the whole run -- see runWithImports for the rationale.
+    // Cover the whole thing: compile, execute (which parks at its own
+    // safepoints), and the post-execution teardown, which touches GC state.
     ScopedGCMutatorCover gcCover;
 
-    // Setup: compile and prepare the initial call frame
-    ExecutionStatus setupResult = setup(source, name);
-    if (setupResult != ExecutionStatus::OK)
-        return setupResult;
+    const ExecutionStatus prepared = stageProgramSync(source, std::move(options));
+    if (prepared != ExecutionStatus::OK)
+        return prepared;
+    return executeStagedSync();
+}
 
+ExecutionStatus VM::executeStagedSync()
+{
+    ScopedGCMutatorCover gcCover;
     markMainThread();
+    if (stopCoordinator_)
+        stopCoordinator_->beginExecution();
+
+    for (auto& mod : builtinModules) {
+        if (mod) mod->onScriptStart(*this);
+    }
 
     // Execute directly on the host thread
     ExecutionStatus result = ExecutionStatus::OK;
-    inSynchronousExecution_.store(true, std::memory_order_release);
     try {
         auto [execResult, value] = execute();
+        // Teardown below is only for TERMINAL statuses.  A suspended status
+        // surfacing here (Paused: non-RT threads normally park inside
+        // execute(); Yielded: only possible from an RT-flagged misconfigured
+        // run() thread) must NOT fall through to joinAllThreads/freeObjects
+        // -- re-enter instead; the debug entry gate parks a paused thread,
+        // so this does not spin.
+        while (isSuspended(execResult)) {
+            auto [r2, v2] = execute();
+            execResult = r2;
+        }
         result = execResult;
     } catch (...) {
         // Ensure cleanup runs even if execute() throws (e.g. from queueCall
         // runtime errors).  Without this, joinAllThreads/thread.reset are
         // skipped, causing static/thread_local destruction order issues.
-        inSynchronousExecution_.store(false, std::memory_order_release);
         joinAllThreads();
         for (auto& mod : builtinModules) {
             if (mod) mod->onScriptComplete(*this);
@@ -1928,15 +1972,14 @@ ExecutionStatus VM::run(std::istream& source, const std::string& name)
         freeObjects();
         throw;
     }
-    inSynchronousExecution_.store(false, std::memory_order_release);
 
     // Join any other threads spawned during execution (actors, etc.)
     ExecutionStatus joinResult = joinAllThreads();
 
-    if (joinResult != ExecutionStatus::OK || runtimeErrorFlag.load())
+    if (joinResult != ExecutionStatus::OK || hasRuntimeError())
         result = ExecutionStatus::RuntimeError;
 
-    if (exitRequested.load())
+    if (isExitRequested())
         result = ExecutionStatus::OK;
 
     #if defined(DEBUG_TRACE_EXECUTION)
@@ -1957,48 +2000,114 @@ ExecutionStatus VM::run(std::istream& source, const std::string& name)
 }
 
 
-ExecutionStatus VM::setup(std::istream& source, const std::string& name)
+
+
+AttachDriverResult VM::attachEmbeddedRuntime(DriverOptions options)
 {
-    return setup(source, name, /*imports=*/{});
+    AttachDriverResult result;
+    if (shutdownComplete_.load(std::memory_order_acquire)) {
+        result.status = AttachStatus::ShuttingDown;
+        return result;
+    }
+    if (embeddedRuntimeAttached_.load(std::memory_order_acquire)) {
+        // Unique per VM: a second driver would break the single-driver
+        // contract that Busy semantics and the debugger stop protocol assume.
+        result.status = AttachStatus::AlreadyAttached;
+        result.runtime = embeddedRuntime_.get();
+        return result;
+    }
+    embeddedRuntime_ = std::make_shared<EmbeddedRuntime>(*this, options);
+    embeddedRuntimeAttached_.store(true, std::memory_order_release);
+    result.status = AttachStatus::Attached;
+    result.runtime = embeddedRuntime_.get();
+    return result;
 }
 
-ExecutionStatus VM::setup(std::istream& source, const std::string& name,
-                          const std::vector<Value>& imports)
+DetachStatus VM::detachEmbeddedRuntime()
 {
-    // Compilation / cache-load allocates GC objects reachable only from this
-    // C++ stack -- cover the phase so no concurrent collection sweeps them.
+    if (!embeddedRuntimeAttached_.load(std::memory_order_acquire))
+        return DetachStatus::NotAttached;
+    if (embeddedRuntime_ && embeddedRuntime_->hasUnfinalizedRun()) {
+        // A claimed run is the driver's, and a handed-over run belongs to
+        // whichever waiter finalizes it; tearing either record out from under
+        // its owner is not a detach, it is a crash.
+        return DetachStatus::RunActive;
+    }
+    // Cancels anything still pending and clears its roots while the collector
+    // is alive (see EmbeddedRuntime::cancelPendingForShutdown).
+    embeddedRuntimeAttached_.store(false, std::memory_order_release);
+    embeddedRuntime_.reset();
+    return DetachStatus::Detached;
+}
+
+void VM::shutdownEmbeddedRuntime()
+{
+    if (!embeddedRuntime_)
+        return;
+    embeddedRuntimeAttached_.store(false, std::memory_order_release);
+    // The runtime's destructor cancels pending and active runs and clears
+    // their roots under mutator coverage.
+    embeddedRuntime_.reset();
+}
+
+PrepareProgramResult VM::prepareProgram(std::istream& source,
+                                        ProgramOptions options)
+{
+    PrepareProgramResult result;
+
+    // Order matters, and the destruction order matters more.  Deferral first
+    // so no tracing collection begins while the compiler holds Values in C++
+    // locals; mutator coverage second so those locals are scanned if one is
+    // already in flight; the compiled result is moved into the record's root
+    // BEFORE either scope unwinds.
+    //
+    // The caller's options carry Values too -- imports and prelude receivers
+    // -- and a by-value parameter is destroyed AFTER a function's locals,
+    // i.e. after these scopes.  So they are moved into a local declared
+    // below the scopes, which dies before them on every return path,
+    // including the failures.  (A caller that still holds Values once the
+    // VM has shut down is beyond what any cover can protect.)
+    SimpleMarkSweepGC::CollectionDeferralScope deferCollection;
     ScopedGCMutatorCover gcCover;
+    ProgramOptions opts = std::move(options);
 
-    Value function { Value::nilVal() }; // ObjFunction
+    // Refuse before allocating a record: preparation is the long, off-driver
+    // step, so it is the one most likely to be entered while the VM is going
+    // away.  Reporting it here means a host never gets a Ready program it
+    // can only discover is unusable at submit().
+    if (shutdownComplete_.load(std::memory_order_acquire)) {
+        result.status = PrepareStatus::ShuttingDown;
+        return result;
+    }
 
-    runtimeErrorFlag = false;
+    // One compilation at a time per VM (see preparationMutex_).
+    std::lock_guard<std::mutex> preparation(preparationMutex_);
 
-    // If the caller wants imports pre-populated, create the script's
-    // ObjModuleType up front and copy each import's vars in.  This is
-    // threaded through `compiler.compile(..., existingModule=...)` so
-    // unqualified names like `movj` resolve against the pre-populated
-    // vars during compilation.  We disable file-cache lookup in this
-    // mode because cached closures embed a reference to a frozen
-    // ObjModuleType that wasn't pre-populated.
+    auto record = std::make_unique<PreparedExecutionRecord>();
+    record->sourceName = opts.sourceName;
+    record->completion = opts.completion;
+
+    // With imports, the program's module type is created up front and each
+    // import's vars copied in, so unqualified names resolve against them
+    // during compilation.  The file cache is bypassed in that mode: a cached
+    // closure embeds a reference to a frozen module that was never
+    // pre-populated.
     Value existingModule = Value::nilVal();
-    if (!imports.empty()) {
-        std::filesystem::path namePath(name);
+    if (!opts.imports.empty()) {
+        std::filesystem::path namePath(opts.sourceName);
         ustring moduleName = toUnicodeString(
             namePath.stem().filename().string());
         auto modObj = newModuleTypeObj(moduleName);
         ObjModuleType* modPtr = modObj.get();
         existingModule = Value::objVal(std::move(modObj));
 
-        // Register in the global module list so the type outlives this
-        // function -- the compiled top-level closure only holds a weak
-        // ref to its module (RoxalCompiler.cpp:596).  Without this push,
-        // the strong ref count drops to 0 when existingModule goes out of
-        // scope below and execute() then segfaults loading vars on a
-        // freed module.  Modules created via enterModuleScope's normal
-        // path get pushed here too (RoxalCompiler.cpp:706).
+        // A compiled top-level closure holds only a WEAK ref to its module,
+        // so the global list is what keeps the type alive once this frame
+        // returns.  Modules created through enterModuleScope's normal path
+        // are pushed here too.
         ObjModuleType::allModules.push_back(existingModule);
 
-        for (const auto& imp : imports) {
+        for (const auto& imp : opts.imports) {
             if (!isModuleType(imp)) continue;
             asModuleType(imp)->vars.forEach(
                 [&](const VariablesMap::NameValue& nv) {
@@ -2010,6 +2119,7 @@ ExecutionStatus VM::setup(std::istream& source, const std::string& name,
         }
     }
 
+    Value function { Value::nilVal() }; // ObjFunction
     try {
         RoxalCompiler compiler {};
         compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
@@ -2019,11 +2129,12 @@ ExecutionStatus VM::setup(std::istream& source, const std::string& name,
         compiler.setModuleResolverVM(this);
 
         std::filesystem::path cacheSourcePath;
-        if (!name.empty() && existingModule.isNil()) {
+        if (!opts.sourceName.empty() && existingModule.isNil()) {
             try {
-                std::filesystem::path namePath(name);
+                std::filesystem::path namePath(opts.sourceName);
                 if (namePath.has_extension() && namePath.extension() == ".rox")
-                    cacheSourcePath = std::filesystem::canonical(std::filesystem::absolute(namePath));
+                    cacheSourcePath = std::filesystem::canonical(
+                        std::filesystem::absolute(namePath));
             } catch (...) {
                 cacheSourcePath.clear();
             }
@@ -2039,72 +2150,410 @@ ExecutionStatus VM::setup(std::istream& source, const std::string& name,
         }
 
         if (!loadedFromCache) {
-            function = compiler.compile(source, name, existingModule);
+            function = compiler.compile(source, opts.sourceName,
+                                        existingModule);
             if (!function.isNil() && !cacheSourcePath.empty())
                 compiler.storeFileCache(cacheSourcePath, function);
         }
 
     } catch (std::exception& e) {
-        return ExecutionStatus::CompileError;
+        result.status = PrepareStatus::CompileError;
+        result.diagnostics.message = e.what();
+        return result;
     }
 
-    if (function.isNil())
+    if (function.isNil()) {
+        result.status = PrepareStatus::CompileError;
+        return result;
+    }
+
+    // Publish into the record's root while still covered and still deferred.
+    ExecutionRootValues values;
+    values.closure = Value::closureVal(function);
+    // Strong: the closure's own link to its module is weak.
+    values.module = existingModule.isNonNil()
+                        ? existingModule
+                        : asFunction(function)->moduleType.strongRef();
+    values.imports = std::move(opts.imports);
+    values.preludes = std::move(opts.preludes);
+    record->roots = std::move(values);
+
+    result.program = PreparedProgram(std::move(record));
+    result.status = PrepareStatus::Ready;
+    return result;
+}
+
+SliceResult VM::driveRunSlice(RunRecord& run, TimeDuration budget)
+{
+    SliceResult slice;
+    slice.runId = run.id;
+    // Every failure of the run goes through here, so the reason always
+    // reaches the handle: the flag says THAT it failed, this says why.
+    auto fail = [&](std::string why) -> SliceResult {
+        if (why.empty())
+            why = "execution failed";
+        if (run.control) {
+            std::lock_guard<std::mutex> lock(run.control->mutex_);
+            run.control->diagnostic_ = std::move(why);
+        }
+        run.phase = RunPhase::Finished;
+        slice.state = SliceState::ExecutionFailed;
+        return slice;
+    };
+    if (run.phase == RunPhase::Finished) {
+        slice.state = SliceState::Idle;
+        slice.runId = 0;
+        return slice;
+    }
+
+    // Yield out of a pending or in-progress collection BEFORE taking the
+    // mutator cover: constructing the cover enters the collection barrier,
+    // and a collection already in progress holds it for its whole
+    // mark+sweep -- so a slice that took the cover first would block for
+    // that duration, which is exactly what a slice promises never to do.
+    // execute() repeats this check for the interpretation phase; this one
+    // guards activation and the prelude steps, which never reach execute().
+    if ((SimpleMarkSweepGC::inGCYieldSectionOnThisThread()
+         || (run.thread && run.thread->rtYieldOnGC))
+        && (SimpleMarkSweepGC::instance().isCollectionRequested()
+            || SimpleMarkSweepGC::instance().isCollectionInProgress())) {
+        slice.state = SliceState::Yielded;
+        return slice;
+    }
+
+    ScopedGCMutatorCover gcCover;
+    const ExecutionRootValues& values = run.prepared->roots.get();
+
+    // ---- Activation ------------------------------------------------------
+    // Binding, hook invocation and frame pushes happen here rather than at
+    // submission: the run's Roxal thread must belong to the thread that will
+    // execute it.
+    if (run.phase == RunPhase::Activate) {
+        if (ReplSessionState* session = run.prepared->session) {
+            // A fragment runs on its SESSION's thread: handlers and actors an
+            // earlier fragment registered belong to that thread and must be
+            // serviced by whichever thread runs this one.  A fresh thread per
+            // fragment would strand them.
+            if (!session->thread) {
+                if (!session->domain)
+                    session->domain = make_ptr<ExecutionDomain>();
+                session->thread = Thread::create(session->domain, ThreadKind::Repl);
+                threads.store(session->thread->id(), session->thread);
+                replThread = session->thread;
+            }
+            run.thread = session->thread;
+            thread = run.thread;
+            // The claim is the execution's from here: finalizeRunRecord
+            // releases it, and the record's destructor must no longer.
+            run.prepared->fragmentClaimHeld = false;
+        } else {
+            // A fresh program gets its own domain: its actors inherit it, its
+            // error and exit flags are its own, and finalization joins only
+            // it.  Nothing owns the domain but its threads -- it dies with
+            // the last of them.
+            run.thread = Thread::create(make_ptr<ExecutionDomain>(), ThreadKind::Main);
+            threads.store(run.thread->id(), run.thread);
+            thread = run.thread;
+        }
+        markMainThread();
+        // The debugger follows the active user execution: stop state lives
+        // on the domain, so the run (or session) being activated starts
+        // clean, and a stop on it never reaches the other domains.
+        if (stopCoordinator_) {
+            stopCoordinator_->rebind(thread->domain);
+            stopCoordinator_->beginExecution();
+        }
+        run.phase = RunPhase::Preludes;
+        run.nextPrelude = 0;
+    } else {
+        // Re-bind: the driver's thread-local is the run's own thread for the
+        // whole of its life, but another entry point may have moved it.
+        thread = run.thread;
+    }
+
+    // The body has returned; hand the run over.  Nothing is executed in this
+    // slice -- the transition is the work.
+    if (run.phase == RunPhase::MainReturned) {
+        run.phase = RunPhase::Finished;
+        slice.state = SliceState::ExecutionEnded;
+        return slice;
+    }
+
+    const TimePoint deadline = TimePoint::currentTime() + budget;
+    std::pair<ExecutionStatus, Value> result { ExecutionStatus::OK, Value::nilVal() };
+
+    // ---- Preludes, one bounded step at a time ----------------------------
+    if (run.phase == RunPhase::Preludes) {
+        if (!thread->frames.empty()) {
+            // A prelude yielded mid-way on an earlier slice; resume it.
+            result = execute(deadline);
+        } else if (run.nextPrelude < values.preludes.size()) {
+            const PreludeCall& prelude = values.preludes[run.nextPrelude];
+            ++run.nextPrelude;
+            resetStack();
+            result = invokeMethod(prelude.receiver, prelude.method, {}, deadline);
+        } else {
+            // Preludes done.  NOW the user's program starts, and that is what
+            // the module start hooks announce: preludes are the host's own
+            // pre-setup, run before the hooks on every launch path, so a hook
+            // sees the world the body will see (the simulator bound, say)
+            // and a debugger armed by a hook never sees the plumbing.  A
+            // fragment fires none -- it is a continuation of its session, not
+            // a launch.
+            //
+            // A hook that throws fails the run, published once like any other
+            // failure.  The phase advances first so no slice re-runs them.
+            if (!run.prepared->session) {
+                try {
+                    for (auto& mod : builtinModules)
+                        if (mod) mod->onScriptStart(*this);
+                } catch (const std::exception& e) {
+                    const std::string why = std::string("onScriptStart failed: ") + e.what();
+                    emitDiagnostic(why, OutputSeverity::Error, "embed");
+                    return fail(why);
+                } catch (...) {
+                    const std::string why = "onScriptStart failed: unknown exception";
+                    emitDiagnostic(why, OutputSeverity::Error, "embed");
+                    return fail(why);
+                }
+            }
+            // Push the body and fall through to run it with whatever budget
+            // is left.
+            resetStack();
+            const Value closureValue = values.closure;
+            push(closureValue);
+            if (!call(asClosure(closureValue), CallSpec(0)))
+                return fail(takeRuntimeErrorMessage());
+            run.phase = RunPhase::Body;
+            result = execute(deadline);
+        }
+    } else if (run.phase == RunPhase::Body) {
+        result = execute(deadline);
+    }
+
+    // ---- Classify -------------------------------------------------------
+    // An exit() surfaces through the call path as a failed call, exactly as
+    // on the synchronous path, which corrects it the same way after
+    // execute() returns: the program EXITED, it did not fail.  Its threads
+    // were woken with the flag and will end; the body is treated as
+    // returned and the run is handed over like any other.
+    if (isExitRequested())
+        result.first = ExecutionStatus::OK;
+
+    switch (result.first) {
+    case ExecutionStatus::Yielded:
+        // Blocked is a yield the host can schedule around: report when the
+        // thread could next make progress.  Read from OUR thread-local, which
+        // is this run's own thread.
+        if (isBlocked()) {
+            slice.state = SliceState::Blocked;
+            const TimePoint until = blockedUntil();
+            if (until != TimePoint::max())
+                slice.retryAt = until;
+        } else {
+            slice.state = SliceState::Yielded;
+        }
+        return slice;
+
+    case ExecutionStatus::Paused:
+        slice.state = SliceState::DebugPaused;
+        return slice;
+
+    case ExecutionStatus::Busy:
+        // A synchronous run owns the VM; nothing was done.
+        slice.state = SliceState::Yielded;
+        return slice;
+
+    case ExecutionStatus::OK:
+        if (run.phase == RunPhase::Preludes)
+            return { SliceState::Yielded, run.id, std::nullopt };   // next prelude next slice
+        // The body returned.  Publish the terminal value into the record's
+        // already-registered slot BEFORE this frame's cover ends: on wasm the
+        // C++ local may live only in a register, and nothing else roots it.
+        run.prepared->roots.get().terminalValue = result.second;
+        if (run.prepared->completion == CompletionPolicy::ExecutionDomainQuiescent
+            && run.phase == RunPhase::Body) {
+            // Not terminal yet under this policy: the launch's own threads
+            // have to end too.  They do not end on their own -- an actor
+            // waits for work until it is asked to quit -- so the quit-and-join
+            // belongs to the finalizer, where unbounded work is allowed.  The
+            // driver publishes the body's return and hands over on the next
+            // slice.
+            run.phase = RunPhase::MainReturned;
+            slice.state = SliceState::MainReturned;
+            return slice;
+        }
+        run.phase = RunPhase::Finished;
+        slice.state = SliceState::ExecutionEnded;
+        return slice;
+
+    case ExecutionStatus::CompileError:
+    case ExecutionStatus::RuntimeError:
+    default:
+        return fail(takeRuntimeErrorMessage());
+    }
+}
+
+bool VM::finalizeRunRecord(RunRecord& run, bool failed)
+{
+    // The waiter has already won the exactly-once claim, and the driver has
+    // stopped touching this run.  Coverage starts here, after the claim, not
+    // around the wait.
+    ScopedGCMutatorCover gcCover;
+
+    // The run's own thread is what module hooks expect to be current.
+    if (run.thread)
+        thread = run.thread;
+
+    // A fragment is a continuation of its session: its threads, handlers and
+    // actors may outlive it on purpose, and it is not a script start/complete
+    // pair.  So neither the join nor the program hooks apply to one.
+    const bool fragment = run.prepared && run.prepared->session != nullptr;
+    if (!fragment) {
+        // Quit and join what the launch started.  Actor threads wait for work
+        // until asked to stop, so this is where the domain actually becomes
+        // quiescent -- and it is unbounded, which is why it is not in a slice.
+        joinDomainThreads(run.thread && run.thread->domain
+                              ? run.thread->domain->id() : defaultDomain_->id());
+
+        // Every module gets its completion hook even if an earlier one
+        // throws; the failure is reported and the run finalizes as failed.
+        // Aborting here would leave the run's Values rooted and its control
+        // parked in Finalizing forever.
+        for (auto& mod : builtinModules) {
+            if (!mod) continue;
+            try {
+                mod->onScriptComplete(*this);
+            } catch (const std::exception& e) {
+                emitDiagnostic(std::string("onScriptComplete failed: ") + e.what(),
+                               OutputSeverity::Error, "embed");
+                failed = true;
+            } catch (...) {
+                emitDiagnostic("onScriptComplete failed: unknown exception",
+                               OutputSeverity::Error, "embed");
+                failed = true;
+            }
+        }
+    }
+
+    // Nothing of this run may reach the next submission.  The error flag is
+    // per-VM and a failed run would otherwise make the next launch look like
+    // it failed before running a statement.
+    if (failed)
+        clearRuntimeErrorFlag();
+
+    // The terminal value outlives the run as TEXT: a bounded, side-effect-free
+    // rendering (no user code, no waits) copied onto the control, readable
+    // from the handle even after the VM is gone.  Rendered here, on the
+    // finalizer, which owns the record's roots and is covered.
+    if (run.prepared && run.control) {
+        const std::string rendered =
+            renderValue(run.prepared->roots.get().terminalValue);
+        std::lock_guard<std::mutex> lock(run.control->mutex_);
+        run.control->result_ = rendered;
+    }
+
+    // The exit code, if the program exited: read off its domain before the
+    // domain goes with its last thread.
+    if (run.control && run.thread && run.thread->domain)
+        run.control->exitCode_.store(run.thread->domain->exitCode.load(std::memory_order_acquire),
+                                     std::memory_order_release);
+
+    // Retire the launch's module.  Every compiled module is pinned in
+    // ObjModuleType::allModules so weak closure links can find it; for a
+    // fresh program that pin outlived the program, and repeated launches
+    // grew it without bound.  With the domain quiescent nothing of the run
+    // can reach the module any more.  A fragment's module is the session's,
+    // and imports are canonical in the user-module registry -- neither is
+    // touched.
+    if (!fragment && run.prepared) {
+        const Value moduleVal = run.prepared->roots.get().module;
+        if (isModuleType(moduleVal)) {
+            ObjModuleType* target = asModuleType(moduleVal);
+            ObjModuleType::allModules.erase_if([target](const Value& v) {
+                return isModuleType(v) && asModuleType(v) == target;
+            });
+        }
+    }
+
+    // Release references; do NOT sweep.  Object destruction belongs to the
+    // collector and reclaimer, and calling that machinery from an arbitrary
+    // waiter is how a run finalizer ends up destroying objects another thread
+    // is still walking.
+    if (run.prepared) {
+        ExecutionRootValues& values = run.prepared->roots.get();
+        values.closure = Value::nilVal();
+        values.module = Value::nilVal();
+        values.imports.clear();
+        values.preludes.clear();
+        values.terminalValue = Value::nilVal();
+    }
+    if (run.prepared && run.prepared->session)
+        run.prepared->session->fragmentInFlight.store(false, std::memory_order_release);
+    run.thread.reset();
+    thread.reset();
+    return failed;
+}
+
+ExecutionStatus VM::activatePrepared(PreparedProgram program)
+{
+    if (!program.valid())
         return ExecutionStatus::CompileError;
 
-    Value closureValue { Value::closureVal(function) };
+    ScopedGCMutatorCover gcCover;
+    const ExecutionRootValues& values = program.record_->roots.get();
 
-    ptr<Thread> mainThread = make_ptr<Thread>();
+    ptr<Thread> mainThread = Thread::create(defaultDomain_, ThreadKind::Main);
     threads.store(mainThread->id(), mainThread);
     thread = mainThread;
 
-    // Run host-registered preludes (see addScriptPrelude) now: the script
-    // thread exists, but the body's frame is not pushed yet, so each prelude
-    // runs as its own self-contained top-level frame — returning cleanly when
-    // its frame pops the stack empty (execute()'s execute_depth==1 &&
-    // frames.empty() termination).  Any `when` handler a prelude registers is
-    // therefore owned by THIS thread, the one that will service the body.
-    // Consumed once so unrelated setup() calls (builtin modules, REPL) don't
-    // re-fire them.
-    //
-    // Hold the synchronous-execution guard across the prelude.  Our caller
-    // (runWithImports) only raises it AFTER setup() returns, but a host RT
-    // loop may already be ticking runFor() on another thread; without the
-    // guard it would enter execute() on `thread` (which now has the prelude's
-    // frames) concurrently with us — a double-driver on the same VM thread.
-    // Restore the prior value so the incremental setup()+runFor() path (which
-    // never registers preludes) is unaffected.
-    if (!scriptPreludes_.empty()) {
-        const bool prevSync =
-            inSynchronousExecution_.exchange(true, std::memory_order_acq_rel);
-        auto preludes = std::move(scriptPreludes_);
-        scriptPreludes_.clear();
+    // Preludes run now: the script thread exists, but the body's frame is not
+    // pushed yet, so each prelude runs as its own self-contained top-level
+    // frame -- returning cleanly when its frame pops the stack empty
+    // (execute()'s execute_depth==1 && frames.empty() termination).  Any
+    // `when` handler a prelude registers is therefore owned by THIS thread,
+    // the one that will service the body.
+    if (!values.preludes.empty()) {
         ExecutionStatus preludeStatus = ExecutionStatus::OK;
-        for (const auto& pr : preludes) {
+        for (const auto& prelude : values.preludes) {
             resetStack();
-            auto [pstatus, presult] = invokeMethod(pr.first, pr.second, {});
+            auto [pstatus, presult] =
+                invokeMethod(prelude.receiver, prelude.method, {});
             (void)presult;
-            if (pstatus != ExecutionStatus::OK || runtimeErrorFlag.load()) {
+            if (pstatus != ExecutionStatus::OK || hasRuntimeError()) {
                 preludeStatus = ExecutionStatus::RuntimeError;
                 break;
             }
         }
-        inSynchronousExecution_.store(prevSync, std::memory_order_release);
-        if (preludeStatus != ExecutionStatus::OK)
+        if (preludeStatus != ExecutionStatus::OK) {
+            // Undo the activation: the prelude may have started actors, and
+            // the thread this call created is registered but will never run
+            // a body.  And release the record HERE, under this frame's cover
+            // -- see the note below the successful path.
+            joinAllThreads();
+            threads.erase(mainThread->id());
+            thread.reset();
+            program.reset();
             return preludeStatus;
+        }
     }
 
+    const Value closureValue = values.closure;
     resetStack();
     push(closureValue);
-    if (!call(asClosure(closureValue), CallSpec(0)))
-        return ExecutionStatus::RuntimeError;
+    const bool called = call(asClosure(closureValue), CallSpec(0));
 
-    return ExecutionStatus::OK;
+    // Release the record HERE, while this frame's mutator cover is still
+    // alive.  A by-value parameter is destroyed after the function's own
+    // locals, so letting it fall out of scope would drop the launch's roots
+    // -- unregistering them and then releasing their Values -- with no cover
+    // in effect.  Native builds hide that behind conservative stack scanning;
+    // wasm, which has no stack scanner, does not.
+    program.reset();
+
+    return called ? ExecutionStatus::OK : ExecutionStatus::RuntimeError;
 }
 
-void VM::addScriptPrelude(const Value& receiver, const ustring& method)
-{
-    scriptPreludes_.emplace_back(receiver, method);
-}
 
 std::size_t VM::abiInstanceSize()
 {
@@ -2114,87 +2563,6 @@ std::size_t VM::abiInstanceSize()
 }
 
 
-std::pair<ExecutionStatus, Value> VM::runFor(TimeDuration duration)
-{
-    // Guard: if run()/runLine() is executing synchronously (e.g. --setup script),
-    // don't enter execute() — the synchronous path already owns the VM.
-    if (inSynchronousExecution_.load(std::memory_order_acquire))
-        return { ExecutionStatus::OK, Value::nilVal() };
-
-    // RT GC yield: bail BEFORE the Ready-path root mutations below (closure
-    // pickup, resetStack, frame push) -- with a collection pending those must
-    // not run outside the yield section's protection, and execute()'s own
-    // yield check only covers the interpretation phase.  Applies to threads
-    // inside a GCYieldScope or driving an rtYieldOnGC-flagged Thread.
-    if (SimpleMarkSweepGC::instance().isCollectionRequested()
-        && (SimpleMarkSweepGC::inGCYieldSectionOnThisThread()
-            || (replThread && replThread->rtYieldOnGC))) {
-        return { ExecutionStatus::Yielded, Value::nilVal() };
-    }
-
-    // Check for pending closure from setupLine()
-    auto state = rtState_.load(std::memory_order_acquire);
-
-    if (state == RTState::Ready) {
-        // Pick up the compiled closure
-        Value closure;
-        {
-            std::lock_guard<std::mutex> lk(rtMutex_);
-            closure = pendingRTClosure_;
-            pendingRTClosure_ = Value::nilVal();
-        }
-
-        // Use persistent REPL thread
-        if (!replThread)
-            replThread = make_ptr<Thread>();
-        thread = replThread;
-
-        markMainThread();
-
-        resetStack();
-        push(closure);
-        if (!call(asClosure(closure), CallSpec(0))) {
-            rtState_.store(RTState::Idle, std::memory_order_release);
-            rtCondVar_.notify_one();
-            return { ExecutionStatus::RuntimeError, Value::nilVal() };
-        }
-        rtState_.store(RTState::Executing, std::memory_order_release);
-
-    } else if (state == RTState::Executing || state == RTState::Yielded) {
-        // Resume previous work
-        thread = replThread;
-
-    } else {
-        // Idle — fall through to check setup() path
-    }
-
-    // If no setupLine work, check for setup() path (existing behavior)
-    if (state == RTState::Idle) {
-        if (!hasMoreWork())
-            return { ExecutionStatus::OK, Value::nilVal() };
-        // thread is already set by setup()
-    }
-
-    // Execute with time budget
-    auto deadline = TimePoint::currentTime() + duration;
-    auto [status, value] = execute(deadline);
-
-    // Only manage RT state if we're in the setupLine path
-    if (state != RTState::Idle) {
-        if (status == ExecutionStatus::Yielded) {
-            rtState_.store(RTState::Yielded, std::memory_order_release);
-        } else {
-            // Completed or error — transition to Idle and wake setupLine()
-            rtState_.store(RTState::Idle, std::memory_order_release);
-            rtCondVar_.notify_one();
-        }
-    }
-
-    if (runtimeErrorFlag.load())
-        return { ExecutionStatus::RuntimeError, Value::nilVal() };
-
-    return { status, value };
-}
 
 bool VM::hasMoreWork() const
 {
@@ -2222,6 +2590,35 @@ TimePoint VM::blockedUntil() const
 // only exists to avoid a per-instruction syscall storm. Tunable.
 static constexpr int64_t kHostPumpIntervalUs = 1000; // 1 ms
 
+void VM::restartDataflowEngineIfStopped()
+{
+    if (!dataflowEngine || !dataflowEngineThread
+        || dataflowEngine->runLoopActive())
+        return;
+    ActorInstance* inst = asActorInstance(dataflowEngineActor);
+    CallSpec cs{}; cs.argCount = 0; cs.allPositional = true;
+    Value callee { Value::boundNativeVal(dataflowEngineActor,
+                       std::mem_fn(&VM::dataflow_run_native), true, nullptr, {}) };
+    inst->queueCall(callee, cs, nullptr);
+    dataflowEngineThread->wake();
+}
+
+ptr<Thread> VM::spawnActorThread(const Value& actorInstance, bool debugExcluded)
+{
+    ptr<Thread> t = Thread::create(currentOrDefaultDomain(), ThreadKind::Actor);
+    if (debugExcluded)
+        t->debugExcluded.store(true, std::memory_order_release);
+    threads.store(t->id(), t);
+    t->act(actorInstance);
+    return t;
+}
+
+void VM::debugStopHostPump()
+{
+    if (hostEventLoop_)
+        hostEventLoop_->waitForEvents(TimeDuration::milliSecs(4));
+}
+
 void VM::hostOrCondVarWait(Thread* thread, TimeDuration maxWait)
 {
     // Only the main thread may drive a host UI loop; actor threads (and any build
@@ -2236,155 +2633,109 @@ void VM::hostOrCondVarWait(Thread* thread, TimeDuration maxWait)
 }
 
 
-ExecutionStatus VM::runLine(std::istream& linestream,
-                                  bool replMode,
-                                  const std::string& sourceNameOverride)
+ReplSessionState& VM::ensureReplSession()
 {
-    // Cover compile + invoke phases (see ScopedGCMutatorCover).
-    ScopedGCMutatorCover gcCover;
+    if (!replSession_)
+        replSession_ = std::make_unique<ReplSessionState>();
+    return *replSession_;
+}
 
-    Value function { Value::nilVal() }; // ObjFunction
+ReplSession VM::defaultReplSession()
+{
+    return ReplSession(*this, ensureReplSession());
+}
 
-    runtimeErrorFlag = false;
+ReplSession VM::createReplSession(ReplOptions options)
+{
+    // Version 1 has one session per VM.  The handle is already per-session,
+    // so additional sessions are an implementation change rather than an API
+    // change for callers.
+    (void)options;
+    return defaultReplSession();
+}
 
-    if (!replCompiler_)
-        replCompiler_ = std::make_unique<RoxalCompiler>();
-    RoxalCompiler& compiler = *replCompiler_;
+void VM::configureFragmentCompiler(RoxalCompiler& compiler, bool replMode)
+{
     compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
     compiler.setCacheReadEnabled(cacheReadsEnabled());
     compiler.setCacheWriteEnabled(cacheWritesEnabled());
     compiler.setModulePaths(modulePaths);
     compiler.setReplMode(replMode);
     compiler.setModuleResolverVM(this);
+}
 
-    try {
-        function = compiler.compile(linestream, "cli", replModuleValue, sourceNameOverride);
-
-    } catch (std::exception& e) {
+ExecutionStatus VM::evaluateFragmentOnThisThread(ReplSessionState& session,
+                                                 PreparedProgram fragment)
+{
+    if (!fragment.valid()) {
+        session.fragmentInFlight.store(false, std::memory_order_release);
         return ExecutionStatus::CompileError;
     }
+    // The claim is this execution's from here; released explicitly below.
+    fragment.record_->fragmentClaimHeld = false;
 
-    if (function.isNil())
-        return ExecutionStatus::CompileError;
+    ScopedGCMutatorCover gcCover;
 
-    if (replModuleValue.isNil())
-        replModuleValue = asFunction(function)->moduleType.strongRef();
-
-    lineMode = true;
-    lineStream = &linestream;
-    compiler.setReplMode(false);
-
-    Value closure = Value::closureVal(function); // ObjClosure
-
-    if (!replThread) {
-        replThread = make_ptr<Thread>();
+    // The session's thread outlives each fragment: handlers and actors an
+    // earlier fragment registered belong to it, and must still be serviced by
+    // the thread running this one.  Its domain likewise: a fragment's errors
+    // and exits are the session's, not the next program run's.
+    if (!session.thread) {
+        if (!session.domain)
+            session.domain = make_ptr<ExecutionDomain>();
+        session.thread = Thread::create(session.domain, ThreadKind::Repl);
+        replThread = session.thread;
     }
-
-    thread = replThread;
-
+    thread = session.thread;
+    // Cleared AFTER binding the thread: the flag is the session domain's,
+    // and clearing before would have cleared the caller's domain instead.
+    clearRuntimeErrorFlag();
+    if (stopCoordinator_)
+        stopCoordinator_->beginExecution();
     markMainThread();
-
     resetStack();
 
-    inSynchronousExecution_.store(true, std::memory_order_release);
-    auto resultPair = invokeClosure(asClosure(closure), {});
-    inSynchronousExecution_.store(false, std::memory_order_release);
+    const Value closureValue = fragment.record()->roots.get().closure;
+    auto resultPair = invokeClosure(asClosure(closureValue), {});
 
     ExecutionStatus result = resultPair.first;
-    if (runtimeErrorFlag.load())
+    if (hasRuntimeError())
         result = ExecutionStatus::RuntimeError;
+    if (result == ExecutionStatus::OK)
+        session.roots.get().lastResult = resultPair.second;
 
-    #if defined(DEBUG_TRACE_EXECUTION)
-    // globals dump disabled (VariablesMap API changed)
-    #endif
-
+    // Released while covered, before the fragment handle goes away.
+    fragment.reset();
+    session.fragmentInFlight.store(false, std::memory_order_release);
     thread.reset();
-
     return result;
 }
 
-ExecutionStatus VM::setupLine(std::istream& linestream,
-                              bool replMode,
-                              const std::string& sourceNameOverride)
-{
-    // Cover the compile phase (see ScopedGCMutatorCover).
-    ScopedGCMutatorCover gcCover;
 
-    // Shared compiler with runLine() — same persistent state (imported
-    // modules, type deducer, suffix registry) carries across both entry
-    // points.
-    if (!replCompiler_)
-        replCompiler_ = std::make_unique<RoxalCompiler>();
-    RoxalCompiler& compiler = *replCompiler_;
-    compiler.setOutputBytecodeDisassembly(outputBytecodeDisassembly);
-    compiler.setCacheReadEnabled(cacheReadsEnabled());
-    compiler.setCacheWriteEnabled(cacheWritesEnabled());
-    compiler.setModulePaths(modulePaths);
-    compiler.setReplMode(replMode);
-    compiler.setModuleResolverVM(this);
-
-    Value function { Value::nilVal() };
-    runtimeErrorFlag = false;
-
-    try {
-        function = compiler.compile(linestream, "cli", replModuleValue, sourceNameOverride);
-    } catch (std::exception& e) {
-        return ExecutionStatus::CompileError;
-    }
-
-    if (function.isNil())
-        return ExecutionStatus::CompileError;
-
-    if (replModuleValue.isNil())
-        replModuleValue = asFunction(function)->moduleType.strongRef();
-
-    compiler.setReplMode(false);
-
-    Value closure = Value::closureVal(function);
-
-    // Hand off to RT thread
-    {
-        std::unique_lock<std::mutex> lk(rtMutex_);
-        // Wait for previous work to finish
-        rtCondVar_.wait(lk, [this]{
-            return rtState_.load(std::memory_order_acquire) == RTState::Idle;
-        });
-        pendingRTClosure_ = closure;
-        rtState_.store(RTState::Ready, std::memory_order_release);
-    }
-    rtCondVar_.notify_one();
-
-    return ExecutionStatus::OK;
-}
-
-void VM::waitForRTCompletion()
-{
-    std::unique_lock<std::mutex> lk(rtMutex_);
-    rtCondVar_.wait(lk, [this]{
-        return rtState_.load(std::memory_order_acquire) == RTState::Idle;
-    });
-}
 
 ObjModuleType* VM::replModuleType() const
 {
-    if (replModuleValue.isNil())
+    if (!replSession_)
         return nullptr;
-    return asModuleType(replModuleValue);
+    const Value& module = replSession_->roots.get().module;
+    if (module.isNil())
+        return nullptr;
+    return asModuleType(module);
 }
 
 ObjModuleType* VM::ensureReplModule()
 {
-    if (replModuleValue.isNil()) {
-        // The compiler normally creates the REPL module on the first
-        // runLine()/setupLine() compile (see VM.cpp:1828-1829, 1897-1898).
-        // For embedding flows that need to pre-populate REPL globals
-        // before the user types anything, mint a fresh "cli" module up
-        // front and adopt it.  Subsequent compiles see replModuleValue
-        // already non-nil and reuse it.
+    ReplSessionState& session = ensureReplSession();
+    if (session.roots.get().module.isNil()) {
+        // The compiler normally mints the session's module on its first
+        // fragment.  An embedding that needs to pre-populate session globals
+        // before any input arrives creates it up front instead; later
+        // compiles find it already there and reuse it.
+        ScopedGCMutatorCover gcCover;
         auto modUP = newModuleTypeObj(toUnicodeString("cli"));
-        replModuleValue = Value::objVal(std::move(modUP));
+        session.roots.get().module = Value::objVal(std::move(modUP));
     }
-    return asModuleType(replModuleValue);
+    return asModuleType(session.roots.get().module);
 }
 
 void VM::importModuleVarsInto(ObjModuleType* target,
@@ -2394,12 +2745,10 @@ void VM::importModuleVarsInto(ObjModuleType* target,
         throw std::runtime_error("VM::importModuleVarsInto: target is null");
 
     // Match OpCode::ImportModuleVars wildcard branch semantics.  Overwrite
-    // when target is the REPL module (so re-imports refresh stale bindings)
-    // and clone OverloadSets so a later local FuncDecl can replace them.
-    const bool replReimport =
-        replModuleValue.isNonNil() &&
-        isModuleType(replModuleValue) &&
-        asModuleType(replModuleValue) == target;
+    // when target is the session's module (so re-imports refresh stale
+    // bindings) and clone OverloadSets so a later local FuncDecl can replace
+    // them.
+    const bool replReimport = (replModuleType() == target);
 
     auto storeImported = [&](int32_t hash, const ustring& name,
                              const Value& v) {
@@ -3217,7 +3566,17 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
             for (auto& outSig : outputs)
                 if (outSig && !outSig->hasSrcOrigin())
                     outSig->setSrcOrigin(liftLoc.name, liftLoc.line, liftLoc.col);
-            dataflowEngine->initializeNode(node); // give the new node its first output value
+            // Gives the new node its first output value -- which EVALUATES the
+            // lifted closure, on this thread.  If that evaluation raises, the
+            // runtime-error path has already reset this thread's stack and
+            // frames, so the operands this call pushed are gone: popping them
+            // now walks below the stack base.  In a debug build that throws
+            // "Stack underflow"; in a release build pop() has no guard, and
+            // the read of stack[-1] is a genuine out-of-bounds access (ASan:
+            // heap-buffer-overflow 8 bytes before the value stack).
+            dataflowEngine->initializeNode(node);
+            if (hasRuntimeError())
+                return false;
             popN(callSpec.argCount + 1);
             if (outputs.size() == 1) {
                 push(Value::signalVal(outputs[0]));
@@ -3343,7 +3702,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 
                     ActorInstance* inst = asActorInstance(boundMethod->receiver);
 
-                    if (std::this_thread::get_id() == inst->thread_id) {
+                    if (std::this_thread::get_id() == inst->thread_id.load(std::memory_order_acquire)) {
                         // actor to this/self method call
                         thread->currentBoundCall = boundValue;
                         BoundCallGuard guard(thread.get());
@@ -3629,7 +3988,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                         inst = Value::actorInstanceVal(callee);
 
                         // spawn Thread to handle actor method calls
-                        ptr<Thread> newThread = make_ptr<Thread>();
+                        ptr<Thread> newThread = Thread::create(currentOrDefaultDomain(), ThreadKind::Actor);
                         threads.store(newThread->id(), newThread);
                         newThread->act(inst);
 
@@ -4216,7 +4575,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 
                     ActorInstance* inst = asActorInstance(bound->receiver);
 
-                    if (std::this_thread::get_id() == inst->thread_id) {
+                    if (std::this_thread::get_id() == inst->thread_id.load(std::memory_order_acquire)) {
                         // actor to this/self native method call
                         thread->currentBoundCall = boundValue;
                         BoundCallGuard guard(thread.get());
@@ -4369,7 +4728,7 @@ std::pair<ExecutionStatus,Value> VM::invokeClosure(ObjClosure* closure,
     // This frame sits on an otherwise-empty frame stack (or a nested one --
     // either way the pushes above are OURS): mark it so opReturn unwinds its
     // slots on return.  The flag travels WITH the frame, so a call that
-    // yields here and completes later inside runFor() is unwound at its real
+    // yields here and completes later in a slice is unwound at its real
     // completion site -- this epilogue never sees it.
     //
     // Mark the CALLEE frame, not frames.back(): when a parameter's default has
@@ -4381,9 +4740,10 @@ std::pair<ExecutionStatus,Value> VM::invokeClosure(ObjClosure* closure,
 
     auto result = execute(deadline, entryFrames + 1);
 
-    // A Yielded call is still live (resumed via runFor) and a completed one
-    // was unwound by opReturn; only the error path needs local cleanup here
-    // (the VM is in fatal-error mode then, but leave the stack sane anyway).
+    // A Yielded (or debugger-Paused) call is still live (resumed via
+    // a later slice / on release) and a completed one was unwound by opReturn; only
+    // the error path needs local cleanup here (the VM is in fatal-error mode
+    // then, but leave the stack sane anyway).
     if (result.first == ExecutionStatus::RuntimeError)
         thread->popToDepth(entryDepth);
 
@@ -4429,7 +4789,7 @@ std::pair<ExecutionStatus,Value> VM::invokeMethod(const Value& receiver,
         return { ExecutionStatus::RuntimeError, Value::nilVal() };
     }
     // Same slot-ownership contract as invokeClosure: opReturn unwinds this
-    // frame on return (including a later runFor completion after a yield).
+    // frame on return (including a later slice completing after a yield).
     // Mark and anchor to the CALLEE frame -- default-value frames sit above it.
     thread->frames[entryFrames].unwindOnReturn = true;
     auto result = execute(deadline, entryFrames + 1);
@@ -4887,7 +5247,7 @@ bool VM::invokeOverloadAt(ObjString* name, uint16_t overloadIndex, const CallSpe
     // (the queue path needs a BoundMethod-style structure we don't build here).
     if (isActorInstance(receiver)) {
         ActorInstance* inst = asActorInstance(receiver);
-        if (std::this_thread::get_id() != inst->thread_id)
+        if (std::this_thread::get_id() != inst->thread_id.load(std::memory_order_acquire))
             return invoke(name, callSpec);  // delegate to regular invoke
     }
 
@@ -4994,7 +5354,7 @@ bool VM::invoke(ObjString* name, const CallSpec& callSpec)
                 if (nativeCallTimingEnabled_)
                     nativeCallContext_ = name->s;
 
-                if (std::this_thread::get_id() == instance->thread_id) {
+                if (std::this_thread::get_id() == instance->thread_id.load(std::memory_order_acquire)) {
                     // Same thread - call directly
                     if (methodInfo.funcType) {
                         return callNativeFn(fn, methodInfo.funcType,
@@ -6133,21 +6493,12 @@ void VM::defineNative(const std::string& name, NativeFn function,
 
 void VM::wakeAllThreadsForGC()
 {
-    threads.unsafeApply([](const auto& registered) {
-        for (const auto& entry : registered) {
-            if (entry.second) {
-                entry.second->wake();
-            }
-        }
-    });
-
-    if (replThread) {
-        replThread->wake();
-    }
-
-    if (dataflowEngineThread) {
-        dataflowEngineThread->wake();
-    }
+    // Complete coverage via the ThreadManager index (strong leases; wakes
+    // happen outside the registry mutex) -- replaces the former vm.threads /
+    // replThread / dataflowEngineThread special-case gathering, and also
+    // reaches threads those special cases missed (module-init, deserialized
+    // actor, compute-server-spawned).
+    ThreadManager::instance().wakeAll();
 
     // The dataflow engine's run() loop may be dormant on its pending-event
     // condvar (not a Thread sleep) -- rouse it so it reaches its GC poll and
@@ -6363,6 +6714,41 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
         asFunction(asClosure(thread->frames.back().closure)->function)->chunk->code.size() == 0)
         return std::make_pair(ExecutionStatus::OK, Value::nilVal()); // nothing to execute
 
+    // The interrupt word this execution observes is its THREAD'S DOMAIN's --
+    // a program run's own, a REPL session's own, or the service domain's
+    // (which aliases VM::interrupts_, so a default-domain thread reads the
+    // same atomic it always has).  Cached once here: the per-instruction
+    // check below reads through one register-held pointer, the same cost as
+    // the member load it replaces.  (Reading thread->domain->word_ at every
+    // instruction instead measured 2-3% on dispatch_micro.)
+    std::atomic<uint32_t>* const word = &thread->domain->interrupts();
+
+    // Debugger admission gate: checked at the very top -- before ANY
+    // re-entry mutation and before GC registration -- so a paused RT host
+    // re-entering is enter-see-stopped-return with nothing
+    // mutated.  RT/deadline callers observe a pending stop as an immediate
+    // Paused; non-RT callers park inside and proceed on release.  Nested
+    // re-entries skip admission (the outermost level owns it); the fast path
+    // is one plain-int test plus one CAS.
+    if (thread->debugExecNesting == 0) {
+        bool admitted;
+        auto expectIdle = Thread::DebugOwnership::Idle;
+        if ((word->load() & ExecutionDomain::IntrDebugStop) == 0
+            && thread->debugOwnership.compare_exchange_strong(
+                   expectIdle, Thread::DebugOwnership::Executing,
+                   std::memory_order_acq_rel)) {
+            admitted = true;   // fast path: no stop pending, ownership claimed
+        } else {
+            const bool rtNoPark = SimpleMarkSweepGC::inGCYieldSectionOnThisThread()
+                                  || thread->rtYieldOnGC
+                                  || deadline != TimePoint::max();
+            admitted = stopCoordinator().admitOrPark(*thread, !rtNoPark);
+        }
+        if (!admitted)
+            return std::make_pair(ExecutionStatus::Paused, Value::nilVal());
+    }
+    Thread::DebugExecScope debugExecScope(*thread);
+
     SimpleMarkSweepGC& valueGC = SimpleMarkSweepGC::instance();
     // A re-entrant execute() on the SAME physical thread — e.g. a native pump (an event
     // loop, processPendingEvents) invoking a Roxal callback, or _invoke_method calling a
@@ -6417,7 +6803,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
         // a stop-the-world pause.  Yield back to the host instead; the
         // executionGuard dtor runs onThreadExit so the barrier doesn't count
         // us, and this Thread's frames stay rooted via the threads registry.
-        // Resumption is the normal Yielded path (rtState_ machinery).
+        // Resumption is the normal Yielded path.
         if (SimpleMarkSweepGC::inGCYieldSectionOnThisThread() || thread->rtYieldOnGC) {
             return std::make_pair(ExecutionStatus::Yielded, Value::nilVal());
         }
@@ -6498,7 +6884,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
     // Mirrors the frames-empty handling in OpCode::Throw.
     auto handleZeroDivision = [&](const char* msg) -> bool {
         raiseZeroDivisionError(msg);
-        if (runtimeErrorFlag.load() || thread->frames.empty())
+        if (hasRuntimeError() || thread->frames.empty())
             return true;
         frame = thread->frames.end()-1;
         return false;
@@ -6554,8 +6940,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
     // loop requires adding its trigger here.  Atomic loads use the same
     // memory orderings as the sites they mirror.
     auto interInstrWorkPending = [&]() -> unsigned {
-        return (unsigned)runtimeErrorFlag.load()                       // loop top: error return
-             | (unsigned)exitRequested.load()                          // suspension guard + event dispatch
+        return (unsigned)word->load()                                  // interrupt word: RuntimeError (loop top) | Exit (suspension guard + event dispatch) | debug bits
              | (unsigned)valueGC.isCollectionRequested()               // epilogue: GC safepoint
              | (unsigned)thread->threadSleep.load()                    // suspension guard + epilogue park
              | (unsigned)thread->awaitedFuture.isNonNil()              // suspension guard + epilogue await
@@ -6622,7 +7007,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
         // same name.  The Thread field is also accessed by tryAwait* helpers.
         auto& instructionStart = thread->instructionStart;
 
-        if (runtimeErrorFlag.load())
+        if (hasRuntimeError())
             return errorReturn;
 
         // Frame-boundary cleanup guard: the three cleanups below each fire only
@@ -6700,14 +7085,59 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
         // are read directly (no derived/cached state), so there is no
         // missed-trigger maintenance surface.  The rare cases are disambiguated
         // in priority order inside.
-        if ((unsigned)exitRequested.load()
+        if ((unsigned)(word->load()
+                       & (ExecutionDomain::IntrExit | ExecutionDomain::IntrDebugStop
+                          | ExecutionDomain::IntrDebugSlowPath))
             | (unsigned)thread->threadSleep.load()
             | (unsigned)thread->awaitedFuture.isNonNil()
             | (unsigned)thread->pendingWaitFor.isNonNil()
             | (unsigned)thread->waitSuspension.active) [[unlikely]] {
 
-            if (exitRequested.load())
+            if (isExitRequested())
                 return std::make_pair(ExecutionStatus::OK,Value::nilVal());
+
+            // Debugger cooperative stop point.  Sleepers and awaiters
+            // cycle through this loop top on wake (wakeAll rouses them),
+            // so this single check covers them -- their sleep deadlines
+            // are untouched, so release needs no save/restore.  A
+            // gate-counted dataflow section finishes its bounded node
+            // work first.  RT/deadline execution acknowledges and returns
+            // Paused (bounded atomic work only); everything else parks.
+            if (debugStopRequested() && thread->dataflowEvalDepth == 0
+                && !thread->debugExcluded.load(std::memory_order_relaxed)) [[unlikely]] {
+                if (hasDeadline || SimpleMarkSweepGC::inGCYieldSectionOnThisThread()
+                    || thread->rtYieldOnGC) {
+                    stopCoordinator().ackNoPark(*thread);
+                    if (thread->execute_depth > 0) thread->execute_depth--;
+                    return std::make_pair(ExecutionStatus::Paused, Value::nilVal());
+                }
+                stopCoordinator().ackAndPark(*thread);
+                goto postInstructionDispatch;   // re-evaluate sleeps/awaits after release
+            }
+
+            // Debugger statement-boundary work for breakpoints and
+            // stepping -- armed via IntrDebugSlowPath; the check itself is
+            // two integer compares against the frame's statement cache, and
+            // a trap behaves exactly like the cooperative stop point above.
+            if ((word->load() & ExecutionDomain::IntrDebugSlowPath) != 0
+                && thread->dataflowEvalDepth == 0
+                && !thread->debugExcluded.load(std::memory_order_relaxed)
+                && !thread->frames.empty()) [[unlikely]] {
+                const bool rtSlice = hasDeadline
+                    || SimpleMarkSweepGC::inGCYieldSectionOnThisThread()
+                    || thread->rtYieldOnGC;
+                // RT slices publish traps with atomics only (no worker
+                // mutex/wake -- the worker's armed-mode poll observes them).
+                if (debugStatementBoundary(*thread, frame, /*canNotify=*/!rtSlice)) {
+                    if (rtSlice) {
+                        stopCoordinator().ackNoPark(*thread);
+                        if (thread->execute_depth > 0) thread->execute_depth--;
+                        return std::make_pair(ExecutionStatus::Paused, Value::nilVal());
+                    }
+                    stopCoordinator().ackAndPark(*thread);
+                    goto postInstructionDispatch;
+                }
+            }
 
             // if we're 'sleeping' don't execute any instructions
             //  (we may have been woken up by an event or a spurious wakeup, in which case we'll re-block below)
@@ -7056,7 +7486,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                 Value& inst { peek(0) };
                 ObjString* name = readString();
                 inst.resolveSignal();
-                if (runtimeErrorFlag.load()) return errorReturn;
+                if (hasRuntimeError()) return errorReturn;
                 VariablesMap::MonitoredValue* prop = nullptr;
                 if (isObjectInstance(inst)) {
                     prop = asObjectInstance(inst)->findProperty(name->hash);
@@ -7124,7 +7554,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
 
                 // Now resolve signals for non-signal types
                 inst.resolveSignal();
-                if (runtimeErrorFlag.load())
+                if (hasRuntimeError())
                     return errorReturn;
                 if (isEventInstance(inst)) {
                     ObjEventInstance* eventInst = asEventInstance(inst);
@@ -7409,7 +7839,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                         }
                     } catch (std::exception& e) {
                         raiseException(Value::exceptionVal(Value::stringVal(toUnicodeString(e.what()))));
-                        if (runtimeErrorFlag.load()) return errorReturn;
+                        if (hasRuntimeError()) return errorReturn;
                         if (!thread->frames.empty()) frame = thread->frames.end()-1;
                         goto postInstructionDispatch;
                     }
@@ -7483,7 +7913,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
 
                 // Now resolve signals for non-signal types
                 inst.resolveSignal();
-                if (runtimeErrorFlag.load())
+                if (hasRuntimeError())
                     return errorReturn;
                 if (isEventInstance(inst)) {
                     ObjEventInstance* eventInst = asEventInstance(inst);
@@ -7789,7 +8219,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                         }
                     } catch (std::exception& e) {
                         raiseException(Value::exceptionVal(Value::stringVal(toUnicodeString(e.what()))));
-                        if (runtimeErrorFlag.load()) return errorReturn;
+                        if (hasRuntimeError()) return errorReturn;
                         if (!thread->frames.empty()) frame = thread->frames.end()-1;
                         goto postInstructionDispatch;
                     }
@@ -8000,7 +8430,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                         }
                     } catch (std::exception& e) {
                         raiseException(Value::exceptionVal(Value::stringVal(toUnicodeString(e.what()))));
-                        if (runtimeErrorFlag.load()) return errorReturn;
+                        if (hasRuntimeError()) return errorReturn;
                         if (!thread->frames.empty()) frame = thread->frames.end()-1;
                         goto postInstructionDispatch;
                     }
@@ -8217,7 +8647,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                         }
                     } catch (std::exception& e) {
                         raiseException(Value::exceptionVal(Value::stringVal(toUnicodeString(e.what()))));
-                        if (runtimeErrorFlag.load()) return errorReturn;
+                        if (hasRuntimeError()) return errorReturn;
                         if (!thread->frames.empty()) frame = thread->frames.end()-1;
                         goto postInstructionDispatch;
                     }
@@ -10131,7 +10561,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                 // the raise went uncaught or was stashed for actor forwarding,
                 // in which case there is no frame to continue on (mirrors both
                 // OpCode::Throw and handleZeroDivision).
-                if (runtimeErrorFlag.load() || thread->frames.empty())
+                if (hasRuntimeError() || thread->frames.empty())
                     return errorReturn;
                 frame = thread->frames.end()-1;
                 break;
@@ -10144,43 +10574,9 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                     if (s == FutureStatus::Error) return errorReturn;
                 }
                 Value exc = pop();
-                if (!isException(exc))
-                    exc = Value::exceptionVal(exc);
-                ObjException* exObj = asException(exc);
-                if (exObj->stackTrace.isNil())
-                    exObj->stackTrace = captureStacktrace();
-                while (true) {
-                    if (thread->frames.empty()) {
-                        // Forward the exception through actor return future
-                        // when running inside an actor call; otherwise
-                        // surface as a global runtime error (the original
-                        // behaviour for top-level scripts and non-actor threads).
-                        thread->pendingUncaughtException = exc;
-                        bool willForward = thread->isActorThread() && thread->currentActorCall.isNonNil();
-                        if (!willForward) {
-                            runtimeError("Uncaught exception: " + objExceptionToString(asException(exc)));
-                        } else {
-                            resetStack();
-                        }
-                        return errorReturn;
-                    }
-                    auto &cf = thread->frames.back();
-                    if (!cf.exceptionHandlers.empty()) {
-                        auto h = cf.exceptionHandlers.back();
-                        cf.exceptionHandlers.pop_back();
-                        while (thread->frames.size() > h.frameDepth)
-                            unwindFrame();
-                        frame = thread->frames.end()-1;
-                        frame->ip = h.handlerIp;
-                        while (thread->stackTop - thread->stack.begin() > h.stackDepth)
-                            pop();
-                        push(exc);
-                        break;
-                    } else {
-                        unwindFrame();
-                    }
-                }
-                frame = thread->frames.end()-1;
+                if (!unwindToExceptionHandler(exc))
+                    return errorReturn;
+                frame = thread->frames.end()-1;   // cached-frame refresh
                 break;
             }
             case OpCode::ObjectType: {
@@ -10522,10 +10918,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                     // bindings so the freshly-loaded module's values become
                     // visible. For all other targets, keep prior semantics
                     // (overwrite=false — first import wins).
-                    const bool replReimport =
-                        replModuleValue.isNonNil() &&
-                        isModuleType(replModuleValue) &&
-                        asModuleType(replModuleValue) == toModuleType;
+                    const bool replReimport = (replModuleType() == toModuleType);
 
                     auto storeImported = [&](int32_t hash, const ustring& name, const Value& v) {
                         if (v.isObj() && isOverloadSet(v)) {
@@ -10716,7 +11109,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                     thread->waitSuspension.clear();
                     thread->pendingWaitFor = Value::nilVal();
                     thread->awaitedFuture = Value::nilVal();
-                    if (runtimeErrorFlag.load())
+                    if (hasRuntimeError())
                         return errorReturn;
                     // Refresh frame pointer; raiseException may have unwound.
                     if (!thread->frames.empty())
@@ -10762,7 +11155,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
         // checked at identical frequency, so event latency is unchanged.
         // (dispatch.active alone is deliberately not a trigger: with no handler
         // return and no pending events, the call is a pure no-op then too.)
-        if (exitRequested.load() ||
+        if (isExitRequested() ||
             thread->eventHandlerJustReturned ||
             thread->pendingEventCount.load(std::memory_order_acquire) != 0) {
             if (!processEventDispatch())
@@ -10801,7 +11194,7 @@ bool VM::processPendingEvents()
     SimpleMarkSweepGC::GCNoParkScope nativeCover;
 #endif
 
-    if (exitRequested.load()) return false;
+    if (isExitRequested()) return false;
 
     if (thread->pendingEventCount.load(std::memory_order_acquire) == 0)
         return true;
@@ -11128,7 +11521,7 @@ bool VM::invokeNextEventHandler()
 
 bool VM::processEventDispatch()
 {
-    if (exitRequested.load()) return false;
+    if (isExitRequested()) return false;
 
     auto& dispatch = thread->eventDispatch;
 
@@ -11993,15 +12386,125 @@ void VM::unwindFrame()
     thread->popFrame();
 }
 
-void VM::raiseException(Value exc)
+// Fatal-error debugger stop.  With the stop-on-fatal policy armed and this
+// thread eligible (never RT/GC-yield slices or bounded dataflow eval
+// sections), publish an Exception stop carrying `description` and PARK
+// until released.  Competing-stop policy: the earlier stop wins -- this
+// thread joins it -- and the exception stop is retried on release, so the
+// user sees the failure as its own stop right after continuing; bounded
+// retries, then the normal teardown proceeds.
+void VM::debugFatalStopIfArmed(const std::string& description,
+                               Chunk* chunk, size_t instruction)
+{
+    auto& coord = stopCoordinator();
+    if (!coord.stopOnFatal() || !thread
+        || thread->dataflowEvalDepth != 0
+        || thread->debugExcluded.load(std::memory_order_relaxed)
+        || SimpleMarkSweepGC::inGCYieldSectionOnThisThread()
+        || thread->rtYieldOnGC)
+        return;
+    coord.ensureWorker();
+    int32_t stmtIdx = -1;
+    if (chunk && chunk->debugInfo)
+        stmtIdx = debugLocateStatement(*chunk->debugInfo, uint32_t(instruction));
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        const bool began = coord.tryBeginAsyncStop(
+            DebugStopReason::Exception, thread->id(),
+            stmtIdx >= 0 ? static_cast<const void*>(chunk) : nullptr,
+            stmtIdx >= 0 ? uint32_t(stmtIdx) : 0,
+            /*canNotify=*/true, description);
+        if (began) {
+            coord.ackAndPark(*thread);
+            return;
+        }
+        if (!debugStopRequested())
+            return;   // backoff refusal with no stop pending: give up
+        coord.ackAndPark(*thread);   // join the earlier stop; retry on release
+        if (!coord.stopOnFatal())
+            return;   // policy disarmed while we were parked
+    }
+}
+
+// Unwind to the innermost exception handler (the single shared unwinder
+// behind OpCode::Throw and raiseException -- the two previously
+// hand-copied loops).  Normalizes the value to an ObjException and
+// captures the stack trace if absent.  Returns true when a handler was
+// entered (frames/ip/stack adjusted; a dispatch-loop caller must refresh
+// its cached frame iterator); false when the exception was uncaught -- then
+// it was forwarded through the actor return future, or surfaced via
+// runtimeError() -- and this thread's frames are gone either way.
+bool VM::unwindToExceptionHandler(Value& exc)
 {
     if (!isException(exc))
         exc = Value::exceptionVal(exc);
-
     ObjException* exObj = asException(exc);
     if (exObj->stackTrace.isNil())
         exObj->stackTrace = captureStacktrace();
 
+    // Provably-uncaught check: with NO handler entry anywhere on the
+    // stack, unwinding would destroy every frame before the empty-frames
+    // branch below reports the failure -- so the debugger stop must happen
+    // HERE, at the raise site with the stack intact.  A typed handler that
+    // rethrows re-enters this function with fewer handlers and eventually
+    // satisfies this check: the stop lands at the final rethrow.
+    // Forwarded actor exceptions are exempt -- the awaiting side may catch
+    // them.
+    {
+        const bool willForward =
+            thread && thread->isActorThread() && thread->currentActorCall.isNonNil();
+        if (!willForward && thread && !thread->frames.empty()
+            && stopCoordinator().stopOnFatal()) {
+            bool anyHandler = false;
+            for (const auto& f : thread->frames)
+                if (!f.exceptionHandlers.empty()) { anyHandler = true; break; }
+            if (!anyHandler) {
+                auto frame = thread->frames.end() - 1;
+                Chunk* ch = asFunction(asClosure(frame->closure)->function)->chunk.get();
+                const size_t instr = frame->ip > ch->code.begin()
+                    ? size_t(frame->ip - ch->code.begin() - 1) : 0;
+                debugFatalStopIfArmed(
+                    "Uncaught exception: " + objExceptionToString(asException(exc)),
+                    ch, instr);
+            }
+        }
+    }
+
+    while (true) {
+        if (thread->frames.empty()) {
+            // Stash the exception so the actor return path can forward it
+            // through the actor's return future (wait(for=fut), allof/anyof
+            // etc. observe and re-raise on the awaiting thread).  Inside an
+            // actor call, do NOT set the global IntrRuntimeError bit -- that
+            // would abort all threads, defeating cross-actor propagation.
+            thread->pendingUncaughtException = exc;
+            const bool willForward =
+                thread->isActorThread() && thread->currentActorCall.isNonNil();
+            if (!willForward)
+                runtimeError("Uncaught exception: "
+                             + objExceptionToString(asException(exc)));
+            else
+                resetStack();
+            return false;
+        }
+        auto& cf = thread->frames.back();
+        if (!cf.exceptionHandlers.empty()) {
+            auto h = cf.exceptionHandlers.back();
+            cf.exceptionHandlers.pop_back();
+            while (thread->frames.size() > h.frameDepth)
+                unwindFrame();
+            auto frame = thread->frames.end() - 1;
+            frame->ip = h.handlerIp;
+            while (thread->stackTop - thread->stack.begin() > h.stackDepth)
+                pop();
+            push(exc);
+            return true;
+        }
+        unwindFrame();
+    }
+}
+
+void VM::raiseException(Value exc)
+{
     if (thread && thread->nativeCallDepth > 0)
         thread->exceptionJumpPending.store(true, std::memory_order_relaxed);
 
@@ -12015,44 +12518,7 @@ void VM::raiseException(Value exc)
         thread->threadSleep = false;
     }
 
-    while (true) {
-        if (thread->frames.empty()) {
-            // Stash the exception so the actor return path can forward it
-            // through the actor's return future (so wait(for=fut), allof/anyof
-            // etc. observe and re-raise on the awaiting thread).
-            thread->pendingUncaughtException = exc;
-            // If we're inside an actor call, the actor's main loop will see
-            // the unwound state and forward the exception through the return
-            // promise. Don't trigger the global runtimeErrorFlag — that would
-            // abort *all* threads, defeating the whole point of cross-actor
-            // exception propagation.
-            bool willForward = thread->isActorThread() && thread->currentActorCall.isNonNil();
-            if (!willForward) {
-                runtimeError("Uncaught exception: " + objExceptionToString(asException(exc)));
-            } else {
-                // Reset stack on this thread (so the actor loop can pick up
-                // cleanly) without setting the global flag.
-                resetStack();
-            }
-            return;
-        }
-
-        auto& cf = thread->frames.back();
-        if (!cf.exceptionHandlers.empty()) {
-            auto h = cf.exceptionHandlers.back();
-            cf.exceptionHandlers.pop_back();
-            while (thread->frames.size() > h.frameDepth)
-                unwindFrame();
-            auto frame = thread->frames.end()-1;
-            frame->ip = h.handlerIp;
-            while (thread->stackTop - thread->stack.begin() > h.stackDepth)
-                pop();
-            push(exc);
-            break;
-        } else {
-            unwindFrame();
-        }
-    }
+    unwindToExceptionHandler(exc);
 }
 
 
@@ -12225,7 +12691,7 @@ void VM::freeObjects()
             ObjControl* ctrl = batchControls[i];
             // Same release + acquire-on-zero death protocol as Obj::decWeak:
             // other threads' weak releases must be visible before the free.
-            if (ctrl->weak.fetch_sub(1, std::memory_order_release) == 1) {
+            if (ctrl->weak.fetch_sub(1, refReleaseOrder) == 1) {
                 std::atomic_thread_fence(std::memory_order_acquire);
 #ifdef ROXAL_GC_FORENSICS
                 // THIS is the sweep's real free site -- quarantine must hook
@@ -12343,15 +12809,28 @@ VM::SourceLocation VM::currentSourceLocation() const
     return loc;
 }
 
+std::string VM::takeRuntimeErrorMessage()
+{
+    ExecutionDomain& d = *currentOrDefaultDomain();
+    std::lock_guard<std::mutex> lock(d.errorMutex);
+    return std::move(d.errorMessage);
+}
+
 void VM::runtimeError(const std::string& format, ...)
 {
-    runtimeErrorFlag = true;
-
-    // Wake all threads so they can notice the error flag and terminate
-    threads.apply([](const std::pair<const uint64_t, ptr<Thread>>& entry){
-        if (entry.second)
-            entry.second->wake();
-    });
+    // NOTE: the error flag + wakes are published AFTER the (optional)
+    // debugger exception stop below -- publishing the flag first would
+    // start terminating other threads before the world can be frozen for
+    // inspection.  With no debugger attached the flag is set a few
+    // microseconds later; nothing observes the difference.
+    auto publishErrorAndWake = [this] {
+        setRuntimeErrorFlag();
+        // Wake all threads so they can notice the error flag and terminate
+        threads.apply([](const std::pair<const uint64_t, ptr<Thread>>& entry){
+            if (entry.second)
+                entry.second->wake();
+        });
+    };
 
     va_list args;
     va_start(args, format);
@@ -12368,7 +12847,16 @@ void VM::runtimeError(const std::string& format, ...)
         message.assign(buffer.data(), static_cast<std::size_t>(required));
     }
     va_end(args);
+    {
+        // Retained on the raising thread's DOMAIN for the run's handle: the
+        // flag says THAT it failed, this says why.  Taken by whoever
+        // publishes the failure.
+        ExecutionDomain& d = *currentOrDefaultDomain();
+        std::lock_guard<std::mutex> lock(d.errorMutex);
+        d.errorMessage = message;
+    }
     if (!thread || thread->frames.empty()) {
+        publishErrorAndWake();
         const std::string text = "error: " + message;
         OutputEventView event;
         event.kind = OutputKind::Diagnostic;
@@ -12393,7 +12881,7 @@ void VM::runtimeError(const std::string& format, ...)
 
     std::ostringstream rendered;
     // Render stack metadata only.  Source-file lookup belongs to the terminal
-    // sink so an asynchronous embedding can defer it off the runFor() thread.
+    // sink so an asynchronous embedding can defer it off the driver thread.
     for(auto it = thread->frames.begin(); it != thread->frames.end(); ++it) {
         const CallFrame& f { *it };
         auto c = asFunction(asClosure(f.closure)->function)->chunk;
@@ -12421,6 +12909,19 @@ void VM::runtimeError(const std::string& format, ...)
     rendered << message;
 
     const std::string text = rendered.str();
+
+    // Debugger exception stop: with the policy armed, publish an Exception
+    // stop and PARK -- before the error flag starts terminating other
+    // threads and before resetStack() destroys this stack -- so the
+    // failure is inspectable exactly where it happened.  On release
+    // (continue/terminate), fall through to the pre-existing teardown,
+    // which then runs exactly once.  Excluded, as at statement boundaries:
+    // RT/GC-yield slices and bounded dataflow eval sections, which must
+    // not park here.
+    debugFatalStopIfArmed(text, chunk.get(), instruction);
+
+    publishErrorAndWake();
+
     OutputEventView event;
     event.kind = OutputKind::Diagnostic;
     event.severity = OutputSeverity::Error;
@@ -12931,7 +13432,7 @@ Value VM::captureStacktrace()
 bool VM::resolveValue(Value& value)
 {
     value.resolve();
-    return !runtimeErrorFlag.load();
+    return !hasRuntimeError();
 }
 
 FutureStatus VM::tryResolveValue(Value& value)
@@ -14707,7 +15208,7 @@ void VM::executeBuiltinModuleScript(const std::string& path, Value moduleType)
         return;
 
     Value closure { Value::closureVal(fn) };
-    ptr<Thread> t = make_ptr<Thread>();
+    ptr<Thread> t = Thread::create(defaultDomain_, ThreadKind::Init);
     // Register the module-script Thread in the threads registry for the
     // duration of the run: the GC root scan discovers threads through the
     // registry (plus replThread/dataflowEngineThread and the COLLECTOR's own
@@ -14745,10 +15246,13 @@ std::optional<Value> VM::lookupUserModule(const ustring& qualifiedName)
 void VM::registerUserModule(const ustring& qualifiedName, const Value& moduleType)
 {
     std::lock_guard<std::mutex> guard(userModuleRegistryMutex);
-    // Insert-only; never overwrite.  If two compilations race past the
-    // pre-compile lookup, the loser's freshly allocated ObjModuleType is
-    // simply discarded by its compileImport caller (which re-reads the
-    // canonical value after registration -- see RoxalCompiler.cpp).
+    // Insert-only; never overwrite.  Compilations are serialized by
+    // preparationMutex_, so two of them cannot race past the pre-compile
+    // lookup; a second registration of the same name can only come from a
+    // re-import within ONE compilation, and the first wins.  (The compiler
+    // does NOT re-read the canonical value after registering -- it keeps
+    // compiling into the module it pre-allocated -- so serialization is what
+    // makes this correct, not this map.)
     userModuleRegistry.emplace(qualifiedName, moduleType);
 }
 
@@ -14758,11 +15262,11 @@ void VM::clearUserModuleRegistry()
         std::lock_guard<std::mutex> guard(userModuleRegistryMutex);
         userModuleRegistry.clear();
     }
-    // Also wipe the long-lived REPL compiler's importedModules cache so its
+    // Also wipe the session compiler's importedModules cache so its
     // per-instance short-circuit doesn't bypass the now-empty VM registry on
     // the next compile.
-    if (replCompiler_)
-        replCompiler_->clearImportedModules();
+    if (replSession_ && replSession_->compiler)
+        replSession_->compiler->clearImportedModules();
 }
 
 #ifdef ROXAL_ENABLE_GRPC
@@ -14815,8 +15319,49 @@ void VM::dumpStackTraces()
     fflush(stderr);
 }
 
+ExecutionStatus VM::joinDomainThreads(uint64_t domainId)
+{
+    // Same as joinAllThreads(): joining the domain is the end of its
+    // execution, so refuse new stops and release any active one.
+    if (stopCoordinator_)
+        stopCoordinator_->endExecution();
+
+    ExecutionStatus combined = ExecutionStatus::OK;
+    for (;;) {
+        bool joinedAny = false;
+        for (uint64_t id : threads.keys()) {
+            ptr<Thread> t;
+            {
+                auto opt = threads.lookup(id);
+                if (opt)
+                    t = *opt;
+            }
+            if (!t || !t->domain || t->domain->id() != domainId)
+                continue;
+            joinedAny = true;
+            t->join();
+            if (t->result != ExecutionStatus::OK)
+                combined = ExecutionStatus::RuntimeError;
+            threads.erase(id);
+        }
+        if (!joinedAny)
+            break;
+    }
+    return combined;
+}
+
 ExecutionStatus VM::joinAllThreads(uint64_t skipId)
 {
+    // Joining everything is the end of execution for the debuggee.  A thread
+    // parked in a debugger stop returns from ackAndPark() only when that
+    // stop is released -- and a thread released to finish its last
+    // statements must not be able to trap on a still-armed breakpoint and
+    // park again under this join.  endExecution() closes the gate, then
+    // releases the PARK, not the hold: the fail-safe hold stays with the
+    // host, as at session end.
+    if (stopCoordinator_)
+        stopCoordinator_->endExecution();
+
     ExecutionStatus combined = ExecutionStatus::OK;
     for (;;) {
         auto ids = threads.keys();
@@ -14846,10 +15391,190 @@ ExecutionStatus VM::joinAllThreads(uint64_t skipId)
     return combined;
 }
 
+bool VM::debugStatementBoundary(Thread& t, CallFrames::iterator frame, bool canNotify)
+{
+    Chunk* chunk = asFunction(asClosure(frame->closure)->function)->chunk.get();
+    const DebugInfo* di = chunk->debugInfo.get();
+    if (!di || di->stmts.empty())
+        return false;
+    const auto off = uint32_t(frame->ip - chunk->code.begin());
+
+    // Refresh the frame's statement-window cache on leaving the cached
+    // [start, next) window (fresh frame or a control-flow jump).  A frame's
+    // chunk never changes, so the window needs no chunk identity.
+    if (off < frame->dbgStmtStart || off >= frame->dbgStmtNext) {
+        const int32_t idx = debugLocateStatement(*di, off);
+        if (idx < 0) {
+            frame->dbgStmtStart = 0xfffffffeu;   // impossible-match sentinel
+            frame->dbgStmtNext = di->stmts.front().offset;
+            return false;
+        }
+        frame->dbgStmtStart = di->stmts[idx].offset;
+        frame->dbgStmtNext = (size_t(idx) + 1 < di->stmts.size())
+                                 ? di->stmts[idx + 1].offset
+                                 : uint32_t(chunk->code.size() + 1);
+    }
+    if (off != frame->dbgStmtStart)
+        return false;   // mid-statement: not a boundary
+    // FIRE path (rare): re-locate the statement index.
+    const int32_t fireIdx = debugLocateStatement(*di, off);
+    if (fireIdx < 0 || di->stmts[fireIdx].offset != off)
+        return false;
+    const uint32_t stmtIdx = uint32_t(fireIdx);
+
+    auto ensureActivation = [&]() -> uint64_t {
+        if (frame->activationId == 0)
+            frame->activationId = t.nextActivationId++;
+        return frame->activationId;
+    };
+
+    // One-shot resume suppression: releasing a stop must not immediately
+    // re-trap the same (chunk, statement, activation).
+    if (t.debugSuppressChunk == chunk && t.debugSuppressStmt == stmtIdx
+        && t.debugSuppressActivation == ensureActivation()) {
+        t.debugSuppressChunk = nullptr;
+        t.debugSuppressStmt = 0xffffffffu;
+        t.debugSuppressActivation = 0;
+        return false;
+    }
+
+    bool hit = false;
+    DebugStopReason reason = DebugStopReason::Breakpoint;
+
+    // Breakpoint word, claimed only from a stable (even, unchanged) seqlock
+    // snapshot -- edits are legal while we run.
+    if (ChunkBreakpoints* bp = chunk->breakpointsRaw.load(std::memory_order_acquire)) {
+        if (stmtIdx < bp->count) {
+            const uint32_t s1 = bp->seq.load(std::memory_order_acquire);
+            if ((s1 & 1u) == 0) {
+                const uint32_t w = bp->words[stmtIdx].load(std::memory_order_acquire);
+                if (bp->seq.load(std::memory_order_acquire) == s1
+                    && (w & ChunkBreakpoints::Enabled) != 0)
+                    hit = true;
+            }
+        }
+    }
+
+    // Step predicate, evaluated on the stepping thread only.  Anchored on
+    // the ORIGIN FRAME'S ACTIVATION -- never raw frame depth, which a
+    // recycled equal depth with a different activation would satisfy
+    // wrongly.  The one-shot suppression above already consumed the arming
+    // statement, so a loop that returns to the origin statement is a NEW
+    // crossing and fires.
+    if (!hit && t.debugStepMode != Thread::DebugStepMode::None) {
+        const size_t top = t.frames.size() - 1;
+        const uint32_t oi = t.debugStepOriginIndex;
+        const bool originAlive =
+            oi < t.frames.size()
+            && t.frames[oi].activationId == t.debugStepActivation;
+        // A step must not land inside an asynchronous event-handler
+        // dispatch that interposed itself above the origin: scan the frames
+        // pushed above the origin index (bounded by depth gained since
+        // arming; slow path only).  Continuation-callback frames are NOT
+        // excluded -- they execute user closures (map/filter bodies) and
+        // are legitimate step landings.
+        auto handlerInterposed = [&]() -> bool {
+            const size_t base = originAlive ? size_t(oi) + 1 : 0;
+            for (size_t i = base; i <= top; ++i)
+                if (t.frames[i].isEventHandler)
+                    return true;
+            return false;
+        };
+        bool fire = false;
+        switch (t.debugStepMode) {
+            case Thread::DebugStepMode::In:
+                fire = !handlerInterposed();   // next crossing, any depth
+                break;
+            case Thread::DebugStepMode::Next:
+                // Back in the origin activation itself, or the origin has
+                // returned/unwound (then the first non-interposed crossing
+                // -- the caller, or the next continuation invocation).
+                fire = originAlive ? (top == oi) : !handlerInterposed();
+                break;
+            case Thread::DebugStepMode::Out:
+                fire = !originAlive && !handlerInterposed();
+                break;
+            default: break;
+        }
+        if (fire) {
+            hit = true;
+            reason = DebugStopReason::Step;
+        }
+    }
+
+    if (!hit)
+        return false;
+
+    // Publish the stop (bounded lock-free work; the debug worker completes
+    // it).  If publication is refused (failed-stop backoff) and no stop is
+    // otherwise pending, keep running WITH any armed step intact -- the
+    // next crossing retries (disarm only after successful publication).
+    const bool began = stopCoordinator().tryBeginAsyncStop(reason, t.id(), chunk,
+                                                           stmtIdx, canNotify);
+    if (!began && !debugStopRequested())
+        return false;
+    if (began && reason == DebugStopReason::Step) {
+        // The step consumed itself: disarm its thread-local state.  Its
+        // paired slow-path demand is released by the WORKER in
+        // completeAsyncStop -- releasing it here could drop the demand to
+        // zero right after this unnotified RT publication, letting the
+        // worker enter its idle wait with the stop pending.  (If a
+        // DIFFERENT stop preempted us -- began==false with a stop pending
+        // -- the step stays armed and the commit-time sweep cancels it.)
+        t.debugStepMode = Thread::DebugStepMode::None;
+        t.debugStepActivation = 0;
+        t.debugStepOriginIndex = 0;
+    }
+    const uint64_t act = ensureActivation();
+    t.debugSuppressChunk = chunk;
+    t.debugSuppressStmt = stmtIdx;
+    t.debugSuppressActivation = act;
+    return true;
+}
+
+void VM::debugStopParkIfRequested()
+{
+    // Cooperative stop point for Roxal-owned persistent native loops (the
+    // dataflow engine's run() drain, the actor queue idle) -- always non-RT.
+    if (!debugStopRequested() || !thread)
+        return;
+    if (thread->dataflowEvalDepth > 0)
+        return;   // finish the bounded eval section first
+    if (thread->debugExcluded.load(std::memory_order_relaxed))
+        return;   // service thread: runs through stops
+    stopCoordinator().ackAndPark(*thread);
+}
+
+df::DataflowEngine* VM::dataflowEngineForDebug()
+{
+    return dataflowEngine.get();
+}
+
 void VM::requestExit(int code)
 {
+    // A program run's own domain, under an embedded driver: exit() ends THAT
+    // RUN.  Set its flag, wake its threads, record its code -- the driver's
+    // next slice sees the flag, the body returns, the run is handed over,
+    // and the finalizer joins the domain.  No process-wide join here (this
+    // may well be the driver thread) and no engine stop: the dataflow
+    // engine is the host's, not the program's.
+    if (embeddedDriverAttached() && thread && thread->domain != defaultDomain_) {
+        thread->domain->exitCode.store(code, std::memory_order_release);
+        setExitFlag();
+        const uint64_t domainId = thread->domain->id();
+        threads.apply([domainId](const std::pair<const uint64_t, ptr<Thread>>& entry){
+            if (entry.second && entry.second->domain
+                && entry.second->domain->id() == domainId)
+                entry.second->wake();
+        });
+        return;
+    }
+
     exitCodeValue = code;
-    exitRequested = true;
+    setExitFlag();
+    // The process exits: the flag goes on the service domain too, which is
+    // what a host thread (the CLI, the REPL loop) reads.
+    interrupts_.fetch_or(ExecutionDomain::IntrExit);
 
     // wake all threads so they can terminate promptly
     threads.apply([](const std::pair<const uint64_t, ptr<Thread>>& entry){

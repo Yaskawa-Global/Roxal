@@ -64,7 +64,8 @@ export function disposeModel(path) {
     monaco.editor.getModel(monaco.Uri.parse('inmemory://roxal' + path))?.dispose();
 }
 
-export default function Editor({ path, content, onChange, service, height = '22rem', readOnly = false }) {
+export default function Editor({ path, content, onChange, service, height = '22rem', readOnly = false,
+                                 breakpoints = null, stopLine = null, onToggleBreakpoint = null }) {
     const hostRef = useRef(null);
     const editorRef = useRef(null);
     const onChangeRef = useRef(onChange);
@@ -79,6 +80,9 @@ export default function Editor({ path, content, onChange, service, height = '22r
 
     const pathRef = useRef(path);
     pathRef.current = path;
+    const onToggleBpRef = useRef(onToggleBreakpoint);
+    onToggleBpRef.current = onToggleBreakpoint;
+    const decoRef = useRef(null);
 
     useEffect(() => {
         registerRoxal(monaco);
@@ -95,6 +99,9 @@ export default function Editor({ path, content, onChange, service, height = '22r
             insertSpaces: true,           // Roxal is indentation-sensitive
             detectIndentation: false,
             readOnly,
+            // Breakpoint gutter -- shown always so the layout does not jump
+            // when debugging is toggled on.
+            glyphMargin: true,
         });
         editorRef.current = editor;
         // Exposed deliberately: browser tests drive the model rather than
@@ -148,7 +155,17 @@ export default function Editor({ path, content, onChange, service, height = '22r
             },
         });
 
-        return () => { clearTimeout(timer); hover.dispose(); sub.dispose(); editor.dispose(); };
+        // --- breakpoints ----------------------------------------------------
+        // A click in the glyph margin toggles a breakpoint on that line; the
+        // owner decides what that means (it may push the new set to a live
+        // debug session).
+        const mouse = editor.onMouseDown(e => {
+            if (e.target?.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN
+                && e.target.position)
+                onToggleBpRef.current?.(e.target.position.lineNumber);
+        });
+
+        return () => { clearTimeout(timer); hover.dispose(); sub.dispose(); mouse.dispose(); editor.dispose(); };
         // Mount once: `value` is the initial document. Re-creating the editor on
         // every keystroke would destroy the cursor and undo history.
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -176,6 +193,28 @@ export default function Editor({ path, content, onChange, service, height = '22r
         // content is deliberately not a dependency: it only seeds NEW models.
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [path]);
+
+    // Breakpoint dots + the current-stop line, as one decorations collection.
+    useEffect(() => {
+        const editor = editorRef.current;
+        if (!editor) return;
+        const decos = [];
+        for (const line of breakpoints ?? [])
+            decos.push({
+                range: new monaco.Range(line, 1, line, 1),
+                options: { glyphMarginClassName: 'bp-glyph', stickiness: 1 },
+            });
+        if (stopLine)
+            decos.push({
+                range: new monaco.Range(stopLine, 1, stopLine, 1),
+                options: { isWholeLine: true, className: 'debug-stop-line',
+                           glyphMarginClassName: 'debug-stop-glyph' },
+            });
+        decoRef.current?.clear();
+        decoRef.current = editor.createDecorationsCollection(decos);
+        if (stopLine)
+            editor.revealLineInCenterIfOutsideViewport(stopLine);
+    }, [breakpoints, stopLine, path]);
 
     return <div className="editor" style={{ height }} ref={hostRef} />;
 }

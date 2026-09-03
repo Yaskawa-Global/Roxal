@@ -130,8 +130,12 @@ inline bool isNilAcceptableTargetType(ValueType t) {
 // partially linked objects.  Every context self-registers via GCRootBase
 // and traces its registered objects for its whole lifetime.
 struct SerializationContext : public GCRootBase {
-    virtual ~SerializationContext() = default;
-    void traceRoot(ValueVisitor& visitor) const override;
+    SerializationContext() = default;
+    ~SerializationContext() override = default;
+    // final is load-bearing: the base SerializationContext registers before a
+    // derived NetworkSerializationContext's fields exist.  Its root callback
+    // may therefore inspect only this fully initialized base payload.
+    void traceRoot(ValueVisitor& visitor) const final;
     std::unordered_map<const Obj*, uint64_t> objToId;
     std::unordered_map<uint64_t, Obj*> idToObj;
     // Strong refs backing idToObj for the context's lifetime: a
@@ -142,6 +146,10 @@ struct SerializationContext : public GCRootBase {
     // take them either.
     std::vector<Value> retained;
     uint64_t nextId = 1;
+
+private:
+    // MUST remain last: unregister before retained/id maps are destroyed.
+    Registration registration_ { *this };
 };
 
 struct CloneContext {
@@ -972,6 +980,28 @@ public:
         std::vector<NameValue> copy;
         copy.reserve(vars.size());
         for (const auto& entry : vars) {
+            copy.emplace_back(entry.second.first, entry.second.second.value);
+        }
+        return copy;
+    }
+
+    // Bounded page [start, start+count) of the snapshot, under the same
+    // lock -- a paged consumer (debugger variables view) must not copy and
+    // refcount the whole map to serve one page.  Iteration order of the
+    // unchanged map is stable between calls, so consecutive pages compose.
+    std::vector<NameValue> snapshotRange(size_t start, size_t count) const
+    {
+        std::lock_guard lock(varsLock);
+        std::vector<NameValue> copy;
+        if (start >= vars.size())
+            return copy;
+        copy.reserve(std::min(count, vars.size() - start));
+        size_t i = 0;
+        for (const auto& entry : vars) {
+            if (i++ < start)
+                continue;
+            if (copy.size() >= count)
+                break;
             copy.emplace_back(entry.second.first, entry.second.second.value);
         }
         return copy;
