@@ -242,6 +242,50 @@ CancelStatus EmbeddedRuntime::cancelBeforeStart(const RunHandle& run)
     return status;
 }
 
+ExitRequestStatus EmbeddedRuntime::requestExit(const RunHandle& run, int code)
+{
+    if (!run.valid())
+        return ExitRequestStatus::Unknown;
+    if (code == RunRecord::kNoExitRequest)
+        code = RunRecord::kNoExitRequest + 1;    // the sentinel is not a code
+    bool pending = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (active_ && active_->id == run.id()) {
+            // Only the code is left here; the driver owns the run's thread and
+            // domain and applies the request at the start of its next slice.
+            active_->exitRequest.store(code, std::memory_order_release);
+            return ExitRequestStatus::Requested;
+        }
+        pending = pending_ && pending_->id == run.id();
+    }
+    if (pending) {
+        // Never claimed: there is no execution to end, so withdraw it.  Outside
+        // the lock, as cancelBeforeStart takes it (and destroys roots).
+        switch (cancelBeforeStart(run)) {
+        case CancelStatus::Cancelled:       return ExitRequestStatus::Cancelled;
+        case CancelStatus::AlreadyRunning:  break;   // claimed in between: retry once
+        case CancelStatus::AlreadyTerminal: return ExitRequestStatus::AlreadyTerminal;
+        case CancelStatus::Unknown:         return ExitRequestStatus::Unknown;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (active_ && active_->id == run.id()) {
+            active_->exitRequest.store(code, std::memory_order_release);
+            return ExitRequestStatus::Requested;
+        }
+    }
+    switch (run.state()) {
+    case RunState::FinalizationPending:
+    case RunState::Finalizing:
+    case RunState::Completed:
+    case RunState::Failed:
+    case RunState::Cancelled:
+        return ExitRequestStatus::AlreadyTerminal;
+    default:
+        return ExitRequestStatus::Unknown;
+    }
+}
+
 FinalizeResult EmbeddedRuntime::finalizeRun(const std::shared_ptr<RunControl>& control)
 {
     FinalizeResult result;

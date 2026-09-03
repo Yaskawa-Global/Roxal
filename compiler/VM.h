@@ -747,6 +747,15 @@ protected:
     /// Consumes the handle.  stageProgramSync() is this plus compilation.
     ExecutionStatus activatePrepared(PreparedProgram program);
 
+    /// End the execution domain `domain` the way exit() does from inside it:
+    /// record the code, raise the domain's exit interrupt and wake its
+    /// threads.  Nothing is joined here and nothing process-wide is touched;
+    /// the driver's next slice sees the flag, the body returns, and the run is
+    /// handed over with the code on its handle.  Reached by a host through
+    /// EmbeddedRuntime::requestExit(); exit() in a driven program takes the
+    /// same path with its own thread's domain.
+    void requestDomainExit(ExecutionDomain& domain, int code);
+
     /// Advance one claimed run by at most `budget`, on the calling (driver)
     /// thread.  Binds the run's Roxal thread on first entry, runs module
     /// start hooks, then drives the launch's preludes and body incrementally

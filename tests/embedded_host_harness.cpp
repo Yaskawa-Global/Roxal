@@ -605,6 +605,45 @@ int main()
         }
     }
 
+    // 27. A host ends a claimed run from a non-driver thread: the body does
+    //     not reach its end, the run completes (not fails) with the host's
+    //     code on the handle, and a run not yet claimed is cancelled instead.
+    {
+        const int endedBefore = driver.ended();
+        PrepareProgramResult longRun = prepareOffDriver(
+            vm,
+            "var spin = 0\n"
+            "while spin < 200000000:\n"
+            "  spin = spin + 1\n"
+            "print('host exit did not happen')\n",
+            "harness_host_exit");
+        expect(longRun.status == PrepareStatus::Ready, "the host-exit program prepared");
+        SubmitResult run = runtime.submit(std::move(longRun.program));
+        expect(run.status == SubmitStatus::Accepted, "the host-exit program is accepted");
+        expect(waitUntil([&] { return run.run.state() == RunState::Running; }),
+               "the host-exit program starts running");
+        const ExitRequestStatus asked = runtime.requestExit(run.run, 42);
+        expect(asked == ExitRequestStatus::Requested,
+               "a claimed run accepts a host exit request");
+        expect(waitUntil([&] { return driver.ended() > endedBefore; }),
+               "the run ends after the host asked it to");
+        const FinalizeResult fin = run.run.wait();
+        expect(fin.state == RunState::Completed,
+               std::string("a host-ended run completes rather than fails [")
+               + runStateName(fin.state) + "]");
+        expect(run.run.exitCode() == 42, "the host's code is on the handle");
+        expect(!run.run.failed(), "a host-ended run is not a failure");
+        expect(sink.take().empty(), "the body did not run to its end");
+        expect(runtime.requestExit(run.run, 1) == ExitRequestStatus::AlreadyTerminal,
+               "a finished run reports AlreadyTerminal");
+
+        expect(runtime.requestExit(RunHandle(), 1) == ExitRequestStatus::Unknown,
+               "an invalid handle is Unknown");
+        // (A run that is still Queued is withdrawn instead -- the Cancelled
+        // answer -- but with one run slot that window is the few cycles
+        // between submit() and the driver's claim, too narrow to pin here.)
+    }
+
     // 17. A second driver is rejected deterministically.
     {
         std::atomic<int> foreignSlices { 0 };

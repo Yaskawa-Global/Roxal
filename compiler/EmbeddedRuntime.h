@@ -27,6 +27,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <limits>
 #include <optional>
 #include <string>
 
@@ -202,6 +203,13 @@ enum class CancelStatus {
     Unknown,
 };
 
+enum class ExitRequestStatus {
+    Requested,           // the driver will end the run on its next slice
+    Cancelled,           // not yet claimed: withdrawn instead, never runs
+    AlreadyTerminal,     // handed over or finalized; nothing to end
+    Unknown,             // not a run this runtime knows
+};
+
 enum class AttachStatus {
     Attached,
     AlreadyAttached,
@@ -271,6 +279,14 @@ struct RunRecord {
     // finalizer is done with its interpreter roots -- the run record's root
     // and this one deliberately overlap.
     ptr<Thread> thread;
+
+    // A host's exit request (EmbeddedRuntime::requestExit), parked here for
+    // the driver: the host may not reach the run's thread or domain -- the
+    // driver binds them on its own thread without the runtime lock -- so it
+    // leaves the code and the driver applies it at the start of its next
+    // slice.  kNoExitRequest means none.
+    static constexpr int kNoExitRequest = std::numeric_limits<int>::min();
+    std::atomic<int> exitRequest { kNoExitRequest };
 };
 
 class EmbeddedRuntime : public std::enable_shared_from_this<EmbeddedRuntime> {
@@ -308,6 +324,14 @@ public:
     // reports AlreadyRunning: cooperative cancellation of a live execution
     // domain is a separate design.
     CancelStatus cancelBeforeStart(const RunHandle& run);
+
+    // Ask a run to end the way exit(code) inside it would: its domain's exit
+    // flag is raised and its threads woken, the driver's next slice sees the
+    // body return, and the run is handed over with `code` on the handle
+    // (RunHandle::exitCode()).  Nothing is stopped by force and nothing is
+    // joined here.  A run the driver has not claimed yet is cancelled
+    // instead (as cancelBeforeStart).  Thread-safe; any non-driver thread.
+    ExitRequestStatus requestExit(const RunHandle& run, int code);
 
     bool hasPendingRun() const;
     bool hasActiveRun() const;

@@ -2271,6 +2271,17 @@ SliceResult VM::driveRunSlice(RunRecord& run, TimeDuration budget)
         thread = run.thread;
     }
 
+    // A host asked this run to end (EmbeddedRuntime::requestExit).  Applied
+    // here, on the driver, once the run has a thread and a domain: the host
+    // never touches either, it only leaves the code in the record.  Ordering
+    // the wake before the phase dispatch below is what lets a thread blocked
+    // in a wait fall out of it in this same slice.
+    if (const int code = run.exitRequest.exchange(RunRecord::kNoExitRequest,
+                                                  std::memory_order_acq_rel);
+        code != RunRecord::kNoExitRequest) {
+        requestDomainExit(*thread->domain, code);
+    }
+
     // The body has returned; hand the run over.  Nothing is executed in this
     // slice -- the transition is the work.
     if (run.phase == RunPhase::MainReturned) {
@@ -15550,6 +15561,18 @@ df::DataflowEngine* VM::dataflowEngineForDebug()
     return dataflowEngine.get();
 }
 
+void VM::requestDomainExit(ExecutionDomain& domain, int code)
+{
+    domain.exitCode.store(code, std::memory_order_release);
+    domain.interrupts().fetch_or(ExecutionDomain::IntrExit);
+    const uint64_t domainId = domain.id();
+    threads.apply([domainId](const std::pair<const uint64_t, ptr<Thread>>& entry){
+        if (entry.second && entry.second->domain
+            && entry.second->domain->id() == domainId)
+            entry.second->wake();
+    });
+}
+
 void VM::requestExit(int code)
 {
     // A program run's own domain, under an embedded driver: exit() ends THAT
@@ -15559,14 +15582,7 @@ void VM::requestExit(int code)
     // may well be the driver thread) and no engine stop: the dataflow
     // engine is the host's, not the program's.
     if (embeddedDriverAttached() && thread && thread->domain != defaultDomain_) {
-        thread->domain->exitCode.store(code, std::memory_order_release);
-        setExitFlag();
-        const uint64_t domainId = thread->domain->id();
-        threads.apply([domainId](const std::pair<const uint64_t, ptr<Thread>>& entry){
-            if (entry.second && entry.second->domain
-                && entry.second->domain->id() == domainId)
-                entry.second->wake();
-        });
+        requestDomainExit(*thread->domain, code);
         return;
     }
 
