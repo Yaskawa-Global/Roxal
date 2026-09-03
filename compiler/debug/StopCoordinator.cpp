@@ -58,6 +58,14 @@ void StopCoordinator::rebind(const ptr<ExecutionDomain>& domain)
            && !forming_.load(std::memory_order_acquire)
            && "rebind only between stops");
     domain_->coordinator.store(nullptr, std::memory_order_release);
+    // The slow-path demand is the coordinator's, not one domain's: breakpoints
+    // and armed steps that exist BEFORE this execution had a domain (a driven
+    // launch sets its breakpoints between preparation and activation) must
+    // trap in the domain being activated.  Move the dispatch-loop bit along.
+    if (slowPathDemand_.load(std::memory_order_acquire) > 0) {
+        domain_->interrupts().fetch_and(~uint32_t(ExecutionDomain::IntrDebugSlowPath));
+        domain->interrupts().fetch_or(ExecutionDomain::IntrDebugSlowPath);
+    }
     domain_ = domain;
     domain_->coordinator.store(this, std::memory_order_release);
 }

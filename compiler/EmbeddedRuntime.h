@@ -100,6 +100,10 @@ public:
     // The code the program passed to exit(), if it exited that way; 0
     // otherwise.  A driven program's exit() ends ITS RUN, nothing else.
     int exitCode() const noexcept { return exitCode_.load(std::memory_order_acquire); }
+    // The run's main Roxal thread id, from activation on; 0 before that (a
+    // Queued run has no thread yet).  For a fragment this is the session's
+    // thread.  Debug transports use it to label stop events.
+    std::uint64_t mainThreadId() const noexcept { return mainThreadId_.load(std::memory_order_acquire); }
 
 private:
     friend class EmbeddedRuntime;
@@ -137,6 +141,7 @@ private:
     std::string diagnostic_;
     std::string result_;
     std::atomic<int> exitCode_ { 0 };
+    std::atomic<std::uint64_t> mainThreadId_ { 0 };
     // Exactly-once finalizer claim: the winner runs cleanup, everyone else
     // waits for its result.
     std::atomic<bool> finalizeClaimed_ { false };
@@ -166,6 +171,7 @@ public:
     /// The terminal value, rendered; see RunControl::result().
     std::string result() const { return control_->result(); }
     int exitCode() const { return control_->exitCode(); }
+    std::uint64_t mainThreadId() const { return control_->mainThreadId(); }
 
     // Claim and perform this run's finalization -- module completion hooks,
     // joining what the launch started, releasing its roots.  Unbounded by

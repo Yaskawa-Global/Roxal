@@ -75,6 +75,12 @@ public:
     // The main script thread's id, captured after setup (fallback for stop
     // events whose discovering thread is unknown).
     void setMainThreadId(uint64_t id) { mainThreadId_.store(id); }
+    // How to end the debuggee on `terminate` / transport loss.  Default:
+    // VM::requestExit(0), the process-owning CLI shape.  An embedding host
+    // whose debuggee is one driven run installs its own (e.g. the run's
+    // cooperative exit) so terminating the session never exits the host.
+    // Set before the session handles requests.
+    void setTerminateHandler(std::function<void()> fn) { terminate_ = std::move(fn); }
 
     // ---- DebugHostControl (called by the coordinator/worker) ----
     DebugHostResult onDebugHoldRequested(const DebugHoldRequest&) noexcept override;
@@ -125,6 +131,7 @@ private:
     std::atomic<bool> terminatedSent_ { false };
     std::atomic<uint64_t> mainThreadId_ { 0 };
     std::string programPath_;
+    std::function<void()> terminate_;
     int deferredLaunchSeq_ { 0 };   // worker-only state
 
     // client conventions from initialize

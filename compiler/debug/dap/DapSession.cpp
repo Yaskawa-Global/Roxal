@@ -514,7 +514,10 @@ Json DapSession::reqStep(const Json& args, Thread::DebugStepMode mode,
 
 void DapSession::requestTerminate()
 {
-    vm_.requestExit(0);
+    if (terminate_)
+        terminate_();
+    else
+        vm_.requestExit(0);
     if (coord_.isStopped()) {
         // Wake the parked threads so they observe the exit interrupt.  The
         // hold generation is NOT released (fail-safe); the session-end

@@ -2086,6 +2086,7 @@ PrepareProgramResult VM::prepareProgram(std::istream& source,
     auto record = std::make_unique<PreparedExecutionRecord>();
     record->sourceName = opts.sourceName;
     record->completion = opts.completion;
+    record->stopOnEntry = opts.stopOnEntry;
 
     // With imports, the program's module type is created up front and each
     // import's vars copied in, so unqualified names resolve against them
@@ -2255,6 +2256,10 @@ SliceResult VM::driveRunSlice(RunRecord& run, TimeDuration budget)
             threads.store(run.thread->id(), run.thread);
             thread = run.thread;
         }
+        // The run's main thread is now known; a host's debug transport needs
+        // it for stop events whose discovering thread is unknown.
+        if (run.control)
+            run.control->mainThreadId_.store(thread->id(), std::memory_order_release);
         markMainThread();
         // The debugger follows the active user execution: stop state lives
         // on the domain, so the run (or session) being activated starts
@@ -2327,6 +2332,17 @@ SliceResult VM::driveRunSlice(RunRecord& run, TimeDuration budget)
                     emitDiagnostic(why, OutputSeverity::Error, "embed");
                     return fail(why);
                 }
+            }
+            // A debugger launch with stopOnEntry: arm a step-in on this run's
+            // thread now, after the preludes and the start hooks, so the
+            // FIRST USER STATEMENT publishes the entry stop -- never host
+            // plumbing.  Same arming the synchronous adapter performs on its
+            // staged thread.
+            if (run.prepared->stopOnEntry && stopCoordinator_) {
+                thread->debugStepMode = Thread::DebugStepMode::In;
+                thread->debugStepActivation = 0;
+                thread->debugStepOriginIndex = 0;
+                stopCoordinator_->addSlowPathDemand();
             }
             // Push the body and fall through to run it with whatever budget
             // is left.

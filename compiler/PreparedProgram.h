@@ -55,6 +55,12 @@ struct ProgramOptions {
     std::vector<Value> imports;
     std::vector<PreludeCall> preludes;
     CompletionPolicy completion { CompletionPolicy::ExecutionDomainQuiescent };
+    // Debugger launch: arm a step-in on the run's thread right before its
+    // body starts (after the preludes), so the first user statement stops
+    // as "entry".  Applied at activation, which is the earliest moment a
+    // driven run has a thread; the synchronous adapter arms the staged
+    // thread itself and leaves this false.
+    bool stopOnEntry { false };
 };
 
 enum class PrepareStatus {
@@ -116,6 +122,7 @@ public:
     // ExecutionRootValues, where the tracer can see it.
     std::string sourceName;
     CompletionPolicy completion { CompletionPolicy::ExecutionDomainQuiescent };
+    bool stopOnEntry { false };   // see ProgramOptions::stopOnEntry
     // Set for a session fragment: activation reuses the session's existing
     // Roxal thread rather than creating a fresh one, which is what makes
     // handlers and actors registered by an earlier fragment still belong to
