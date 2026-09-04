@@ -482,6 +482,281 @@ func reduce(items: const list, reducer, initial):
   return acc
 
 
+// Sorting is implemented here, rather than as a native list method, so calls
+// to user comparators and overloaded operator< methods run through the normal
+// VM dispatch loop.  Besides keeping the implementation generic, this lets a
+// runFor() host yield and resume in the middle of a long sort.
+
+func _sort_before(a, b, comparator, ascending:bool) -> bool:
+  var result
+  if ascending:
+    if comparator == nil:
+      result = a < b
+    else:
+      result = comparator(a, b)
+  else:
+    // Swap operands rather than negating the result.  Negation would treat
+    // equal values as ordered and would destroy Powersort's stability.
+    if comparator == nil:
+      result = b < a
+    else:
+      result = comparator(b, a)
+  if not (result is bool):
+    raise 'sort comparator must return bool'
+  return result
+
+
+proc _sort_reverse(items:list, first:int, last:int):
+  var left = first
+  var right = last - 1
+  while left < right:
+    var tmp = items[left]
+    items[left] = items[right]
+    items[right] = tmp
+    left = left + 1
+    right = right - 1
+
+
+// Return the length of the natural run beginning at first.  Descending runs
+// are strictly descending so reversing one never reverses equal elements.
+func _sort_count_run(items:list, first:int, last:int, comparator, ascending:bool) -> int:
+  if first + 1 >= last:
+    return 1
+
+  var cursor = first + 1
+  var descending = _sort_before(items[cursor], items[first], comparator, ascending)
+  cursor = cursor + 1
+
+  if descending:
+    while cursor < last and _sort_before(items[cursor], items[cursor - 1], comparator, ascending):
+      cursor = cursor + 1
+    _sort_reverse(items, first, cursor)
+  else:
+    while cursor < last and not _sort_before(items[cursor], items[cursor - 1], comparator, ascending):
+      cursor = cursor + 1
+
+  return cursor - first
+
+
+// Stable binary insertion sort.  [first:start) is already sorted; ties are
+// inserted to the right of existing equal values.
+proc _sort_binary_insertion(items:list, first:int, last:int, start:int, comparator, ascending:bool):
+  var cursor = start
+  while cursor < last:
+    var pivot = items[cursor]
+    var left = first
+    var right = cursor
+    while left < right:
+      var middle = left + (right - left) / 2
+      if _sort_before(pivot, items[middle], comparator, ascending):
+        right = middle
+      else:
+        left = middle + 1
+
+    var move = cursor
+    while move > left:
+      items[move] = items[move - 1]
+      move = move - 1
+    items[left] = pivot
+    cursor = cursor + 1
+
+
+func _sort_minrun(length:int) -> int:
+  var n = length
+  var shifted_one = 0
+  while n >= 64:
+    shifted_one = shifted_one | (n & 1)
+    n = n / 2
+  return n + shifted_one
+
+
+// Power of the boundary between two adjacent runs.  This is CPython's
+// integer-only powerloop formulation of the Powersort merge policy.
+func _sort_node_power(first:int, left_length:int, right_length:int, total:int) -> int:
+  var power = 0
+  var a = 2 * first + left_length
+  var b = a + left_length + right_length
+  while true:
+    power = power + 1
+    if a >= total:
+      a = a - total
+      b = b - total
+    else:
+      if b >= total:
+        return power
+    a = a * 2
+    b = b * 2
+
+
+// Stably merge adjacent runs at stack slot at.  Parallel lists keep the
+// representation simple and will also be reusable by a future dict-key sort.
+proc _sort_merge_at(items:list, starts:list, lengths:list, powers:list, at:int, comparator, ascending:bool):
+  var first = starts[at]
+  var left_length = lengths[at]
+  var right_length = lengths[at + 1]
+  var right_first = first + left_length
+  var right_last = right_first + right_length
+  var left_items = items[first:right_first]
+
+  var left = 0
+  var right = right_first
+  var dest = first
+  while left < left_length and right < right_last:
+    if _sort_before(items[right], left_items[left], comparator, ascending):
+      items[dest] = items[right]
+      right = right + 1
+    else:
+      items[dest] = left_items[left]
+      left = left + 1
+    dest = dest + 1
+
+  while left < left_length:
+    items[dest] = left_items[left]
+    left = left + 1
+    dest = dest + 1
+
+  lengths[at] = left_length + right_length
+  starts.pop(at + 1)
+  lengths.pop(at + 1)
+  powers.pop(at + 1)
+
+
+proc _powersort(items:list, comparator, ascending:bool):
+  var total = len(items)
+  if total < 2:
+    return
+
+  var minrun = _sort_minrun(total)
+  var starts = []
+  var lengths = []
+  var powers = []
+  var first = 0
+
+  while first < total:
+    var remaining = total - first
+    var run_length = _sort_count_run(items, first, total, comparator, ascending)
+    if run_length < minrun:
+      var forced = minrun
+      if forced > remaining:
+        forced = remaining
+      _sort_binary_insertion(items, first, first + forced, first + run_length,
+                             comparator, ascending)
+      run_length = forced
+
+    if len(lengths) > 0:
+      var top = len(lengths) - 1
+      var power = _sort_node_power(starts[top], lengths[top], run_length, total)
+      while len(lengths) > 1 and powers[len(powers) - 2] > power:
+        _sort_merge_at(items, starts, lengths, powers, len(lengths) - 2,
+                       comparator, ascending)
+      powers[len(powers) - 1] = power
+
+    starts.append(first)
+    lengths.append(run_length)
+    powers.append(0)
+    first = first + run_length
+
+  // Match CPython's final collapse choice: when three runs remain, merge the
+  // smaller adjacent pair first.
+  while len(lengths) > 1:
+    var at = len(lengths) - 2
+    if at > 0 and lengths[at - 1] < lengths[at + 1]:
+      at = at - 1
+    _sort_merge_at(items, starts, lengths, powers, at, comparator, ascending)
+
+
+proc _sort_swap(items:list, a:int, b:int):
+  if a != b:
+    var tmp = items[a]
+    items[a] = items[b]
+    items[b] = tmp
+
+
+// Deterministic, iterative three-way quicksort.  Three-way partitioning keeps
+// duplicate-heavy inputs from degenerating; the small-range insertion pass
+// reduces interpreter overhead.
+proc _quicksort(items:list, comparator, ascending:bool):
+  var total = len(items)
+  if total < 2:
+    return
+
+  var ranges = [0, total - 1]
+  while len(ranges) > 0:
+    var last = ranges.pop()
+    var first = ranges.pop()
+
+    if last - first < 16:
+      _sort_binary_insertion(items, first, last + 1, first + 1,
+                             comparator, ascending)
+      continue
+
+    var middle = first + (last - first) / 2
+    if _sort_before(items[middle], items[first], comparator, ascending):
+      _sort_swap(items, middle, first)
+    if _sort_before(items[last], items[middle], comparator, ascending):
+      _sort_swap(items, last, middle)
+    if _sort_before(items[middle], items[first], comparator, ascending):
+      _sort_swap(items, middle, first)
+    var pivot = items[middle]
+
+    var lower = first
+    var cursor = first
+    var upper = last
+    while cursor <= upper:
+      if _sort_before(items[cursor], pivot, comparator, ascending):
+        _sort_swap(items, lower, cursor)
+        lower = lower + 1
+        cursor = cursor + 1
+      else:
+        if _sort_before(pivot, items[cursor], comparator, ascending):
+          _sort_swap(items, cursor, upper)
+          upper = upper - 1
+        else:
+          cursor = cursor + 1
+
+    // Push the larger partition first so the smaller one is processed next.
+    // The explicit stack avoids dependence on the Roxal call-frame limit.
+    var left_size = lower - first
+    var right_size = last - upper
+    if left_size > right_size:
+      if left_size > 1:
+        ranges.append(first)
+        ranges.append(lower - 1)
+      if right_size > 1:
+        ranges.append(upper + 1)
+        ranges.append(last)
+    else:
+      if right_size > 1:
+        ranges.append(upper + 1)
+        ranges.append(last)
+      if left_size > 1:
+        ranges.append(first)
+        ranges.append(lower - 1)
+
+
+proc sort(items:list, algorithm:string='powersort', comparator=nil, ascending:bool=true):
+  """sort items in place; algorithm is 'powersort' (stable, default) or 'quicksort'; comparator(a, b) returns true when a precedes b"""
+  if algorithm != 'powersort' and algorithm != 'quicksort':
+    raise "sort algorithm must be 'powersort' or 'quicksort' (got '" + algorithm + "')"
+
+  // This is also a cheap, representation-preserving mutability check.  It
+  // makes sort(const_list) fail even when the list has fewer than two items
+  // or is already one natural run and would otherwise need no writes.
+  items.reserve(len(items))
+
+  if algorithm == 'powersort':
+    _powersort(items, comparator, ascending)
+  else:
+    _quicksort(items, comparator, ascending)
+
+
+func sorted(items: const list, algorithm:string='powersort', comparator=nil, ascending:bool=true) -> list:
+  """return a shallow sorted copy of items; accepts the same options as sort"""
+  var result = items + []
+  sort(result, algorithm=algorithm, comparator=comparator, ascending=ascending)
+  return result
+
+
 // ============================================================================
 // quantity — dimensional physical quantity type
 // ============================================================================

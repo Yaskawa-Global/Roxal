@@ -1,0 +1,1 @@
+sort([2, 1], comparator=func(a, b): 1)

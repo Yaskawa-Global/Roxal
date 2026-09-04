@@ -1365,7 +1365,8 @@ VM::VM()
         // what makes 'lshift(sig, 2)' build a node like 'sig & 1' does, instead
         // of silently sampling.  It also makes the bare and 'sys.'-qualified
         // spellings the same function.
-        for (const char* name : {"filter", "map", "reduce", "lshift", "rshift"}) {
+        for (const char* name : {"filter", "map", "reduce", "sort", "sorted",
+                                 "lshift", "rshift"}) {
             auto maybeFunc = sysVars.load(toUnicodeString(name));
             if (maybeFunc.has_value() && isClosure(maybeFunc.value())) {
                 globals.storeGlobal(toUnicodeString(name), maybeFunc.value());

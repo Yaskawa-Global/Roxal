@@ -1,0 +1,98 @@
+// Pure-Roxal sort()/sorted(): algorithms, ordering hooks, stability, and
+// list representation/alias semantics.
+
+func check(condition:bool, message:string):
+  if not condition:
+    raise 'list_sort failed: ' + message
+
+var values = [5, 1, 4, 2, 3, 2]
+var alias = values
+sort(values)
+check(values == [1, 2, 2, 3, 4, 5], 'default powersort')
+check(alias == values, 'sort mutates the original list')
+print(values)
+
+var original = [4, 1, 3, 2]
+var copy = sorted(original)
+check(original == [4, 1, 3, 2], 'sorted preserves its input')
+check(copy == [1, 2, 3, 4], 'sorted result')
+print(original)
+print(copy)
+
+var descending = sorted(values, ascending=false)
+check(descending == [5, 4, 3, 2, 2, 1], 'descending powersort')
+print(descending)
+
+var quick = [19, 2, 17, 4, 15, 6, 13, 8, 11, 10, 9, 12, 7, 14, 5, 16, 3, 18, 1, 0]
+sort(quick, algorithm='quicksort')
+check(quick == [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+      'quicksort partition path')
+print(quick)
+
+var words = ['bbb', 'a', 'dddd', 'cc', 'e']
+sort(words, comparator=func(a, b): len(a) < len(b))
+check(words == ['a', 'e', 'cc', 'bbb', 'dddd'], 'stable custom comparator')
+print(words)
+
+var reverse_words = sorted(words,
+                           comparator=func(a, b): len(a) < len(b),
+                           ascending=false)
+check(reverse_words == ['dddd', 'bbb', 'cc', 'a', 'e'],
+      'descending swaps comparator operands and preserves ties')
+print(reverse_words)
+
+var bytes = [byte(9), byte(1), byte(5), byte(1)]
+sort(bytes)
+check(bytes == [byte(1), byte(1), byte(5), byte(9)], 'byte values')
+check(_list_repr(bytes) == 'packed', 'byte list remains packed')
+print(_list_repr(bytes))
+
+var mixed = [3, 1.5, byte(2), -4]
+sort(mixed)
+check(mixed == [-4, 1.5, byte(2), 3], 'mixed numeric ordering')
+print('mixed numeric pass')
+
+type Tagged object:
+  var key:int = 0
+  var serial:int = 0
+
+  proc init(key:int, serial:int):
+    this.key = key
+    this.serial = serial
+
+  func operator<(other:Tagged) -> bool:
+    return key < other.key
+
+var tagged = []
+var i = 0
+while i < 100:
+  tagged.append(Tagged(i rem 5, i))
+  i = i + 1
+sort(tagged)
+
+var stable = true
+i = 1
+while i < len(tagged):
+  if tagged[i].key < tagged[i - 1].key:
+    stable = false
+  if tagged[i].key == tagged[i - 1].key and tagged[i].serial < tagged[i - 1].serial:
+    stable = false
+  i = i + 1
+check(stable, 'powersort stability with operator<')
+print('operator stability pass')
+
+var many = []
+var pseudo = 7
+i = 0
+while i < 257:
+  pseudo = (pseudo * 37 + 17) rem 101
+  many.append(pseudo)
+  i = i + 1
+var many_power = sorted(many)
+var many_quick = sorted(many, algorithm='quicksort')
+check(many_power == many_quick, 'large powersort/quicksort agreement')
+i = 1
+while i < len(many_power):
+  check(not (many_power[i] < many_power[i - 1]), 'large result ordering')
+  i = i + 1
+print('large algorithms pass')
