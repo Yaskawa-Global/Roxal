@@ -1012,6 +1012,22 @@ so a `func` declared `-> [T0, .., TN-1]` mints N output signals named
 the existing destructuring assignment then unpacks). A function declared
 `-> list` keeps a single output whose value is a list.
 
+Natively minted closures declare their arity the same way, through the
+`FuncType` they are given (`BuiltinModule::makeFuncType(.., returnTypes)`).
+`ai.nn.Model` builds its per-instance `predict` closure at construction, when
+the ONNX graph's output count is known, and declares `-> [tensor, ..]` with one
+entry per output -- so a multi-output model lifts as an N-output node with no
+per-model wrapper, and the same call returns a list when invoked plainly. The
+arity lives at the declaration (the model), never at the use site: a target
+count on `var [a, b] = ..` is checked against it (`CheckDeclList`), not used to
+infer it.
+
+`FuncNode::distributeReturnValue` is the single place a body's return value is
+mapped onto the ports (split element-wise for N > 1, passed through for one).
+An async native body returns ONE future for its N ports; the split is applied
+after resolution in `resumeExecution`, not at return time. A wrong-length list
+is not padded or truncated -- it reaches the arity check with its true count.
+
 The data flow engine is represented as a builtin actor instance.  Hence, the evaluation of all functions (`FuncNode`s) happens on the dataflow engine's actor thread.
 
 Signals can be sampled to yield their current value at any time on any thread, either via the builtin `value` property, or by using them to construct their underlying value type (e.g. `vector(vecsignal)`, or `real(realsig)`)
@@ -2882,6 +2898,15 @@ right after `requestExit()` and before `setVM(nullptr)`.
   `VM::wakeAllThreadsForGC()` reaches it. For a wait that cannot poll at all
   (`std::thread::join`, opaque native calls, contended locks held by a
   parkable owner), wrap it in `GCSafeBlockScope`.
+- **New module-owned thread that is not a VM `Thread`?** (a plain
+  `std::thread` worker, e.g. ai.nn's per-model `InferenceWorker`.) Quiesce it
+  in `BuiltinModule::onShutdown()`, which `VM::shutdown()` calls right after
+  `requestExit()` and before anything is freed: `joinAllThreads()` cannot see
+  it, and after `main()` returns the native library it uses is destroyed under
+  it from `__run_exit_handlers`. Wait for what is in flight, drop what is
+  queued (an un-interruptible `Session::Run` backlog would otherwise make exit
+  take one inference per frame). This was the exit-time SIGSEGV whenever a
+  script ended, normally or fatally, with an ai.nn inference in flight.
 - **New C++ state retaining Values beyond one call?** Typed root member
   (`PersistentRoot`/`TracedMember`/`TracedRef`) + `onModuleUnloading` clear.
   Never retain raw `Obj*` — wrap in a `Value`; and remember refcounts alone

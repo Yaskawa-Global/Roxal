@@ -214,6 +214,9 @@ private:
 
     void initializeOutputDefaults(const std::vector<ptr<roxal::type::Type>>& returnTypes);
     roxal::Value initialValueForOutput(size_t index) const;
+
+    // Map a body's return value onto the output ports (see the definition).
+    Values distributeReturnValue(const roxal::Value& returned) const;
 };
 
 }

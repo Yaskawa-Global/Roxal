@@ -416,8 +416,8 @@ ffi_tests = [
     'nested_cstruct', 'nested_cstruct_ptr', 'nested_cstruct_byval', 'nested_cstruct_align',
     'nested_cstruct_infer', 'cstruct_array_struct', 'cstruct_array_overflow_err',
 ]
-nn_tests = ['nn_mnist', 'nn_signal', 'nn_chain', 'nn_signal_chain', 'nn_dynamic', 'nn_multi_io', 'nn_async', 'nn_tokenizer']
-nn_lfs_tests = ['nn_dfine']  # require LFS model files (only run with --all)
+nn_tests = ['nn_mnist', 'nn_signal', 'nn_chain', 'nn_signal_chain', 'nn_dynamic', 'nn_multi_io', 'nn_multi_output_lift', 'nn_async', 'nn_tokenizer']
+nn_lfs_tests = ['nn_dfine', 'nn_exit_inflight']  # require LFS model files (only run with --all)
 media_tests = ['media_read_write', 'media_manipulate', 'media_convert',
                # audio: run with ROXAL_AUDIO_BACKEND=null (no hardware needed)
                'media_audio_basic', 'media_audio_play', 'media_audio_record',

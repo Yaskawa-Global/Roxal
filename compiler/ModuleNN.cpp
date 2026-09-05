@@ -55,7 +55,7 @@ public:
         Ort::SessionOptions opts;
         opts.SetIntraOpNumThreads(1);
         opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
-        if (requestGpu && cudaAvailable_) {
+        if (requestGpu && cudaAvailable()) {
             try {
                 OrtCUDAProviderOptions cuda_opts{};
                 cuda_opts.device_id = 0;
@@ -67,22 +67,30 @@ public:
         return opts;
     }
 
-    bool cudaAvailable() const { return cudaAvailable_; }
+    // Probed LAZILY, on the first request that could actually use the GPU
+    // ('auto'/'cuda' models, memory_info for a non-'cpu' device).  ORT's probe
+    // dlopens the CUDA provider and, on a box without the CUDA runtime, prints
+    // a red "Failed to load libonnxruntime_providers_cuda.so" to stderr -- noise
+    // a program that only ever asks for device='cpu' has no reason to see.
+    bool cudaAvailable() {
+        std::call_once(cudaProbeOnce_, [this] {
+            try {
+                Ort::SessionOptions probe;
+                OrtCUDAProviderOptions cuda_opts{};
+                cuda_opts.device_id = 0;
+                probe.AppendExecutionProvider_CUDA(cuda_opts);
+                cudaAvailable_ = true;
+            } catch (...) {
+                cudaAvailable_ = false;
+            }
+        });
+        return cudaAvailable_;
+    }
 
 private:
-    OnnxEnvironment() : env_(ORT_LOGGING_LEVEL_ERROR, "roxal-nn") {
-        // Probe for CUDA by trying to create a session options with CUDA provider
-        try {
-            Ort::SessionOptions probe;
-            OrtCUDAProviderOptions cuda_opts{};
-            cuda_opts.device_id = 0;
-            probe.AppendExecutionProvider_CUDA(cuda_opts);
-            cudaAvailable_ = true;
-        } catch (...) {
-            cudaAvailable_ = false;
-        }
-    }
+    OnnxEnvironment() : env_(ORT_LOGGING_LEVEL_ERROR, "roxal-nn") {}
     Ort::Env env_;
+    std::once_flag cudaProbeOnce_;
     bool cudaAvailable_ = false;
 };
 
@@ -205,6 +213,39 @@ public:
             workerThread.join();
     }
 
+    // Abandon everything still queued: each waiter's future resolves to nil.
+    // The in-flight job is untouched -- Session::Run cannot be interrupted, so
+    // it is left to finish and stop()'s join waits for it.
+    void dropPending() {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        while (!pendingJobs.empty()) {
+            pendingJobs.front().promise->set_value(Value::nilVal());
+            pendingJobs.pop();
+        }
+    }
+
+    // VM-shutdown quiesce: bring every worker to rest BEFORE the VM frees a
+    // single object and before main() returns.  A worker is a plain
+    // std::thread, not a VM Thread, so requestExit()'s joinAllThreads never
+    // sees it; left alone it would still be inside Session::Run -- reading the
+    // (GC-owned) input tensors -- while shutdown sweeps them, and then while
+    // ONNX Runtime's own statics are destroyed from __run_exit_handlers after
+    // main() returns.  Either is a use-after-free deep inside ORT (SIGSEGV at
+    // exit whenever a script ends, normally or fatally, with inference in
+    // flight).  Queued jobs are dropped rather than drained: draining would
+    // make exit take one full inference per backlogged frame.
+    static void shutdownAll() {
+        std::vector<InferenceWorker*> snapshot;
+        {
+            std::lock_guard<std::mutex> lock(workersMutex());
+            snapshot = workers();   // stop() erases from the live list
+        }
+        for (InferenceWorker* w : snapshot) {
+            w->dropPending();
+            w->stop();
+        }
+    }
+
     // GC root hook: pin queued and in-flight jobs' held Values.
     static void traceHeld(ValueVisitor& visitor) {
         std::lock_guard<std::mutex> lock(workersMutex());
@@ -231,6 +272,11 @@ public:
 void roxal::nnTraceWorkers(ValueVisitor& visitor)
 {
     InferenceWorker::traceHeld(visitor);
+}
+
+void ModuleNN::onShutdown(VM&)
+{
+    InferenceWorker::shutdownAll();
 }
 
 // ============================================================
@@ -871,8 +917,20 @@ Value ModuleNN::nn_model_init_builtin(ArgsView args)
     func->doc = toUnicodeString(
         "Run inference. Input may be a tensor, a dict {name: tensor}, or a list "
         "of tensors. Returns output tensor (or list if multiple outputs). "
-        "Also works with signals for reactive dataflow.");
-    func->funcType = makeFuncType({{"input", std::nullopt}});
+        "Also works with signals for reactive dataflow: a signal input yields "
+        "a derived signal per model output.");
+    // The signature: one untyped input, and one tensor return PER MODEL
+    // OUTPUT.  An ONNX graph fixes its output count, and it is known here, so
+    // predict carries the same '-> [tensor, ..]' declaration a Roxal func
+    // would write by hand: a plain call returns the outputs as a list (as it
+    // always did), and a lifted call mints one output signal per model output
+    // -- 'var [logits, boxes] = model.predict(sig)' -- instead of a single
+    // list-valued signal.  The declaration decides the arity, not the use
+    // site, so the two forms agree with the rest of the language (see
+    // "Nodes with several outputs" in roxal-for-devs.md).
+    const size_t outputCount = wrapper->outputNames.empty() ? 1 : wrapper->outputNames.size();
+    func->funcType = makeFuncType({{"input", std::nullopt}}, {}, /*isProc=*/false,
+                                  std::vector<type::BuiltinType>(outputCount, type::BuiltinType::Tensor));
 
     Value funcVal = Value::objVal(std::move(funcObj));
     Value closureVal = Value::objVal(newClosureObj(funcVal));

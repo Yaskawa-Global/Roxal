@@ -2390,6 +2390,13 @@ var results2 = model.predict([a, b])
 
 When a model has multiple outputs, `predict()` returns a list of tensors. For single-output models, it returns a single tensor.
 
+The output count is part of a model's `predict` signature: a model with N
+outputs gets a `predict` declared `-> [tensor, ...]` with N entries (one output
+declares `-> tensor`), exactly as if you had written a typed function by hand
+(see *Nodes with several outputs*). `help(model.predict)` returns it. This is
+what makes a multi-output model wire into a dataflow network as a node with N
+output signals, below.
+
 ### Chaining Models
 
 Model outputs are tensors that can be passed directly as inputs to another model. When both models run on GPU, intermediate tensors stay in GPU memory with no copies:
@@ -2481,6 +2488,17 @@ input_sig.set(input)
 wait(300ms)
 ```
 
+A multi-output model lifts to a node with one signal per output, so the
+declaring destructure names them directly. No per-model wrapper function is
+needed; the arity comes from the model's own declared signature:
+
+```roxal
+var detector = ai.nn.Model("dfine_nano_fp32.onnx")   // outputs: logits, boxes
+var frame = signal(0, tensor(1, 3, 640, 640, dtype='float32'))
+var [logits, boxes] = detector.predict(frame)       // two derived signals
+var best = argmax(logits)                           // downstream nodes as usual
+```
+
 When models run on GPU, intermediate tensors stay on GPU throughout the signal chain — no CPU round-trip.
 
 
@@ -2498,7 +2516,7 @@ When models run on GPU, intermediate tensors stay on GPU throughout the signal c
 | Method | Description |
 |--------|-------------|
 | `Model(path, device='auto', warmup=true)` | Load an ONNX model. Device: `'auto'`, `'cpu'`, or `'cuda'`. Set `warmup=false` to skip initial warm-up inference. |
-| `predict(input)` | Run inference. Input: tensor, dict `{name: tensor}`, list of tensors, or a signal. Returns tensor (or list if multiple outputs). With a signal input, returns a derived signal. |
+| `predict(input)` | Run inference. Input: tensor, dict `{name: tensor}`, list of tensors, or a signal. Returns tensor (or list if multiple outputs). With a signal input, returns a derived signal, or one derived signal per output for a multi-output model (`var [a, b] = model.predict(sig)`). Declared `-> [tensor, ...]` with one entry per model output. |
 | `inputs()` | Return list of input descriptors: `[{name, shape, dtype}, ...]` |
 | `outputs()` | Return list of output descriptors: `[{name, shape, dtype}, ...]` |
 | `device()` | Return execution device string (`'cpu'` or `'cuda'`). |

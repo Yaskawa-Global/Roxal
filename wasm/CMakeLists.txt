@@ -51,6 +51,7 @@ set(_wasm_ai_nn_rox "${CMAKE_SOURCE_DIR}/modules/ai/nn.rox")
 # /modules/ai for the ../modules/ai/... paths the nn tests use.
 set(_wasm_models
     "${CMAKE_SOURCE_DIR}/modules/ai/add-sub.onnx"
+    "${CMAKE_SOURCE_DIR}/modules/ai/scale-shift.onnx"
     "${CMAKE_SOURCE_DIR}/modules/ai/identity-10.onnx"
     "${CMAKE_SOURCE_DIR}/modules/ai/double-dynamic.onnx"
     "${CMAKE_SOURCE_DIR}/modules/ai/mnist-8.onnx")

@@ -64,8 +64,19 @@ public:
     /// loads that module.
     virtual void onScriptStart(VM& vm) {}
 
-    // Called during VM shutdown, before destructor.
-    // Use for: stopping background threads, cleanup.
+    /// Called at the START of VM::shutdown(), right after the VM's own
+    /// threads (actors, dataflow engine) have been asked to exit and joined,
+    /// and BEFORE any object is freed.  A module that owns a non-VM thread
+    /// which touches VM-owned memory (GC-pinned tensors, closures, ...) or
+    /// depends on a native library's globals must bring that thread to rest
+    /// here: joinAllThreads() does not know about it, and once main() returns
+    /// the library's statics are destroyed under it.  Bounded work only --
+    /// wait for what is in flight, drop what is merely queued.
+    virtual void onShutdown(VM& vm) {}
+
+    // Called late in VM shutdown, after references have been dropped, before
+    // the module is destroyed.  Use for: releasing host resources, cleanup.
+    // (Threads that read VM memory must already be stopped -- see onShutdown.)
     virtual void onModuleUnloading(VM& vm) {}
 
 protected:
@@ -79,12 +90,16 @@ protected:
                                                 std::optional<type::BuiltinType>>>& infos,
                     const std::vector<Value>& defaults);
 
-    // Convenience helper to build a Func type descriptor
+    // Convenience helper to build a Func type descriptor.  `returnTypes`
+    // declares the return signature: one entry is `-> T`, several are
+    // `-> [T0, ..]` (N values; N output ports when the closure is lifted
+    // into a dataflow node), none leaves the return untyped.
     static ptr<type::Type>
     makeFuncType(const std::vector<std::pair<std::string,
                                              std::optional<type::BuiltinType>>>& infos,
                  const std::vector<Value>& defaults = {},
-                 bool isProc = false);
+                 bool isProc = false,
+                 const std::vector<type::BuiltinType>& returnTypes = {});
 
     // Attach C++ implementation to function declared in builtin .rox module
     void link(const std::string& name, NativeFn fn,
@@ -189,7 +204,8 @@ inline ptr<type::Type>
 BuiltinModule::makeFuncType(const std::vector<std::pair<std::string,
                                             std::optional<type::BuiltinType>>>& infos,
                             const std::vector<Value>& defaults,
-                            bool isProc)
+                            bool isProc,
+                            const std::vector<type::BuiltinType>& returnTypes)
 {
     auto t = make_ptr<type::Type>(type::BuiltinType::Func);
     t->func = type::Type::FuncType();
@@ -197,6 +213,9 @@ BuiltinModule::makeFuncType(const std::vector<std::pair<std::string,
     auto params = constructParams(infos, defaults);
     t->func->params.resize(params.size());
     for(size_t i=0;i<params.size();++i) t->func->params[i]=params[i];
+    if (!isProc)
+        for (auto rt : returnTypes)
+            t->func->returnTypes.push_back(make_ptr<type::Type>(rt));
     return t;
 }
 

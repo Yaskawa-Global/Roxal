@@ -1,0 +1,14 @@
+# ai.nn: the process must exit cleanly while a lifted node's inference is
+# still running on the model's worker thread.  D-FINE on CPU takes ~100 ms per
+# frame (vs microseconds for the tiny test models), which keeps the window
+# open; shutdown must wait for the in-flight Session::Run (and drop the queued
+# frame) before objects are freed and main returns -- otherwise ONNX Runtime
+# faults at exit (was: SIGSEGV, exit 139).
+import ai.nn
+
+var model = ai.nn.Model("../modules/ai/dfine_nano_fp32.onnx", device='cpu', warmup=false)
+const blob = signal(0, tensor(1, 3, 640, 640, dtype='float32'))
+var [logits, boxes] = model.predict(blob)
+print(len(model.outputs()))
+blob.set(tensor(1, 3, 640, 640, dtype='float32') + 0.5)
+print("ending with inference in flight")

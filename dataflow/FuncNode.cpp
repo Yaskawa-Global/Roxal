@@ -393,6 +393,29 @@ void FuncNode::createOutputSignals(double freq)
     }
 }
 
+// Maps a body's return value onto this node's output ports.  A single-port
+// node carries the value as-is (so a returned list is ONE list-valued output,
+// per the '-> list' vs '-> [T..]' rule).  An N-port node splits a returned
+// list element-wise, one per port.  Anything else -- a non-list, or a future
+// still pending from an async native body -- passes through unchanged: a
+// non-list then trips the caller's arity check with an honest count, and a
+// future is distributed once it resolves (see resumeExecution).  A wrong-length
+// list likewise reaches the arity check with its real element count rather
+// than being padded or truncated silently; declared '-> [T..]' Roxal bodies
+// can't produce one (CheckReturnList), so it only ever reports a native bug.
+Values FuncNode::distributeReturnValue(const roxal::Value& returned) const
+{
+    if (m_outputNames.size() > 1 && roxal::isList(returned)) {
+        auto* list = roxal::asList(returned);
+        Values outs;
+        outs.reserve(list->length());
+        for (int32_t i = 0; i < list->length(); ++i)
+            outs.push_back(list->getElement(i));
+        return outs;
+    }
+    return { returned };
+}
+
 void FuncNode::initializeOutputDefaults(const std::vector<ptr<roxal::type::Type>>& returnTypes)
 {
     const auto count = outputNames().size();
@@ -453,8 +476,6 @@ FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline
     using roxal::Value;
     using roxal::ExecutionStatus;
     using roxal::asClosure;
-    using roxal::isList;
-    using roxal::asList;
     using roxal::isFuture;
 
     // If we have a pending future-based yield (e.g. from a previous tick where
@@ -566,22 +587,7 @@ FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline
             return FuncExecResult::Error;
         }
 
-        // Process return value into output values (same logic as operator())
-        if (!m_outputNames.empty() && m_outputNames.size() > 1) {
-            if (isList(result.second)) {
-                auto list = asList(result.second);
-                for (size_t i = 0; i < m_outputNames.size(); ++i) {
-                    if (i < list->length())
-                        outputValues.push_back(list->getElement(i));
-                    else
-                        outputValues.push_back(Value::nilVal());
-                }
-            } else {
-                outputValues.push_back(result.second);
-            }
-        } else {
-            outputValues.push_back(result.second);
-        }
+        outputValues = distributeReturnValue(result.second);
     }
 
     // Check if any output is a future (async native fn like predict).
@@ -621,8 +627,6 @@ FuncExecResult FuncNode::resumeExecution(TimePoint deadline)
     using roxal::VM;
     using roxal::Value;
     using roxal::ExecutionStatus;
-    using roxal::isList;
-    using roxal::asList;
     using roxal::isFuture;
     using roxal::asFuture;
 
@@ -650,6 +654,12 @@ FuncExecResult FuncNode::resumeExecution(TimePoint deadline)
             else
                 outputValues.push_back(v);
         }
+        // A body that handed back ONE future for several ports (an async
+        // native such as ai.nn predict on a multi-output model) delivers its
+        // list only now, so the per-port split happens here rather than at
+        // return time.
+        if (outputValues.size() == 1 && m_outputs.size() > 1)
+            outputValues = distributeReturnValue(outputValues[0]);
 
         TimePoint time = m_funcYieldState.executionTime;
         Values inputValues = m_funcYieldState.inputValues;
@@ -709,23 +719,7 @@ FuncExecResult FuncNode::resumeExecution(TimePoint deadline)
 
     VM::thread = savedThread;
 
-    // Process return value into output values
-    Values outputValues;
-    if (!m_outputNames.empty() && m_outputNames.size() > 1) {
-        if (isList(returnValue)) {
-            auto list = asList(returnValue);
-            for (size_t i = 0; i < m_outputNames.size(); ++i) {
-                if (i < list->length())
-                    outputValues.push_back(list->getElement(i));
-                else
-                    outputValues.push_back(Value::nilVal());
-            }
-        } else {
-            outputValues.push_back(returnValue);
-        }
-    } else {
-        outputValues.push_back(returnValue);
-    }
+    Values outputValues = distributeReturnValue(returnValue);
 
     if (outputValues.size() != m_outputs.size())
         throw std::runtime_error("FuncNode '"+name()+"' returned "+std::to_string(outputValues.size())+" values, expected "+std::to_string(m_outputs.size())+" values");
@@ -787,20 +781,5 @@ Values FuncNode::operator()(const Values& inputValues)
     DataflowThreadGuard dfGuard;
     auto result = vm.invokeClosure(roxal::asClosure(closure), args);
 
-    if (!m_outputNames.empty() && m_outputNames.size() > 1) {
-        if (roxal::isList(result.second)) {
-            auto list = roxal::asList(result.second);
-            Values outs;
-            outs.reserve(m_outputNames.size());
-            for (size_t i = 0; i < m_outputNames.size(); ++i) {
-                if (i < list->length())
-                    outs.push_back(list->getElement(i));
-                else
-                    outs.push_back(Value::nilVal());
-            }
-            return outs;
-        }
-    }
-
-    return { result.second };
+    return distributeReturnValue(result.second);
 }

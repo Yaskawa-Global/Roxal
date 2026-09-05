@@ -1680,6 +1680,15 @@ void VM::shutdown()
     // requestExit also stops the dataflow engine and joins all threads.
     requestExit(0);
 
+    // Module-owned threads that are NOT VM Threads (ai.nn's inference
+    // workers, for one) are invisible to joinAllThreads.  Quiesce them now,
+    // while every object they may be reading is still alive, and before
+    // main() can return into the exit handlers that destroy their libraries.
+    for (auto& mod : builtinModules) {
+        if (mod)
+            mod->onShutdown(*this);
+    }
+
     // Drain + join the actor lifecycle thread BEFORE stopping the collector:
     // in-flight actor finalizations must complete (worker joins + instance
     // destruction) while the collector can still reclaim what they release.

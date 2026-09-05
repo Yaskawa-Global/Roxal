@@ -28,6 +28,10 @@ public:
     void onModuleLoaded(VM& vm) override;
 #endif
 
+    // Joins the per-model inference workers (dropping queued jobs) so no
+    // Session::Run is in flight when the VM frees objects and main() returns.
+    void onShutdown(VM& vm) override;
+
     inline Value moduleType() const override { return moduleTypeValue; }
 
     // Module-level functions

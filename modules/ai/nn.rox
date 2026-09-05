@@ -15,7 +15,7 @@ type Model object:
 
   @builtin
   func predict(input):
-    """Run inference. Input may be a tensor, a dict \{name: tensor}, or a list of tensors. Returns output tensor (or list if multiple outputs). Also works with signals for reactive dataflow."""
+    """Run inference. Input may be a tensor, a dict \{name: tensor}, or a list of tensors. Returns output tensor (or list if multiple outputs). Also works with signals for reactive dataflow: a signal input yields a derived signal per model output (a model's predict is declared '-> [tensor, ...]' with one entry per output)."""
 
   @builtin
   func inputs():

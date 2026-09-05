@@ -1,0 +1,63 @@
+# ai.nn: predict() on a multi-output model declares one return per model
+# output ('-> [tensor, tensor]' for this model), so lifting it into the
+# dataflow network mints one signal per output -- no per-model typed wrapper.
+# scale-shift.onnx: doubled = x * 2, plus_one = x + 1, shape [1, 4]
+import ai.nn
+
+var model = ai.nn.Model("../modules/ai/scale-shift.onnx", device='cpu')
+print(len(model.outputs()))
+print(model.outputs()[0]['name'])
+print(model.outputs()[1]['name'])
+
+var x = tensor(1, 4, dtype='float32')
+x[0, 0] = 1.0
+x[0, 1] = 2.0
+x[0, 2] = 3.0
+x[0, 3] = 4.0
+
+# --- plain call: the outputs still arrive as a list ---
+var res = model.predict(x)
+print(len(res))
+print(res[0][0, 3])
+print(res[1][0, 3])
+
+# --- lifted: a two-output node, one signal per model output ---
+var in_sig = signal(10, x)
+var [doubled, plus_one] = model.predict(in_sig)
+print(typeof(doubled))
+print(typeof(plus_one))
+
+# the node's initial evaluation (inference is async, so give it a moment)
+in_sig.run()
+wait(ms=300)
+print(doubled.value[0, 0])
+print(plus_one.value[0, 0])
+print(doubled.value[0, 3])
+print(plus_one.value[0, 3])
+
+# both outputs track the input
+var latest_doubled = x
+var latest_plus_one = x
+when doubled changes as evt:
+  latest_doubled = evt.value
+when plus_one changes as evt:
+  latest_plus_one = evt.value
+
+var y = tensor(1, 4, dtype='float32')
+y[0, 0] = 10.0
+y[0, 3] = 0.5
+in_sig.set(y)
+wait(ms=300)
+print(latest_doubled[0, 0])
+print(latest_plus_one[0, 0])
+print(latest_doubled[0, 3])
+print(latest_plus_one[0, 3])
+
+# --- the whole bundle can be captured and indexed like any -> [T..] func ---
+var bundle = model.predict(in_sig)
+print(len(bundle))
+wait(ms=300)
+print(bundle[1].value[0, 0])
+
+model.close()
+print("done")
