@@ -11,6 +11,7 @@ for it in items:
     if p['has_default']:
       ps = ps + '='
   print("{it['kind']}  {it['callee']}({ps}) -> {it['outputs']}")
+  print("    doc: {it['doc']}")
 
 // a real module parses too; spot-check a known entry
 var math_items = dfdoc.palette(['../modules/math.rox'])
@@ -19,4 +20,5 @@ for it in math_items:
   if it['callee'] == 'math.atan2':
     found = true
     print("math.atan2 params: {len(it['params'])}  outputs: {it['outputs']}")
+    print("math.atan2 doc: {it['doc']}")
 print("math funcs > 20: {len(math_items) > 20}  atan2 found: {found}")

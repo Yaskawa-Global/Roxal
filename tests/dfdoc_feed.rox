@@ -1,0 +1,28 @@
+// dfdoc: a tensor input port may carry a feed ('camera:0', 'video:PATH',
+// 'realsense:color'); the harness then attaches a feeds.Feed actor to an
+// event-driven source signal instead of the clocked stimulus, exposes the
+// frame count, and stops the actor when the run ends
+import dfdoc
+
+var doc = dfdoc.new_document('Cam', [{'name': 'freq', 'default': 2.0}])['doc']
+var img = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'input', 'name': 'img', 'type': 'tensor', 'x': 0, 'y': 0})['id']
+var en = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'input', 'name': 'en', 'x': 0, 'y': 60})['id']
+var out = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'output', 'name': 'shape', 'x': 500, 'y': 0})['id']
+
+print("feed before: {dfdoc.view(doc)['nodes'][0]['feed']}")
+print("not an input: {dfdoc.apply(doc, {'op': 'set_input_feed', 'id': out, 'feed': 'camera:0'})['error']}")
+print("set: {dfdoc.apply(doc, {'op': 'set_input_feed', 'id': img, 'feed': 'video:tests/testvideo.mp4'})['ok']}")
+print("feed after: {dfdoc.view(doc)['nodes'][0]['feed']}")
+
+// a feed on a non-tensor port is a check error
+print("set on bool: {dfdoc.apply(doc, {'op': 'set_input_feed', 'id': en, 'feed': 'camera:0'})['ok']}")
+for d in dfdoc.check(doc):
+  if d['level'] == 'error':
+    print("error: {d['message']}")
+print("clear: {dfdoc.apply(doc, {'op': 'set_input_feed', 'id': en, 'feed': nil})['ok']}")
+print("---")
+print(dfdoc.save(doc))
+print("--- web harness")
+print(dfdoc.harness(doc))
+print("--- headless harness")
+print(dfdoc.harness(doc, for_native=true))

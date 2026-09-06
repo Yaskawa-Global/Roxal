@@ -1,0 +1,15 @@
+@dataflow_diagram(version=1, next_id=4)
+
+import gen
+
+type Pic object:
+  @df(id=1, x=20, y=100, payload='bool')
+  var t:signal = nil
+  @df(id=3, x=520, y=100, view='image')
+  var img:signal = nil
+
+  proc init(t:signal, freq:real=2):
+    this.t = t
+    @df(id=2, x=260, y=100)
+    var frame = gen.gradient(t)
+    img = frame

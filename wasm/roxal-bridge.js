@@ -14,19 +14,14 @@
 'use strict';
 
 (function () {
-    // ------------------------------------------------------------ wire format
-    const TAG_NIL = 0, TAG_FALSE = 1, TAG_TRUE = 2, TAG_INT = 3, TAG_REAL = 4,
-          TAG_STR = 5, TAG_HANDLE = 6, TAG_LIST = 7, TAG_DICT = 8, TAG_FUNC = 9,
-          TAG_BYTES = 10, TAG_ERROR = 11, TAG_METHOD = 12;
-
-    const OP_GLOBAL = 0, OP_GET = 1, OP_SET = 2, OP_CALL = 3, OP_INDEX = 4,
-          OP_SETINDEX = 5, OP_NEW = 6, OP_RELEASE = 7, OP_LISTEN = 8,
-          OP_UNLISTEN = 9, OP_TYPEOF = 10,
-          OP_STORE_DEFINE = 11, OP_STORE_PATCH = 12, OP_STORE_RESOLVE = 13,
-          OP_NN_REQUEST = 14, OP_UNICODE_CASE = 15;
-
-    // Inbound kinds (must match roxal::web::Inbound).
-    const IN_CALLBACK = 0, IN_STORE_CALL = 1, IN_STORE_WRITE = 2, IN_NN_RESULT = 3;
+    // The codec and the store registry are shared with the socket host:
+    // wasm/roxal-wire.js, linked just before this file.
+    const W = globalThis.RoxalWire;
+    const { TAG_STR, TAG_METHOD, TAG_LIST, TAG_NIL,
+            OP_GLOBAL, OP_GET, OP_SET, OP_CALL, OP_INDEX, OP_SETINDEX, OP_NEW,
+            OP_RELEASE, OP_LISTEN, OP_UNLISTEN, OP_TYPEOF, OP_STORE_DEFINE,
+            OP_STORE_PATCH, OP_STORE_RESOLVE, OP_NN_REQUEST, OP_UNICODE_CASE,
+            IN_CALLBACK, IN_NN_RESULT } = W;
 
     // -------------------------------------------------------- handle table
     // Index 0 is permanently null so a zero handle needs no special case on
@@ -52,138 +47,35 @@
         free.push(h);
     }
 
-    // ------------------------------------------------------------- decoding
+    // ------------------------------------------------------------- codec
     // Reads directly out of the wasm heap. Memory is shared with the Worker, so
     // there is no copy here -- that is the main reason the protocol is binary
-    // rather than JSON.
+    // rather than JSON. Handles and callables are resolved through this file's
+    // table and registry.
+    // copyPayloads: tensor bytes are copied out of the heap (see roxal-wire)
+    const readerHooks = { deref, makeCallback, copyPayloads: true };
     function Reader(ptr, len) {
-        this.view = new DataView(HEAPU8.buffer, ptr, len);
-        this.pos = 0;
+        return new W.Reader(HEAPU8.subarray(ptr, ptr + len), readerHooks);
     }
-    Reader.prototype.u8 = function () { return this.view.getUint8(this.pos++); };
-    Reader.prototype.u32 = function () {
-        const v = this.view.getUint32(this.pos, true); this.pos += 4; return v;
-    };
-    Reader.prototype.f64 = function () {
-        const v = this.view.getFloat64(this.pos, true); this.pos += 8; return v;
-    };
-    Reader.prototype.str = function () {
-        const len = this.u32();
-        const start = this.view.byteOffset + this.pos;
-        this.pos += len;
-        return UTF8ArrayToString(HEAPU8, start, len);
-    };
-    Reader.prototype.atEnd = function () { return this.pos >= this.view.byteLength; };
-
-    Reader.prototype.value = function () {
-        switch (this.u8()) {
-            case TAG_NIL:    return null;
-            case TAG_FALSE:  return false;
-            case TAG_TRUE:   return true;
-            case TAG_INT:    return this.view.getInt32((this.pos += 4) - 4, true);
-            case TAG_REAL:   return this.f64();
-            case TAG_STR:    return this.str();
-            case TAG_HANDLE: return deref(this.u32());
-            case TAG_LIST: {
-                const n = this.u32(), out = new Array(n);
-                for (let i = 0; i < n; i++) out[i] = this.value();
-                return out;
-            }
-            case TAG_DICT: {
-                const n = this.u32(), out = {};
-                for (let i = 0; i < n; i++) {
-                    if (this.u8() !== TAG_STR) throw new Error('malformed dict key');
-                    const k = this.str();
-                    out[k] = this.value();
-                }
-                return out;
-            }
-            case TAG_FUNC:   return makeCallback(this.u32());
-            case TAG_BYTES: {
-                const len = this.u32();
-                const start = this.view.byteOffset + this.pos;
-                this.pos += len;
-                return HEAPU8.subarray(start, start + len);
-            }
-            default: throw new Error('unknown value tag');
-        }
-    };
-
-    // ------------------------------------------------------------- encoding
-    function Writer() { this.bytes = []; }
-    Writer.prototype.u8 = function (v) { this.bytes.push(v & 0xff); };
-    Writer.prototype.u32 = function (v) {
-        this.bytes.push(v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >>> 24) & 0xff);
-    };
-    Writer.prototype.str = function (tag, s) {
-        const utf8 = new TextEncoder().encode(s);
-        this.u8(tag);
-        this.u32(utf8.length);
-        for (let i = 0; i < utf8.length; i++) this.bytes.push(utf8[i]);
-    };
-    Writer.prototype.value = function (v) {
-        if (v === null || v === undefined) { this.u8(TAG_NIL); return; }
-        switch (typeof v) {
-            case 'boolean': this.u8(v ? TAG_TRUE : TAG_FALSE); return;
-            case 'number':
-                if (Number.isInteger(v) && v >= -2147483648 && v <= 2147483647) {
-                    this.u8(TAG_INT); this.u32(v | 0);
-                } else {
-                    this.u8(TAG_REAL);
-                    const b = new Uint8Array(8);
-                    new DataView(b.buffer).setFloat64(0, v, true);
-                    for (let i = 0; i < 8; i++) this.bytes.push(b[i]);
-                }
-                return;
-            case 'string': this.str(TAG_STR, v); return;
-            default: {
-                // Plain data goes across BY VALUE; anything with identity or
-                // behaviour goes by reference as a handle. Getting this wrong is
-                // not subtle -- an event payload arriving as an opaque handle
-                // cannot be indexed, and a DOM node arriving as a dict would be
-                // a dead copy.
-                if (v instanceof Uint8Array) {
-                    this.u8(TAG_BYTES);
-                    this.u32(v.length);
-                    for (let i = 0; i < v.length; i++) this.bytes.push(v[i]);
-                    return;
-                }
-                if (Array.isArray(v)) {
-                    this.u8(TAG_LIST);
-                    this.u32(v.length);
-                    for (let i = 0; i < v.length; i++) this.value(v[i]);
-                    return;
-                }
-                const proto = Object.getPrototypeOf(v);
-                if (typeof v === 'object' && (proto === Object.prototype || proto === null)) {
-                    const keys = Object.keys(v);
-                    this.u8(TAG_DICT);
-                    this.u32(keys.length);
-                    for (const k of keys) { this.str(TAG_STR, k); this.value(v[k]); }
-                    return;
-                }
-                this.u8(TAG_HANDLE); this.u32(keep(v));
-                return;
-            }
-        }
-    };
-    Writer.prototype.error = function (msg) {
-        this.bytes.length = 0;
-        this.str(TAG_ERROR, msg);
-    };
-
-    // Copy into a malloc'd block the C++ side owns and frees.
-    // Layout: [u32 byteLen][payload].
-    Writer.prototype.toWasm = function () {
-        const n = this.bytes.length;
-        const ptr = _malloc(4 + n);
-        HEAPU8[ptr] = n & 0xff;
-        HEAPU8[ptr + 1] = (n >> 8) & 0xff;
-        HEAPU8[ptr + 2] = (n >> 16) & 0xff;
-        HEAPU8[ptr + 3] = (n >>> 24) & 0xff;
-        HEAPU8.set(this.bytes, ptr + 4);
-        return ptr;
-    };
+    function Writer() {
+        const w = new W.Writer();
+        // By-reference values go through the handle table.
+        const value = w.value;
+        w.value = v => value.call(w, v, keep);
+        // Copy into a malloc'd block the C++ side owns and frees.
+        // Layout: [u32 byteLen][payload].
+        w.toWasm = function () {
+            const n = this.bytes.length;
+            const ptr = _malloc(4 + n);
+            HEAPU8[ptr] = n & 0xff;
+            HEAPU8[ptr + 1] = (n >> 8) & 0xff;
+            HEAPU8[ptr + 2] = (n >> 16) & 0xff;
+            HEAPU8[ptr + 3] = (n >>> 24) & 0xff;
+            HEAPU8.set(this.bytes, ptr + 4);
+            return ptr;
+        };
+        return w;
+    }
 
     // ------------------------------------------------------------ callbacks
     // A Roxal callable passed to JS becomes a function that QUEUES an invocation
@@ -240,96 +132,9 @@
     function keepAsHandleMarker(node) { return node; }
 
     // ------------------------------------------------------------- stores
-    // A store is the framework-agnostic contract every adapter builds on:
-    //
-    //     subscribe(fn) -> unsubscribe    fn receives the new snapshot
-    //     getSnapshot() -> frozen object  STABLE identity until something changes
-    //     call(method, ...args) -> Promise
-    //     set(prop, value)
-    //
-    // getSnapshot's referential stability is the strict requirement: React's
-    // useSyncExternalStore re-renders forever without it. Svelte and Vue only need
-    // the pushed value, so satisfying React satisfies everyone.
-    const stores = new Map();
-    let defineSeq = 0;                // monotonic across ALL stores (see OP_STORE_DEFINE)
-    let nextCallId = 1;
-    const CALL_TIMEOUT_MS = 20000;
-    const pendingCalls = new Map();   // callId -> {resolve, reject}
-
-    function storeRecord(name) {
-        let rec = stores.get(name);
-        if (!rec) {
-            rec = { name, snapshot: Object.freeze({}), methods: [], subs: new Set(), queued: false };
-            stores.set(name, rec);
-        }
-        return rec;
-    }
-
-    // Replace the snapshot wholesale rather than mutating: subscribers compare by
-    // identity, and a mutated object would look unchanged.
-    function applyPatch(rec, delta) {
-        rec.snapshot = Object.freeze(Object.assign({}, rec.snapshot, delta));
-        notify(rec);
-    }
-
-    // Coalesce into a microtask, so several patches in one turn cause one render.
-    function notify(rec) {
-        if (rec.queued) return;
-        rec.queued = true;
-        Promise.resolve().then(() => {
-            rec.queued = false;
-            const snap = rec.snapshot;
-            for (const fn of Array.from(rec.subs)) {
-                try { fn(snap); } catch (e) { console.error('roxal store subscriber threw:', e); }
-            }
-        });
-    }
-
-    function storeHandle(name) {
-        const rec = storeRecord(name);
-        return {
-            name,
-            get methods() { return rec.methods.slice(); },
-            subscribe(fn) {
-                rec.subs.add(fn);
-                return () => rec.subs.delete(fn);
-            },
-            getSnapshot() { return rec.snapshot; },
-            call(method, ...args) {
-                return new Promise((resolve, reject) => {
-                    const id = nextCallId++;
-                    // A store call is only serviced while a script is RUNNING or
-                    // PARKED: the host loop is pumped from the VM's dispatch
-                    // loop. If the last script ended, nothing pumps and this
-                    // promise would never settle -- a silently wedged UI, with
-                    // no way for the caller to tell "slow" from "dead". Reject
-                    // instead, generously enough not to catch a legitimately
-                    // slow method (a big parse is ~0.5s).
-                    const timer = setTimeout(() => {
-                        if (!pendingCalls.delete(id)) return;
-                        reject(new Error(
-                            `roxal store call ${name}.${method}() was never serviced ` +
-                            `(${CALL_TIMEOUT_MS}ms) — is a script still running? ` +
-                            `A script that ends without web.serve() leaves nothing to pump.`));
-                    }, CALL_TIMEOUT_MS);
-                    pendingCalls.set(id, {
-                        resolve: v => { clearTimeout(timer); resolve(v); },
-                        reject:  e => { clearTimeout(timer); reject(e); },
-                    });
-                    const w = new Writer();
-                    w.u8(TAG_LIST);
-                    w.u32(args.length);
-                    for (const a of args) w.value(a);
-                    postInbound(IN_STORE_CALL, id, name, method, w.bytes);
-                });
-            },
-            set(prop, value) {
-                const w = new Writer();
-                w.value(value);
-                postInbound(IN_STORE_WRITE, 0, name, prop, w.bytes);
-            },
-        };
-    }
+    // The registry is shared code; this host posts inbound work through the
+    // C entry point and keeps by-reference values in its handle table.
+    const stores = W.makeStores(postInbound, keep);
 
     // ------------------------------------------------------------ unicode
     // Title case, matching ICU's toTitle: each WORD's first letter is
@@ -482,42 +287,15 @@
                 release(h);
                 return false;
             }
-            case OP_STORE_DEFINE: {
-                const name = (r.u8(), r.str());
-                const snapshot = r.value();
-                const methods = r.value();
-                const rec = storeRecord(name);
-                rec.methods = Array.isArray(methods) ? methods : [];
-                rec.snapshot = Object.freeze(Object.assign({}, snapshot));
-                // A GLOBAL define sequence, not a per-store count. Two things
-                // depend on it: a harness tells a fresh store from the stale
-                // record the registry keeps across runs (any increase does
-                // that), and a host picks the store the RUNNING script just
-                // exposed by taking the highest. Per-store counting broke the
-                // second one -- a store defined twice outranked one defined
-                // once no matter which script was live.
-                rec.generation = ++defineSeq;
-                notify(rec);
-                w.value(null);
-                return true;
-            }
-            case OP_STORE_PATCH: {
-                const name = (r.u8(), r.str());
-                applyPatch(storeRecord(name), r.value() || {});
+            case OP_STORE_DEFINE:
+                stores.define(r);
                 return false;
-            }
-            case OP_STORE_RESOLVE: {
-                const id = r.u32();
-                const result = r.value();
-                const error = r.value();
-                const p = pendingCalls.get(id);
-                pendingCalls.delete(id);
-                if (p) {
-                    if (error) p.reject(new Error(String(error)));
-                    else p.resolve(result);
-                }
+            case OP_STORE_PATCH:
+                stores.patch(r);
                 return false;
-            }
+            case OP_STORE_RESOLVE:
+                stores.resolve(r);
+                return false;
             case OP_NN_REQUEST: {
                 const callId = r.u32();
                 const kind = r.u8();
@@ -587,7 +365,7 @@
     Module.roxalBridge = { exec: exec, table: table, keep: keep, deref: deref };
 
     // Public API for app code and framework adapters.
-    Module.roxalStore = storeHandle;
-    Module.roxalStoreNames = () => Array.from(stores.keys());
-    Module.roxalStoreGeneration = name => stores.get(name)?.generation || 0;
+    Module.roxalStore = stores.handle;
+    Module.roxalStoreNames = stores.names;
+    Module.roxalStoreGeneration = stores.generation;
 })();

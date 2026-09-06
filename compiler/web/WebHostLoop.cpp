@@ -1,4 +1,4 @@
-#ifdef __EMSCRIPTEN__
+#ifdef ROXAL_ENABLE_WEB
 
 #include "WebHostLoop.h"
 #include "JsBridge.h"
@@ -52,6 +52,10 @@ struct WebHostLoop : HostEventLoop {
         // Containment: pump() runs from the dispatch loop, which has no call site
         // to propagate to, so an escaping exception would kill the VM thread.
         try {
+            // A client that (re)connected knows no store: resend them all
+            // before anything else this turn.
+            if (Transport* t = transport(); t && t->takeResync())
+                WebStoreHub::instance().redefineAll();
             // Order matters. Publish state changes BEFORE running inbound work, so
             // a handler that reads the UI sees what the last turn produced; then
             // flush again below to push whatever the handler just changed.
@@ -73,9 +77,9 @@ struct WebHostLoop : HostEventLoop {
 
     void waitForEvents(TimeDuration maxWait) override
     {
-        // Nothing to block on: browser events arrive by another thread pushing onto
-        // the inbound queue, and the browser main thread cannot be waited on from
-        // here. Poll at a UI-appropriate granularity instead.
+        // Host events arrive by another thread pushing onto the inbound queue
+        // (the browser main thread, or the socket reader); service what is
+        // there, then wait for more.
         pump();
 
         // Un-park here, after any handler has returned -- doing it inside the
@@ -90,11 +94,12 @@ struct WebHostLoop : HostEventLoop {
             return;
         }
 
-        // Cap the nap at roughly one UI frame, so queued work never sits longer
-        // than a user would notice.
+        // Park on the inbound queue: woken the moment the host posts work,
+        // otherwise capped at roughly one UI frame so a timed park and the
+        // store flush above still run at a UI-appropriate cadence.
         constexpr int64_t capUs = 8000;
         const int64_t us = maxWait.microSecs() < capUs ? maxWait.microSecs() : capUs;
-        if (us > 0) std::this_thread::sleep_for(std::chrono::microseconds(us));
+        waitForInbound(us);
     }
 };
 
@@ -134,4 +139,4 @@ void roxal::web::requestStop()
     g_stopRequested.store(true, std::memory_order_release);
 }
 
-#endif // __EMSCRIPTEN__
+#endif // ROXAL_ENABLE_WEB

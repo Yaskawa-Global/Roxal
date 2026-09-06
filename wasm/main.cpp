@@ -46,6 +46,7 @@
 #include "Error.h"
 #include "web/WebHostLoop.h"
 #include "web/UnicodeHost.h"
+#include "web/ScriptInbox.h"
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
@@ -130,60 +131,19 @@ int runSource(std::istream& source, const std::string& name,
 }
 
 // --- inbound script queue ---------------------------------------------------
-// The seed of the JS -> Roxal direction. Any thread may submit a script; only the
-// VM thread runs one. This is what lets the host keep a VM alive across scripts
-// instead of exiting after one, and it is the mechanism web.serve() will sit on.
-//
-// Note the asymmetry, which is deliberate and permanent (rule 1 of the web
-// design): submitting NEVER blocks the caller. The browser main thread cannot
-// Atomics.wait, so any design that has it wait on the VM is a deadlock waiting to
-// happen. Callers observe completion by polling roxal_completed_count().
-std::mutex g_inboxMutex;
-std::condition_variable g_inboxCv;
-std::deque<std::pair<std::string, std::string>> g_inbox;   // (source, name)
-std::atomic<bool> g_quitRequested{false};
-std::atomic<int>  g_completedCount{0};
-std::atomic<int>  g_lastResult{0};
+// The seed of the JS -> Roxal direction: any thread may submit a script; only
+// the VM thread runs one (roxal::web::ScriptInbox, shared with the native
+// host). Submitting NEVER blocks the caller -- the browser main thread cannot
+// Atomics.wait -- so callers observe completion by polling
+// roxal_completed_count().
+roxal::web::ScriptInbox g_inbox;
 
-// Between scripts this thread deliberately services NOTHING. Host event loops
-// (the dom module installs one) are pumped by the VM's dispatch loop, which only
-// runs while a script does -- and a callback invoked outside that context has no
-// Roxal thread to execute on. A UI app therefore keeps a script alive: dom.run()
-// parks inside the dispatch loop, exactly as qt's engine.run() does.
-//
 // Run submitted scripts until roxal_quit(). Called on the VM thread only.
 void serveInbox() {
-    for (;;) {
-        std::pair<std::string, std::string> job;
-        {
-            std::unique_lock<std::mutex> lock(g_inboxMutex);
-            // Bounded wait, because a UI app spends most of its life here with
-            // no script running: an event listener installed by a script that
-            // has already finished must still fire, and the only thing that can
-            // deliver it is this thread servicing the host event loop.
-            g_inboxCv.wait(lock, [] {
-                return !g_inbox.empty() || g_quitRequested.load(std::memory_order_acquire);
-            });
-            if (g_inbox.empty() && g_quitRequested.load(std::memory_order_acquire))
-                return;
-            job = std::move(g_inbox.front());
-            g_inbox.pop_front();
-        }
-        std::istringstream in{job.first};
-        const int rc = runSource(in, job.second, modulePathsFor(job.second, {"/stdlib"}));
-        // An interrupted (roxal_interrupt_script) or exit()ed script leaves
-        // the exit flag latched and the dataflow engine's run loop stopped;
-        // both must reset or every LATER script is stillborn/signal-dead.
-        {
-            VM& vm = VM::instance();
-            vm.clearExitFlag();
-            vm.restartDataflowEngineIfStopped();
-        }
-        g_lastResult.store(rc, std::memory_order_relaxed);
-        // Release-store LAST: a poller that sees the new count must also see the
-        // result and all output written before it.
-        g_completedCount.fetch_add(1, std::memory_order_release);
-    }
+    g_inbox.serve([](const std::string& source, const std::string& name) -> int {
+        std::istringstream in { source };
+        return runSource(in, name, modulePathsFor(name, {"/stdlib"}));
+    });
 }
 
 } // namespace
@@ -264,11 +224,7 @@ int roxal_thread_info(void) {
 // Queue a script for the VM thread to run. Returns immediately.
 EMSCRIPTEN_KEEPALIVE
 void roxal_submit_source(const char* source, const char* name) {
-    {
-        std::lock_guard<std::mutex> lock(g_inboxMutex);
-        g_inbox.emplace_back(source ? source : "", name ? name : "<editor>");
-    }
-    g_inboxCv.notify_one();
+    g_inbox.submit(source ? source : "", name ? name : "<editor>");
 }
 
 // Arm (or disarm) a debugger session for subsequent runs: while armed,
@@ -336,20 +292,19 @@ extern "C" const char* __asan_default_options()
 // Ask the serve loop to stop once the queue drains.
 EMSCRIPTEN_KEEPALIVE
 void roxal_quit(void) {
-    g_quitRequested.store(true, std::memory_order_release);
-    g_inboxCv.notify_one();
+    g_inbox.requestQuit();
 }
 
 // Scripts finished so far. Poll this to detect completion without blocking.
 EMSCRIPTEN_KEEPALIVE
 int roxal_completed_count(void) {
-    return g_completedCount.load(std::memory_order_acquire);
+    return g_inbox.completedCount();
 }
 
 // Exit code of the most recently completed script.
 EMSCRIPTEN_KEEPALIVE
 int roxal_last_result(void) {
-    return g_lastResult.load(std::memory_order_relaxed);
+    return g_inbox.lastResult();
 }
 
 // Diagnostic/config hook driven by page URL flags. GC keys act on the GC
@@ -530,5 +485,5 @@ int main(int argc, char** argv) {
     // Otherwise stay alive and serve scripts submitted from JS. main() must not
     // return here: this thread IS the VM, and a UI app outlives any one script.
     serveInbox();
-    return g_lastResult.load(std::memory_order_relaxed);
+    return g_inbox.lastResult();
 }

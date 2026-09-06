@@ -1,0 +1,15 @@
+# a lifted call leaves unsupplied trailing parameters to their declared
+# defaults, exactly as a plain call does (they used to arrive as nil)
+func scale(a: real, k: real = 2.0, offset: real = 0.5) -> real:
+  return a * k + offset
+
+const s = signal(0, 1.0)
+const y0 = scale(s)            # k and offset defaulted
+const y1 = scale(s, 3.0)       # offset defaulted
+const y2 = scale(s, 3.0, 1.0)  # all supplied
+s.set(2.0)
+wait(ms=200)
+print(y0.value)
+print(y1.value)
+print(y2.value)
+print(scale(2.0))

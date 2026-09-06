@@ -401,6 +401,7 @@ private:
     // evaluation by m_evalMutex.
     bool serviceBackgroundIslands(TimePoint& soonestDue);
 
+
     // Fast precheck for the run loops: true if the last network-cache build
     // produced at least one background periodic island.
     std::atomic<bool> m_haveBackgroundIslands { false };
@@ -456,6 +457,28 @@ private:
     };
 
     std::vector<NetworkIsland> m_networkIslands;
+
+    // Async nodes in event-driven islands.  A node whose body returned
+    // futures (ai.nn predict) yields; on a clocked island the next tick
+    // polls it, but an event-driven island is only evaluated when a source
+    // is set, so nothing would deliver the result -- or, if a later event
+    // did, it delivered the stale result and the event's own input was
+    // dropped (FuncNode's rerunTime covers that half).  The engine thread
+    // polls these nodes between events (1 ms while any is pending) and,
+    // once one resolves, finishes its island downstream of it.  Recorded
+    // by evaluateIsland() (a future yield does not suspend the island)
+    // and by initializeNode().
+    struct AsyncYield {
+        ptr<FuncNode> func;
+        TimePoint time;      // the evaluation the node yielded in
+    };
+    std::vector<AsyncYield> m_asyncYields;     // guarded by m_mutex
+    void noteAsyncYield(const ptr<FuncNode>& func, TimePoint time);
+    bool hasAsyncYields();
+    bool serviceAsyncYields();
+    // Position of func in island's execution order (false if absent).
+    static bool locateInIsland(const NetworkIsland& island, const ptr<FuncNode>& func,
+                               size_t& periodIndex, size_t& funcIndex);
 
     void computeNetworkIslands();
 

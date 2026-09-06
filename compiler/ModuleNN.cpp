@@ -1,5 +1,6 @@
 #include "ModuleNN.h"
 #include "VM.h"
+#include "SimpleMarkSweepGC.h"
 #include "Object.h"
 #include "core/json5.h"
 #include <stdexcept>
@@ -49,7 +50,28 @@ public:
         return env;
     }
 
-    Ort::Env& env() { return env_; }
+    // Created on first use (any thread: actors construct models
+    // concurrently), under a lock -- an unsynchronized check-then-create
+    // could build two environments and destroy one another thread was
+    // already using.  release() takes the same lock.
+    Ort::Env& env() {
+        std::lock_guard<std::mutex> lock(envMutex_);
+        if (!env_)
+            env_ = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_ERROR, "roxal-nn");
+        return *env_;
+    }
+    // Destroy the environment NOW -- at the end of VM shutdown, every session
+    // gone -- rather than from __run_exit_handlers, where Ort::Env's
+    // destructor ran the CUDA provider's teardown against memory another exit
+    // handler had already freed (valgrind: invalid read in
+    // libonnxruntime_providers_cuda.so under Ort::Env::~Env, of a block the
+    // provider allocated while being appended to session options). That was
+    // the intermittent "corrupted double-linked list" at exit of every script
+    // that had used a CUDA session.
+    void release() {
+        std::lock_guard<std::mutex> lock(envMutex_);
+        env_.reset();
+    }
 
     Ort::SessionOptions createSessionOptions(bool requestGpu = true) {
         Ort::SessionOptions opts;
@@ -75,23 +97,38 @@ public:
     bool cudaAvailable() {
         std::call_once(cudaProbeOnce_, [this] {
             try {
+                // The provider registers against the environment's default
+                // logger: probing before the (lazily created) Ort::Env
+                // exists fails with "DefaultLogger ... none has been
+                // registered" -- and that failure would be cached, putting
+                // every model of the run on the CPU.
+                env();
                 Ort::SessionOptions probe;
                 OrtCUDAProviderOptions cuda_opts{};
                 cuda_opts.device_id = 0;
                 probe.AppendExecutionProvider_CUDA(cuda_opts);
                 cudaAvailable_ = true;
+            } catch (const std::exception& e) {
+                cudaAvailable_ = false;
+                cudaProbeError_ = e.what();
             } catch (...) {
                 cudaAvailable_ = false;
+                cudaProbeError_ = "unknown error";
             }
         });
         return cudaAvailable_;
     }
 
+    // Why the last probe failed (empty while it succeeded or never ran).
+    const std::string& cudaProbeError() const { return cudaProbeError_; }
+
 private:
-    OnnxEnvironment() : env_(ORT_LOGGING_LEVEL_ERROR, "roxal-nn") {}
-    Ort::Env env_;
+    OnnxEnvironment() = default;
+    std::unique_ptr<Ort::Env> env_;
+    std::mutex envMutex_;
     std::once_flag cudaProbeOnce_;
     bool cudaAvailable_ = false;
+    std::string cudaProbeError_;
 };
 
 static std::string ortDtypeToString(ONNXTensorElementDataType dt) {
@@ -158,6 +195,15 @@ class InferenceWorker {
                 currentActive = true;
             }
             try {
+                // A GC participant for the job's duration: the collector's
+                // barrier waits for this thread between polls, so the output
+                // tensors the job allocates on THIS (non-Roxal) thread are
+                // never created behind a running collection -- which would
+                // sweep them, unmarked, before the future ever published
+                // them to a root. The Session::Run inside is bracketed
+                // SafeBlocked (runInference), so a long inference does not
+                // hold the barrier; only the allocation of the results does.
+                SimpleMarkSweepGC::ExternalParticipant participant(SimpleMarkSweepGC::instance());
                 Value result = currentJob.work();
                 currentJob.promise->set_value(result);
             } catch (const std::exception& e) {
@@ -277,6 +323,13 @@ void roxal::nnTraceWorkers(ValueVisitor& visitor)
 void ModuleNN::onShutdown(VM&)
 {
     InferenceWorker::shutdownAll();
+}
+
+void ModuleNN::onShutdownComplete(VM&)
+{
+#ifdef ROXAL_ENABLE_ONNX
+    OnnxEnvironment::instance().release();
+#endif
 }
 
 // ============================================================
@@ -400,7 +453,13 @@ static Value runInferenceMulti(ModelWrapper* wrapper,
             binding.BindOutput(name.c_str(), cpuMemInfo);
     }
 
-    wrapper->session->Run(Ort::RunOptions{nullptr}, binding);
+    {
+        // Pure native work on bound buffers; the Roxal inputs are rooted by
+        // the job's heldValues (or the caller's stack on the sync path), so
+        // the thread can be quiescent for the GC while ORT runs.
+        SimpleMarkSweepGC::GCBlockedScope blocked;
+        wrapper->session->Run(Ort::RunOptions{nullptr}, binding);
+    }
     outputs = binding.GetOutputValues();
 
     if (outputs.size() == 1) {
@@ -709,6 +768,12 @@ Value ModuleNN::nn_model_init_builtin(ArgsView args)
         throw std::invalid_argument("Model.init: device must be 'auto', 'cpu', or 'cuda'");
 
     auto& ortEnv = OnnxEnvironment::instance();
+    // An explicit 'cuda' that cannot be honoured is an error, not a silent
+    // CPU session: the caller asked for the GPU by name.  ('auto' keeps the
+    // quiet fallback.)
+    if (deviceArg == "cuda" && !ortEnv.cudaAvailable())
+        throw std::invalid_argument("Model.init: device='cuda' but the CUDA execution provider "
+                                    "is not available: " + ortEnv.cudaProbeError());
     auto opts = ortEnv.createSessionOptions(requestGpu);
 
     auto wrapper = std::make_shared<ModelWrapper>();

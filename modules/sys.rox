@@ -440,6 +440,13 @@ func module_paths() -> list:
   """the module search paths used by import, in order (ROXALPATH entries,
   --module-paths entries, then the built-in defaults)"""
 
+@builtin
+func host_dir(kind: string) -> string:
+  """where the embedding host keeps things, for a web UI's services: 'stdlib'
+  (the module directory the page's services parse) or 'data' (the user's
+  files). /stdlib and /data in the wasm build; real directories under a
+  native `roxal --web-host` (its module path and --root)"""
+
 func filter(items: const list, predicate) -> list:
   """return a new list containing elements for which predicate(element) returns true; predicate can optionally take (element, index)"""
   var result = []

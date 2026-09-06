@@ -65,6 +65,8 @@
 #endif
 #ifdef __EMSCRIPTEN__
 #include "web/ModuleDom.h"
+#endif
+#ifdef ROXAL_ENABLE_WEB
 #include "web/ModuleWeb.h"
 #endif
 #include "Object.h"
@@ -363,6 +365,9 @@ std::vector<std::string> VM::featureStrings()
 #endif
 #ifdef ROXAL_ENABLE_INSPECT
     features.push_back("inspect");
+#endif
+#ifdef ROXAL_ENABLE_WEB
+    features.push_back("web");
 #endif
     return features;
 }
@@ -1335,6 +1340,10 @@ VM::VM()
     // dom needs a browser main thread to proxy to, so it exists only in the
     // wasm build; there is no native equivalent to gate with a feature flag.
     lazyModuleRegistry.registerFactory("dom", []{ return make_ptr<ModuleDom>(); });
+    #endif
+    #ifdef ROXAL_ENABLE_WEB
+    // web needs only a transport: the wasm bridge, or a native host's socket
+    // (roxal --web-host). Without one attached, web.expose() refuses.
     lazyModuleRegistry.registerFactory("web", []{ return make_ptr<ModuleWeb>(); });
     #endif
 
@@ -1819,6 +1828,14 @@ void VM::shutdown()
 
     // ensure all threads are gone before reporting
     joinAllThreads();
+
+    // Library-level state that must not wait for the exit handlers (ORT's
+    // environment: destroyed from __run_exit_handlers, its CUDA provider's
+    // teardown read memory another handler had already freed).
+    for (auto& mod : builtinModules) {
+        if (mod)
+            mod->onShutdownComplete(*this);
+    }
 
     #ifdef DEBUG_TRACE_MEMORY
     // Final attempt to release any objects that might still be pending
@@ -13083,6 +13100,8 @@ void VM::defineBuiltinMethods()
                         false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
     defineBuiltinMethod(ValueType::Tensor, "take", std::mem_fn(&VM::tensor_take_builtin),
                         false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
+    defineBuiltinMethod(ValueType::Tensor, "reshape", std::mem_fn(&VM::tensor_reshape_builtin),
+                        false, nullptr, {}, Value::nilVal(), /*noMutateSelf=*/true);
     defineBuiltinMethod(ValueType::Tensor, "fill", std::mem_fn(&VM::tensor_fill_builtin),
                         false, nullptr, {}, Value::nilVal());  // mutates self in place
 
@@ -14001,6 +14020,35 @@ Value VM::tensor_take_builtin(ArgsView args)
         }
     });
     return Value::objVal(std::move(out));
+}
+
+Value VM::tensor_reshape_builtin(ArgsView args)
+{
+    // reshape(d0, d1, ...) or reshape([d0, d1, ...]): the same elements
+    // seen under another shape, sharing the buffer -- adding or dropping a
+    // batch axis for a model's input or output costs nothing.
+    if (args.empty() || !isTensor(args[0]))
+        throw std::invalid_argument("tensor.reshape expects dimensions");
+
+    std::vector<int64_t> shape;
+    if (args.size() == 2 && isList(args[1])) {
+        ObjList* dims = asList(args[1]);
+        for (int32_t i = 0; i < dims->length(); ++i) {
+            const Value d = dims->getElement(static_cast<size_t>(i));
+            if (!d.isNumber())
+                throw std::invalid_argument("tensor.reshape: dimensions must be numbers");
+            shape.push_back(d.asInt());
+        }
+    } else {
+        for (size_t i = 1; i < args.size(); ++i) {
+            if (!args[i].isNumber())
+                throw std::invalid_argument("tensor.reshape: dimensions must be numbers");
+            shape.push_back(args[i].asInt());
+        }
+    }
+    if (shape.empty())
+        throw std::invalid_argument("tensor.reshape expects at least one dimension");
+    return asTensor(args[0])->reshape(shape);
 }
 
 Value VM::tensor_fill_builtin(ArgsView args)

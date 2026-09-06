@@ -1,4 +1,4 @@
-#ifdef __EMSCRIPTEN__
+#ifdef ROXAL_ENABLE_WEB
 
 #include <algorithm>
 
@@ -132,8 +132,8 @@ Value ModuleWeb::expose_builtin(ArgsView args)
 {
     if (!canIssueOps())
         throw std::runtime_error(
-            "web: this build has no browser main thread to publish to "
-            "(the web module needs the wasm host, not a native build)");
+            "web: no web host is attached to publish to "
+            "(run a native VM with `roxal --web-host`, or use the wasm host)");
 
     const std::string name = args.getString(0);
     if (!args.has(1) || !(isObjectInstance(args[1]) || isActorInstance(args[1])))
@@ -182,4 +182,4 @@ Value ModuleWeb::stop_builtin(ArgsView args)
     return Value::nilVal();
 }
 
-#endif // __EMSCRIPTEN__
+#endif // ROXAL_ENABLE_WEB

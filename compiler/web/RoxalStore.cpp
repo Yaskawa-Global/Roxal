@@ -1,4 +1,4 @@
-#ifdef __EMSCRIPTEN__
+#ifdef ROXAL_ENABLE_WEB
 
 #include "RoxalStore.h"
 #include "JsBridge.h"
@@ -528,6 +528,12 @@ void WebStoreHub::flushAll()
         if (s) s->flushDirty();
 }
 
+void WebStoreHub::redefineAll()
+{
+    for (auto& s : *impl_->stores)
+        if (s) s->define();
+}
+
 void WebStoreHub::trackPendingCall(uint32_t callId, const Value& future, const std::string& method)
 {
     impl_->pending->push_back({ callId, future, method });
@@ -577,4 +583,4 @@ void WebStoreHub::shutdown()
     impl_->stores->clear();
 }
 
-#endif // __EMSCRIPTEN__
+#endif // ROXAL_ENABLE_WEB

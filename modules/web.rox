@@ -1,4 +1,8 @@
-// web — expose Roxal state to a web UI (WebAssembly builds only).
+// web — expose Roxal state to a web UI.
+//
+// Works under two hosts: the WebAssembly build in a browser tab, and a native
+// VM started with `roxal --web-host`, which serves a browser page over a local
+// WebSocket. Scripts are the same under both.
 //
 // EXPERIMENTAL: new, not yet exercised by a real application; expect rough edges
 // and API changes.
@@ -76,6 +80,27 @@ proc serve(seconds=nil):
 @builtin
 proc stop():
   """Make a running web.serve() return."""
+
+# The page's services locate the standard library and the user's files
+# through sys.host_dir('stdlib') / sys.host_dir('data') -- the host reports
+# them (fixed mounts in the wasm build, real directories under
+# `roxal --web-host`).
+
+# An output view for a diagram harness: holds an image-valued output signal
+# so the page paints each new frame at the output node. A signal-valued
+# property crosses as its current value and is observed on the signal, so
+# every frame that changes reaches the page, coalesced per host-loop turn.
+type ImageView object:
+  var frame :signal = nil
+  proc init(sig :signal):
+    frame = sig
+
+# Any signal as a store: the page reads its current value and every change.
+# The harness uses it for a feed's frame count (an FPS readout).
+type SignalView object:
+  var value :signal = nil
+  proc init(sig :signal):
+    value = sig
 
 # ---------------------------------------------------------------------------
 # The IDE language service. Owned by this module so an editor never has to mix
@@ -227,8 +252,9 @@ type Df actor:
   private func _refresh_palette(path :string):
     var paths = []
     for m in dfdoc.doc_modules(docs[path]):
-      paths.append('/stdlib/' + m + '.rox')
-      paths.append('/data/' + m + '.rox')
+      for base in [host_dir('stdlib'), host_dir('data')]:
+        paths.append(base + '/' + m + '.rox')
+        paths.append(base + '/' + m + '/init.rox')   // directory modules (opencv)
     pals[path] = dfdoc.palette(paths)   // unreadable paths skip harmlessly
 
   private func _pal(path :string) -> list:
@@ -282,8 +308,8 @@ type Df actor:
     try:
       var r = dfdoc.apply(docs[path], op, _pal(path))
       if r['ok']:
-        if op['op'] == 'add_node':
-          _refresh_palette(path)   // a new sub-diagram may add an import
+        if op['op'] == 'add_node' or op['op'] == 'add_import':
+          _refresh_palette(path)   // a new node or import may add a module
         r['ports'] = dfdoc.port_types(docs[path], _pal(path))
       return r
     except e:
@@ -318,8 +344,70 @@ type Df actor:
     try:
       var paths = []
       for m in modules:
-        paths.append('/stdlib/' + m + '.rox')
+        paths.append(host_dir('stdlib') + '/' + m + '.rox')
       return {'ok': true, 'items': dfdoc.palette(paths)}
+    except e:
+      return {'ok': false, 'error': string(e)}
+
+  # The palette for ONE document: every function of the modules it imports
+  # (resolved against the standard library and the data directory) plus the
+  # editor's base modules, so a fresh diagram is not empty. Items are
+  # grouped by module on the client.
+  func doc_palette(path :string, base :list) -> dict:
+    if not (path in docs):
+      return {'ok': false, 'error': 'no_document'}
+    try:
+      var items = []
+      var seen = {}
+      for it in _pal(path):
+        seen[it['callee']] = true
+        items.append(it)
+      var paths = []
+      for m in base:
+        paths.append(host_dir('stdlib') + '/' + m + '.rox')
+        paths.append(host_dir('stdlib') + '/' + m + '/init.rox')
+      for it in dfdoc.palette(paths):
+        if not (it['callee'] in seen):
+          seen[it['callee']] = true
+          items.append(it)
+      // ONNX models from the workspace's catalog (<data>/models/catalog.json,
+      // written by tools/nn-catalog.py): ports from the model's own metadata
+      try:
+        var cat = from_json(fileio.read_file(host_dir('data') + '/models/catalog.json'))
+        for m in cat['models']:
+          if 'missing' in m and m['missing']:
+            continue
+          var params = []
+          for inp in m['inputs']:
+            params.append({'name': inp['name'], 'type': 'tensor', 'has_default': false})
+          var outs = []
+          var onames = []
+          for o in m['outputs']:
+            outs.append('tensor')
+            onames.append(o['name'])
+          var label = m['name']
+          if 'label' in m:
+            label = m['label']
+          var blurb = ''
+          if 'blurb' in m:
+            blurb = m['blurb']
+          var license = ''
+          if 'license' in m:
+            license = m['license']
+          var opset = nil
+          if 'opset' in m:
+            opset = m['opset']
+          // 'doc' is what the editor shows for any palette entry; a model's
+          // comes from the catalog, since the ONNX format's own doc_string
+          // is empty in everything the usual exporters produce
+          items.append({'kind': 'model', 'module': 'models', 'name': m['name'], 'label': label,
+                        'callee': 'models.' + m['name'], 'file': m['file'],
+                        'params': params, 'outputs': outs, 'output_names': onames,
+                        'inputs': m['inputs'], 'outputs_meta': m['outputs'],
+                        'doc': blurb, 'license': license, 'opset': opset})
+      except ecat:
+        var _no_catalog = ecat   // a workspace without models/ simply has no model nodes
+      return {'ok': true, 'items': items, 'modules': dfdoc.doc_modules(docs[path])}
     except e:
       return {'ok': false, 'error': string(e)}
 
@@ -344,11 +432,12 @@ type Df actor:
   func components(exclude :string = '') -> dict:
     try:
       var items = []
-      var entries = fileio.list_dir('/data')
+      var data_dir = host_dir('data')
+      var entries = fileio.list_dir(data_dir)
       if entries == nil:
         entries = []
       for e in entries:
-        var path = '/data/' + e
+        var path = data_dir + '/' + e
         if path == exclude:
           continue
         if len(e) < 5 or e[len(e) - 4] != '.' or e[len(e) - 3] != 'r' or e[len(e) - 2] != 'o' or e[len(e) - 1] != 'x':
@@ -387,10 +476,10 @@ type Df actor:
       if (not (path in scache)) or scache[path]['rev'] != rev:
         var ran0 = dfdoc.harness(docs[path])
         scache[path] = {'rev': rev, 'ran': ran0,
-                        'map': dfdoc.live_map(ran0, '/data')}
+                        'map': dfdoc.live_map(ran0, host_dir('data'))}
       var c = scache[path]
       return {'ok': true,
-              'values': dfdoc.live_values(docs[path], stem, c['ran'], '/data', c['map'])}
+              'values': dfdoc.live_values(docs[path], stem, c['ran'], host_dir('data'), c['map'])}
     except e:
       return {'ok': false, 'error': string(e)}
 

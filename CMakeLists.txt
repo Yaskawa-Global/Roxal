@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.12)
 
-project(roxal VERSION 0.8.40 LANGUAGES CXX C)
+project(roxal VERSION 0.8.41 LANGUAGES CXX C)
 set(ROXAL_PRERELEASE "pre" CACHE STRING "SemVer prerelease label (e.g. alpha.1, rc.1)")
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -149,6 +149,17 @@ if(ROXAL_ENABLE_MEDIA_AUDIO AND NOT ROXAL_ENABLE_MEDIA)
 endif()
 option(ROXAL_ENABLE_QT "Enable qt module (QML/QtQuick UI, requires Qt6)" OFF)
 option(ROXAL_ENABLE_INSPECT "Enable inspect module (AST and dataflow introspection)" ON)
+# The web module (state bridge to a browser UI) and, natively, the socket host
+# behind `roxal --web-host`. Its service actors are written against inspect and
+# fileio, so it is only meaningful with both.
+option(ROXAL_ENABLE_WEB "Enable web module and the native web host (requires inspect and fileio)" ON)
+if(EMSCRIPTEN)
+    set(ROXAL_ENABLE_WEB ON CACHE BOOL "Always on in the wasm build" FORCE)
+endif()
+if(ROXAL_ENABLE_WEB AND NOT (ROXAL_ENABLE_INSPECT AND ROXAL_ENABLE_FILEIO))
+    message(STATUS "ROXAL_ENABLE_WEB needs inspect and fileio; disabling web")
+    set(ROXAL_ENABLE_WEB OFF)
+endif()
 if(ROXAL_ENABLE_ALL)
     set(ROXAL_ENABLE_FILEIO ON CACHE BOOL "Enabled by ROXAL_ENABLE_ALL" FORCE)
     set(ROXAL_ENABLE_GRPC ON CACHE BOOL "Enabled by ROXAL_ENABLE_ALL" FORCE)
@@ -485,16 +496,26 @@ list(APPEND COMPILER_SOURCES compiler/TestRefOrient.cpp)
 list(APPEND COMPILER_SOURCES compiler/LazyModuleRegistry.cpp)
 list(APPEND COMPILER_SOURCES compiler/RuntimeConfig.cpp)
 
+if(ROXAL_ENABLE_WEB)
+    # Host-neutral half: the codec, the store bridge, the host loop, the module.
+    list(APPEND COMPILER_SOURCES
+        compiler/web/JsBridge.cpp
+        compiler/web/WebHostLoop.cpp
+        compiler/web/RoxalStore.cpp
+        compiler/web/ModuleWeb.cpp
+        compiler/web/ScriptInbox.cpp
+    )
+    if(NOT EMSCRIPTEN)
+        # Native host: the WebSocket transport behind `roxal --web-host`.
+        list(APPEND COMPILER_SOURCES compiler/web/SocketHost.cpp)
+    endif()
+endif()
 if(EMSCRIPTEN)
     # The dom module has no native equivalent to gate behind a feature flag -- it
     # exists exactly when there is a browser main thread to proxy operations to.
     list(APPEND COMPILER_SOURCES
-        compiler/web/JsBridge.cpp
         compiler/web/ObjJsValue.cpp
-        compiler/web/WebHostLoop.cpp
         compiler/web/ModuleDom.cpp
-        compiler/web/RoxalStore.cpp
-        compiler/web/ModuleWeb.cpp
         compiler/web/UnicodeHost.cpp
     )
     if(ROXAL_ENABLE_AI_NN)
@@ -669,7 +690,7 @@ else()
 endif()
 set(_roxal_features_on "")
 set(_roxal_features_off "")
-foreach(_roxal_feature FILEIO GRPC DDS REGEX XML SOCKET FFI ONNX AI_NN MEDIA MEDIA_AUDIO QT INSPECT)
+foreach(_roxal_feature FILEIO GRPC DDS REGEX XML SOCKET FFI ONNX AI_NN MEDIA MEDIA_AUDIO QT INSPECT WEB)
     string(TOLOWER "${_roxal_feature}" _roxal_feature_label)
     if(ROXAL_ENABLE_${_roxal_feature})
         list(APPEND ROXAL_ABI_DEFINITIONS ROXAL_ENABLE_${_roxal_feature})
@@ -952,6 +973,7 @@ file(WRITE "${CMAKE_BINARY_DIR}/roxal_features.cmake"
     "set(ROXAL_HAS_ONNX ${ROXAL_ENABLE_ONNX})\n"
     "set(ROXAL_HAS_REGEX ${ROXAL_ENABLE_REGEX})\n"
     "set(ROXAL_HAS_INSPECT ${ROXAL_ENABLE_INSPECT})\n"
+    "set(ROXAL_HAS_WEB ${ROXAL_ENABLE_WEB})\n"
     "set(ROXAL_HAS_FFI ${ROXAL_ENABLE_FFI})\n"
     "set(ROXAL_HAS_XML ${ROXAL_ENABLE_XML})\n"
     "set(ROXAL_HAS_MEDIA ${ROXAL_ENABLE_MEDIA})\n"

@@ -300,8 +300,8 @@ type TemplateMethod enum:
   Ccoeff = 4
   CcoeffNormed = 5
 
-# destination channel count for each ColorCode (generated from the codes above)
 func _cvt_channels(code) -> int:
+  """destination channel count for each ColorCode (generated from the codes above)"""
   if code == ColorCode.Rgb2Rgba:
     return 4
   if code == ColorCode.Rgb2Gray:
@@ -352,32 +352,32 @@ func _gen_morphology(src, h: int, w: int, c: int, dst, op, ksize: int, iteration
 func _gen_flip(src, h: int, w: int, c: int, dst, axis: int) -> int:
   _
 
-# Median filter; ksize must be odd.
 func median_blur(img: tensor, ksize: int) -> tensor:
+  """Median filter; ksize must be odd."""
   var s = img.shape()
   var out = tensor([s[0], s[1], s[2]], dtype='uint8')
   if _gen_median_blur(img, s[0], s[1], s[2], out, ksize) != 0:
     raise RuntimeException('median_blur: ' + _last_error())
   return out
 
-# Box blur.
 func blur(img: tensor, ksize: int) -> tensor:
+  """Box blur."""
   var s = img.shape()
   var out = tensor([s[0], s[1], s[2]], dtype='uint8')
   if _gen_blur(img, s[0], s[1], s[2], out, ksize) != 0:
     raise RuntimeException('blur: ' + _last_error())
   return out
 
-# Edge-preserving smoothing.
 func bilateral_filter(img: tensor, diameter: int, sigma_color: real, sigma_space: real) -> tensor:
+  """Edge-preserving smoothing."""
   var s = img.shape()
   var out = tensor([s[0], s[1], s[2]], dtype='uint8')
   if _gen_bilateral_filter(img, s[0], s[1], s[2], out, diameter, sigma_color, sigma_space) != 0:
     raise RuntimeException('bilateral_filter: ' + _last_error())
   return out
 
-# Histogram equalization (grayscale).
 func equalize_hist(img: tensor) -> tensor:
+  """Histogram equalization (grayscale)."""
   var s = img.shape()
   if s[2] != 1:
     raise RuntimeException('equalize_hist: expects a grayscale image (use grayscale() first)')
@@ -386,8 +386,8 @@ func equalize_hist(img: tensor) -> tensor:
     raise RuntimeException('equalize_hist: ' + _last_error())
   return out
 
-# Sobel derivative magnitude (grayscale).
 func sobel(img: tensor, dx: int, dy: int, ksize: int = 3) -> tensor:
+  """Sobel derivative magnitude (grayscale)."""
   var s = img.shape()
   if s[2] != 1:
     raise RuntimeException('sobel: expects a grayscale image (use grayscale() first)')
@@ -396,8 +396,8 @@ func sobel(img: tensor, dx: int, dy: int, ksize: int = 3) -> tensor:
     raise RuntimeException('sobel: ' + _last_error())
   return out
 
-# Laplacian edge response (grayscale).
 func laplacian(img: tensor, ksize: int = 3) -> tensor:
+  """Laplacian edge response (grayscale)."""
   var s = img.shape()
   if s[2] != 1:
     raise RuntimeException('laplacian: expects a grayscale image (use grayscale() first)')
@@ -406,32 +406,32 @@ func laplacian(img: tensor, ksize: int = 3) -> tensor:
     raise RuntimeException('laplacian: ' + _last_error())
   return out
 
-# Morphological erosion.
 func erode(img: tensor, ksize: int, iterations: int = 1, kshape = MorphShape.Rect) -> tensor:
+  """Morphological erosion."""
   var s = img.shape()
   var out = tensor([s[0], s[1], s[2]], dtype='uint8')
   if _gen_erode(img, s[0], s[1], s[2], out, ksize, iterations, kshape) != 0:
     raise RuntimeException('erode: ' + _last_error())
   return out
 
-# Morphological dilation.
 func dilate(img: tensor, ksize: int, iterations: int = 1, kshape = MorphShape.Rect) -> tensor:
+  """Morphological dilation."""
   var s = img.shape()
   var out = tensor([s[0], s[1], s[2]], dtype='uint8')
   if _gen_dilate(img, s[0], s[1], s[2], out, ksize, iterations, kshape) != 0:
     raise RuntimeException('dilate: ' + _last_error())
   return out
 
-# Morphological operation (see MorphOp).
 func morphology(img: tensor, op, ksize: int, iterations: int = 1, kshape = MorphShape.Rect) -> tensor:
+  """Morphological operation (see MorphOp)."""
   var s = img.shape()
   var out = tensor([s[0], s[1], s[2]], dtype='uint8')
   if _gen_morphology(img, s[0], s[1], s[2], out, op, ksize, iterations, kshape) != 0:
     raise RuntimeException('morphology: ' + _last_error())
   return out
 
-# Flip: axis 0 = vertical, 1 = horizontal, -1 = both.
 func flip(img: tensor, axis: int) -> tensor:
+  """Flip: axis 0 = vertical, 1 = horizontal, -1 = both."""
   var s = img.shape()
   var out = tensor([s[0], s[1], s[2]], dtype='uint8')
   if _gen_flip(img, s[0], s[1], s[2], out, axis) != 0:
@@ -447,9 +447,9 @@ func flip(img: tensor, axis: int) -> tensor:
 func version() -> string:
   return _version()
 
-# Read an image file as a uint8 [H, W, C] RGB tensor. channels: 3 (RGB, default),
-# 1 (grayscale) or 4 (RGBA).
 func imread(path: string, channels: int = 3) -> tensor:
+  """Read an image file as a uint8 [H, W, C] RGB tensor. channels: 3 (RGB, default),
+  1 (grayscale) or 4 (RGBA)."""
   var m = _imread(path, channels)
   if m == nil:
     raise RuntimeException('imread: ' + _last_error())
@@ -467,16 +467,16 @@ proc imwrite(path: string, img: tensor):
   if _imwrite(path, img, s[0], s[1], s[2]) != 0:
     raise RuntimeException('imwrite: ' + _last_error())
 
-# Resize to the given width x height.
 func resize(img: tensor, width: int, height: int, interpolation = Interpolation.Linear) -> tensor:
+  """Resize to the given width x height."""
   var s = img.shape()
   var out = tensor([height, width, s[2]], dtype='uint8')
   if _resize(img, s[0], s[1], s[2], out, height, width, interpolation) != 0:
     raise RuntimeException('resize: ' + _last_error())
   return out
 
-# Convert between color spaces (images stay RGB-ordered at this API).
 func cvt_color(img: tensor, code) -> tensor:
+  """Convert between color spaces (images stay RGB-ordered at this API)."""
   var s = img.shape()
   var dc = _cvt_channels(code)
   var out = tensor([s[0], s[1], dc], dtype='uint8')
@@ -484,8 +484,8 @@ func cvt_color(img: tensor, code) -> tensor:
     raise RuntimeException('cvt_color: ' + _last_error())
   return out
 
-# Convenience: RGB -> single-channel grayscale [H, W, 1]
 func grayscale(img: tensor) -> tensor:
+  """Convenience: RGB -> single-channel grayscale [H, W, 1]"""
   return cvt_color(img, ColorCode.Rgb2Gray)
 
 func gaussian_blur(img: tensor, ksize: int, sigma: real = 0.0) -> tensor:
@@ -495,8 +495,8 @@ func gaussian_blur(img: tensor, ksize: int, sigma: real = 0.0) -> tensor:
     raise RuntimeException('gaussian_blur: ' + _last_error())
   return out
 
-# Edge detection on a grayscale [H, W, 1] image.
 func canny(img: tensor, threshold1: real, threshold2: real) -> tensor:
+  """Edge detection on a grayscale [H, W, 1] image."""
   var s = img.shape()
   if s[2] != 1:
     raise RuntimeException('canny: expects a grayscale image (use grayscale() first)')
@@ -505,8 +505,8 @@ func canny(img: tensor, threshold1: real, threshold2: real) -> tensor:
     raise RuntimeException('canny: ' + _last_error())
   return out
 
-# Threshold a grayscale [H, W, 1] image.
 func threshold(img: tensor, thresh: real, maxval: real = 255.0, mode = ThresholdType.Binary) -> tensor:
+  """Threshold a grayscale [H, W, 1] image."""
   var s = img.shape()
   if s[2] != 1:
     raise RuntimeException('threshold: expects a grayscale image (use grayscale() first)')
@@ -515,8 +515,8 @@ func threshold(img: tensor, thresh: real, maxval: real = 255.0, mode = Threshold
     raise RuntimeException('threshold: ' + _last_error())
   return out
 
-# Otsu automatic threshold (returns the binarized image).
 func threshold_otsu(img: tensor, maxval: real = 255.0) -> tensor:
+  """Otsu automatic threshold (returns the binarized image)."""
   var s = img.shape()
   if s[2] != 1:
     raise RuntimeException('threshold_otsu: expects a grayscale image (use grayscale() first)')
@@ -525,8 +525,8 @@ func threshold_otsu(img: tensor, maxval: real = 255.0) -> tensor:
     raise RuntimeException('threshold_otsu: ' + _last_error())
   return out
 
-# Rotate by a 90-degree step (see Rotation); 90/270 swap width and height.
 func rotate(img: tensor, rotation) -> tensor:
+  """Rotate by a 90-degree step (see Rotation); 90/270 swap width and height."""
   var s = img.shape()
   var dh = s[0]
   var dw = s[1]
@@ -566,23 +566,23 @@ proc put_text(img: tensor, text: string, x: int, y: int, color, scale: real = 1.
 #
 # geometric transforms
 
-# 2x3 float64 affine matrix for rotation around (cx, cy) by angle degrees.
 func rotation_matrix(cx: real, cy: real, angle: real, scale: real = 1.0) -> tensor:
+  """2x3 float64 affine matrix for rotation around (cx, cy) by angle degrees."""
   var m = tensor([2, 3])
   if _rotation_matrix_2d(cx, cy, angle, scale, m) != 0:
     raise RuntimeException('rotation_matrix: ' + _last_error())
   return m
 
-# Apply a 2x3 float64 affine matrix; output is width x height.
 func warp_affine(img: tensor, m: tensor, width: int, height: int, interpolation = Interpolation.Linear) -> tensor:
+  """Apply a 2x3 float64 affine matrix; output is width x height."""
   var s = img.shape()
   var out = tensor([height, width, s[2]], dtype='uint8')
   if _warp_affine(img, s[0], s[1], s[2], out, height, width, m, interpolation) != 0:
     raise RuntimeException('warp_affine: ' + _last_error())
   return out
 
-# Apply a 3x3 float64 perspective matrix; output is width x height.
 func warp_perspective(img: tensor, m: tensor, width: int, height: int, interpolation = Interpolation.Linear) -> tensor:
+  """Apply a 3x3 float64 perspective matrix; output is width x height."""
   var s = img.shape()
   var out = tensor([height, width, s[2]], dtype='uint8')
   if _warp_perspective(img, s[0], s[1], s[2], out, height, width, m, interpolation) != 0:
@@ -593,8 +593,8 @@ func warp_perspective(img: tensor, m: tensor, width: int, height: int, interpola
 #
 # contours (on a binary grayscale image, e.g. from threshold() or canny())
 
-# Returns a list of contours, each an int32 [N, 2] tensor of x, y points.
 func find_contours(img: tensor, mode = ContourMode.External, method = ContourApprox.Simple) -> list:
+  """Returns a list of contours, each an int32 [N, 2] tensor of x, y points."""
   var s = img.shape()
   if s[2] != 1:
     raise RuntimeException('find_contours: expects a binary grayscale image')
@@ -618,8 +618,8 @@ func contour_area(points: tensor) -> real:
     raise RuntimeException('contour_area: ' + _last_error())
   return a
 
-# Bounding box of an int32 [N, 2] point set as [x, y, width, height].
 func bounding_rect(points: tensor) -> list:
+  """Bounding box of an int32 [N, 2] point set as [x, y, width, height]."""
   var s = points.shape()
   var out = tensor([4], dtype='int32')
   if _bounding_rect(points, s[0], out) != 0:
@@ -669,10 +669,10 @@ type VideoCapture object:
   proc close():
     _cap_close(_cap)
 
-# Open a camera by index. Optional width/height/fps request a capture mode
-# (0 = driver default); drivers snap to the nearest supported mode, so read
-# .width/.height/.fps() for what was actually granted.
 func open_camera(index: int = 0, width: int = 0, height: int = 0, fps: int = 0) -> VideoCapture:
+  """Open a camera by index. Optional width/height/fps request a capture mode
+  (0 = driver default); drivers snap to the nearest supported mode, so read
+  .width/.height/.fps() for what was actually granted."""
   var cap = _cap_open(index)
   if cap == nil:
     raise RuntimeException('open_camera: ' + _last_error())
@@ -684,8 +684,8 @@ func open_camera(index: int = 0, width: int = 0, height: int = 0, fps: int = 0) 
     _cap_set(cap, CapProp.Fps, fps)
   return VideoCapture(cap)
 
-# Open a video file.
 func open_video(path: string) -> VideoCapture:
+  """Open a video file."""
   var cap = _cap_open_file(path)
   if cap == nil:
     raise RuntimeException('open_video: ' + _last_error())
@@ -794,8 +794,8 @@ func _stereo_sgbm(left, right, h: int, w: int, min_disp: int, num_disp: int, blo
 #
 # ---- in-memory image codecs ----
 
-# copy a decoded Mat handle into a [H, W, C] uint8 tensor
 func _mat_to_image(m, what: string) -> tensor:
+  """copy a decoded Mat handle into a [H, W, C] uint8 tensor"""
   var h = _mat_rows(m)
   var w = _mat_cols(m)
   var c = _mat_channels(m)
@@ -804,8 +804,8 @@ func _mat_to_image(m, what: string) -> tensor:
     raise RuntimeException(what + ': ' + _last_error())
   return img
 
-# Encode an image to an in-memory byte stream ('.png', '.jpg', ...) as a [N] uint8 tensor.
 func imencode(img: tensor, ext: string = '.png', quality: int = 95) -> tensor:
+  """Encode an image to an in-memory byte stream ('.png', '.jpg', ...) as a [N] uint8 tensor."""
   var s = img.shape()
   var m = _imencode(ext, img, s[0], s[1], s[2], quality)
   if m == nil:
@@ -816,8 +816,8 @@ func imencode(img: tensor, ext: string = '.png', quality: int = 95) -> tensor:
     raise RuntimeException('imencode: ' + _last_error())
   return out
 
-# Decode an in-memory byte stream to a uint8 [H, W, C] RGB image.
 func imdecode(data: tensor, channels: int = 3) -> tensor:
+  """Decode an in-memory byte stream to a uint8 [H, W, C] RGB image."""
   var s = data.shape()
   var m = _imdecode(data, s[0], channels)
   if m == nil:
@@ -832,17 +832,17 @@ type Marker object:
   var id: int = 0
   var corners      # float32 [4, 2] pixel corners: TL, TR, BR, BL
 
-# Render a marker image (uint8 [side, side, 1]) suitable for printing/display.
 func generate_marker(dictionary, id: int, side: int = 200) -> tensor:
+  """Render a marker image (uint8 [side, side, 1]) suitable for printing/display."""
   var out = tensor([side, side, 1], dtype='uint8')
   if _aruco_generate(dictionary, id, side, out) != 0:
     raise RuntimeException('generate_marker: ' + _last_error())
   return out
 
-# Detect markers; returns a list of Marker. (Detector instances are cached
-# per dictionary inside the shim, so this is cheap to call per frame from any
-# thread — main, actors, or dataflow functions.)
 func detect_markers(img: tensor, dictionary = ArucoDict.Dict4x4_50) -> list:
+  """Detect markers; returns a list of Marker. (Detector instances are cached
+  per dictionary inside the shim, so this is cheap to call per frame from any
+  thread — main, actors, or dataflow functions.)"""
   var s = img.shape()
   var r = _aruco_detect(img, s[0], s[1], s[2], dictionary)
   if r == nil:
@@ -877,9 +877,9 @@ func _ndist(dist_coeffs) -> int:
     return 0
   return dist_coeffs.shape()[0]
 
-# Pose from 3D<->2D correspondences: object_points float32 [N, 3],
-# image_points float32 [N, 2], camera_matrix float64 [3, 3].
 func solve_pnp(object_points: tensor, image_points: tensor, camera_matrix: tensor, dist_coeffs = nil) -> Pose:
+  """Pose from 3D<->2D correspondences: object_points float32 [N, 3],
+  image_points float32 [N, 2], camera_matrix float64 [3, 3]."""
   var n = object_points.shape()[0]
   var rvec = tensor([3])
   var tvec = tensor([3])
@@ -887,24 +887,24 @@ func solve_pnp(object_points: tensor, image_points: tensor, camera_matrix: tenso
     raise RuntimeException('solve_pnp: ' + _last_error())
   return Pose(rvec, tvec)
 
-# Project 3D points (float32 [N, 3]) through a pose; returns float32 [N, 2] pixels.
 func project_points(object_points: tensor, pose: Pose, camera_matrix: tensor, dist_coeffs = nil) -> tensor:
+  """Project 3D points (float32 [N, 3]) through a pose; returns float32 [N, 2] pixels."""
   var n = object_points.shape()[0]
   var out = tensor([n, 2], dtype='float32')
   if _project_points(object_points, n, pose.rvec, pose.tvec, camera_matrix, dist_coeffs, _ndist(dist_coeffs), out) != 0:
     raise RuntimeException('project_points: ' + _last_error())
   return out
 
-# Pose of a detected marker whose printed side length is marker_size (any unit;
-# tvec comes back in the same unit).
 func marker_pose(marker: Marker, marker_size: real, camera_matrix: tensor, dist_coeffs = nil) -> Pose:
+  """Pose of a detected marker whose printed side length is marker_size (any unit;
+  tvec comes back in the same unit)."""
   var h = marker_size / 2.0
   var obj = tensor([4, 3], [-h, h, 0.0,  h, h, 0.0,  h, -h, 0.0,  -h, -h, 0.0], dtype='float32')
   return solve_pnp(obj, marker.corners, camera_matrix, dist_coeffs)
 
-# Find inner chessboard corners (cols x rows inner corners); float32 [cols*rows, 2]
-# in row-major board order, or nil if the board was not found.
 func find_chessboard(img: tensor, cols: int, rows: int) -> tensor:
+  """Find inner chessboard corners (cols x rows inner corners); float32 [cols*rows, 2]
+  in row-major board order, or nil if the board was not found."""
   var s = img.shape()
   var out = tensor([cols * rows, 2], dtype='float32')
   var rc = _find_chessboard(img, s[0], s[1], s[2], cols, rows, out)
@@ -919,9 +919,9 @@ type Calibration object:
   var dist_coeffs      # float64 [5]
   var error: real = 0.0
 
-# Calibrate from N views: object_points is a list of float32 [Ni, 3] tensors,
-# image_points a list of float32 [Ni, 2] tensors (same lengths).
 func calibrate_camera(object_points: list, image_points: list, width: int, height: int) -> Calibration:
+  """Calibrate from N views: object_points is a list of float32 [Ni, 3] tensors,
+  image_points a list of float32 [Ni, 2] tensors (same lengths)."""
   var nviews = len(object_points)
   var total = 0
   for v in object_points:
@@ -943,17 +943,17 @@ func calibrate_camera(object_points: list, image_points: list, width: int, heigh
     raise RuntimeException('calibrate_camera: ' + _last_error())
   return Calibration(cam, dist, err)
 
-# Undo lens distortion using calibration results.
 func undistort(img: tensor, camera_matrix: tensor, dist_coeffs: tensor) -> tensor:
+  """Undo lens distortion using calibration results."""
   var s = img.shape()
   var out = tensor([s[0], s[1], s[2]], dtype='uint8')
   if _undistort(img, s[0], s[1], s[2], out, camera_matrix, dist_coeffs, dist_coeffs.shape()[0]) != 0:
     raise RuntimeException('undistort: ' + _last_error())
   return out
 
-# Hand-eye calibration: gripper_to_base and target_to_cam are equal-length lists
-# of float64 [4, 4] transforms; returns the camera->gripper [4, 4] transform.
 func hand_eye(gripper_to_base: list, target_to_cam: list, method = HandEyeMethod.Tsai) -> tensor:
+  """Hand-eye calibration: gripper_to_base and target_to_cam are equal-length lists
+  of float64 [4, 4] transforms; returns the camera->gripper [4, 4] transform."""
   var n = len(gripper_to_base)
   var g2b = tensor([n, 4, 4])
   var t2c = tensor([n, 4, 4])
@@ -977,8 +977,8 @@ type Features object:
   var width: int = 0   # size of the image the features came from
   var height: int = 0
 
-# build a Features result from a shim CvxFeatures handle
 func _features_from(f, w: int, h: int, what: string) -> Features:
+  """build a Features result from a shim CvxFeatures handle"""
   var n = _features_count(f)
   if n == 0:
     return Features(nil, nil, w, h)
@@ -991,8 +991,8 @@ func _features_from(f, w: int, h: int, what: string) -> Features:
     raise RuntimeException(what + ': ' + _last_error())
   return Features(pts, desc, w, h)
 
-# ORB keypoints + descriptors.
 func orb_detect(img: tensor, nfeatures: int = 500) -> Features:
+  """ORB keypoints + descriptors."""
   var s = img.shape()
   var f = _orb_detect(img, s[0], s[1], s[2], nfeatures)
   if f == nil:
@@ -1008,8 +1008,8 @@ type Matches object:
   var pairs            # int32 [M, 2]: index in a, index in b
   var distances        # float32 [M]
 
-# Cross-checked brute-force matching of two ORB feature sets.
 func match_features(a: Features, b: Features) -> Matches:
+  """Cross-checked brute-force matching of two ORB feature sets."""
   if a.points == nil or b.points == nil:
     return Matches(nil, nil)
   if _features_desc_type_of(a) != 0:
@@ -1029,9 +1029,9 @@ func match_features(a: Features, b: Features) -> Matches:
 #
 # ---- stereo depth ----
 
-# Disparity map from a rectified grayscale pair; float32 [H, W, 1], in pixels.
-# num_disparities must be a multiple of 16.
 func disparity(left: tensor, right: tensor, num_disparities: int = 64, block_size: int = 9, min_disparity: int = 0) -> tensor:
+  """Disparity map from a rectified grayscale pair; float32 [H, W, 1], in pixels.
+  num_disparities must be a multiple of 16."""
   var s = left.shape()
   if s[2] != 1:
     raise RuntimeException('disparity: expects grayscale images')
@@ -1097,16 +1097,16 @@ type CharucoBoard object:
   var squares_x: int = 0
   var squares_y: int = 0
 
-# A squares_x x squares_y chessboard with ArUco markers in the white squares.
-# square_size/marker_size in your physical unit (e.g. meters).
 func charuco_board(squares_x: int, squares_y: int, square_size: real, marker_size: real, dictionary = ArucoDict.Dict4x4_50) -> CharucoBoard:
+  """A squares_x x squares_y chessboard with ArUco markers in the white squares.
+  square_size/marker_size in your physical unit (e.g. meters)."""
   var b = _charuco_board_new(squares_x, squares_y, square_size, marker_size, dictionary)
   if b == nil:
     raise RuntimeException('charuco_board: ' + _last_error())
   return CharucoBoard(b, squares_x, squares_y)
 
-# Render the board (uint8 [height, width, 1]) for printing/display.
 func board_image(board: CharucoBoard, width: int, height: int, margin: int = 0) -> tensor:
+  """Render the board (uint8 [height, width, 1]) for printing/display."""
   var out = tensor([height, width, 1], dtype='uint8')
   if _charuco_board_image(board._b, out, height, width, margin) != 0:
     raise RuntimeException('board_image: ' + _last_error())
@@ -1117,9 +1117,9 @@ type CharucoDetection object:
   var ids              # int32 [N] board corner ids
   var object_points    # float32 [N, 3] matching board-frame 3D points
 
-# Detect the board's chessboard corners; nil when none are found. The result
-# pairs image corners with board-frame object points, ready for calibrate_camera.
 func detect_charuco(img: tensor, board: CharucoBoard) -> CharucoDetection:
+  """Detect the board's chessboard corners; nil when none are found. The result
+  pairs image corners with board-frame object points, ready for calibrate_camera."""
   var s = img.shape()
   var r = _charuco_detect(board._b, img, s[0], s[1], s[2])
   if r == nil:
@@ -1145,9 +1145,9 @@ type StereoCalibration object:
   var translation      # float64 [3]: right-camera translation w.r.t. left
   var error: real = 0.0
 
-# Relative pose of a rigid two-camera pair. Each camera must be individually
-# calibrated first; per-view point lists mirror calibrate_camera.
 func stereo_calibrate(object_points: list, left_points: list, right_points: list, left: Calibration, right: Calibration, width: int, height: int) -> StereoCalibration:
+  """Relative pose of a rigid two-camera pair. Each camera must be individually
+  calibrated first; per-view point lists mirror calibrate_camera."""
   var nviews = len(object_points)
   var total = 0
   for v in object_points:
@@ -1180,9 +1180,9 @@ type StereoRectification object:
   var right_projection     # float64 [3, 4]
   var q                    # float64 [4, 4] disparity-to-depth mapping
 
-# Rectification transforms that make the two image planes row-aligned (so
-# disparity() can search along rows).
 func stereo_rectify(left: Calibration, right: Calibration, stereo: StereoCalibration, width: int, height: int) -> StereoRectification:
+  """Rectification transforms that make the two image planes row-aligned (so
+  disparity() can search along rows)."""
   var r1 = tensor([3, 3])
   var r2 = tensor([3, 3])
   var p1 = tensor([3, 4])
@@ -1194,9 +1194,9 @@ func stereo_rectify(left: Calibration, right: Calibration, stereo: StereoCalibra
     raise RuntimeException('stereo_rectify: ' + _last_error())
   return StereoRectification(r1, r2, p1, p2, q)
 
-# Undistort + rectify one camera's image (use left_/right_ rotation+projection
-# from stereo_rectify for the matching camera).
 func rectify(img: tensor, calib: Calibration, rotation: tensor, projection: tensor) -> tensor:
+  """Undistort + rectify one camera's image (use left_/right_ rotation+projection
+  from stereo_rectify for the matching camera)."""
   var s = img.shape()
   var out = tensor([s[0], s[1], s[2]], dtype='uint8')
   if _rectify_remap(img, s[0], s[1], s[2], out, calib.camera_matrix,
@@ -1214,17 +1214,17 @@ type HomographyMethod enum:
   Ransac = 8
   Rho = 16
 
-# 3x3 float64 perspective transform mapping src_points onto dst_points
-# (float32 [N, 2] each, N >= 4).
 func find_homography(src_points: tensor, dst_points: tensor, method = HomographyMethod.Ransac, threshold: real = 3.0) -> tensor:
+  """3x3 float64 perspective transform mapping src_points onto dst_points
+  (float32 [N, 2] each, N >= 4)."""
   var n = src_points.shape()[0]
   var h = tensor([3, 3])
   if _find_homography(src_points, dst_points, n, method, threshold, h) != 0:
     raise RuntimeException('find_homography: ' + _last_error())
   return h
 
-# 2x3 float64 affine transform mapping src_points onto dst_points (N >= 3).
 func estimate_affine(src_points: tensor, dst_points: tensor) -> tensor:
+  """2x3 float64 affine transform mapping src_points onto dst_points (N >= 3)."""
   var n = src_points.shape()[0]
   var m = tensor([2, 3])
   if _estimate_affine_2d(src_points, dst_points, n, m) != 0:
@@ -1289,10 +1289,10 @@ func _tracker_update(t, img, h: int, w: int, c: int, rect, score) -> int:
 
 var _models = sys.source_dir() + '/models/'
 
-# Convert an RGB image to an NCHW float32 [1, 3, height, width] input blob for
-# DNN inference (e.g. ai.nn Model.predict): resize, then per channel
-# (v * scale - mean) / std. Defaults produce 0..1 values.
 func to_blob(img: tensor, width: int, height: int, scale: real = 0.003921568627451, mean = nil, std = nil) -> tensor:
+  """Convert an RGB image to an NCHW float32 [1, 3, height, width] input blob for
+  DNN inference (e.g. ai.nn Model.predict): resize, then per channel
+  (v * scale - mean) / std. Defaults produce 0..1 values."""
   var s = img.shape()
   var m = mean
   if m == nil:
@@ -1536,10 +1536,10 @@ func _fisheye_project(obj, n: int, rvec, tvec, cam, dist, out) -> int:
 #
 # ---- color/intensity segmentation ----
 
-# Mask of pixels whose channels all lie within [lower, upper] (lists, one bound
-# per channel; e.g. HSV bounds after cvt_color(img, ColorCode.Rgb2Hsv)).
-# Returns a binary [H, W, 1] mask (255 inside the range).
 func in_range(img: tensor, lower, upper) -> tensor:
+  """Mask of pixels whose channels all lie within [lower, upper] (lists, one bound
+  per channel; e.g. HSV bounds after cvt_color(img, ColorCode.Rgb2Hsv)).
+  Returns a binary [H, W, 1] mask (255 inside the range)."""
   var s = img.shape()
   var c = s[2]
   var lo = [0.0, 0.0, 0.0, 0.0]
@@ -1561,9 +1561,9 @@ type Blob object:
   var center_x: real = 0.0
   var center_y: real = 0.0
 
-# Connected components of a binary mask as a list of Blob (background excluded),
-# optionally dropping blobs smaller than min_area pixels.
 func connected_components(mask: tensor, min_area: int = 1) -> list:
+  """Connected components of a binary mask as a list of Blob (background excluded),
+  optionally dropping blobs smaller than min_area pixels."""
   var s = mask.shape()
   if s[2] != 1:
     raise RuntimeException('connected_components: expects a binary [H, W, 1] mask')
@@ -1624,8 +1624,8 @@ func convex_hull(points: tensor) -> tensor:
     raise RuntimeException('convex_hull: ' + _last_error())
   return out[0:m, 0:2]
 
-# Simplify a contour (Douglas-Peucker); epsilon is the max deviation in pixels.
 func approx_poly(points: tensor, epsilon: real, closed: bool = true) -> tensor:
+  """Simplify a contour (Douglas-Peucker); epsilon is the max deviation in pixels."""
   var n = points.shape()[0]
   var cl = 0
   if closed:
@@ -1643,16 +1643,16 @@ type RotatedRect object:
   var height: real = 0.0
   var angle: real = 0.0     # degrees
 
-# Minimum-area (rotated) bounding rectangle of a point set.
 func min_area_rect(points: tensor) -> RotatedRect:
+  """Minimum-area (rotated) bounding rectangle of a point set."""
   var n = points.shape()[0]
   var out = tensor([5])
   if _min_area_rect(points, n, out) != 0:
     raise RuntimeException('min_area_rect: ' + _last_error())
   return RotatedRect(out[0], out[1], out[2], out[3], out[4])
 
-# The 4 corners of a RotatedRect as float32 [4, 2] (e.g. to draw it).
 func box_points(rect: RotatedRect) -> tensor:
+  """The 4 corners of a RotatedRect as float32 [4, 2] (e.g. to draw it)."""
   var out = tensor([4, 2], dtype='float32')
   if _box_points(rect.center_x, rect.center_y, rect.width, rect.height, rect.angle, out) != 0:
     raise RuntimeException('box_points: ' + _last_error())
@@ -1667,9 +1667,9 @@ type TemplateMatch object:
   var y: int = 0
   var score: real = 0.0
 
-# Best location of templ inside img. With the default CcoeffNormed method the
-# score is 1.0 for a perfect match; for Sqdiff methods lower is better.
 func find_template(img: tensor, templ: tensor, method = TemplateMethod.CcoeffNormed) -> TemplateMatch:
+  """Best location of templ inside img. With the default CcoeffNormed method the
+  score is 1.0 for a perfect match; for Sqdiff methods lower is better."""
   var s = img.shape()
   var ts = templ.shape()
   var loc = tensor([2], dtype='int32')
@@ -1686,8 +1686,8 @@ type QrCode object:
   var text: string = ''
   var corners        # float32 [4, 2]
 
-# Detect and decode all QR codes in the image.
 func detect_qr(img: tensor) -> list:
+  """Detect and decode all QR codes in the image."""
   var s = img.shape()
   var r = _qr_detect(img, s[0], s[1], s[2])
   if r == nil:
@@ -1700,8 +1700,8 @@ func detect_qr(img: tensor) -> list:
     result.append(QrCode(_qr_text(r, i), corners))
   return result
 
-# Render text as a QR code image (uint8 [side, side, 1]).
 func generate_qr(text: string, side: int = 200) -> tensor:
+  """Render text as a QR code image (uint8 [side, side, 1])."""
   var out = tensor([side, side, 1], dtype='uint8')
   if _qr_encode(text, side, out) != 0:
     raise RuntimeException('generate_qr: ' + _last_error())
@@ -1711,11 +1711,11 @@ func generate_qr(text: string, side: int = 200) -> tensor:
 #
 # ---- stereo depth to 3D + cached rectification ----
 
-# Turn a disparity map into 3D points (float32 [H, W, 3], same unit as the
-# calibration) using the Q matrix from stereo_rectify. With mark_missing,
-# pixels at the minimal disparity (SGBM's invalid marker) get a huge Z so they
-# are easy to filter out.
 func reproject_3d(disparity: tensor, q: tensor, mark_missing: bool = true) -> tensor:
+  """Turn a disparity map into 3D points (float32 [H, W, 3], same unit as the
+  calibration) using the Q matrix from stereo_rectify. With mark_missing,
+  pixels at the minimal disparity (SGBM's invalid marker) get a huge Z so they
+  are easy to filter out."""
   var s = disparity.shape()
   var mm = 0
   if mark_missing:
@@ -1751,8 +1751,8 @@ type RectifyMap object:
 #
 # ---- optical flow (grayscale inputs) ----
 
-# Strong corner points to seed sparse tracking; float32 [M, 2].
 func good_features(img: tensor, max_corners: int = 100, quality: real = 0.01, min_distance: real = 10.0) -> tensor:
+  """Strong corner points to seed sparse tracking; float32 [M, 2]."""
   var s = img.shape()
   if s[2] != 1:
     raise RuntimeException('good_features: expects a grayscale image')
@@ -1766,8 +1766,8 @@ type FlowResult object:
   var points         # float32 [N, 2]: tracked positions in the next frame
   var status         # uint8 [N]: 1 = tracked, 0 = lost
 
-# Sparse Lucas-Kanade optical flow: where did these points move to?
 func flow_points(prev: tensor, next: tensor, points: tensor) -> FlowResult:
+  """Sparse Lucas-Kanade optical flow: where did these points move to?"""
   var s = prev.shape()
   var n = points.shape()[0]
   var out = tensor([n, 2], dtype='float32')
@@ -1776,8 +1776,8 @@ func flow_points(prev: tensor, next: tensor, points: tensor) -> FlowResult:
     raise RuntimeException('flow_points: ' + _last_error())
   return FlowResult(out, status)
 
-# Dense Farneback optical flow: per-pixel (dx, dy) as float32 [H, W, 2].
 func flow_dense(prev: tensor, next: tensor) -> tensor:
+  """Dense Farneback optical flow: per-pixel (dx, dy) as float32 [H, W, 2]."""
   var s = prev.shape()
   if s[2] != 1:
     raise RuntimeException('flow_dense: expects grayscale images')
@@ -1786,8 +1786,8 @@ func flow_dense(prev: tensor, next: tensor) -> tensor:
     raise RuntimeException('flow_dense: ' + _last_error())
   return out
 
-# Contrast-limited adaptive histogram equalization (grayscale).
 func clahe(img: tensor, clip_limit: real = 2.0, tiles: int = 8) -> tensor:
+  """Contrast-limited adaptive histogram equalization (grayscale)."""
   var s = img.shape()
   if s[2] != 1:
     raise RuntimeException('clahe: expects a grayscale image')
@@ -1800,9 +1800,9 @@ func clahe(img: tensor, clip_limit: real = 2.0, tiles: int = 8) -> tensor:
 #
 # ---- fisheye camera model (wide-FOV lenses) ----
 
-# Like calibrate_camera but with the fisheye distortion model
-# (dist_coeffs is float64 [4]).
 func calibrate_camera_fisheye(object_points: list, image_points: list, width: int, height: int) -> Calibration:
+  """Like calibrate_camera but with the fisheye distortion model
+  (dist_coeffs is float64 [4])."""
   var nviews = len(object_points)
   var total = 0
   for v in object_points:
@@ -1842,8 +1842,8 @@ func project_points_fisheye(object_points: tensor, pose: Pose, camera_matrix: te
 #
 # ---- feature-match visualization (pure Roxal) ----
 
-# Side-by-side canvas with keypoints and match lines; a debugging aid.
 func draw_matches(img_a: tensor, fa: Features, img_b: tensor, fb: Features, matches: Matches, color = [0, 255, 0], max_draw: int = 50) -> tensor:
+  """Side-by-side canvas with keypoints and match lines; a debugging aid."""
   var sa = img_a.shape()
   var sb = img_b.shape()
   var h = sa[0]
@@ -1903,9 +1903,9 @@ func _median_blur_u16(src, h: int, w: int, dst, ksize: int) -> int:
 func _in_range_u16(src, h: int, w: int, dst, lo: real, hi: real) -> int:
   _
 
-# Shared helpers: accept [H, W], [H, W, 1] (image-shaped) or [N, 3] /
-# [H, W, 3] (point-shaped) tensors and return [rows, cols, points].
 func _depth_hw(t: tensor, context: string) -> list:
+  """Shared helpers: accept [H, W], [H, W, 1] (image-shaped) or [N, 3] /
+  [H, W, 3] (point-shaped) tensors and return [rows, cols, points]."""
   var s = t.shape()
   if len(s) == 2:
     return [s[0], s[1]]
@@ -1925,8 +1925,8 @@ func _points_n(t: tensor, context: string) -> int:
     i = i + 1
   return n
 
-# Rodrigues rotation vector [3] -> rotation matrix [3, 3] (float64).
 func rodrigues(rvec: tensor) -> tensor:
+  """Rodrigues rotation vector [3] -> rotation matrix [3, 3] (float64)."""
   var rv = rvec
   if rv.dtype() != 'float64':
     rv = rv.astype('float64')
@@ -1935,12 +1935,12 @@ func rodrigues(rvec: tensor) -> tensor:
     raise RuntimeException('rodrigues: ' + _last_error())
   return out
 
-# Deproject a depth image to a float32 [H, W, 3] point map in the camera
-# frame.  `depth` is [H, W] or [H, W, 1]; uint16 raw units are converted
-# to metres by `scale` (e.g. 0.001 for millimetre depth), float32/float64
-# are taken as metres unless a scale is given.  Invalid depth
-# (0 / non-finite) becomes NaN points, which crop_box() excludes.
 func depth_to_points(depth: tensor, camera_matrix: tensor, scale: real = 1.0) -> tensor:
+  """Deproject a depth image to a float32 [H, W, 3] point map in the camera
+  frame.  `depth` is [H, W] or [H, W, 1]; uint16 raw units are converted
+  to metres by `scale` (e.g. 0.001 for millimetre depth), float32/float64
+  are taken as metres unless a scale is given.  Invalid depth
+  (0 / non-finite) becomes NaN points, which crop_box() excludes."""
   var hw = _depth_hw(depth, 'depth_to_points')
   var tags = {'uint16': 0, 'float32': 1, 'float64': 2}
   var dt = depth.dtype()
@@ -1954,10 +1954,10 @@ func depth_to_points(depth: tensor, camera_matrix: tensor, scale: real = 1.0) ->
     raise RuntimeException('depth_to_points: ' + _last_error())
   return out
 
-# Rigidly transform a point tensor ([H, W, 3] or [N, 3] float32).  `pose`
-# is a Pose (rvec/tvec, e.g. from solve_pnp) or a [3, 4] / [4, 4]
-# row-major transform tensor.  NaN points stay NaN.
 func transform_points(points: tensor, pose) -> tensor:
+  """Rigidly transform a point tensor ([H, W, 3] or [N, 3] float32).  `pose`
+  is a Pose (rvec/tvec, e.g. from solve_pnp) or a [3, 4] / [4, 4]
+  row-major transform tensor.  NaN points stay NaN."""
   var n = _points_n(points, 'transform_points')
   var pts = points
   if pts.dtype() != 'float32':
@@ -1984,11 +1984,11 @@ func transform_points(points: tensor, pose) -> tensor:
     raise RuntimeException('transform_points: ' + _last_error())
   return out
 
-# Axis-aligned box crop: uint8 mask, 255 where the point is finite and
-# inside the closed box [min, max] (3-element lists/vectors).  A
-# [H, W, 3] point map gives a [H, W, 1] mask ready for the 8-bit family
-# (morphology, connected_components); [N, 3] points give [N, 1].
 func crop_box(points: tensor, min, max) -> tensor:
+  """Axis-aligned box crop: uint8 mask, 255 where the point is finite and
+  inside the closed box [min, max] (3-element lists/vectors).  A
+  [H, W, 3] point map gives a [H, W, 1] mask ready for the 8-bit family
+  (morphology, connected_components); [N, 3] points give [N, 1]."""
   var n = _points_n(points, 'crop_box')
   var pts = points
   if pts.dtype() != 'float32':
@@ -2004,9 +2004,9 @@ func crop_box(points: tensor, min, max) -> tensor:
     raise RuntimeException('crop_box: ' + _last_error())
   return out
 
-# uint16 depth-image band mask: 255 where lo <= depth <= hi (raw units).
-# The uint16 counterpart of in_range() for pre-deprojection range gating.
 func in_range_depth(depth: tensor, lo: real, hi: real) -> tensor:
+  """uint16 depth-image band mask: 255 where lo <= depth <= hi (raw units).
+  The uint16 counterpart of in_range() for pre-deprojection range gating."""
   var hw = _depth_hw(depth, 'in_range_depth')
   if depth.dtype() != 'uint16':
     raise RuntimeException('in_range_depth: expects a uint16 depth image')
@@ -2015,9 +2015,9 @@ func in_range_depth(depth: tensor, lo: real, hi: real) -> tensor:
     raise RuntimeException('in_range_depth: ' + _last_error())
   return out
 
-# uint16 median filter (speckle removal on raw depth before
-# deprojection).  OpenCV supports uint16 medians for ksize 3 and 5 only.
 func median_blur_depth(depth: tensor, ksize: int = 3) -> tensor:
+  """uint16 median filter (speckle removal on raw depth before
+  deprojection).  OpenCV supports uint16 medians for ksize 3 and 5 only."""
   var hw = _depth_hw(depth, 'median_blur_depth')
   if depth.dtype() != 'uint16':
     raise RuntimeException('median_blur_depth: expects a uint16 depth image')

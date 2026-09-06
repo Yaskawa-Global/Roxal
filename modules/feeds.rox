@@ -1,0 +1,124 @@
+# feeds — live sources for data-flow diagrams.
+#
+# A diagram is a reusable component: its input ports are plain signals, and
+# nothing in the file says where the frames come from. A feed is what the
+# harness attaches to a port when the diagram runs: an actor that reads a
+# camera or a video file and publishes each frame into the port's signal.
+# The port stays event-driven (a source signal with no clock), so every
+# node downstream recomputes once per frame -- no clocks in a vision diagram.
+#
+#   const raw = signal(0, tensor([2, 2, 3], dtype='uint8'))   # the port
+#   const stop = signal(0, false)
+#   const count = signal(0, 0)
+#   var feed = feeds.Feed('camera:0', raw, stop, count)
+#   feed.run()                       # frames flow into `raw` from here on
+#   ...
+#   stop.set(true)                   # the actor returns; the script may end
+#
+# Feed specs:
+#   camera:<index>                  a V4L2 / DirectShow camera by index
+#   camera:<index>@<w>x<h>          ... asking for a capture size
+#   video:<path>                    a video file, looped
+#
+# RealSense streams live in feeds_realsense (they need its shim), with the
+# same actor shape.
+#
+# Every frame is frozen (const tensor, moved not copied) before it is
+# published, so samplers can never mutate a published frame and the actor
+# can never observe a later writer mutation -- the idiom from
+# examples/opencv-signals.rox.
+
+import opencv
+
+type Feed actor:
+  private var _spec :string = ''
+  private var _out
+  private var _stop
+  private var _count
+  private var _max_fps :real = 0.0
+
+  # out:     the port's signal (event-driven; receives every frame)
+  # stop:    a bool signal; set it to make run() return
+  # count:   an int signal, bumped per published frame (an FPS readout on
+  #          the page derives from it)
+  # max_fps: throttle, 0 for the source's own rate
+  proc init(spec :string, out :signal, stop :signal, count :signal, max_fps :real = 0.0):
+    _spec = spec
+    _out = out
+    _stop = stop
+    _count = count
+    _max_fps = max_fps
+
+  # 'kind:rest' -> [kind, rest]; a bare spec is a camera index. (Private
+  # methods, not module functions: an actor may not reach its module's
+  # variables, and a module function is one.)
+  private func _split_spec(spec :string) -> list:
+    var i = 0
+    while i < len(spec):
+      if spec[i] == ':':
+        return [spec[0:i], spec[i + 1:len(spec)]]
+      i = i + 1
+    return ['camera', spec]
+
+  # '<index>@<w>x<h>' -> [index, w, h] (w, h 0 when absent).
+  private func _split_size(rest :string) -> list:
+    var at = -1
+    var i = 0
+    while i < len(rest):
+      if rest[i] == '@':
+        at = i
+      i = i + 1
+    if at < 0:
+      return [int(rest), 0, 0]
+    var idx = int(rest[0:at])
+    var wh = rest[at + 1:len(rest)]
+    var x = -1
+    i = 0
+    while i < len(wh):
+      if wh[i] == 'x':
+        x = i
+      i = i + 1
+    if x < 0:
+      return [idx, 0, 0]
+    return [idx, int(wh[0:x]), int(wh[x + 1:len(wh)])]
+
+  proc run():
+    var parts = _split_spec(_spec)
+    var kind = parts[0]
+    var rest = parts[1]
+    var cap = nil
+    var from_file = false
+    if kind == 'camera':
+      var sz = _split_size(rest)
+      cap = opencv.open_camera(sz[0], width=sz[1], height=sz[2])
+    else:
+      if kind == 'video':
+        cap = opencv.open_video(rest)
+        from_file = true
+      else:
+        raise Exception("feeds: unknown feed kind '" + kind + "' (camera:N or video:PATH)")
+    var n = 0
+    var pause_ms = 0
+    if _max_fps > 0.0:
+      pause_ms = int(1000.0 / _max_fps)
+    else:
+      if from_file:
+        # a file reads as fast as the disk allows; replay it at its own rate
+        var fps = cap.fps()
+        if fps > 0.0:
+          pause_ms = int(1000.0 / fps)
+    while not _stop.value:
+      var frame = cap.read()
+      if frame == nil:
+        if from_file:
+          cap.set(opencv.CapProp.PosFrames, 0.0)   # loop the file
+        else:
+          wait(ms=5)                                # a camera hiccup
+      else:
+        var pub: const tensor = move(frame)         # freeze: publish is zero-copy
+        _out.set(pub)
+        n = n + 1
+        _count.set(n)
+        if pause_ms > 0:
+          wait(ms=pause_ms)
+    cap.close()

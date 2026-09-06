@@ -39,6 +39,14 @@
 #include "ComputeServer.h"
 #include "ComputeProtocol.h"
 #endif
+#ifdef ROXAL_ENABLE_WEB
+#include "web/ScriptInbox.h"
+#include "web/SocketHost.h"
+#include "ModuleDebug.h"
+#include "debug/StopCoordinator.h"
+#include "../dataflow/DataflowEngine.h"
+#include "RuntimeConfig.h"
+#endif
 
 #include <Eigen/Version>
 #ifdef ROXAL_ENABLE_DDS
@@ -712,6 +720,87 @@ static void generateAST(const std::string& inputPath, bool graph, const std::str
 }
 
 
+#ifdef ROXAL_ENABLE_WEB
+// `roxal --web-host`: keep one VM alive and run whatever scripts a browser page
+// submits over the socket, the way the wasm host serves its inbox. The page is
+// the UI; this process is the VM, with every native module (ai.nn on CUDA,
+// opencv over the FFI, cameras) available to the scripts it runs.
+static int runWebHost(std::uint16_t port, const std::string& root,
+                      const std::vector<std::string>& modulePaths,
+                      VM::CacheMode cacheMode, bool webHostStrict)
+{
+    VM& vm = VM::instance();
+    vm.setCacheMode(cacheMode);
+    vm.appendModulePaths(modulePaths);
+    // As in the wasm host: the debugger's only controller is the control actor
+    // the web module builds for a program started under an armed session.
+    vm.stopCoordinator().setControllerPresentPredicate(&ModuleDebug::controlActorPresent);
+
+    // The standard library, for the page's services: the module directory
+    // holding web.rox. The user's files: --root.
+    std::string stdlibDir;
+    for (const auto& p : vm.getModulePaths()) {
+        if (std::filesystem::exists(std::filesystem::path(p) / "web.rox")) {
+            stdlibDir = std::filesystem::absolute(p).lexically_normal().string();
+            break;
+        }
+    }
+    if (stdlibDir.empty())
+        throw std::runtime_error("cannot find the module directory (web.rox) on the module paths; pass -p <modules dir>");
+    const std::string rootDir = std::filesystem::absolute(root).lexically_normal().string();
+    if (!std::filesystem::is_directory(rootDir))
+        throw std::runtime_error("--root is not a directory: " + rootDir);
+    RuntimeConfig::set("web.stdlib_dir", stdlibDir);
+    RuntimeConfig::set("web.data_dir", rootDir);
+
+    // A UI host is not a real-time controller: a tick that overruns (a model
+    // taking longer than the period, or plain scheduling jitter on a busy
+    // laptop) must be reported, not end the engine -- the Strict scheme's
+    // throw silently kills every diagram service with it. Relaxed unless
+    // the host was configured otherwise (dataflow.scheme=strict): BestEffort
+    // warns and carries on.
+    {
+        using Scheme = df::DataflowEngine::ExecutionScheme;
+        const bool strict = webHostStrict;
+        RuntimeConfig::set("dataflow.scheme", strict ? "strict" : "best-effort");
+        df::DataflowEngine::instance()->setExecutionScheme(strict ? Scheme::Strict : Scheme::BestEffort);
+    }
+
+    roxal::web::ScriptInbox inbox;
+    roxal::web::SocketHost::Options opts;
+    opts.port = port;
+    opts.root = rootDir;
+    opts.stdlibDir = stdlibDir;
+    opts.verbose = std::getenv("ROXAL_WEB_HOST_VERBOSE") != nullptr;
+    roxal::web::SocketHost host(opts);
+    const std::uint16_t bound = host.listen();
+    // Printed BEFORE serving so a launcher can read the port from stdout.
+    std::cout << "roxal web host listening on ws://127.0.0.1:" << bound
+              << " (root " << rootDir << ")" << std::endl;
+    inbox.setCompletionHandler([&host](int rc, int completed) { host.sendEnded(rc, completed); });
+    host.start(inbox);
+
+    inbox.serve([&vm, &rootDir](const std::string& source, const std::string& name) -> int {
+        // Sibling imports resolve relative to the script, as for the CLI; a
+        // bare name (an editor buffer) resolves against the root.
+        const size_t slash = name.find_last_of('/');
+        vm.appendModulePaths({ slash != std::string::npos && slash > 0 ? name.substr(0, slash) : rootDir });
+        std::istringstream in { source };
+        roxal::ProgramOptions options;
+        options.sourceName = name;
+        try {
+            const ExecutionStatus status = vm.executeProgramSync(in, std::move(options));
+            return status == ExecutionStatus::OK ? 0 : 1;
+        } catch (const std::exception& e) {
+            std::cerr << "web host: " << e.what() << std::endl;
+            return 2;
+        }
+    });
+    host.shutdown();
+    return 0;
+}
+#endif
+
 int main(int argc, const char* argv[])
 {
     // Tear the VM down deterministically at every return from main — before
@@ -766,9 +855,12 @@ int main(int argc, const char* argv[])
             if (arg == "-f" || arg == "-p" ||
                 arg == "--input-file" || arg == "--module-paths" ||
                 arg == "--astgraph" || arg == "--gc-threshold" ||
-                arg == "--stack-size" || arg == "--max-call-frames"
+                arg == "--stack-size" || arg == "--max-call-frames" || arg == "--dataflow-scheme"
 #ifdef ROXAL_COMPUTE_SERVER
                 || arg == "--port"
+#endif
+#ifdef ROXAL_ENABLE_WEB
+                || arg == "--web-port" || arg == "--root"
 #endif
                 ) {
                 ++i; // skip next arg (the option's value)
@@ -809,11 +901,18 @@ int main(int argc, const char* argv[])
         ("astgraph", po::value< std::vector<std::string> >(), "parse only and output GraphViz dot file")
         ("gc-threshold", po::value<long long>(), gcOptionHelp.c_str())
         ("nogc", "disable garbage collection")
+        ("dataflow-scheme", po::value<std::string>()->default_value("strict"),
+         "dataflow engine policy on a tick overrun: strict (stop the engine) or best-effort (warn and continue)")
         ("stack-size", po::value<size_t>()->default_value(VM::DefaultMaxStack), stackOptionHelp.c_str())
         ("max-call-frames", po::value<size_t>()->default_value(VM::DefaultMaxCallFrames), frameOptionHelp.c_str())
         #ifdef ROXAL_COMPUTE_SERVER
         ("server", "run as a Roxal compute server")
         ("port", po::value<int>()->default_value(ComputeDefaultPort), "server listen port (0 for ephemeral)")
+        #endif
+        #ifdef ROXAL_ENABLE_WEB
+        ("web-host", "serve a browser UI over a local WebSocket: scripts are submitted by the page (see web/README.md)")
+        ("web-port", po::value<int>()->default_value(8765), "web host listen port (0 for ephemeral; the bound port is printed)")
+        ("root", po::value<std::string>()->default_value("."), "web host: directory holding the user's files (web.data_dir)")
         #endif
         #ifdef DEBUG_BUILD
         ("opcode-prof", "collect opcode execution frequencies in opcode_profile.json")
@@ -989,6 +1088,14 @@ int main(int argc, const char* argv[])
         // GC settings
         if (vmap.count("nogc"))
             RuntimeConfig::set("gc.disabled", "true");
+        {
+            const std::string scheme = vmap["dataflow-scheme"].as<std::string>();
+            if (scheme != "strict" && scheme != "best-effort") {
+                std::cerr << "Error: --dataflow-scheme must be strict or best-effort" << std::endl;
+                return 1;
+            }
+            RuntimeConfig::set("dataflow.scheme", scheme);
+        }
 
         if (vmap.count("gc-threshold"))
             RuntimeConfig::set("gc.threshold", std::to_string(vmap["gc-threshold"].as<long long>()));
@@ -1020,6 +1127,32 @@ int main(int argc, const char* argv[])
             return 1;
         }
         return 0;
+    }
+#endif
+
+#ifdef ROXAL_ENABLE_WEB
+    if (vmap.count("web-host")) {
+        if (vmap.count("execute") || vmap.count("input-file") || vmap.count("ast") ||
+            vmap.count("astgraph") || vmap.count("precompile") || vmap.count("check") ||
+            vmap.count("dap") || vmap.count("dap-wait")) {
+            std::cerr << "Error: --web-host cannot be combined with script execution or parse modes" << std::endl;
+            return 1;
+        }
+        const int port = vmap["web-port"].as<int>();
+        if (port < 0 || port > 65535) {
+            std::cerr << "Error: --web-port must be in the range 0..65535" << std::endl;
+            return 1;
+        }
+        try {
+            // best-effort unless --dataflow-scheme strict was given explicitly
+            const bool strictGiven = !vmap["dataflow-scheme"].defaulted()
+                                  && vmap["dataflow-scheme"].as<std::string>() == "strict";
+            return runWebHost(static_cast<std::uint16_t>(port), vmap["root"].as<std::string>(),
+                              modulePaths, cacheMode, strictGiven);
+        } catch (const std::exception& e) {
+            std::cerr << "Web host error: " << e.what() << std::endl;
+            return 1;
+        }
     }
 #endif
 

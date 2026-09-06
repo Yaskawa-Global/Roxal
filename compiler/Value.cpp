@@ -1276,21 +1276,29 @@ Value Value::constRef() const
         return *this; // primitives are already immutable
     if (isConst())
         return *this; // already const
-    // Create a new Value with ConstMask set, same strong ref counting
-    Value v;
-    v.val = val.load() | ConstMask;
-    v.incRefObj(); // const refs are strong refs
+    // Copy first, so the copy acquires whichever counter this value holds
+    // (strong, or weak for a weak reference), then flip the const bit on the
+    // copy: the bit does not take part in reference counting. Building the
+    // copy from raw bits and calling incRefObj() unconditionally used to
+    // take a STRONG count on a WEAK value, whose release then gave back a
+    // WEAK count -- one strong leaked and one weak stolen per call, until a
+    // module type read by a dataflow node was freed under live references.
+    Value v(*this);
+    v.val.store(v.val.load(std::memory_order_relaxed) | ConstMask, std::memory_order_release);
     return v;
 }
 
 Value Value::mutableRef() const
 {
+    // isConst() only inspects bit 48, which belongs to the payload of a
+    // primitive (a double's mantissa, a tag), so it is only meaningful on
+    // an object value.
+    if (!isObj())
+        return *this;
     if (!isConst())
         return *this;
-    // Strip the const bit, keep everything else
-    Value v;
-    v.val = val.load() & ~ConstMask;
-    v.incRefObj();
+    Value v(*this);
+    v.val.store(v.val.load(std::memory_order_relaxed) & ~ConstMask, std::memory_order_release);
     return v;
 }
 

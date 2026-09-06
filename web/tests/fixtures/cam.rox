@@ -1,0 +1,15 @@
+@dataflow_diagram(version=1, next_id=4)
+
+import opencv
+
+type Cam object:
+  @df(id=1, x=20, y=100, payload='tensor', feed='video:tests/testvideo.mp4')
+  var img:signal = nil
+  @df(id=3, x=560, y=100, view='image')
+  var gray:signal = nil
+
+  proc init(img:signal, freq:real=2):
+    this.img = img
+    @df(id=2, x=280, y=100)
+    var g = opencv.grayscale(img)
+    gray = g

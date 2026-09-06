@@ -1,0 +1,28 @@
+// dfdoc: output ports carry a view ('text' prints via the harness probe,
+// 'image' hands the output to the page as a web.ImageView store);
+// set_output_view edits it and the web harness emits the exposure
+import dfdoc
+
+var doc = dfdoc.new_document('Pic', [{'name': 'freq', 'default': 2.0}])['doc']
+var t = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'input', 'name': 't', 'type': 'real', 'x': 0, 'y': 0})['id']
+var img = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'output', 'name': 'img', 'x': 500, 'y': 0})['id']
+var txt = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'output', 'name': 'count', 'x': 500, 'y': 60})['id']
+
+for n in dfdoc.view(doc)['nodes']:
+  if n['kind'] == 'output':
+    print("{n['name']}: {n['view']}")
+
+var bad = dfdoc.apply(doc, {'op': 'set_output_view', 'id': img, 'view': 'movie'})
+print("bad view: {bad['ok']} {bad['error']}")
+var notout = dfdoc.apply(doc, {'op': 'set_output_view', 'id': t, 'view': 'image'})
+print("not an output: {notout['ok']} {notout['error']}")
+print("set: {dfdoc.apply(doc, {'op': 'set_output_view', 'id': img, 'view': 'image'})['ok']}")
+for n in dfdoc.view(doc)['nodes']:
+  if n['kind'] == 'output':
+    print("{n['name']}: {n['view']}")
+print("---")
+print(dfdoc.save(doc))
+print("--- web harness")
+print(dfdoc.harness(doc))
+print("--- headless harness")
+print(dfdoc.harness(doc, for_native=true))

@@ -1115,6 +1115,7 @@ public:
     Value tensor_to_bytes_builtin(ArgsView args);
     Value tensor_astype_builtin(ArgsView args);
     Value tensor_take_builtin(ArgsView args);
+    Value tensor_reshape_builtin(ArgsView args);
     Value tensor_fill_builtin(ArgsView args);
     Value tensor_sample_col_builtin(ArgsView args);
     Value tensor_sample_span_builtin(ArgsView args);

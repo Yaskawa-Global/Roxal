@@ -1,0 +1,11 @@
+# helper module for df_lift_module_ref: a module-qualified call that ends in
+# an FFI function (the shape every opencv/vision node has)
+import sys
+mylib = sys.loadlib('../tests/testlib.so')
+
+@cfunc(lib=mylib, cname='sum_f32', args='const float* buf, int n', ret='float')
+func _sum_f32(t, n: int) -> real:
+  _
+
+func total(t: tensor) -> real:
+  return _sum_f32(t, 4)

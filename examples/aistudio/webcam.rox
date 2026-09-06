@@ -1,0 +1,22 @@
+@dataflow_diagram(version=1, next_id=5)
+
+import opencv
+
+type Webcam object:
+  @df(id=1, x=20, y=140, payload='tensor', feed='camera:0')
+  var img:signal = nil
+
+  @df(id=3, x=560, y=40, view='image')
+  var color:signal = nil
+
+  @df(id=4, x=560, y=336, view='image')
+  var gray:signal = nil
+
+  proc init(img:signal, freq:real=2):
+    this.img = img
+
+    @df(id=2, x=290, y=260)
+    var g = opencv.grayscale(img)
+
+    color = img
+    gray = g

@@ -146,7 +146,7 @@ tests = [
     'signal_islands', 'signal_domain', 'signal_tensor_isolation', 'signal_tensor_const',
     'multi_return', 'multi_return_arity_err', 'multi_return_nonlist_err', 'multi_return_literal_err', 'test_multi_return_syntax',
     'signal_multi_output', 'signal_wiring_func', 'signal_wiring_mixed_err', 'signal_branch_err', 'signal_sampling',
-    'signal_list_const', 'df_const_arg_err', 'inspect_df_structure', 'signal_lift_fresh', 'signal_lift_nodisturb',
+    'signal_list_const', 'df_const_arg_err', 'df_overrun_event_ok', 'inspect_df_structure', 'signal_lift_fresh', 'signal_lift_default', 'signal_lift_nodisturb',
     'signal_copyinto_freq_err',
     'var_destructure', 'var_destructure_arity_err', 'var_destructure_nonlist_err', 'var_destructure_const_err',
     'signal_shift', 'signal_deduce', 'signal_variadic_err', 'check_compile_err', 'source_attribution_destructure_err', 'source_attribution_property_err', 'signal_sampled', 'signal_feedback_rate', 'signal_island_rates', 'bitwise_large_int', 'signal_nolift_wait', 'inline_lambda_assign_err',
@@ -277,7 +277,7 @@ tests = [
     'tensor_slice', 'tensor_slice_assign', 'tensor_slice_assign_err', 'tensor_slice_assign_type_err',
     'tensor_inplace', 'tensor_inplace_divzero_err', 'tensor_blit',
     'tensor_bytes', 'tensor_bytes_move', 'tensor_dtype_storage',
-    'tensor_take', 'tensor_take_err',
+    'tensor_take', 'tensor_take_err', 'tensor_equals', 'tensor_argmax_axis', 'tensor_reshape',
     'tensor_bytes_len_err', 'tensor_bytes_conflict_err', 'tensor_uint16',
     'tensor_introspect',
     'math_relu', 'math_softmax', 'math_argmax', 'math_clamp', 'math_abs',
@@ -396,7 +396,7 @@ inspect_tests = [
     # dfdoc (diagram document library) is pure Roxal over inspect
     'dfdoc_ops_basic', 'dfdoc_names', 'dfdoc_feedback', 'dfdoc_load_save',
     'dfdoc_comments', 'dfdoc_runs', 'dfdoc_palette', 'dfdoc_check',
-    'dfdoc_input_types', 'dfdoc_typecheck', 'dfdoc_live', 'dfdoc_compose', 'dfdoc_compose_run',
+    'dfdoc_input_types', 'dfdoc_view_image', 'dfdoc_show', 'dfdoc_feed', 'dfdoc_model', 'dfdoc_typecheck', 'dfdoc_live', 'dfdoc_compose', 'dfdoc_compose_run',
 ]
 xml_tests = [
     'xml_basic_compact', 'xml_basic_raw', 'xml_attrs', 'xml_mixed_raw',
@@ -410,13 +410,13 @@ ffi_tests = [
     'ffi1', 'ffi_addfloats', 'ffi_struct_out', 'ffi_inttypes', 'ffi_strlen', 'ffi_relative',
     'ffi_toupper', 'ffi_primptr', 'ffi_voidptr_struct', 'cstruct1', 'cstruct2', 'cstruct3',
     'cstruct_byval', 'cstruct_array',
-    'ffi_int64', 'ffi_ptr_return', 'ffi_free', 'ffi_tensor', 'ffi_tensor_mismatch_err',
+    'ffi_int64', 'ffi_ptr_return', 'ffi_free', 'ffi_tensor', 'ffi_tensor_mismatch_err', 'df_lift_module_ref', 'df_lift_unused_target',
     'ffi_nullptr', 'ffi_blocking',
     'ffi_ptrptr_slot', 'ffi_ptrptr_nil_err',
     'nested_cstruct', 'nested_cstruct_ptr', 'nested_cstruct_byval', 'nested_cstruct_align',
     'nested_cstruct_infer', 'cstruct_array_struct', 'cstruct_array_overflow_err',
 ]
-nn_tests = ['nn_mnist', 'nn_signal', 'nn_chain', 'nn_signal_chain', 'nn_dynamic', 'nn_multi_io', 'nn_multi_output_lift', 'nn_async', 'nn_tokenizer']
+nn_tests = ['nn_mnist', 'nn_signal', 'nn_chain', 'nn_signal_chain', 'nn_dynamic', 'nn_multi_io', 'nn_multi_output_lift', 'nn_event_async_lift', 'nn_async', 'nn_tokenizer']
 nn_lfs_tests = ['nn_dfine', 'nn_exit_inflight']  # require LFS model files (only run with --all)
 media_tests = ['media_read_write', 'media_manipulate', 'media_convert',
                # audio: run with ROXAL_AUDIO_BACKEND=null (no hardware needed)
@@ -424,7 +424,8 @@ media_tests = ['media_read_write', 'media_manipulate', 'media_convert',
                'media_audio_err_none', 'media_audio_err_rate',
                'media_audio_err_dtype', 'media_audio_err_format']
 # pure-Roxal FFI binding over the cvx shim; needs modules/opencv/libcvxshim.so built
-opencv_tests = ['opencv_basic', 'opencv_imgproc', 'opencv_imgproc2', 'opencv_draw',
+opencv_tests = ['vision_segment',   # the vision helpers: pure Roxal over opencv
+                'opencv_basic', 'opencv_imgproc', 'opencv_imgproc2', 'opencv_draw',
                 'opencv_video', 'opencv_writer', 'opencv_imread_err',
                 'opencv_codec', 'opencv_aruco', 'opencv_calib', 'opencv_handeye',
                 'opencv_features', 'opencv_charuco', 'opencv_stereo_calib',

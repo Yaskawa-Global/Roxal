@@ -346,14 +346,94 @@ Value ModuleMath::math_softmax_builtin(ArgsView args)
     }
 }
 
+// argmax along ONE axis of a tensor: for every position in the other axes,
+// the index of the largest value along `axis`.  The result is the input
+// shape with that axis removed (int32), so a classifier head of scores
+// [1, C, H, W] becomes a class map [1, H, W] in one native pass.  Doing
+// this in script means one slice and one reduction per position, which on
+// a segmentation output (tens of thousands of positions) costs seconds.
+//
+// Tensors are stored contiguously in row-major order, so the elements
+// along `axis` at a given outer/inner position are `inner` apart.
+static Value argmaxAlongAxis(ObjTensor* t, int64_t axis)
+{
+    const std::vector<int64_t>& shape = t->shape();
+    const int64_t rank = static_cast<int64_t>(shape.size());
+    if (axis < 0)
+        axis += rank;   // -1 is the last axis, as elsewhere in Roxal
+    if (axis < 0 || axis >= rank)
+        throw std::invalid_argument(
+            "math.argmax: axis " + std::to_string(axis) + " is outside a rank-"
+            + std::to_string(rank) + " tensor");
+
+    const int64_t len = shape[axis];
+    if (len == 0)
+        throw std::invalid_argument("math.argmax: axis " + std::to_string(axis) + " is empty");
+
+    int64_t outer = 1, inner = 1;
+    for (int64_t i = 0; i < axis; ++i) outer *= shape[i];
+    for (int64_t i = axis + 1; i < rank; ++i) inner *= shape[i];
+
+    std::vector<int64_t> outShape;
+    for (int64_t i = 0; i < rank; ++i)
+        if (i != axis)
+            outShape.push_back(shape[i]);
+
+    std::vector<double> out(static_cast<size_t>(outer) * static_cast<size_t>(inner));
+
+    // One typed pass over the raw buffer; the generic at() accessor takes
+    // the materialization lock and switches on the dtype per element.
+    const void* raw = t->rawData();
+    const bool typed = withTensorDType(t->dtype(), [&]<typename T>() {
+        const T* p = static_cast<const T*>(raw);
+        for (int64_t o = 0; o < outer; ++o) {
+            const T* plane = p + o * len * inner;
+            double* dst = out.data() + o * inner;
+            for (int64_t i = 0; i < inner; ++i) {
+                const T* col = plane + i;
+                T best = *col;
+                int64_t bestAt = 0;
+                for (int64_t k = 1; k < len; ++k) {
+                    const T v = col[k * inner];
+                    if (v > best) { best = v; bestAt = k; }
+                }
+                dst[i] = static_cast<double>(bestAt);
+            }
+        }
+    });
+    if (!typed) {   // float16, bool: no direct storage type
+        for (int64_t o = 0; o < outer; ++o) {
+            for (int64_t i = 0; i < inner; ++i) {
+                const int64_t base = o * len * inner + i;
+                double best = t->at(base);
+                int64_t bestAt = 0;
+                for (int64_t k = 1; k < len; ++k) {
+                    const double v = t->at(base + k * inner);
+                    if (v > best) { best = v; bestAt = k; }
+                }
+                out[static_cast<size_t>(o) * inner + i] = static_cast<double>(bestAt);
+            }
+        }
+    }
+
+    // A rank-1 input reduces to a single index: an int, as the no-axis form
+    // returns -- Roxal has no rank-0 tensor to hand back.
+    if (outShape.empty())
+        return Value::intVal(static_cast<int64_t>(out[0]));
+    return Value::tensorVal(outShape, out, TensorDType::Int32);
+}
+
 Value ModuleMath::math_argmax_builtin(ArgsView args)
 {
-    if (args.size() != 1)
-        throw std::invalid_argument("math.argmax expects one argument");
+    if (args.empty() || args.size() > 2)
+        throw std::invalid_argument("math.argmax expects a value and an optional axis");
 
     const Value& x = args[0];
+    const bool hasAxis = args.size() > 1 && !args[1].isNil();
 
     if (isVector(x)) {
+        if (hasAxis && args[1].asInt() != 0 && args[1].asInt() != -1)
+            throw std::invalid_argument("math.argmax: a vector has only axis 0");
         ObjVector* v = asVector(x);
         Eigen::Index maxIdx;
         v->vec().maxCoeff(&maxIdx);
@@ -361,9 +441,13 @@ Value ModuleMath::math_argmax_builtin(ArgsView args)
     }
     else if (isTensor(x)) {
         ObjTensor* t = asTensor(x);
-        if (t->rank() != 1)
-            throw std::invalid_argument("math.argmax requires a 1D tensor");
+        if (t->numel() == 0)
+            throw std::invalid_argument("math.argmax: the tensor is empty");
+        if (hasAxis)
+            return argmaxAlongAxis(t, args[1].asInt());
 
+        // No axis: the index of the largest element over the whole tensor,
+        // counting in row-major order (rank 1 makes that the plain index).
         int64_t n = t->numel();
         int64_t maxIdx = 0;
         double maxVal = t->at(0);
@@ -377,7 +461,7 @@ Value ModuleMath::math_argmax_builtin(ArgsView args)
         return Value::intVal(maxIdx);
     }
     else {
-        throw std::invalid_argument("math.argmax expects vector or 1D tensor");
+        throw std::invalid_argument("math.argmax expects a vector or a tensor");
     }
 }
 

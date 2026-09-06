@@ -1,0 +1,83 @@
+/* AI Studio shell: the canvas is the window. Everything inside the canvas,
+   the palette, the console and the source editor keeps the IDE's look from
+   style.css; this file only lays the three bands out. */
+
+html, body, #root { height: 100%; }
+
+.ais {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+}
+
+/* --- top bar ------------------------------------------------------------ */
+.ais-top {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    padding: .35rem .8rem;
+    border-bottom: 1px solid #2b303b;
+    background: #1a1d23;
+    min-height: 2.2rem;
+}
+.ais-brand { font-weight: 600; color: #88c0d0; letter-spacing: .02em; white-space: nowrap; }
+.ais-file.ais-dirty { color: #e5c07b; }
+.ais-file { color: #9aa4b2; font-size: .85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 30vw; }
+.ais-top .view-toggle { margin-left: 0; }
+.ais-top .run { margin-left: .4rem; }
+.ais-stop:disabled { opacity: .4; cursor: default; }
+.ais-top .run-error, .ais-top .run-note { font-size: .78rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; min-width: 0; }
+.ais-status { margin-left: auto; color: #6f7a88; font-size: .78rem; white-space: nowrap; }
+
+/* --- main band: the canvas, or the source ------------------------------- */
+.ais-main {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+}
+.ais-main .df-editor { flex: 1 1 auto; min-height: 0; height: 100%; }
+.ais-main .df-palette { width: 13rem; }
+.ais-main .df-props { width: 16rem; }
+.ais-main .df-props.df-collapsed { width: auto; }
+.ais-main .editor { display: flex; flex: 1 1 auto; min-height: 0; height: 100%; }
+.ais-main .loading { padding: 2rem; color: #6f7a88; }
+.ais-error { padding: 2rem; max-width: 60rem; }
+.ais-error pre { background: #1a1d23; padding: .6rem .8rem; border-radius: 6px; overflow-x: auto; }
+
+/* palette sections (also used by the IDE) */
+.df-section h4 { margin: .1rem 0 .2rem; font-size: 11px; font-weight: 600; color: #6f7a88;
+                 text-transform: uppercase; letter-spacing: .06em; }
+.df-add-module { color: #9aa4b2; }
+
+/* --- console drawer, closed by default ---------------------------------- */
+.ais-drawer {
+    flex: 0 0 auto;
+    border-top: 1px solid #2b303b;
+    background: #14161a;
+    display: flex;
+    flex-direction: column;
+    max-height: 1.9rem;
+    transition: max-height .15s ease-out;
+}
+.ais-drawer.open { max-height: 40vh; height: 40vh; }
+.ais-drawer-head {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    padding: .25rem .8rem;
+}
+.ais-drawer-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: .6rem;
+    padding: 0 .8rem .5rem;
+}
+.ais-drawer-body .out { overflow: auto; min-height: 0; border: 1px solid #2b303b; border-radius: 6px; padding: .5rem .8rem; }
+.ais-drawer-body .repl-pane { min-height: 0; border: 1px solid #2b303b; border-radius: 6px; }

@@ -1,6 +1,6 @@
 #pragma once
 
-#ifdef __EMSCRIPTEN__
+#ifdef ROXAL_ENABLE_WEB
 
 #include "BuiltinModule.h"
 #include "Value.h"
@@ -39,4 +39,4 @@ private:
 
 } // namespace roxal
 
-#endif // __EMSCRIPTEN__
+#endif // ROXAL_ENABLE_WEB

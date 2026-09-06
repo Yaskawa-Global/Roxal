@@ -1,0 +1,38 @@
+@dataflow_diagram(version=1, next_id=9)
+
+import vision
+import ai.nn
+
+@df(model='dfine')
+var dfine_model = ai.nn.Model(source_dir() + '/models/dfine_nano_fp32.onnx')
+
+type Detect object:
+  @df(id=1, x=20, y=160, payload='tensor', feed='camera:0', show=false)
+  var img:signal = nil
+
+  @df(id=6, x=1216, y=192, view='image')
+  var annotated:signal = nil
+
+  @df(id=8, x=1040, y=368)
+  var objects:signal = nil
+
+  proc init(img:signal, freq:real=2):
+    this.img = img
+
+    @df(id=2, x=256, y=288, show=false)
+    var dfine_blob = vision.dfine_blob(img)
+
+    @df(id=3, x=460, y=160, model='dfine', show=false)
+    var [dfine_0, dfine_1] = dfine_model.predict(dfine_blob)
+
+    @df(id=4, x=720, y=160, show=false)
+    var dfine_detections = vision.dfine_detections(dfine_0, dfine_1)
+
+    @df(id=5, x=976, y=64, show=false)
+    var draw_detections = vision.draw_detections(img, dfine_detections)
+
+    @df(id=7, x=624, y=368, show=false)
+    var count_detections = vision.count_detections(dfine_detections)
+
+    annotated = draw_detections
+    objects = count_detections

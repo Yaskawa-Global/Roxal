@@ -29,6 +29,7 @@
 #include <time.h>
 #include <cmath>
 #include <filesystem>
+#include "RuntimeConfig.h"
 #include <system_error>
 #include <limits>
 #include <cstdint>
@@ -1592,6 +1593,7 @@ void ModuleSys::registerBuiltins(VM& vm)
         addSys("loadlib", [this](VM& vm, ArgsView a){ return loadlib_native(vm,a); }, nullptr, {}, 0x1);
         addSys("source_dir", [this](VM& vm, ArgsView a){ return source_dir_native(vm,a); });
         addSys("module_paths", [this](VM& vm, ArgsView a){ return module_paths_native(vm,a); });
+        addSys("host_dir", [this](VM& vm, ArgsView a){ return host_dir_native(vm,a); });
 
     }
 
@@ -6299,6 +6301,24 @@ Value ModuleSys::module_paths_native(VM& vm, ArgsView args)
     for (const auto& p : vm.getModulePaths())
         paths.push_back(Value::stringVal(toUnicodeString(p)));
     return Value::listVal(paths);
+}
+
+// Where the embedding host keeps things, for the web module's page services:
+// 'stdlib' is the module directory those services parse, 'data' the user's
+// files. A web host records both in RuntimeConfig (web.stdlib_dir /
+// web.data_dir); the wasm host's fixed mounts are the fallback.
+Value ModuleSys::host_dir_native(VM& vm, ArgsView args)
+{
+    (void)vm;
+    if (args.size() != 1 || !isString(args[0]))
+        throw std::invalid_argument("host_dir expects one string argument: 'stdlib' or 'data'");
+    const std::string kind = asStringObj(args[0])->toStdString();
+    std::string fallback;
+    if (kind == "stdlib")    fallback = "/stdlib";
+    else if (kind == "data") fallback = "/data";
+    else throw std::invalid_argument("host_dir: expected 'stdlib' or 'data', got '" + kind + "'");
+    const auto configured = RuntimeConfig::get("web." + kind + "_dir");
+    return Value::stringVal(toUnicodeString(configured.value_or(fallback)));
 }
 
 Value ModuleSys::list_filter_builtin(VM& vm, ArgsView args)

@@ -7,7 +7,7 @@
 // no stop logic lives in JavaScript.
 
 export function armDebugSession(rox, on) {
-    rox.ccall('roxal_debug_session', null, ['number'], [on ? 1 : 0]);
+    rox.debugSession(on);
 }
 
 export class DebugStoreAdapter {

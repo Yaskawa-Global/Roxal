@@ -41,6 +41,11 @@ struct FuncYieldState {
     ptr<roxal::Thread> executionThread;    // Thread with preserved VM state (null for future-based yields)
     TimePoint executionTime;               // The tick time when execution started
     Values pendingOutputFutures;           // Future values awaiting resolution (async native fn)
+    // A newer evaluation requested while the futures were still pending
+    // (an event arrived, or a later tick): once they resolve, the node
+    // evaluates again at this time with its current inputs -- the latest
+    // input is never dropped behind an in-flight inference.
+    std::optional<TimePoint> rerunTime;
 };
 
 class FuncNode
@@ -92,6 +97,7 @@ public:
 
     // Core execution method
     virtual Values operator()(const Values& inputValues);
+    std::vector<roxal::Value> assembleArgs(const Values& inputValues) const;
 
     // Signal connection method
     virtual Signals operator()(const Signals& signals, const std::optional<ParamMap>& signalsToParams = std::nullopt);
@@ -199,6 +205,14 @@ protected:
 
     // Check if this func has yielded work pending
     bool hasYieldedWork() const { return m_funcYieldState.active; }
+
+    // Yielded on futures from an async native body (ai.nn predict): the
+    // engine polls the node (resumeExecution) rather than a VM thread.
+    bool hasPendingFutureYield() const
+    { return m_funcYieldState.active && !m_funcYieldState.pendingOutputFutures.empty(); }
+
+    // The evaluation time of the yielded execution (valid while hasYieldedWork()).
+    TimePoint yieldedExecutionTime() const { return m_funcYieldState.executionTime; }
 
     void invokeExecutionCallbacks(TimePoint time, const Values& inputValues, const Values& outputValues);
 

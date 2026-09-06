@@ -1,6 +1,7 @@
 // palette fixture: every shape the extractor must classify
 
 func plain(a :int, b :real = 2.0) -> real:
+  """a docstring reaches the palette, so the editor can describe the node"""
   return b
 
 func untyped(v) -> bool:
@@ -9,6 +10,7 @@ func untyped(v) -> bool:
 func multi(v :real) -> [real, real]:
   return [v - 1.0, v + 1.0]
 
+// a plain comment above a declaration is NOT a docstring
 // ':signal' params make a component, not a node
 func wiring(s :signal) -> signal:
   return s

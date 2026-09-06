@@ -13,8 +13,10 @@ type Cosine object:
   proc init(freq:real=8):
     @df(id=1, x=100, y=50)
     var w = signal(freq, 0)
+
     @df(id=2, x=260, y=60)
     var cos = math.cos(w[-1])
+
     w <- cos
     out = cos
 """

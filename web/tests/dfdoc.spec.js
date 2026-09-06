@@ -21,7 +21,7 @@ test('a diagram opens as a canvas; edits regenerate source; Run probes outputs',
     // Run the complete diagram: the harness instantiates the component and
     // its output probe prints values.
     await page.locator('button.run').click();
-    await expect(page.locator('.out')).toContainText('out = ', { timeout: 60000 });
+    await expect(page.locator('.df-output .df-text')).toContainText(/\d/, { timeout: 60000 });   // the text output shows on its node
     console.log('RUN ok');
 
     // Live values: the running instance's wires are sampled by provenance and
@@ -65,7 +65,7 @@ test('a diagram opens as a canvas; edits regenerate source; Run probes outputs',
     await expect(page.locator('.df-node')).toHaveCount(3, { timeout: 20000 });
     await expect(page.locator('.df-diag.df-diag-error')).toHaveCount(0);
     await page.locator('button.run').click();
-    await expect(page.locator('.out')).toContainText('out = ', { timeout: 60000 });
+    await expect(page.locator('.df-output .df-text')).toContainText(/\d/, { timeout: 60000 });   // the text output shows on its node
     console.log('DELETE+RERUN ok');
 
     if (errors.length) console.log('ERRORS', errors.slice(0, 5));
@@ -90,7 +90,8 @@ test('a composed diagram: flip-flops as nodes', async ({ page }) => {
     // counter4.rox marks `value` (the packed count) as its probe, so the
     // harness prints that output alone.
     await page.locator('button.run').click();
-    await expect(page.locator('.out')).toContainText('value = ', { timeout: 60000 });
+    await expect(page.locator('.df-output').filter({ has: page.locator('.df-title', { hasText: /^value$/ }) }).locator('.df-text'))
+        .toContainText(/\d/, { timeout: 60000 });   // the probed text output shows on its node
     await expect(page.locator('.react-flow__edge-text').first())
         .toContainText(/true|false/, { timeout: 30000 });
     console.log('COMPOSED-RUN ok');

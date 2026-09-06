@@ -478,11 +478,34 @@ FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline
     using roxal::asClosure;
     using roxal::isFuture;
 
-    // If we have a pending future-based yield (e.g. from a previous tick where
-    // the non-budgeted evaluateNetwork() path didn't handle the Yielded result),
-    // try to resume it instead of re-executing.
-    if (m_funcYieldState.active && !m_funcYieldState.pendingOutputFutures.empty()) {
-        return resumeExecution(deadline);
+    // A pending future-based yield (an async native body such as ai.nn
+    // predict, evaluated earlier at lift time, on a tick, or for an event):
+    // poll it first.  Still pending: remember that a newer evaluation was
+    // asked for, so the node runs again on its current inputs once the
+    // futures resolve (see resumeExecution) instead of dropping this
+    // update behind the in-flight one.  Resolved: deliver, then -- unless
+    // the rerun already covered it -- fall through and evaluate afresh at
+    // this newer time.
+    bool delivered = false;   // a pending evaluation completed in this call
+    if (hasPendingFutureYield()) {
+        const TimePoint yieldedAt = m_funcYieldState.executionTime;
+        auto result = resumeExecution(deadline);
+        if (result != FuncExecResult::Completed) {
+            if (result == FuncExecResult::Yielded && time > yieldedAt
+                && (!m_funcYieldState.rerunTime || time > *m_funcYieldState.rerunTime))
+                m_funcYieldState.rerunTime = time;
+            return result;
+        }
+        if (m_funcYieldState.active) {
+            // the rerun yielded anew
+            if (time > m_funcYieldState.executionTime
+                && (!m_funcYieldState.rerunTime || time > *m_funcYieldState.rerunTime))
+                m_funcYieldState.rerunTime = time;
+            return FuncExecResult::Yielded;
+        }
+        if (time <= yieldedAt)
+            return result;
+        delivered = true;
     }
 
     if (!m_operatorSignalsCalled && !inputNames().empty())
@@ -537,7 +560,9 @@ FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline
 
     if (!execute) {
         previousInputValues = inputValues;
-        return FuncExecResult::NotExecuted;
+        // (the resumed evaluation above did deliver: report it so the
+        // caller marks the outputs available to their consumers)
+        return delivered ? FuncExecResult::Completed : FuncExecResult::NotExecuted;
     }
 
     Values outputValues;
@@ -554,19 +579,7 @@ FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline
         auto& vm = VM::instance();
 
         // Build args from inputValues (same logic as operator())
-        std::vector<Value> args;
-        size_t sigIdx = 0;
-        for (const auto& pname : paramNames) {
-            auto cit = constArgs.find(pname);
-            if (cit != constArgs.end()) {
-                args.push_back(cit->second);
-            } else {
-                if (sigIdx < inputValues.size())
-                    args.push_back(inputValues[sigIdx++]);
-                else
-                    args.push_back(Value::nilVal());
-            }
-        }
+        std::vector<Value> args = assembleArgs(inputValues);
 
         DataflowThreadGuard dfGuard;
         auto result = vm.invokeClosure(asClosure(closure), args, deadline);
@@ -663,8 +676,10 @@ FuncExecResult FuncNode::resumeExecution(TimePoint deadline)
 
         TimePoint time = m_funcYieldState.executionTime;
         Values inputValues = m_funcYieldState.inputValues;
+        const std::optional<TimePoint> rerun = m_funcYieldState.rerunTime;
         m_funcYieldState.active = false;
         m_funcYieldState.pendingOutputFutures.clear();
+        m_funcYieldState.rerunTime.reset();
 
         if (outputValues.size() != m_outputs.size())
             throw std::runtime_error("FuncNode '"+name()+"' returned "+std::to_string(outputValues.size())+" values, expected "+std::to_string(m_outputs.size())+" values");
@@ -678,6 +693,14 @@ FuncExecResult FuncNode::resumeExecution(TimePoint deadline)
             output.signal->setValueAt(time, outputValues[index]);
             index++;
         }
+
+        // An evaluation requested while the futures were pending: run it
+        // now on the current inputs (the pure gate skips it when they are
+        // unchanged).  It typically yields anew -- hasPendingFutureYield()
+        // tells the caller -- but the resumed evaluation itself completed.
+        if (rerun && *rerun > time
+            && conditionallyExecute(*rerun, deadline) == FuncExecResult::Error)
+            return FuncExecResult::Error;
 
         return FuncExecResult::Completed;
     }
@@ -755,25 +778,39 @@ void FuncNode::invokeExecutionCallbacks(TimePoint time, const Values& inputValue
     }
 }
 
+// The call's positional arguments: bound constants by parameter name, then
+// the input signals' values in order. Trailing parameters that neither
+// supplies are LEFT OUT rather than passed as nil, so the call applies their
+// declared defaults exactly as a hand-written call with the same arguments
+// would (a lifted `f(sig)` for `func f(a, t = 0.5)` used to pass t=nil).
+std::vector<roxal::Value> FuncNode::assembleArgs(const Values& inputValues) const
+{
+    std::vector<roxal::Value> args;
+    size_t sigIdx = 0;
+    size_t supplied = 0;
+    for (const auto& pname : paramNames) {
+        auto cit = constArgs.find(pname);
+        if (cit != constArgs.end()) {
+            args.push_back(cit->second);
+            supplied = args.size();
+        } else if (sigIdx < inputValues.size()) {
+            args.push_back(inputValues[sigIdx++]);
+            supplied = args.size();
+        } else {
+            args.push_back(roxal::Value::nilVal());
+        }
+    }
+    args.resize(supplied);
+    return args;
+}
+
 Values FuncNode::operator()(const Values& inputValues)
 {
     using namespace roxal;
 
     auto& vm = VM::instance();
 
-    std::vector<Value> args;
-    size_t sigIdx = 0;
-    for (const auto& pname : paramNames) {
-        auto cit = constArgs.find(pname);
-        if (cit != constArgs.end()) {
-            args.push_back(cit->second);
-        } else {
-            if (sigIdx < inputValues.size())
-                args.push_back(inputValues[sigIdx++]);
-            else
-                args.push_back(Value::nilVal());
-        }
-    }
+    std::vector<Value> args = assembleArgs(inputValues);
 
     if (nativeFunc) {
         return nativeFunc(args);

@@ -1,0 +1,66 @@
+# feeds_realsense — RealSense streams as diagram feeds.
+#
+# The same actor shape as feeds.Feed (the harness picks this module for
+# 'realsense:' specs), kept in its own module because importing `realsense`
+# loads its shim; a machine without librsshim.so can still use camera and
+# video feeds.
+#
+# Feed specs:
+#   realsense:color          uint8 [H, W, 3] RGB
+#   realsense:depth          uint16 [H, W, 1] raw depth units (see Camera.depth_scale)
+#   realsense:ir             uint8 [H, W, 1] left infrared
+# One actor per feed; two ports fed from the same device open it twice,
+# which librealsense allows for a single process only by serial -- feed one
+# port per device for now.
+#
+# Verified on a D435i (2026-09-05): colour uint8 [720, 1280, 3] and depth
+# uint16 [720, 1280, 1] at the device rate.
+
+import realsense
+
+type Feed actor:
+  private var _spec :string = ''
+  private var _out
+  private var _stop
+  private var _count
+  private var _max_fps :real = 0.0
+
+  proc init(spec :string, out :signal, stop :signal, count :signal, max_fps :real = 0.0):
+    _spec = spec
+    _out = out
+    _stop = stop
+    _count = count
+    _max_fps = max_fps
+
+  proc run():
+    var stream = 'color'
+    if len(_spec) > 10:
+      stream = _spec[10:len(_spec)]          # after 'realsense:'
+    # depth and colour both on (alignment needs the pair; depth in the colour
+    # frame is what a vision diagram wants), infrared only when asked for
+    var cam = realsense.open(depth=true, color=true, ir=(stream == 'ir'), align=true)
+    var n = 0
+    var pause_ms = 0
+    if _max_fps > 0.0:
+      pause_ms = int(1000.0 / _max_fps)
+    while not _stop.value:
+      var fs = cam.read(timeout_ms=1000)
+      var frame = nil
+      if fs != nil:
+        if stream == 'depth':
+          frame = fs.depth
+        else:
+          if stream == 'ir':
+            frame = fs.ir
+          else:
+            frame = fs.color
+      if frame == nil:
+        wait(ms=5)
+      else:
+        var pub: const tensor = move(frame)
+        _out.set(pub)
+        n = n + 1
+        _count.set(n)
+        if pause_ms > 0:
+          wait(ms=pause_ms)
+    cam.close()

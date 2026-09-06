@@ -1,0 +1,232 @@
+# vision — pre- and post-processing nodes around ONNX models, for the
+# data-flow editor. Every function is pure and typed, so it appears in the
+# palette and lifts into a node; the model itself is a separate node
+# (ai.nn.Model.predict) between them.
+#
+#   webcam -> dfine_blob -> [D-FINE] -> dfine_detections -> draw_detections -> image
+#   webcam -> depth_blob -> [Depth Anything] -> depth_image -> image
+#   webcam -> style_blob -> [fast-neural-style] -> chw_image -> image
+#
+# Images are uint8 [H, W, 3] RGB tensors as the opencv module produces them;
+# model blobs are float32 [1, 3, H, W].
+
+import opencv
+import math
+
+# --- D-FINE (COCO detection): pixel_values [1,3,640,640] normalised 0..1;
+#     logits [1,300,80] + pred_boxes [1,300,4] as normalised cx,cy,w,h -------
+
+func dfine_blob(frame: tensor) -> tensor:
+  """Prepare a camera frame for D-FINE: resize to 640x640 and scale to
+  0..1, giving the float32 [1, 3, 640, 640] pixel_values the model wants."""
+  return opencv.to_blob(frame, 640, 640)
+
+// (Per query, the class row is sliced out and reduced natively -- a scripted
+// walk over all 300 x 80 logits costs seconds per frame in a debug build.)
+func dfine_detections(logits: tensor, boxes: tensor, threshold: real = 0.5) -> list:
+  """Turn D-FINE's two outputs into a list of detections, keeping those
+  scoring at least `threshold`. Each detection is a list of six numbers:
+  x, y, w, h, score, class. The box is in normalised image coordinates
+  (0..1), so it fits whatever frame you draw it on."""
+  var dets = []
+  var nq = logits.shape()[1]
+  var nc = logits.shape()[2]
+  var q = 0
+  while q < nq:
+    var row = logits[0, q, 0:nc]
+    var best = math.argmax(row)
+    var score = 1.0 / (1.0 + math.exp(-row[best]))
+    if score >= threshold:
+      var cx = boxes[0, q, 0]
+      var cy = boxes[0, q, 1]
+      var w = boxes[0, q, 2]
+      var h = boxes[0, q, 3]
+      dets.append([cx - w / 2.0, cy - h / 2.0, w, h, score, best])
+    q = q + 1
+  return dets
+
+const COCO = ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat',
+  'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse',
+  'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe', 'backpack', 'umbrella', 'handbag', 'tie',
+  'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove',
+  'skateboard', 'surfboard', 'tennis racket', 'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon',
+  'bowl', 'banana', 'apple', 'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza', 'donut',
+  'cake', 'chair', 'couch', 'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse',
+  'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book',
+  'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush']
+
+func coco_label(cls: int) -> string:
+  """The COCO class name for a detection's class number, such as 'person'
+  or 'cup'. An unknown number comes back as 'class N'."""
+  if cls >= 0 and cls < len(COCO):
+    return COCO[cls]
+  return 'class ' + string(cls)
+
+func draw_detections(frame: tensor, dets: list) -> tensor:
+  """Draw the detections onto a copy of the frame: a box and a labelled
+  score for each, and the count in the corner. The frame itself is left
+  untouched, so the original image stays available downstream."""
+  var img = clone(frame)
+  var s = img.shape()
+  var H = s[0]
+  var W = s[1]
+  for d in dets:
+    var x = int(d[0] * W)
+    var y = int(d[1] * H)
+    var w = int(d[2] * W)
+    var h = int(d[3] * H)
+    opencv.rectangle(img, x, y, w, h, [255, 60, 60], 2)
+    var label = coco_label(int(d[5])) + ' ' + string(int(d[4] * 100.0)) + '%'
+    opencv.put_text(img, label, x + 3, y + 18, [255, 255, 255], 0.55, opencv.Font.Simplex, 1)
+  opencv.put_text(img, string(len(dets)) + ' objects', 8, 24, [0, 255, 0], 0.7, opencv.Font.Simplex, 2)
+  return img
+
+func count_detections(dets: list) -> int:
+  """How many objects were detected -- a number to show or to drive
+  something else with."""
+  return len(dets)
+
+# --- Depth Anything V2 (small): pixel_values [1,3,518,518] ImageNet-normalised;
+#     predicted_depth [1,518,518] relative inverse depth ----------------------
+
+func depth_blob(frame: tensor) -> tensor:
+  """Prepare a camera frame for Depth Anything V2: resize to 518x518 and
+  normalise with the usual ImageNet statistics."""
+  return opencv.to_blob(frame, 518, 518, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+
+func depth_image(depth: tensor) -> tensor:
+  """Turn a depth model's output into a greyscale image you can look at:
+  the depths are stretched over the full 0..255 range, near being bright
+  and far dark. Accepts either shape the models produce."""
+  var s = depth.shape()
+  var H = s[len(s) - 2]
+  var W = s[len(s) - 1]
+  var flat = depth.astype('float32')
+  var lo = flat.min()
+  var hi = flat.max()
+  var span = hi - lo
+  if span <= 0.0:
+    span = 1.0
+  var scaled = ((flat - lo) * (255.0 / span)).astype('uint8')
+  if len(s) == 3:
+    return scaled[0, 0:H, 0:W]
+  return scaled
+
+# --- fast-neural-style (mosaic, candy, ...): input1 [1,3,224,224] float 0..255;
+#     output1 [1,3,224,224] float 0..255 -----------------------------------------
+
+func style_blob(frame: tensor) -> tensor:
+  """Prepare a camera frame for fast-neural-style: resize to 224x224 and
+  keep the original 0..255 pixel range these models expect."""
+  return opencv.to_blob(frame, 224, 224, scale=1.0)
+
+func chw_image(t: tensor) -> tensor:
+  """Turn a network's channels-first image output back into a picture.
+  A network can overshoot the 0..255 range, so the values are shifted and
+  scaled to fit rather than wrapping around at the edges."""
+  var s = t.shape()
+  var H = s[2]
+  var W = s[3]
+  var f = t.astype('float32')
+  var lo = f.min()
+  var hi = f.max()
+  if lo < 0.0:
+    f = f - lo
+    hi = hi - lo
+  if hi > 255.0:
+    f = f * (255.0 / hi)
+  var out = tensor(H, W, 3, dtype='uint8')
+  var c = 0
+  while c < 3:
+    out[0:H, 0:W, c] = f[0, c, 0:H, 0:W].astype('uint8')
+    c = c + 1
+  return out
+
+# --- semantic segmentation (DeepLabV3 MobileNetV2, Pascal VOC): the model
+#     takes raw uint8 [1,513,513,3] pixels and answers with a class number
+#     per pixel, int64 [1,513,513] ------------------------------------------
+
+const VOC_CLASSES = ['background', 'aeroplane', 'bicycle', 'bird', 'boat', 'bottle', 'bus', 'car',
+  'cat', 'chair', 'cow', 'dining table', 'dog', 'horse', 'motorbike', 'person', 'potted plant',
+  'sheep', 'sofa', 'train', 'tv monitor']
+
+# the conventional Pascal VOC colours, three numbers per class in class order
+const VOC_COLORS = [
+  0, 0, 0,          128, 0, 0,        0, 128, 0,        128, 128, 0,
+  0, 0, 128,        128, 0, 128,      0, 128, 128,      128, 128, 128,
+  64, 0, 0,         192, 0, 0,        64, 128, 0,       192, 128, 0,
+  64, 0, 128,       192, 0, 128,      64, 128, 128,     192, 128, 128,
+  0, 64, 0,         128, 64, 0,       0, 192, 0,        128, 192, 0,
+  0, 64, 128]
+
+const SEG_SIZE = 513
+
+func segment_blob(frame: tensor) -> tensor:
+  """Prepare a camera frame for DeepLabV3: resize to 513x513 and add the
+  batch axis. Unlike the other models here it wants raw 0..255 pixels, so
+  nothing is scaled or normalised."""
+  var small = opencv.resize(frame, SEG_SIZE, SEG_SIZE)
+  return small.reshape(1, SEG_SIZE, SEG_SIZE, 3)
+
+# The colour table as a tensor, one row per class: `take` then maps a whole
+# class map through it in one native pass.
+func _voc_palette() -> tensor:
+  return tensor(len(VOC_CLASSES), 3, data=VOC_COLORS, dtype='uint8')
+
+# A [1,H,W] class map without its batch axis (a free reshape: the same
+# elements, one axis fewer).
+func _drop_batch(classes: tensor) -> tensor:
+  var s = classes.shape()
+  if len(s) == 2:
+    return classes
+  return classes.reshape(s[1], s[2])
+
+func segment_image(classes: tensor) -> tensor:
+  """Paint a segmentation class map in the usual Pascal VOC colours: each
+  class gets its own colour and the background stays black."""
+  var flat = _drop_batch(classes)
+  return _voc_palette().take(flat)
+
+func segment_overlay(frame: tensor, classes: tensor, strength: real = 0.45) -> tensor:
+  """Lay the segmentation over the frame, so you see both what the camera
+  saw and what the model made of it. `strength` runs 0 (the frame alone)
+  to 1 (the colours alone). The result is at the model's resolution."""
+  var colored = segment_image(classes)
+  var s = colored.shape()
+  var small = opencv.resize(frame, s[1], s[0])
+  var keep = 1.0 - strength
+  return ((small.astype('float32') * keep) + (colored.astype('float32') * strength)).astype('uint8')
+
+func voc_label(cls: int) -> string:
+  """The Pascal VOC class name for a class number, such as 'person' or
+  'chair'. An unknown number comes back as 'class N'."""
+  if cls >= 0 and cls < len(VOC_CLASSES):
+    return VOC_CLASSES[cls]
+  return 'class ' + string(cls)
+
+func center_class(classes: tensor) -> string:
+  """What the model thinks is in the middle of the view -- the class name
+  at the centre of the class map."""
+  var flat = _drop_batch(classes)
+  var s = flat.shape()
+  return voc_label(int(flat[s[0] / 2, s[1] / 2]))
+
+# --- classification (MobileNet-style): [1,3,224,224] ImageNet-normalised ->
+#     scores [1,1000] -------------------------------------------------------------
+
+func classify_blob(frame: tensor) -> tensor:
+  """Prepare a camera frame for an image classifier such as MobileNet:
+  resize to 224x224 and normalise with the usual ImageNet statistics."""
+  return opencv.to_blob(frame, 224, 224, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+
+func top_class(scores: tensor) -> int:
+  """The number of the highest-scoring class in a classifier's output --
+  pair it with a label list to name what was seen."""
+  var n = scores.shape()[1]
+  var best = 0
+  var i = 1
+  while i < n:
+    if scores[0, i] > scores[0, best]:
+      best = i
+    i = i + 1
+  return best

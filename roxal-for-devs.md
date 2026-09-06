@@ -391,7 +391,7 @@ var t = tensor(2, 3, data=[1,2,3,4,5,6])
 print(t[0, 1])       // element at row 0, col 1
 t[1, 2] = 99         // assign element
 print(t.shape())     // [2, 3]
-print(t.rank())      // 2
+print(t.dims())      // 2 (the number of dimensions)
 print(len(t))        // 6 (total elements)
 print(t.dtype())     // 'float64'
 ```
@@ -442,10 +442,17 @@ print(t.sum())        // 23
 print(t.min())        // 1
 print(t.max())        // 9
 print(t.shape())      // [2, 3]
-print(t.rank())       // 2
+print(t.dims())       // 2 (the number of dimensions)
 print(t.dtype())      // 'float64'
 print(t.to_bytes())   // raw element buffer as a packed byte list
+print(t.reshape(3, 2).shape())     // [3, 2] -- the same elements, row-major
+print(t.reshape(1, 2, 3).shape())  // [1, 2, 3] -- adding a model's batch axis
+print(t.reshape([6]).shape())      // [6] -- the dimensions may come as a list
 ```
+
+`reshape` keeps the elements in row-major order and refuses a shape whose
+element count differs. It returns an independent tensor, like any other
+value-semantics operation.
 
 ### Arithmetic Operations
 
@@ -2933,7 +2940,8 @@ Use `import math` or `import math.*`.  See `math.rox`.
 * `cross(a, b)` - cross product of two 3-element vectors
 * `relu(x)` - rectified linear unit: `max(0, x)` applied element-wise (works on scalar, vector, matrix, or tensor)
 * `softmax(x)` - softmax function: `exp(x_i) / sum(exp(x_j))` (works on vector or 1D tensor)
-* `argmax(x)` - index of maximum element (works on vector or 1D tensor)
+* `argmax(x)` - index of the largest element (works on a vector or a tensor of any rank, counting in row-major order)
+* `argmax(x, axis=n)` - reduce along one axis instead: an int32 tensor of indices with that axis removed, so classifier scores `[1, classes, h, w]` become a class map `[1, h, w]` with `axis=1`. A negative axis counts from the end; a tie keeps the lowest index
 * `min(x)` - minimum element value (works on vector, matrix, tensor, or list)
 * `max(x)` - maximum element value (works on vector, matrix, tensor, or list)
 * `sum(x)` - sum of all elements (works on vector, matrix, tensor, or list)

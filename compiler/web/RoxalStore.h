@@ -1,6 +1,6 @@
 #pragma once
 
-#ifdef __EMSCRIPTEN__
+#ifdef ROXAL_ENABLE_WEB
 
 #include "Object.h"
 #include "Value.h"
@@ -105,6 +105,7 @@ public:
     RoxalStore* lookup(const std::string& name);
 
     void flushAll();     // push every store's pending changes
+    void redefineAll();  // resend every store's shape and current values
 
     // Actor store calls resolve asynchronously: invoke() queues onto the
     // actor's thread and parks the JS promise id here with the completion
@@ -132,4 +133,4 @@ void rejectStoreCall(uint32_t callId, const std::string& store,
 } // namespace web
 } // namespace roxal
 
-#endif // __EMSCRIPTEN__
+#endif // ROXAL_ENABLE_WEB

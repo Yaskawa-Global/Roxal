@@ -1,0 +1,40 @@
+# An async node (predict returns a future) on an EVENT-DRIVEN island.  Nothing
+# ticks such an island, so the engine thread polls the pending futures:
+#  - the lift-time evaluation is delivered without any event,
+#  - a set() issued while the inference is in flight is not dropped behind
+#    it (the node re-evaluates on its latest input once the future resolves),
+#  - a set() right after the lift never delivers the stale lift-time result.
+# scale-shift.onnx: doubled = x * 2, plus_one = x + 1, shape [1, 4]
+import ai.nn
+
+var model = ai.nn.Model("../modules/ai/scale-shift.onnx", device='cpu')
+
+var x = tensor(1, 4, dtype='float32')
+x[0, 3] = 4.0
+var in_sig = signal(0, x)            # event-driven: no clock
+var [doubled, plus_one] = model.predict(in_sig)
+
+# lift-time evaluation arrives on its own
+wait(ms=300)
+print(doubled.value[0, 3])
+print(plus_one.value[0, 3])
+
+# a set right after a (re)lift: the result is for the NEW value
+var [d2, p2] = model.predict(in_sig)
+var y = tensor(1, 4, dtype='float32')
+y[0, 3] = 0.5
+in_sig.set(y)
+wait(ms=300)
+print(d2.value[0, 3])
+print(p2.value[0, 3])
+print(doubled.value[0, 3])
+
+# two sets back to back: the latest one wins, nothing is stuck in flight
+var z = tensor(1, 4, dtype='float32')
+z[0, 3] = 10.0
+in_sig.set(y)
+in_sig.set(z)
+wait(ms=300)
+print(doubled.value[0, 3])
+print(plus_one.value[0, 3])
+print('done')

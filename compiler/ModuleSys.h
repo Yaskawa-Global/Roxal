@@ -110,6 +110,7 @@ public:
     Value loadlib_native(VM& vm, ArgsView args);
     Value source_dir_native(VM& vm, ArgsView args);
     Value module_paths_native(VM& vm, ArgsView args);
+    Value host_dir_native(VM& vm, ArgsView args);
 
 
 private:

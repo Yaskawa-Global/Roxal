@@ -212,3 +212,96 @@ Not an npm package yet. When there is a real app to build, this becomes a
 workspace (`@roxal/web`) consuming `roxal.js` / `roxal.wasm` as prebuilt inputs —
 the JS toolchain owns its own build, and the boundary with CMake stays an artifact
 hand-off. See the build-system section of the plan.
+
+## Running against a native VM (`roxal --web-host`)
+
+The page can drive a native Roxal process instead of the wasm build in the
+tab. The native VM has every module the desktop binary has -- `ai.nn` on
+CUDA, `opencv` over the FFI, cameras, DDS -- and the page does not change:
+the store protocol is the same, carried over a local WebSocket instead of the
+worker bridge.
+
+```bash
+./build/roxal --web-host -p modules --root examples          # the VM, port 8765
+cd web && npm run dev                                        # the page
+# open http://localhost:5173/?host=ws://127.0.0.1:8765
+```
+
+- `--root DIR` is where the page's files live (the wasm build's `/data`);
+  `-p modules` is the standard library the page's services parse.
+- `--web-port 0` picks an ephemeral port; the bound port is printed as
+  `listening on ws://127.0.0.1:<port>` before the host serves.
+- One page at a time: a new connection displaces the previous one and
+  receives every exposed store again (a reload needs no host restart).
+- The `dom` module does not exist under the native host (there is no
+  JavaScript to call into); `web` is complete.
+
+`node wasm/test-sockethost.cjs` exercises the host from node without a
+browser; `web/tests/socket-host.spec.js` runs the IDE against it.
+
+### How the two hosts meet
+
+`web/src/lib/host.js` is the seam: `WasmHost` wraps the Emscripten module,
+`SocketHost` speaks to the native process, and `roxal.js` is written against
+their common interface. The wire codec and the store registry are one plain
+script, `wasm/roxal-wire.js`, linked into the wasm glue as a `--pre-js` and
+imported by the page for the socket host -- the C++ side is likewise one
+codec (`compiler/web/JsBridge.*`) behind a `Transport` the host installs.
+
+## AI Studio (`aistudio.html`)
+
+A second page from the same project: the data-flow editor as the whole
+window, driving a native VM so diagrams can hold ONNX model nodes, OpenCV
+nodes and camera feeds. The canvas is the main view, the source is a tab, the
+console (output + REPL) is a drawer closed by default; no debugger.
+
+```bash
+./build/roxal --web-host -p modules --root examples/aistudio      # the VM
+cd web && npm run dev                                             # the pages
+# open http://localhost:5173/aistudio.html   (?host=ws://... to pick another host)
+```
+
+The palette is grouped by module and follows the diagram's imports; "+
+module…" imports another (e.g. `opencv`) so its typed functions become nodes.
+`web/tests/aistudio.spec.js` covers the loop against the native host.
+
+### As a desktop app (Electron)
+
+The same page as a desktop window, with no browser: `web/electron/main.cjs`
+spawns `roxal --web-host` on an ephemeral port, loads `dist/aistudio.html`
+from disk against it, and adds native menus (File: open a workspace folder
+or a diagram, new/save/save as; Run; View: console, diagram/source, full
+screen). The page reaches the menus through `electron/preload.cjs` only;
+files and the VM still go through the Roxal host.
+
+```bash
+examples/aistudio/aistudio.sh [workspace-dir]     # builds the page if needed
+# or, from web/:  npm run app -- ../examples/aistudio
+# hacking on the UI: npm run dev, then npm run app:dev
+```
+
+Environment: `ROXAL_BIN`, `ROXAL_MODULES`, `AISTUDIO_ROOT`. The last workspace
+is remembered in Electron's user data. Note that an IDE terminal may export
+`ELECTRON_RUN_AS_NODE=1`, which turns Electron into plain node; the scripts
+unset it. `web/tests/electron.spec.js` boots the shell under Playwright.
+
+### Output views
+
+An output port of a diagram carries a view: `text` (the harness prints each
+change to the console drawer) or `image` (the harness hands the output to
+the page as a `web.ImageView` store named `view_<output>`, and the canvas
+paints each frame at the node -- uint8 or float tensors of shape HxW, HxWx3
+or HxWx4). Pick it with the selector on the output node; it is stored as
+`@df(..., view='image')` in the file.
+
+### Input feeds
+
+A tensor input port can carry a feed -- `camera:0`, `camera:1@640x480`,
+`video:path.mp4` (looped), `realsense:color`, `realsense:depth`,
+`realsense:ir` -- chosen on the input node and stored as
+`@df(..., feed='camera:0')`. The diagram itself stays a reusable component;
+when it runs, the harness attaches a `feeds.Feed` actor (or
+`feeds_realsense.Feed`) that publishes every frame into the port's
+event-driven signal, so the whole network recomputes per frame, and the node
+shows the frame count and rate. Without a feed the port gets the typed
+stimulus as before.

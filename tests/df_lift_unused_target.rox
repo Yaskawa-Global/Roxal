@@ -1,0 +1,50 @@
+# A destructured lift keeps every output port even when a target goes
+# unreferenced.  Inside a component's init `b` is a dead local: its signal
+# wrapper is released at once, which used to force-remove the output signal
+# from the engine and strip the port off the producing node -- the node
+# then failed its arity check ("returned 2 values, expected 1") on the next
+# evaluation.  A live producer keeps all its ports; the node is collected
+# only when none of its outputs is held or consumed.
+func split(t: tensor) -> [tensor, tensor]:
+  return [t * 2.0, t + 1.0]
+
+type Half object:
+  var out :signal = nil
+
+  proc init(x :signal):
+    var [a, b] = split(x)
+    out = a
+
+var x = signal(0, tensor(1, 4, dtype='float32'))
+var h = Half(x)
+var t = tensor(1, 4, dtype='float32')
+t[0, 3] = 4.0
+x.set(t)
+wait(ms=200)
+print(h.out.value[0, 3])
+
+# the other way round: keep only the second output
+type Other object:
+  var out :signal = nil
+
+  proc init(x :signal):
+    var [a, b] = split(x)
+    out = b
+
+var o = Other(x)
+t[0, 3] = 10.0
+x.set(t)
+wait(ms=200)
+print(h.out.value[0, 3])
+print(o.out.value[0, 3])
+
+# same in a plain function scope
+func lift_first(s :signal) -> signal:
+  var [a, b] = split(s)
+  return a
+
+var first = lift_first(x)
+t[0, 3] = 1.5
+x.set(t)
+wait(ms=200)
+print(first.value[0, 3])

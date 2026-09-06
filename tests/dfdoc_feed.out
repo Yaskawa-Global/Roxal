@@ -1,0 +1,90 @@
+feed before: nil
+not an input: only input ports carry a feed
+set: true
+feed after: video:tests/testvideo.mp4
+set on bool: true
+error: input en has a feed but its payload is real, not tensor
+error: output shape is unconnected
+clear: true
+---
+@dataflow_diagram(version=1, next_id=4)
+
+type Cam object:
+  @df(id=1, x=0, y=0, payload='tensor', feed='video:tests/testvideo.mp4')
+  var img:signal = nil
+
+  @df(id=2, x=0, y=60, payload='real')
+  var en:signal = nil
+
+  @df(id=3, x=500, y=0)
+  var shape:signal = nil
+
+  proc init(img:signal, en:signal, freq:real=2):
+    this.img = img
+    this.en = en
+    shape = nil
+
+--- web harness
+@dataflow_diagram(version=1, next_id=4)
+
+import web
+import feeds
+
+type Cam object:
+  @df(id=1, x=0, y=0, payload='tensor', feed='video:tests/testvideo.mp4')
+  var img:signal = nil
+
+  @df(id=2, x=0, y=60, payload='real')
+  var en:signal = nil
+
+  @df(id=3, x=500, y=0)
+  var shape:signal = nil
+
+  proc init(img:signal, en:signal, freq:real=2):
+    this.img = img
+    this.en = en
+    shape = nil
+var __stop = signal(0, false)
+var __in_img = signal(0, tensor([2, 2, 3], dtype='uint8'))
+var __cnt_img = signal(0, 0)
+var __feed_img = feeds.Feed('video:tests/testvideo.mp4', __in_img, __stop, __cnt_img)
+var __in_en = signal(2, 0.0)
+var __c = Cam(__in_img, __in_en)
+__feed_img.run()
+web.expose('feed_img', web.SignalView(__cnt_img))
+var __v_shape = web.SignalView(__c.shape)
+web.expose('view_shape', __v_shape)
+web.serve()
+__stop.set(true)
+
+--- headless harness
+@dataflow_diagram(version=1, next_id=4)
+
+import feeds
+
+type Cam object:
+  @df(id=1, x=0, y=0, payload='tensor', feed='video:tests/testvideo.mp4')
+  var img:signal = nil
+
+  @df(id=2, x=0, y=60, payload='real')
+  var en:signal = nil
+
+  @df(id=3, x=500, y=0)
+  var shape:signal = nil
+
+  proc init(img:signal, en:signal, freq:real=2):
+    this.img = img
+    this.en = en
+    shape = nil
+var __stop = signal(0, false)
+var __in_img = signal(0, tensor([2, 2, 3], dtype='uint8'))
+var __cnt_img = signal(0, 0)
+var __feed_img = feeds.Feed('video:tests/testvideo.mp4', __in_img, __stop, __cnt_img)
+var __in_en = signal(2, 0.0)
+var __c = Cam(__in_img, __in_en)
+__feed_img.run()
+when __c.shape changes as __e:
+  print('shape = ' + string(__e.value))
+wait(ms=1500)
+__stop.set(true)
+

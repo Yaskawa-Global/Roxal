@@ -1,0 +1,44 @@
+# tensor.reshape: the same elements under another shape. Adding or dropping
+# a batch axis is what models need it for.
+var t = tensor(2, 3, dtype='int32')
+t[0, 0] = 1
+t[0, 1] = 2
+t[0, 2] = 3
+t[1, 0] = 4
+t[1, 1] = 5
+t[1, 2] = 6
+
+var flat = t.reshape(6)
+print(flat.shape())
+print(flat[0])
+print(flat[5])
+
+# row-major order is preserved
+var r = t.reshape(3, 2)
+print(r.shape())
+print(r[0, 0])
+print(r[0, 1])
+print(r[1, 0])
+print(r[2, 1])
+
+# a batch axis, and back again
+var batched = t.reshape(1, 2, 3)
+print(batched.shape())
+print(batched[0, 1, 2])
+print(batched.reshape(2, 3).shape())
+
+# the dimensions may come as a list
+print(t.reshape([6, 1]).shape())
+print(t.dtype() + ' ' + flat.dtype())
+
+# the original is untouched, and the copy is independent
+flat[0] = 99
+print(t[0, 0])
+print(flat[0])
+
+# a mismatched element count is refused
+try:
+  var bad = t.reshape(4, 2)
+  print('no error')
+except e:
+  print(string(e))

@@ -1028,6 +1028,38 @@ An async native body returns ONE future for its N ports; the split is applied
 after resolution in `resumeExecution`, not at return time. A wrong-length list
 is not padded or truncated -- it reaches the arity check with its true count.
 
+**Async nodes (future yields).** A body that returns futures leaves the node
+in a *future yield*: no VM thread is suspended (the node waits on a worker),
+so `evaluateIsland` does not suspend the island for it -- consumers go on
+with the node's last delivered value (or wait, if it never delivered) and the
+node is polled again (`conditionallyExecute` -> `resumeExecution`) at the
+island's next evaluation.  A poll at a newer time while the futures are still
+pending records `FuncYieldState::rerunTime`; once they resolve the node
+evaluates again on its current inputs (pure gate applies), so the latest
+input is never dropped behind an in-flight inference.  A clocked island polls
+on every tick.  An event-driven island has no evaluation of its own between
+events, so the engine thread polls its pending async nodes
+(`m_asyncYields`, recorded by `evaluateIsland`/`initializeNode`, serviced by
+`serviceAsyncYields` with a 1 ms idle wait while any is pending) and, when
+one resolves, finishes the island downstream of it from the node's position.
+The tick path's own resume record (`m_yieldState`) never holds a future-yield
+node -- two resumers of one node would make the second see no yield state.
+
+**Tensor equality and change detection.** `ObjTensor::equals` (what `==`
+and a signal's set() change check use) compares identity, then memcmp; on a
+mismatch integer dtypes are unequal outright (any eps below 1), and float
+dtypes get a typed walk over the raw buffers.  Never route a bulk compare
+through `at()`: it takes the materialization lock and switches on the dtype
+per element, which turned a video-frame publish into ~100 ms.
+
+**Dead signal wrappers and producers.** `~ObjSignal` asks the engine to
+remove a signal once its last wrapper is gone and nothing consumes it; a
+signal a live `FuncNode` produces is never pruned that way
+(`removeSignal(force)`): the producer keeps every output port, or -- when
+none of its outputs is held or consumed -- goes as a unit via `removeFunc`.
+(An unused destructured target inside an init, `var [a, b] = f(x)`, used to
+strip the node's second port.)
+
 The data flow engine is represented as a builtin actor instance.  Hence, the evaluation of all functions (`FuncNode`s) happens on the dataflow engine's actor thread.
 
 Signals can be sampled to yield their current value at any time on any thread, either via the builtin `value` property, or by using them to construct their underlying value type (e.g. `vector(vecsignal)`, or `real(realsig)`)

@@ -1,0 +1,9 @@
+out:true w:true
+true
+out:true w:false
+false
+true
+out:true w:false
+true
+out:true w:true
+false

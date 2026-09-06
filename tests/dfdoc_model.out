@@ -1,0 +1,67 @@
+true
+true
+true
+true
+true
+model node: dfine dfine_model.predict nin=1 outs=["dfine_0", "dfine_1"]
+model ports: {"ins": ["tensor"], "outs": ["tensor", "tensor"]}
+errors: 0
+---
+@dataflow_diagram(version=1, next_id=6)
+
+import vision
+import ai.nn
+
+@df(model='dfine')
+var dfine_model = ai.nn.Model(source_dir() + '/models/dfine_nano_fp32.onnx')
+
+type Detect object:
+  @df(id=1, x=0, y=0, payload='tensor')
+  var img:signal = nil
+
+  @df(id=5, x=800, y=0)
+  var dets:signal = nil
+
+  proc init(img:signal, freq:real=2):
+    this.img = img
+
+    @df(id=2, x=200, y=0)
+    var dfine_blob = vision.dfine_blob(img)
+
+    @df(id=3, x=400, y=0, model='dfine')
+    var [dfine_0, dfine_1] = dfine_model.predict(dfine_blob)
+
+    @df(id=4, x=600, y=0)
+    var dfine_detections = vision.dfine_detections(dfine_0, dfine_1)
+
+    dets = dfine_detections
+
+--- a second node shares the holder; removing one keeps it
+true
+true
+--- removing the last one drops the holder
+true
+false
+@dataflow_diagram(version=1, next_id=7)
+
+import vision
+import ai.nn
+
+type Detect object:
+  @df(id=1, x=0, y=0, payload='tensor')
+  var img:signal = nil
+
+  @df(id=5, x=800, y=0)
+  var dets:signal = nil
+
+  proc init(img:signal, freq:real=2):
+    this.img = img
+
+    @df(id=2, x=200, y=0)
+    var dfine_blob = vision.dfine_blob(img)
+
+    @df(id=4, x=600, y=0)
+    var dfine_detections = vision.dfine_detections(nil, nil)
+
+    dets = dfine_detections
+

@@ -1,0 +1,52 @@
+# math.argmax along one axis: the index of the largest value at every
+# position in the other axes, with that axis removed from the shape.
+import math
+
+# no axis: one index over the whole tensor, row-major
+var v = tensor(4, dtype='float32')
+v[2] = 5.0
+print(math.argmax(v))
+print(math.argmax(v, axis=0))
+print(math.argmax(v, axis=-1))
+
+var m = tensor(2, 3, dtype='float32')
+m[0, 1] = 3.0
+m[1, 2] = 9.0
+print(math.argmax(m))          # flat index of the 9.0
+
+# along an axis
+var a1 = math.argmax(m, axis=1)
+print(a1.shape())
+print(a1.dtype())
+print(a1[0])
+print(a1[1])
+var a0 = math.argmax(m, axis=0)
+print(a0.shape())
+print(a0[0])
+print(a0[1])
+print(a0[2])
+
+# a classifier head: scores [1, C, H, W] -> a class map [1, H, W]
+var scores = tensor(1, 3, 2, 2, dtype='float32')
+scores[0, 2, 0, 0] = 1.0
+scores[0, 1, 0, 1] = 1.0
+scores[0, 0, 1, 0] = 1.0
+scores[0, 2, 1, 1] = 1.0
+var cls = math.argmax(scores, axis=1)
+print(cls.shape())
+print(cls[0, 0, 0])
+print(cls[0, 0, 1])
+print(cls[0, 1, 0])
+print(cls[0, 1, 1])
+
+# negative axis, integer payloads, and ties keeping the first index
+var ints = tensor(2, 3, dtype='int32')
+ints[0, 0] = 7
+ints[1, 1] = 7
+ints[1, 2] = 7
+var ai = math.argmax(ints, axis=-1)
+print(ai[0])
+print(ai[1])
+
+# a vector still answers with a plain index
+print(math.argmax(vector([1.0, 9.0, 2.0])))

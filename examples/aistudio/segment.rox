@@ -1,0 +1,35 @@
+@dataflow_diagram(version=1, next_id=9)
+
+import vision
+import ai.nn
+
+@df(model='segment')
+var segment_model = ai.nn.Model(source_dir() + '/models/deeplabv3_mobilenetv2_voc.onnx')
+
+type Segment object:
+  @df(id=1, x=20, y=200, payload='tensor', feed='camera:0', show=false)
+  var img:signal = nil
+
+  @df(id=7, x=1120, y=112, view='image')
+  var scene:signal = nil
+
+  @df(id=8, x=976, y=336)
+  var middle:signal = nil
+
+  proc init(img:signal, freq:real=2):
+    this.img = img
+
+    @df(id=2, x=260, y=300, show=false)
+    var segment_blob = vision.segment_blob(img)
+
+    @df(id=3, x=528, y=240, model='segment', show=false)
+    var classes = segment_model.predict(segment_blob)
+
+    @df(id=4, x=768, y=112, show=false)
+    var segment_overlay = vision.segment_overlay(img, classes)
+
+    @df(id=5, x=768, y=336, show=false)
+    var center_class = vision.center_class(classes)
+
+    scene = segment_overlay
+    middle = center_class

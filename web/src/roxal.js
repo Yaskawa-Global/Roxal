@@ -1,11 +1,17 @@
-// Load the Roxal VM and run an app script.
+// Load a Roxal VM and run an app script.
 //
-// roxal.js is an Emscripten MODULARIZE bundle served from public/, not an ES
+// The VM is reached through a host (web/src/lib/host.js): the wasm build in
+// this tab, or a native `roxal --web-host` process over a WebSocket when the
+// page is opened with `?host=ws://127.0.0.1:8765`. Everything here is written
+// against the host interface; nothing below knows which one it got.
+//
+// roxal.js (the Emscripten MODULARIZE bundle) is served from public/, not an ES
 // module, so it is pulled in with a script tag and hands back a global factory.
 // It must NOT go through the bundler: Vite would try to rewrite its Worker
 // spawning and its .wasm/.data fetches, both of which Emscripten resolves itself.
 
 import { installNnProvider } from './nn-provider.js';
+import { WasmHost, SocketHost } from './lib/host.js';
 
 let loading = null;
 
@@ -25,6 +31,25 @@ function loadFactory() {
     });
 }
 
+// Diagnostic switches carried in the URL, applied to whichever host we got:
+// ?nogc=1 disables the collector for crash triage (mirrors the native --nogc
+// flag; memory then only grows), the rest are GC and forensic knobs.
+function applyUrlConfig(host) {
+    try {
+        const qs = new URLSearchParams(location.search);
+        if (qs.has('nogc')) host.config('gc.disabled', 'true');
+        if (qs.has('gcthreshold')) host.config('gc.threshold', qs.get('gcthreshold'));
+        if (qs.has('gcshadow')) host.config('env.ROXAL_GC_SHADOW_SCAN', qs.get('gcshadow'));
+        if (qs.has('fcflags')) host.config('forensic.flags', qs.get('fcflags'));
+        if (qs.has('gcprecise')) host.config('env.ROXAL_GC_CONSERVATIVE', '0');
+    } catch (e) {
+        // A missing export here means the treatment you asked for in the
+        // URL did NOT apply -- an entire validation series was once
+        // invalidated by exactly this being swallowed. Shout.
+        console.error('runtime config unavailable — URL GC switches ignored:', e);
+    }
+}
+
 /**
  * Boot the VM and run `source` as the app script.
  *
@@ -32,61 +57,56 @@ function loadFactory() {
  * a UI has nothing to render before that. The script itself keeps running — it
  * ends in web.serve(), which parks the VM waiting for UI events.
  *
+ * `hostUrl` selects a native host (`ws://...`); without it the wasm VM boots
+ * in this tab.
+ *
  * @returns {Promise<{rox: object, output: () => string}>}
  */
-export async function startRoxal(source, { expectStore, onOutput, name = '<script>' } = {}) {
+export async function startRoxal(source, { expectStore, onOutput, name = '<script>', hostUrl = null } = {}) {
     if (loading) return loading;
 
     loading = (async () => {
-        if (!self.crossOriginIsolated)
-            throw new Error(
-                'not cross-origin isolated — COOP/COEP headers are missing, so ' +
-                'SharedArrayBuffer is unavailable and the VM cannot spawn its threads');
-
-        const createRoxal = await loadFactory();
         let buffer = '';
+        // `text` is raw output, newlines included, exactly as the VM wrote it.
         const append = (text, isErr) => {
-            buffer += (isErr ? '[stderr] ' : '') + text + '\n';
+            buffer += (isErr ? '[stderr] ' : '') + text;
             // Mirror VM stderr to the devtools console: aborts (stack-overflow
             // canaries, assertions) are written there by the runtime, and the
             // output pane can be gone or truncated by the time they matter.
-            if (isErr) console.error('[VM stderr]', text);
+            if (isErr) console.error('[VM stderr]', text.replace(/\n$/, ''));
             onOutput?.(buffer);
         };
 
-        const rox = await createRoxal({
-            print: t => append(t, false),
-            printErr: t => append(t, true),
-        });
+        let rox;
+        if (hostUrl) {
+            const host = new SocketHost(hostUrl);
+            host.onOutput(append);
+            const hello = await host.connect();
+            // The host may already be inside a script from a previous page
+            // (a parked app survives a reload); count it so the liveness
+            // logic knows something is alive to pump.
+            submitted = hello.completed + (hello.running ? 1 : 0);
+            rox = host;
+        } else {
+            if (!self.crossOriginIsolated)
+                throw new Error(
+                    'not cross-origin isolated — COOP/COEP headers are missing, so ' +
+                    'SharedArrayBuffer is unavailable and the VM cannot spawn its threads');
 
-        // ai.nn's backend: scripts that import it get onnxruntime-web
-        // (WebGPU when available). Registration is cheap; loading is lazy.
-        installNnProvider(rox);
-
-        // Diagnostic switch: ?nogc=1 disables the collector for crash triage
-        // (mirrors the native --nogc flag). Memory then only grows.
-        try {
-            const qs = new URLSearchParams(location.search);
-            if (qs.has('nogc'))
-                rox.ccall('roxal_config', null, ['string', 'string'], ['gc.disabled', 'true']);
-            if (qs.has('gcthreshold'))
-                rox.ccall('roxal_config', null, ['string', 'string'], ['gc.threshold', qs.get('gcthreshold')]);
-            if (qs.has('gcshadow'))
-                rox.ccall('roxal_config', null, ['string', 'string'], ['env.ROXAL_GC_SHADOW_SCAN', qs.get('gcshadow')]);
-            if (qs.has('fcflags'))
-                rox.ccall('roxal_config', null, ['string', 'string'],
-                          ['forensic.flags', qs.get('fcflags')]);
-            if (qs.has('gcprecise'))
-                rox.ccall('roxal_config', null, ['string', 'string'], ['env.ROXAL_GC_CONSERVATIVE', '0']);
-        } catch (e) {
-            // A missing export here means the treatment you asked for in the
-            // URL did NOT apply -- an entire validation series was once
-            // invalidated by exactly this being swallowed. Shout.
-            console.error('roxal_config unavailable — URL GC switches ignored:', e);
+            const createRoxal = await loadFactory();
+            const module = await createRoxal({
+                print: t => append(t + '\n', false),
+                printErr: t => append(t + '\n', true),
+            });
+            // ai.nn's backend: scripts that import it get onnxruntime-web
+            // (WebGPU when available). Registration is cheap; loading is lazy.
+            installNnProvider(module);
+            rox = new WasmHost(module);
         }
+        applyUrlConfig(rox);
 
         submitted++;
-        rox.ccall('roxal_submit_source', null, ['string', 'string'], [source, name]);
+        rox.submit(source, name);
 
         if (expectStore) {
             // Poll rather than await: submitting is deliberately fire-and-forget,
@@ -107,28 +127,20 @@ export async function startRoxal(source, { expectStore, onOutput, name = '<scrip
 }
 
 /**
- * Re-run an edited script against the already-running VM.
- *
- * A parked app (web.serve) owns the VM thread, so a newly submitted script would
- * queue behind it forever. Ask the parked script to return first, wait for it to
- * finish, then submit. Re-exposing the same store name replaces it, so the edited
- * object takes effect rather than the old one being silently reused.
- */
-/**
  * Displace whatever script currently owns the VM: ask a web.serve() park to
  * return (graceful), and if the script is still alive after `graceMs` --
  * a batch loop never parks in serve -- interrupt it (a clean VM exit of
  * that run; the host resets state before the next).
  */
 export async function stopCurrent(rox, { graceMs = 1500, deadlineMs = 12000 } = {}) {
-    const before = rox.ccall('roxal_completed_count', 'number', [], []);
+    const before = rox.completedCount();
     if (!scriptParked(rox)) return;                     // nothing alive
-    rox.ccall('roxal_request_stop', null, [], []);
+    rox.requestStop();
     const start = Date.now();
     let escalated = false;
-    while (rox.ccall('roxal_completed_count', 'number', [], []) === before) {
+    while (rox.completedCount() === before) {
         if (!escalated && Date.now() - start > graceMs) {
-            rox.ccall('roxal_interrupt_script', null, [], []);
+            rox.interrupt();
             escalated = true;
         }
         if (Date.now() - start > deadlineMs)
@@ -137,6 +149,14 @@ export async function stopCurrent(rox, { graceMs = 1500, deadlineMs = 12000 } = 
     }
 }
 
+/**
+ * Re-run an edited script against the already-running VM.
+ *
+ * A parked app (web.serve) owns the VM thread, so a newly submitted script would
+ * queue behind it forever. Ask the parked script to return first, wait for it to
+ * finish, then submit. Re-exposing the same store name replaces it, so the edited
+ * object takes effect rather than the old one being silently reused.
+ */
 export async function runScript(rox, source,
                                 { expectStore, assumeStopped, name = '<script>',
                                   superseded } = {}) {
@@ -152,28 +172,28 @@ export async function runScript(rox, source,
         await stopCurrent(rox);
     }
 
-    const ranBefore = rox.ccall('roxal_completed_count', 'number', [], []);
+    const ranBefore = rox.completedCount();
     // Generation, not presence: the JS registry keeps a stale record for the
     // store across runs, so .includes(name) is true the moment the OLD run has
     // ever exposed it. Only a fresh DEFINE proves the new script reached
     // serve().
-    const genBefore = rox.roxalStoreGeneration?.(expectStore) ?? 0;
+    const genBefore = rox.roxalStoreGeneration(expectStore);
     submitted++;
-    rox.ccall('roxal_submit_source', null, ['string', 'string'], [source, name]);
+    rox.submit(source, name);
 
     // The new script parks in web.serve() rather than completing, so wait for the
     // store -- and treat completion as failure, since a script that COMPLETED
     // never reached serve(): it had a compile or runtime error.
     const deadline = Date.now() + 20000;
     for (;;) {
-        if (expectStore && (rox.roxalStoreGeneration?.(expectStore) ?? 0) > genBefore) return;
-        if (rox.ccall('roxal_completed_count', 'number', [], []) > ranBefore) {
+        if (expectStore && rox.roxalStoreGeneration(expectStore) > genBefore) return;
+        if (rox.completedCount() > ranBefore) {
             // Completing is not automatically a failure: a script with no
             // web.serve() is an ordinary batch script that ran and finished.
             // Only the exit code distinguishes that from a script that died,
             // so say which -- "ended without exposing a store" reads as a
             // defect either way, and for a print-and-exit script it is not one.
-            const rc = rox.ccall('roxal_last_result', 'number', [], []);
+            const rc = rox.lastResult();
             throw Object.assign(new Error(rc === 0
                 ? 'the script ran to completion — it never called web.serve(), '
                   + 'so there is no live app to interact with'
@@ -197,7 +217,7 @@ export async function runScript(rox, source,
  * dead menus, a dead console and a Run button that hangs on its first call.
  */
 export function scriptParked(rox) {
-    return submitted > rox.ccall('roxal_completed_count', 'number', [], []);
+    return submitted > rox.completedCount();
 }
 
 /**

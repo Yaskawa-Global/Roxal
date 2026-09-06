@@ -3,6 +3,7 @@
 #include "compiler/VM.h"
 #include "compiler/Object.h"
 #include "compiler/SimpleMarkSweepGC.h"
+#include "compiler/RuntimeConfig.h"
 #include "core/common.h"
 
 #include <optional>
@@ -75,7 +76,12 @@ void printTrace() {
 
 DataflowEngine::DataflowEngine()
 {
+    // Strict unless the host asked for best-effort (RuntimeConfig
+    // dataflow.scheme: 'best-effort' warns on a tick overrun instead of
+    // throwing; `roxal --dataflow-scheme` and the web host set it).
     m_executionScheme = ExecutionScheme::Strict;
+    if (roxal::RuntimeConfig::get("dataflow.scheme").value_or("strict") == "best-effort")
+        m_executionScheme = ExecutionScheme::BestEffort;
     m_networkModified = false;
     assert(TimeDuration::secs(1).frequency() == 1.0);
     m_runStart = TimePoint::zero();
@@ -184,6 +190,29 @@ void DataflowEngine::removeSignal(const ptr<Signal>& signal, bool force)
     if (used && !force)
         return;
 
+    // A signal a func produces is never pruned on its own, even when its
+    // last wrapper dies unconsumed: the func keeps every output port or
+    // goes as a unit.  A multi-output lift whose second target was a dead
+    // local (`var [a, b] = split(x)` in an init) would otherwise lose a
+    // port and fail its arity check at the next evaluation.  The producer
+    // is garbage only when none of its outputs is held or consumed; then
+    // removeFunc() takes it and its signals down together.
+    if (force) {
+        std::vector<ptr<FuncNode>> producers;
+        for (const auto& kv : funcs)
+            for (const auto& op : kv.second->m_outputs)
+                if (op.signal == signal) { producers.push_back(kv.second); break; }
+        if (!producers.empty()) {
+            for (const auto& f : producers)
+                for (const auto& op : f->m_outputs)
+                    if (wrapperRefCount(op.signal) > 0 || consumerCount(op.signal) > 0)
+                        return;
+            for (const auto& f : producers)
+                removeFunc(f);
+            return;
+        }
+    }
+
     // Remove from signal list
     auto it = std::remove(signals.begin(), signals.end(), signal);
     if (it != signals.end())
@@ -221,6 +250,10 @@ void DataflowEngine::removeSignal(const ptr<Signal>& signal, bool force)
 void DataflowEngine::removeFunc(ptr<FuncNode> func)
 {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
+
+    m_asyncYields.erase(std::remove_if(m_asyncYields.begin(), m_asyncYields.end(),
+                            [&](const AsyncYield& y){ return y.func == func; }),
+                        m_asyncYields.end());
 
     auto it = funcs.find(func->name());
     if (it != funcs.end())
@@ -683,6 +716,7 @@ void DataflowEngine::run() {
             TimePoint bgDue;
             didWork |= serviceBackgroundIslands(bgDue);
             didWork |= servicePendingTickRequests();
+            didWork |= serviceAsyncYields();
             if (!didWork) {
                 // Idle: sleep on the pending-event condvar instead of a 1ms
                 // poll -- truly dormant with no traffic, ~us delivery with.
@@ -692,6 +726,8 @@ void DataflowEngine::run() {
                 // wakeDrain()).  The timed fallback covers any missed wake
                 // -- shortened when a background island comes due sooner.
                 auto waitDur = std::chrono::microseconds(10000);
+                if (hasAsyncYields())
+                    waitDur = std::chrono::microseconds(1000);   // poll an in-flight inference
                 if (bgDue != TimePoint::zero()) {
                     auto us = (bgDue - TimePoint::currentTime()).microSecs();
                     if (us < 10000)
@@ -751,6 +787,7 @@ void DataflowEngine::run() {
             TimePoint bgDue;
             gapWork |= serviceBackgroundIslands(bgDue);
             gapWork |= servicePendingTickRequests();
+            gapWork |= serviceAsyncYields();
             if (!gapWork)
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
@@ -793,10 +830,17 @@ void DataflowEngine::tick(bool waitForTickStart)
 
 
     m_tickStart = m_runStart + m_tickPeriod*m_tickNumber;
-    auto nextTickStart = m_tickStart + m_tickPeriod;
 
     if (waitForTickStart)
         sleepUntil(m_tickStart);
+    // The overrun policy judges the CLOCKED work of this tick -- ticking the
+    // sources, the periodic islands, the tick callbacks -- against the
+    // period. It is measured from when that work starts, not from the grid:
+    // event-driven islands are serviced in the gap before a tick (and a
+    // camera frame through a model can take longer than a period), which
+    // used to make the tick start late and fail an absolute deadline it
+    // never had a chance at.
+    const TimePoint clockedWorkStart = TimePoint::currentTime();
 
     #if 0
     std::cout << "tick " << tick << " @ " << m_tickStart.humanString() << std::endl;
@@ -857,7 +901,7 @@ void DataflowEngine::tick(bool waitForTickStart)
     #endif
 
     invokeTickCallbacks();
-    if (TimePoint::currentTime() > nextTickStart) {
+    if (TimePoint::currentTime() - clockedWorkStart > m_tickPeriod) {
         std::string message = "Engine tick period "+m_tickPeriod.load().humanString()+" exceeded after tick callbacks invoked";
 
         if (m_executionScheme == ExecutionScheme::Strict)
@@ -905,6 +949,15 @@ void DataflowEngine::evaluateNetwork(TimePoint evaluationTime)
     }
 
     for (const auto& island : islandsCopy) {
+        // An island with no clocked signal at all is event-driven: it is
+        // evaluated when one of its sources is set (processEventDriven-
+        // SignalUpdate), on the actor thread in the tick gap or in the
+        // host-driven branch, never as part of a tick. Evaluating it here
+        // as well ran its (possibly long -- a model inference) work inside
+        // the periodic budget, so a purely event-driven vision network
+        // tripped the Strict overrun check of a 20 Hz grid it was not on.
+        if (island.tickPeriod == TimeDuration::zero())
+            continue;
         TimePoint islandTime = resolveEvaluationTime(island, evaluationTime);
         evaluateIsland(island, islandTime);
     }
@@ -1294,6 +1347,20 @@ DataflowEngine::TickResult DataflowEngine::evaluateIsland(
                         updateSignalConsumerInputAvailability(output.signal, evaluationTime);
                 }
                 else if (result == FuncExecResult::Yielded
+                         && func->hasPendingFutureYield()) {
+                    // An async body (ai.nn predict): the node waits on a
+                    // worker, not on a VM thread, so the island is not
+                    // suspended for it -- consumers go on with its last
+                    // delivered value (or wait, if it never delivered) and
+                    // the node is polled again on the next evaluation.  An
+                    // event-driven island has no next evaluation of its
+                    // own; the engine thread polls it (serviceAsyncYields).
+                    for (auto& output : func->m_outputs)
+                        updateSignalConsumerInputAvailability(output.signal, evaluationTime);
+                    if (island.tickPeriod == TimeDuration::zero())
+                        noteAsyncYield(func, evaluationTime);
+                }
+                else if (result == FuncExecResult::Yielded
                          || result == FuncExecResult::Paused) {
                     // Save position for resume -- IDENTICAL retention for a
                     // debugger pause: treating Paused as anything but a
@@ -1672,6 +1739,138 @@ void DataflowEngine::initializeNode(const ptr<FuncNode>& node)
             if (output.signal)
                 updateSignalConsumerInputAvailability(output.signal, evalTime);
     }
+
+    // An async body (futures pending) on an event-driven island: nothing
+    // ticks it, so the engine thread polls it (see serviceAsyncYields).
+    if (node->hasPendingFutureYield()) {
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        for (const auto& island : m_networkIslands) {
+            if (std::find(island.funcs.begin(), island.funcs.end(), node) == island.funcs.end())
+                continue;
+            if (island.tickPeriod == TimeDuration::zero())
+                noteAsyncYield(node, evalTime);
+            break;
+        }
+    }
+}
+
+
+bool DataflowEngine::locateInIsland(const NetworkIsland& island, const ptr<FuncNode>& func,
+                                    size_t& periodIndex, size_t& funcIndex)
+{
+    size_t p = 0;
+    for (const auto& order : island.executionOrders) {
+        for (size_t f = 0; f < order.second.size(); ++f) {
+            if (order.second[f] == func) {
+                periodIndex = p;
+                funcIndex = f;
+                return true;
+            }
+        }
+        ++p;
+    }
+    return false;
+}
+
+
+void DataflowEngine::noteAsyncYield(const ptr<FuncNode>& func, TimePoint time)
+{
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    for (auto& y : m_asyncYields)
+        if (y.func == func) {
+            // Still the same in-flight evaluation (the node re-yields on
+            // its own rerun; see FuncNode::resumeExecution): keep the
+            // record current.
+            y.time = func->yieldedExecutionTime();
+            return;
+        }
+    m_asyncYields.push_back({func, time});
+    m_pendingEventCv.notify_all();   // shorten the engine thread's idle wait
+}
+
+
+bool DataflowEngine::hasAsyncYields()
+{
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    return !m_asyncYields.empty();
+}
+
+
+bool DataflowEngine::serviceAsyncYields()
+{
+    if (!hasAsyncYields())
+        return false;
+
+    // Same admission and serialization as an event-driven evaluation.
+    DebugGateTryScope debugAdmission(debugGate);
+    if (!debugAdmission.entered)
+        return false;
+    std::unique_lock<std::recursive_mutex> evalLock(m_evalMutex, std::try_to_lock);
+    if (!evalLock.owns_lock()) {
+        roxal::SimpleMarkSweepGC::GCSafeBlockScope blockCover;
+        evalLock.lock();
+    }
+    if (m_networkModified)
+        buildNetworkCacheData();
+
+    std::vector<AsyncYield> pending;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        pending = m_asyncYields;
+    }
+
+    bool didWork = false;
+    for (const auto& y : pending) {
+        auto drop = [&] {
+            std::lock_guard<std::recursive_mutex> lock(m_mutex);
+            m_asyncYields.erase(std::remove_if(m_asyncYields.begin(), m_asyncYields.end(),
+                                    [&](const AsyncYield& e){ return e.func == y.func; }),
+                                m_asyncYields.end());
+        };
+
+        if (!y.func->hasPendingFutureYield()) {   // delivered elsewhere (an event's evaluation)
+            drop();
+            continue;
+        }
+        auto result = y.func->resumeExecution(TimePoint::max());
+        if (result == FuncExecResult::Yielded)
+            continue;   // still in flight
+        didWork = true;
+        if (result != FuncExecResult::Completed) {
+            drop();
+            continue;
+        }
+
+        // Delivered at y.time: finish the island downstream of the node, at
+        // that time.  The island is looked up now (not recorded): a rebuild
+        // since the yield would have invalidated any saved position.
+        NetworkIsland island;
+        bool found = false;
+        {
+            std::lock_guard<std::recursive_mutex> lock(m_mutex);
+            for (const auto& isl : m_networkIslands) {
+                if (std::find(isl.funcs.begin(), isl.funcs.end(), y.func) != isl.funcs.end()) {
+                    island = isl;
+                    found = true;
+                    break;
+                }
+            }
+            for (const auto& output : y.func->m_outputs)
+                updateSignalConsumerInputAvailability(output.signal, y.time);
+        }
+        // The rerun (if any) may have yielded anew: keep polling it, from
+        // its own evaluation time, unless the island is now clocked.
+        if (y.func->hasPendingFutureYield() && found && island.tickPeriod == TimeDuration::zero())
+            noteAsyncYield(y.func, y.func->yieldedExecutionTime());
+        else
+            drop();
+
+        size_t periodIndex = 0, funcIndex = 0;
+        if (found && island.tickPeriod == TimeDuration::zero()
+            && locateInIsland(island, y.func, periodIndex, funcIndex))
+            evaluateIsland(island, y.time, TimePoint::max(), periodIndex, funcIndex + 1);
+    }
+    return didWork;
 }
 
 

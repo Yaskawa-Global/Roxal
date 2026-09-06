@@ -1,0 +1,34 @@
+# A lifted function that names an imported module reads that module
+# variable on the dataflow thread as a const reference. The module binding
+# is a WEAK reference, and constRef() used to acquire it strongly and
+# release it weakly -- one weak count lost per node execution, until the
+# import's module-type object was freed under live references (a crash at
+# shutdown, or a corrupted heap earlier). Two executions of a node whose
+# module has few weak holders were enough. Also covers the same node placed
+# inside a component's init, where the demo diagrams first hit it.
+import df_lift_module_ref_lib
+
+func wrap(t: tensor) -> real:
+  return df_lift_module_ref_lib.total(t)
+
+type C object:
+  var out :signal = nil
+  proc init(x :signal, freq :real = 2):
+    var b = wrap(x)
+    out = b
+
+var x = signal(0, tensor(4, dtype='float32'))
+var c = C(x)
+x.set(tensor(4, dtype='float32') + 1.5)
+wait(ms=200)
+print(c.out.value)
+x.set(tensor(4, dtype='float32') + 2.5)
+wait(ms=200)
+print(c.out.value)
+
+# the module-level form, for the same read on the engine thread
+var y = wrap(x)
+x.set(tensor(4, dtype='float32') + 0.25)
+wait(ms=200)
+print(y.value)
+print('done')

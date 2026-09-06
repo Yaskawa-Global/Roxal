@@ -79,6 +79,13 @@ public:
     // (Threads that read VM memory must already be stopped -- see onShutdown.)
     virtual void onModuleUnloading(VM& vm) {}
 
+    // Called as the very LAST step of VM shutdown: every object has been
+    // freed and every VM thread joined. Use for library-level state that must
+    // be torn down deterministically, before main() returns into the exit
+    // handlers -- e.g. an inference runtime's environment, whose destruction
+    // from __run_exit_handlers races the teardown of its GPU provider.
+    virtual void onShutdownComplete(VM& vm) {}
+
 protected:
     // only valid after call to setVM() in registerBuiltins(VM&)
     VM& vm() { return vm_.value().get(); }

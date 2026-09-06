@@ -1,0 +1,18 @@
+# A palette-visible image source for the AI Studio view test: a small RGB
+# gradient whose blue channel flips with the input, so consecutive frames
+# differ (the harness drives a bool input as a square wave).
+func gradient(t :bool) -> tensor:
+  var img = tensor(24, 32, 3, dtype='uint8')
+  var blue = 60
+  if t:
+    blue = 220
+  var y = 0
+  while y < 24:
+    var x = 0
+    while x < 32:
+      img[y, x, 0] = x * 8
+      img[y, x, 1] = y * 10
+      img[y, x, 2] = blue
+      x = x + 1
+    y = y + 1
+  return img

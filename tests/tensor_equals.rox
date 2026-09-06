@@ -1,0 +1,29 @@
+# Tensor equality after the bitwise fast path: integer dtypes are unequal as
+# soon as any element differs (no per-element walk), floats compare within
+# eps, and a long identical prefix (video frames) changes nothing.
+var a = tensor(2000, 3, dtype='uint8')
+var b = tensor(2000, 3, dtype='uint8')
+print(a == b)
+b[1999, 2] = 1
+print(a == b)
+print(a != b)
+a[1999, 2] = 1
+print(a == b)
+
+var f = tensor(4, dtype='float32')
+var g = tensor(4, dtype='float32')
+g[3] = 1.0
+print(f == g)
+g[3] = 0.0
+print(f == g)
+g[3] = -0.0
+print(f == g)
+
+var i = tensor(3, dtype='int64')
+var j = tensor(3, dtype='int64')
+j[0] = -1
+print(i == j)
+print(tensor(2, dtype='int32') == tensor(3, dtype='int32'))
+print(tensor(2, dtype='int32') == tensor(2, dtype='uint8'))
+print(tensor(0, dtype='uint8') == tensor(0, dtype='uint8'))
+print(tensor(0, dtype='float32') == tensor(0, dtype='float32'))

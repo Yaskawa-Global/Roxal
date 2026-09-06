@@ -1,0 +1,33 @@
+// dfdoc: an ONNX model from the workspace catalog as a node -- a module-level
+// ai.nn.Model holder shared by the component's instances plus a predict node
+// with one output wire per model output; removing the last node using the
+// holder removes the holder too
+import dfdoc
+
+var doc = dfdoc.new_document('Detect', [{'name': 'freq', 'default': 2.0}])['doc']
+var img = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'input', 'name': 'img', 'type': 'tensor', 'x': 0, 'y': 0})['id']
+var pre = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'func', 'callee': 'vision.dfine_blob', 'nin': 1, 'nout': 1, 'x': 200, 'y': 0})['id']
+var det = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'model', 'name': 'dfine', 'file': 'dfine_nano_fp32.onnx', 'nin': 1, 'nout': 2, 'x': 400, 'y': 0})['id']
+var post = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'func', 'callee': 'vision.dfine_detections', 'nin': 2, 'nout': 1, 'x': 600, 'y': 0})['id']
+var out = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'output', 'name': 'dets', 'x': 800, 'y': 0})['id']
+print(dfdoc.apply(doc, {'op': 'connect', 'from': {'id': img, 'port': 0}, 'to': {'id': pre, 'port': 0}})['ok'])
+print(dfdoc.apply(doc, {'op': 'connect', 'from': {'id': pre, 'port': 0}, 'to': {'id': det, 'port': 0}})['ok'])
+print(dfdoc.apply(doc, {'op': 'connect', 'from': {'id': det, 'port': 0}, 'to': {'id': post, 'port': 0}})['ok'])
+print(dfdoc.apply(doc, {'op': 'connect', 'from': {'id': det, 'port': 1}, 'to': {'id': post, 'port': 1}})['ok'])
+print(dfdoc.apply(doc, {'op': 'connect', 'from': {'id': post, 'port': 0}, 'to': {'id': out, 'port': 0}})['ok'])
+for n in dfdoc.view(doc)['nodes']:
+  if n['kind'] == 'model':
+    print("model node: {n['model']} {n['callee']} nin={n['nin']} outs={n['name']}")
+var pt = dfdoc.port_types(doc, [])
+print("model ports: {pt[string(det)]}")
+print("errors: {len(dfdoc.check(doc))}")
+print("---")
+print(dfdoc.save(doc))
+print("--- a second node shares the holder; removing one keeps it")
+var det2 = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'model', 'name': 'dfine', 'file': 'dfine_nano_fp32.onnx', 'nin': 1, 'nout': 2, 'x': 400, 'y': 100})['id']
+print(dfdoc.apply(doc, {'op': 'remove_node', 'id': det2})['ok'])
+print(dfdoc.save(doc).search('dfine_model = ai.nn.Model') >= 0)
+print("--- removing the last one drops the holder")
+print(dfdoc.apply(doc, {'op': 'remove_node', 'id': det})['ok'])
+print(dfdoc.save(doc).search('ai.nn.Model') >= 0)
+print(dfdoc.save(doc))

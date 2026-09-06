@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { startRoxal, runScript, scriptParked, ensureServices, stopCurrent } from './roxal.js';
 import { warmNnProvider } from './nn-provider.js';
+import { hostUrlFromLocation } from './lib/host.js';
 import Editor, { disposeModel } from './Editor.jsx';
 import TanksPanel from './TanksPanel.jsx';
 import MnistPanel from './MnistPanel.jsx';
@@ -11,6 +12,8 @@ const DfEditor = lazy(() => import('./DfEditor.jsx'));
 import { isDiagramSource, dfCall } from './dfdoc.js';
 import { armDebugSession, DebugStoreAdapter } from './debug.js';
 import { useRoxal, useRoxalStore } from './roxal-react.js';
+import FileMenu from './lib/FileMenu.jsx';
+import Repl from './lib/Repl.jsx';
 // The demos are PLAIN .rox files -- editable in any editor, with Roxal syntax
 // rather than a JavaScript string. Vite's ?raw suffix hands us their text; the
 // IDE seeds them into /data on a first visit, after which they are ordinary
@@ -41,11 +44,13 @@ const pickPanel = rox =>
           .filter(x => x.g > 0)
           .sort((a, b) => b.g - a.g)[0]?.n ?? null;
 
-// Files live under /data in the wasm FS, which the host backs with OPFS in the
-// browser -- they survive a reload. The IDE reaches them through the
+// Files live in the host's data directory: /data in the wasm FS, which the
+// host backs with OPFS in the browser (they survive a reload), or the --root
+// directory of a native `roxal --web-host`. The IDE reaches them through the
 // "workspace" store (a Roxal actor in the web module using fileio itself), so
-// File > Open here exercises the same API user scripts get.
-const DATA_DIR = '/data';
+// File > Open here exercises the same API user scripts get. The bootstrap's
+// build store reports which directory this host uses.
+let dataDir = '/data';
 // The bootstrap also publishes what this build of the VM can do. `features` is
 // a sys constant (sys.* is implicit), so the header reports the real compiled
 // feature set rather than a list maintained by hand over here -- which would
@@ -56,6 +61,7 @@ const BOOTSTRAP = [
     '  var platform :string = platform',
     '  var version :string = version',
     '  var features = features',
+    '  var data_dir :string = host_dir("data")',
     'web.expose("build", Build())',
     'web.serve()',
     '',
@@ -235,86 +241,6 @@ function Track({ position, target }) {
     );
 }
 
-// A zero-JS dropdown (details/summary); items close it by blurring the details.
-function FileMenu({ files, onAction }) {
-    const ref = useRef(null);
-    const pick = action => () => { ref.current?.removeAttribute('open'); onAction(action); };
-    return (
-        <details className="menu" ref={ref}>
-            <summary>File</summary>
-            <div className="menu-items">
-                <button onClick={pick({ kind: 'new' })}>New…</button>
-                <button onClick={pick({ kind: 'newDiagram' })}>New diagram…</button>
-                <div className="menu-sep" />
-                {files.length === 0 && <span className="menu-note">(no files)</span>}
-                {files.map(f => (
-                    <button key={f} onClick={pick({ kind: 'open', name: f })}>{f}</button>
-                ))}
-                <div className="menu-sep" />
-                <button onClick={pick({ kind: 'save' })}>Save</button>
-                <button onClick={pick({ kind: 'saveAs' })}>Save As…</button>
-                <button onClick={pick({ kind: 'delete' })}>Delete</button>
-                <div className="menu-sep" />
-                <button onClick={pick({ kind: 'reset' })}>Reset app…</button>
-            </div>
-        </details>
-    );
-}
-
-// REPL: each line goes to workspace.eval() on the VM; expression results and
-// prints come back over stdout, so the entry captures the output delta.
-function Repl({ evalLine }) {
-    const [log, setLog] = useState([]);
-    const [input, setInput] = useState('');
-    const [history, setHistory] = useState([]);
-    const [histAt, setHistAt] = useState(-1);
-    const endRef = useRef(null);
-
-    useEffect(() => { endRef.current?.scrollIntoView({ block: 'nearest' }); }, [log]);
-
-    async function submit() {
-        const line = input.trim();
-        if (!line) return;
-        setInput('');
-        setHistory(h => [line, ...h]);
-        setHistAt(-1);
-        const out = await evalLine(line);
-        setLog(l => [...l, { line, out }]);
-    }
-
-    function key(e) {
-        if (e.key === 'Enter') { e.preventDefault(); submit(); }
-        else if (e.key === 'ArrowUp') {
-            e.preventDefault();
-            const at = Math.min(histAt + 1, history.length - 1);
-            if (at >= 0 && history[at] !== undefined) { setHistAt(at); setInput(history[at]); }
-        } else if (e.key === 'ArrowDown') {
-            e.preventDefault();
-            const at = histAt - 1;
-            setHistAt(at);
-            setInput(at >= 0 ? history[at] : '');
-        }
-    }
-
-    return (
-        <div className="repl">
-            <div className="repl-log">
-                {log.map((e, i) => (
-                    <div key={i}>
-                        <div className="repl-in">&gt; {e.line}</div>
-                        {e.out && <div className="repl-out">{e.out}</div>}
-                    </div>
-                ))}
-                <div ref={endRef} />
-            </div>
-            <input className="repl-input" placeholder="roxal expression — try 6 * 7"
-                   value={input}
-                   onChange={e => setInput(e.target.value)}
-                   onKeyDown={key} />
-        </div>
-    );
-}
-
 export default function App() {
     const [rox, setRox] = useState(null);
     // The VM, reachable from code whose closure predates it.  Boot is one
@@ -422,7 +348,7 @@ export default function App() {
     const runSeqRef = useRef(0);
     const runChainRef = useRef(Promise.resolve());
 
-    const filePath = name => DATA_DIR + '/' + name;
+    const filePath = name => dataDir + '/' + name;
     const modelText = name => {
         const monaco = window.monaco;
         const m = monaco?.editor.getModel(monaco.Uri.parse('inmemory://roxal' + filePath(name)));
@@ -440,7 +366,7 @@ export default function App() {
     const activeView = activeIsDiagram ? (viewModes[active] ?? 'diagram') : 'source';
 
     async function refreshFiles(ws) {
-        const list = await ws.call('fs_list', DATA_DIR);
+        const list = await ws.call('fs_list', dataDir);
         // only .rox sources: running a /data script leaves a compiled .roc
         // cache beside it, which is not a file anyone opens
         setFiles((list || []).filter(n => !n.endsWith('/') && !n.startsWith('.') && n.endsWith('.rox')));
@@ -479,10 +405,15 @@ export default function App() {
                 const { rox } = await startRoxal(BOOTSTRAP, {
                     expectStore: 'workspace',
                     onOutput: text => { outputRef.current = text; setOutput(text); },
+                    hostUrl: hostUrlFromLocation(),
                 });
                 roxRef.current = rox;
                 setRox(rox);
                 const ws = rox.roxalStore('workspace');
+                // Where this host keeps files (the bootstrap exposed it before
+                // the workspace, so the build store is already defined).
+                const reported = rox.roxalStore('build').getSnapshot().data_dir;
+                if (typeof reported === 'string' && reported) dataDir = reported;
 
                 let list = await refreshFiles(ws);
                 let seeded = false;
@@ -532,7 +463,7 @@ export default function App() {
                 // boot, since the URL may outlive the file it names.
                 const wanted = requestedFile();
                 if (wanted && !list.includes(wanted))
-                    console.warn(`?file=${wanted}: not in ${DATA_DIR}, opening the usual file instead`);
+                    console.warn(`?file=${wanted}: not in ${dataDir}, opening the usual file instead`);
                 const first = (wanted && list.includes(wanted)) ? wanted
                             : (last && list.includes(last)) ? last : 'tanks.rox';
                 await openFile(ws, first);
@@ -580,7 +511,7 @@ export default function App() {
         }
         // A script that loads a model will block the VM inside Model() until
         // the runtime is there; start fetching it now so that wait is short.
-        if ((source ?? modelText(name)).includes('ai.nn')) warmNnProvider();
+        if (rox?.kind === 'wasm' && (source ?? modelText(name)).includes('ai.nn')) warmNnProvider();
         setRunning(true);
         setRunError(null);
         setRunBenign(false);
@@ -639,9 +570,8 @@ export default function App() {
                 // armed before the source is submitted, so they bind at
                 // compile time -- before the first user statement can run,
                 // fail, or pass a breakpoint line.
-                rox.ccall('roxal_debug_arm', null, ['number'], [1]);
-                rox.ccall('roxal_debug_set_breakpoints', null, ['string', 'string'],
-                          [name, (bpsRef.current[name] ?? []).join(',')]);
+                rox.debugArm(true);
+                rox.setBreakpoints(name, bpsRef.current[name] ?? []);
             }
             // expectStore is decided at SUBMIT time from the CURRENT armed
             // state (ref, not closure): if debugging was toggled on while
@@ -805,7 +735,7 @@ export default function App() {
     async function evalLine(line) {
         if (!workspace || !rox) return '(VM not ready)';
         const before = outputRef.current.length;
-        const completedBefore = rox.ccall('roxal_completed_count', 'number', [], []);
+        const completedBefore = rox.completedCount();
         let err = '';
         const result = await Promise.race([
             workspace.call('eval', line).catch(e => String(e.message || e)),
@@ -815,7 +745,7 @@ export default function App() {
         // Give the coalesced output flush a beat to land.
         await new Promise(r => setTimeout(r, 60));
         let note = '';
-        if (rox.ccall('roxal_completed_count', 'number', [], []) > completedBefore) {
+        if (rox.completedCount() > completedBefore) {
             // The line killed the app. Bring it back.
             busyRef.current = true;
             try {
@@ -889,7 +819,7 @@ export default function App() {
         armDebugSession(rox, true);
         // Host-level policy armed immediately: even a run already in flight
         // (which then inherits the session) gets stop-on-fatal.
-        try { rox.ccall('roxal_debug_arm', null, ['number'], [1]); } catch { /* boot race */ }
+        try { rox.debugArm(true); } catch { /* boot race */ }
         // Unconditional: a run still waiting to start is superseded by this
         // one, and runNamed displaces whatever owns the VM.  Gating on "busy"
         // silently dropped the toggle for exactly the case that needs it --
@@ -908,8 +838,7 @@ export default function App() {
             // Live edit through the persistent native requests: rebinds the
             // running session AND pre-configures the next run.
             try {
-                rox.ccall('roxal_debug_set_breakpoints', null, ['string', 'string'],
-                          [active, next[active].join(',')]);
+                rox.setBreakpoints(active, next[active]);
             } catch { /* not fatal for the UI */ }
             return next;
         });
@@ -1071,6 +1000,7 @@ export default function App() {
                                             path={filePath(active)}
                                             getText={() => modelText(active)}
                                             df={df}
+                                            rox={rox}
                                             onOpenFile={n => openFile(workspace, n)}
                                             onSource={src => {
                                                 writeModel(active, src);
@@ -1087,7 +1017,7 @@ export default function App() {
                             : <Editor path={filePath(active)}
                                       content={seed[active] ?? ''}
                                       onChange={(path, _text) => {
-                                          const name = path.slice(DATA_DIR.length + 1);
+                                          const name = path.slice(dataDir.length + 1);
                                           setDirtyTabs(d => (d[name] ? d : { ...d, [name]: true }));
                                       }}
                                       service={ide}

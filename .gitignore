@@ -48,3 +48,4 @@ node_modules/
 !examples/qt/*.obj
 modules/opencv/models/*.onnx
 tests/tmp_*
+examples/aistudio/models/*.onnx

@@ -37,6 +37,11 @@ const DIGITS = '0123456789'
 // generation, not the compiler.
 const INPUT_TYPES = ['bool', 'byte', 'int', 'real', 'number', 'string',
                      'vector', 'matrix', 'tensor']
+// How an output is shown while the diagram runs: printed by the harness's
+// probe ('text'), or painted at the node from an image-valued signal
+// ('image'); see harness() and web.ImageView.
+const OUTPUT_VIEWS = ['text', 'image']
+
 const STIMULUS = {'bool': 'false', 'byte': 'byte(0)', 'int': '0',
                   'real': '0.0', 'number': '0.0', 'string': "''",
                   'vector': '[0.0 0.0 0.0]', 'matrix': '[0.0 0.0; 0.0 0.0]',
@@ -102,6 +107,16 @@ func port_types(doc, palette :list) -> dict:
     if k == 'signal':
       ins.append(nil)
       outs.append(nil)
+    if k == 'model':
+      var mi = 0
+      while mi < n['nin']:
+        ins.append('tensor')
+        mi = mi + 1
+      var names = n['name']
+      var mo = 0
+      while mo < len(names):
+        outs.append('tensor')
+        mo = mo + 1
     if k == 'func' or k == 'diagram':
       var spec = nil
       if k == 'func' and n['callee'] in by_callee:
@@ -209,6 +224,14 @@ func _ann_set(ann, name :string, v):
     ann.args.append(inspect.Arg(name=name, value=inspect.parse_expression(_lit(v))))
   else:
     a.value = inspect.parse_expression(_lit(v))
+
+// Drop an argument (an absent argument reads as its default).
+func _ann_del(ann, name :string):
+  var kept = []
+  for a in ann.args:
+    if a.name != name:
+      kept.append(a)
+  ann.args = kept
 
 func _df_ann(decl):
   for a in decl.annotations:
@@ -344,6 +367,8 @@ func _find_node(doc, id :int):
         var kind = _class_of(s)
         if kind == 'func' and _ann_get(ann2, 'diagram', nil) != nil:
           kind = 'diagram'
+        if kind == 'func' and _ann_get(ann2, 'model', nil) != nil:
+          kind = 'model'
         return {'id': id, 'kind': kind, 'decl': s}
   return nil
 
@@ -483,7 +508,38 @@ func load(source :string) -> dict:
       return _err('line ' + string(s.start_line) + ': statement outside the diagram dialect')
   return {'ok': true, 'doc': doc}
 
+# A saved diagram keeps every @df annotation on the line above its
+# declaration and sets the pair apart from its neighbours with a blank line
+# -- module-level holders, the component's ports and the init body alike --
+# so a reader can tell at a glance which declaration an annotation belongs
+# to.  Blank lines the author wrote elsewhere are kept.
+func _has_df(s) -> bool:
+  var k = s.kind()
+  if k == 'VarDecl' or k == 'PropertyDecl':
+    return _df_ann(s) != nil
+  return false
+
+func _space_group(lst :list, first :int):
+  var i = first
+  while i < len(lst):
+    if _has_df(lst[i]) or (i > 0 and _has_df(lst[i - 1])):
+      if lst[i].blank_lines_before < 1:
+        lst[i].blank_lines_before = 1
+    i = i + 1
+
+func _space_annotated(doc):
+  # (module level: an annotated holder directly after the imports gets its
+  # blank line too; inside a block the first statement never does)
+  _space_group(doc.decls_or_stmts, 0)
+  var td = _typedecl(doc)
+  if td != nil:
+    _space_group(td.properties, 1)
+    var fn = _init_fn(td)
+    if fn != nil:
+      _space_group(fn.body.decls_or_stmts, 1)
+
 func save(doc) -> string:
+  _space_annotated(doc)
   return inspect.unparse(doc)
 
 func component_name(doc) -> string:
@@ -569,9 +625,13 @@ func view(doc) -> dict:
     if is_input:
       kind = 'input'
     var pn = {'id': id, 'kind': kind, 'name': p.name,
-              'x': _ann_get(ann, 'x', 0), 'y': _ann_get(ann, 'y', 0)}
+              'x': _ann_get(ann, 'x', 0), 'y': _ann_get(ann, 'y', 0),
+              'show': _ann_get(ann, 'show', true)}
     if is_input:
       pn['type'] = _ann_get(ann, 'payload', 'real')
+      pn['feed'] = _ann_get(ann, 'feed', nil)
+    else:
+      pn['view'] = _ann_get(ann, 'view', 'text')
     nodes.append(pn)
 
   for s in _stmts(doc):
@@ -586,21 +646,32 @@ func view(doc) -> dict:
         init_v = args[1].value.value
       nodes.append({'id': id2, 'kind': 'signal', 'name': s.name,
                     'clock': clock, 'init': init_v,
-                    'x': _ann_get(ann2, 'x', 0), 'y': _ann_get(ann2, 'y', 0)})
+                    'x': _ann_get(ann2, 'x', 0), 'y': _ann_get(ann2, 'y', 0),
+                    'show': _ann_get(ann2, 'show', true)})
     if cls == 'func' and ann2 != nil:
       var id3 = _ann_get(ann2, 'id', -1)
       var call = s.initializer
       var sub = _ann_get(ann2, 'diagram', nil)
+      var mdl = _ann_get(ann2, 'model', nil)
       var nin3 = _positional_argc(call)
-      if sub == nil:
+      if sub == nil and mdl != nil:
+        // an ONNX model's predict: the module-level ai.nn.Model declaration
+        // carries the same model= tag (see _op_add_node)
+        nodes.append({'id': id3, 'kind': 'model', 'callee': _callee_text(call.callable),
+                      'model': mdl, 'name': _decl_wires(s), 'nin': nin3,
+                      'x': _ann_get(ann2, 'x', 0), 'y': _ann_get(ann2, 'y', 0),
+                      'show': _ann_get(ann2, 'show', true)})
+      if sub == nil and mdl == nil:
         nodes.append({'id': id3, 'kind': 'func', 'callee': _callee_text(call.callable),
                       'name': _decl_wires(s), 'nin': nin3,
-                      'x': _ann_get(ann2, 'x', 0), 'y': _ann_get(ann2, 'y', 0)})
-      else:
+                      'x': _ann_get(ann2, 'x', 0), 'y': _ann_get(ann2, 'y', 0),
+                      'show': _ann_get(ann2, 'show', true)})
+      if sub != nil:
         nodes.append({'id': id3, 'kind': 'diagram', 'callee': _callee_text(call.callable),
                       'name': s.name, 'module': sub, 'outs': _diagram_outs(s),
                       'nin': nin3,
-                      'x': _ann_get(ann2, 'x', 0), 'y': _ann_get(ann2, 'y', 0)})
+                      'x': _ann_get(ann2, 'x', 0), 'y': _ann_get(ann2, 'y', 0),
+                      'show': _ann_get(ann2, 'show', true)})
       var j = 0
       while j < nin3:
         var av = _arg_view(call.args[j].value, wires, accs)
@@ -720,6 +791,35 @@ func _reorder(doc) -> dict:
 // edit operations
 // ---------------------------------------------------------------------------
 
+// Module-level declarations of the diagram file (outside the component):
+// today only model holders. Inserted just before the component type.
+func _has_module_decl(doc, name :string) -> bool:
+  for d in doc.decls_or_stmts:
+    if d.kind() == 'VarDecl' and d.name == name:
+      return true
+  return false
+
+func _insert_module_decl(doc, decl):
+  var out = []
+  var placed = false
+  for d in doc.decls_or_stmts:
+    if not placed and d.kind() == 'TypeDecl':
+      out.append(decl)
+      placed = true
+    out.append(d)
+  if not placed:
+    out.append(decl)
+  doc.decls_or_stmts = out
+
+// The model= tag of a module-level holder, or nil.
+func _module_decl_model(d):
+  if d.kind() != 'VarDecl':
+    return nil
+  var a = _df_ann(d)
+  if a == nil:
+    return nil
+  return _ann_get(a, 'model', nil)
+
 func _op_add_node(doc, op :dict) -> dict:
   var kind = op['kind']
   var x = op['x']
@@ -761,6 +861,41 @@ func _op_add_node(doc, op :dict) -> dict:
     var src2 = '@df(id=' + string(id) + ', x=' + _lit(x) + ', y=' + _lit(y) + ')\n'
     src2 = src2 + 'var ' + lhs + ' = ' + op['callee'] + '(' + args + ')'
     _insert_stmt(doc, inspect.parse_declaration(src2), 'func')
+    return {'ok': true, 'id': id}
+  if kind == 'model':
+    // an ONNX model from the catalog: a module-level ai.nn.Model shared by
+    // every instance of the component (loaded once, from <data dir>/models),
+    // and a predict node in the wiring with one output wire per model output
+    _ensure_import(doc, 'ai.nn')
+    var mname = safe_name(op['name'], id)
+    var holder = mname + '_model'
+    if not _has_module_decl(doc, holder):
+      var msrc = "@df(model='" + op['name'] + "')\n"
+      msrc = msrc + 'var ' + holder + " = ai.nn.Model(source_dir() + '/models/" + op['file'] + "')"
+      _insert_module_decl(doc, inspect.parse_declaration(msrc))
+    var name6 = _unique_name(doc, mname)
+    var nin6 = op['nin']
+    var nout6 = op['nout']
+    var args6 = ''
+    var i6 = 0
+    while i6 < nin6:
+      if i6 > 0:
+        args6 = args6 + ', '
+      args6 = args6 + 'nil'
+      i6 = i6 + 1
+    var lhs6 = name6
+    if nout6 > 1:
+      lhs6 = '['
+      i6 = 0
+      while i6 < nout6:
+        if i6 > 0:
+          lhs6 = lhs6 + ', '
+        lhs6 = lhs6 + name6 + '_' + string(i6)
+        i6 = i6 + 1
+      lhs6 = lhs6 + ']'
+    var src6 = '@df(id=' + string(id) + ', x=' + _lit(x) + ', y=' + _lit(y) + ", model='" + op['name'] + "')\n"
+    src6 = src6 + 'var ' + lhs6 + ' = ' + holder + '.predict(' + args6 + ')'
+    _insert_stmt(doc, inspect.parse_declaration(src6), 'func')
     return {'ok': true, 'id': id}
   if kind == 'diagram':
     // another diagram as a node: instantiate its component type; the output
@@ -887,7 +1022,7 @@ func _op_connect(doc, op :dict, palette :list = []) -> dict:
   if prev:
     ref = src_name + '[-1]'
 
-  if to['kind'] == 'func' or to['kind'] == 'diagram':
+  if to['kind'] == 'func' or to['kind'] == 'diagram' or to['kind'] == 'model':
     var call = to['decl'].initializer
     var port = op['to']['port']
     if port < 0 or port >= _positional_argc(call):
@@ -921,7 +1056,7 @@ func _op_disconnect(doc, op :dict) -> dict:
   var to = _find_node(doc, op['to']['id'])
   if to == nil:
     return _err('unknown target node ' + string(op['to']['id']))
-  if to['kind'] == 'func' or to['kind'] == 'diagram':
+  if to['kind'] == 'func' or to['kind'] == 'diagram' or to['kind'] == 'model':
     var call = to['decl'].initializer
     var port = op['to']['port']
     if port < 0 or port >= _positional_argc(call):
@@ -960,10 +1095,26 @@ func _op_remove_node(doc, op :dict) -> dict:
   var td = _typedecl(doc)
   var fn = _init_fn(td)
   var dead = []
-  if node['kind'] == 'sig' or node['kind'] == 'func':
+  if node['kind'] == 'sig' or node['kind'] == 'func' or node['kind'] == 'model':
     dead = _decl_wires(node['decl'])
   else:
     dead = [node['decl'].name]
+  // a model node's holder goes with the LAST node using it
+  if node['kind'] == 'model':
+    var mtag = _ann_get(_df_ann(node['decl']), 'model', nil)
+    var others = 0
+    for s0 in _stmts(doc):
+      if s0 != node['decl'] and _class_of(s0) == 'func':
+        var a0 = _df_ann(s0)
+        if a0 != nil and _ann_get(a0, 'model', nil) == mtag:
+          others = others + 1
+    if others == 0:
+      var kept = []
+      for d0 in doc.decls_or_stmts:
+        if _module_decl_model(d0) == mtag:
+          continue
+        kept.append(d0)
+      doc.decls_or_stmts = kept
 
   // does this expression reference any dead wire?
   var refs_dead = func(expr) -> bool:
@@ -1057,6 +1208,33 @@ func _op_set_input_type(doc, op :dict) -> dict:
   _ann_set(_df_ann(node['decl']), 'payload', op['type'])
   return {'ok': true}
 
+// An input port's feed: what the harness attaches to it when the diagram
+// runs ('camera:0', 'video:PATH', 'realsense:color', ...; see modules/feeds).
+// nil/'' clears it and the port gets the typed stimulus again.
+func _op_set_input_feed(doc, op :dict) -> dict:
+  var node = _find_node(doc, op['id'])
+  if node == nil:
+    return _err('unknown node ' + string(op['id']))
+  if node['kind'] != 'input':
+    return _err('only input ports carry a feed')
+  var feed = op['feed']
+  if feed == nil or feed == '':
+    _ann_del(_df_ann(node['decl']), 'feed')
+  else:
+    _ann_set(_df_ann(node['decl']), 'feed', feed)
+  return {'ok': true}
+
+func _op_set_output_view(doc, op :dict) -> dict:
+  var node = _find_node(doc, op['id'])
+  if node == nil:
+    return _err('unknown node ' + string(op['id']))
+  if node['kind'] != 'output':
+    return _err('only output ports carry a view')
+  if not (op['view'] in OUTPUT_VIEWS):
+    return _err('unknown output view: ' + string(op['view']))
+  _ann_set(_df_ann(node['decl']), 'view', op['view'])
+  return {'ok': true}
+
 func _op_set_clock(doc, op :dict) -> dict:
   var fn = _init_fn(_typedecl(doc))
   var name = op['name']
@@ -1066,6 +1244,21 @@ func _op_set_clock(doc, op :dict) -> dict:
       return {'ok': true}
   fn.params.append(inspect.Parameter(name=name, param_type='real',
                                      default_value=inspect.parse_expression(_lit(op['default']))))
+  return {'ok': true}
+
+// Whether the editor labels a node's outgoing links with their live values
+// while the diagram runs.  A display preference, kept in the source like
+// the node's position: shown by default, `show=false` in the annotation
+// when hidden.
+func _op_set_show(doc, op :dict) -> dict:
+  var node = _find_node(doc, op['id'])
+  if node == nil:
+    return _err('unknown node ' + string(op['id']))
+  var ann = _df_ann(node['decl'])
+  if op['show']:
+    _ann_del(ann, 'show')
+  else:
+    _ann_set(ann, 'show', false)
   return {'ok': true}
 
 func apply(doc, op :dict, palette :list = []) -> dict:
@@ -1088,6 +1281,16 @@ func apply(doc, op :dict, palette :list = []) -> dict:
       r = _op_set_clock(doc, op)
     if kind == 'set_input_type':
       r = _op_set_input_type(doc, op)
+    if kind == 'set_output_view':
+      r = _op_set_output_view(doc, op)
+    if kind == 'set_input_feed':
+      r = _op_set_input_feed(doc, op)
+    if kind == 'set_show':
+      r = _op_set_show(doc, op)
+    if kind == 'add_import':
+      // bring a module's functions into the palette without placing one yet
+      _ensure_import(doc, op['module'])
+      r = {'ok': true}
     if r == nil:
       r = _err('unknown op: ' + string(op['op']))
   except e:
@@ -1133,7 +1336,7 @@ func check(doc) -> list:
 
   for n in v['nodes']:
     var id = string(n['id'])
-    if n['kind'] == 'func' or n['kind'] == 'diagram':
+    if n['kind'] == 'func' or n['kind'] == 'diagram' or n['kind'] == 'model':
       var j = 0
       while j < n['nin']:
         if not ((id + ':' + string(j)) in covered):
@@ -1148,6 +1351,9 @@ func check(doc) -> list:
       if not (id in used_from):
         diags.append({'level': 'warning', 'id': n['id'],
                       'message': 'input ' + n['name'] + ' is unused'})
+      if n['feed'] != nil and n['type'] != 'tensor':
+        var msg = 'input ' + n['name'] + ' has a feed but its payload is ' + string(n['type']) + ', not tensor'
+        diags.append({'level': 'error', 'id': n['id'], 'message': msg})
 
   // splice rate agreement: walk upstream from the splice's producer and
   // compare every declared wire rate found against the spliced wire's own
@@ -1357,6 +1563,9 @@ func live_values(doc, src_name :string, ran_src :string = '', dir :string = '.',
 func _module_stem(path :string) -> string:
   var segs = path.split('/')
   var base = segs[len(segs) - 1]
+  // a directory module is named by its directory: <mod>/init.rox
+  if base == 'init.rox' and len(segs) > 1:
+    base = segs[len(segs) - 2] + '.rox'
   var stem = ''
   var i = 0
   while i < len(base):
@@ -1394,6 +1603,53 @@ func component_spec(path :string) -> dict:
   return {'ok': true, 'module': _module_stem(path), 'type': td.name,
           'inputs': inputs, 'clocks': v['clocks'], 'outs': outs}
 
+// A declaration's docstring, as the compiler left it: a plain """..."""
+// body opener is lifted into a @doc annotation.  Comments above the
+// declaration are deliberately NOT used -- they attach to the next
+// declaration below them even across a blank line, so a section banner
+// would be read as the first function's description.
+// A docstring as written, minus the source indentation its continuation
+// lines carry: every line after the first is shifted left by the smallest
+// indent among them, so a wrapped paragraph reads as a paragraph while a
+// deliberately indented example keeps its shape.
+func _dedent(text :string) -> string:
+  var lines = text.split('\n')
+  if len(lines) < 2:
+    return text
+  var indent = -1
+  var i = 1
+  while i < len(lines):
+    var line = lines[i]
+    var n = 0
+    while n < len(line) and line[n] == ' ':
+      n = n + 1
+    if n < len(line):                  // blank lines say nothing about indent
+      if indent < 0 or n < indent:
+        indent = n
+    i = i + 1
+  if indent <= 0:
+    return text
+  var out = lines[0]
+  i = 1
+  while i < len(lines):
+    var l = lines[i]
+    if len(l) > indent:
+      out = out + '\n' + l[indent:len(l)]
+    else:
+      out = out + '\n'
+    i = i + 1
+  return out
+
+func _docstring(node) -> string:
+  if node == nil:
+    return ''
+  for a in node.annotations:
+    if a.name == 'doc' and len(a.args) > 0:
+      var v = a.args[0].value
+      if v != nil and v.kind() == 'Str':
+        return _dedent(v.value)
+  return ''
+
 func palette(paths :list) -> list:
   var items = []
   for path in paths:
@@ -1410,6 +1666,8 @@ func palette(paths :list) -> list:
           continue
         if fn.access != 'public':
           continue
+        if len(fn.name) > 0 and fn.name[0] == '_':
+          continue   // an underscore name is a module's internal helper (FFI stubs)
         var kind = 'func'
         var params = []
         for p in fn.params:
@@ -1424,7 +1682,8 @@ func palette(paths :list) -> list:
           outputs = []
         items.append({'kind': kind, 'module': mod, 'name': fn.name,
                       'callee': mod + '.' + fn.name,
-                      'params': params, 'outputs': outputs})
+                      'params': params, 'outputs': outputs,
+                      'doc': _docstring(fn)})
       if d.kind() == 'TypeDecl' and d.type_kind == 'object':
         var has_sig = false
         for prop in d.properties:
@@ -1432,7 +1691,8 @@ func palette(paths :list) -> list:
             has_sig = true
         if has_sig:
           items.append({'kind': 'component', 'module': mod, 'name': d.name,
-                        'callee': mod + '.' + d.name, 'params': [], 'outputs': []})
+                        'callee': mod + '.' + d.name, 'params': [], 'outputs': [],
+                        'doc': _docstring(d)})
   return items
 
 
@@ -1459,24 +1719,52 @@ func harness(doc, for_native :bool = false) -> string:
     if n0['kind'] == 'input':
       in_types[n0['name']] = n0['type']
 
+  // per-input feeds: the port becomes an event-driven source a feed actor
+  // publishes into (modules/feeds), instead of the clocked stimulus
+  var in_feeds = {}
+  for n1 in v['nodes']:
+    if n1['kind'] == 'input' and n1['feed'] != nil:
+      in_feeds[n1['name']] = n1['feed']
   var fn = _init_fn(_typedecl(h))
   var ctor_args = ''
   var any_bool = false
+  var feed_names = []
+  var feed_mods = {}
+  if len(in_feeds) > 0:
+    h.decls_or_stmts.append(inspect.parse_declaration('var __stop = signal(0, false)'))
   for prm in fn.params:
     if prm.param_type == 'signal':
       var ptype = 'bool'
       if prm.name in in_types:
         ptype = in_types[prm.name]
-      var init_lit = STIMULUS[ptype]
       var stim = '__in_' + prm.name
-      h.decls_or_stmts.append(inspect.parse_declaration('var ' + stim + ' = signal(' + string(rate) + ', ' + init_lit + ')'))
-      if ptype == 'bool':
-        // a live square wave beats a constant: enables actually enable
-        any_bool = true
-        h.decls_or_stmts.append(inspect.parse_statement(stim + ' <- logic.not_gate(' + stim + '[-1])'))
+      if prm.name in in_feeds:
+        var spec = in_feeds[prm.name]
+        var fmod = 'feeds'
+        if len(spec) >= 10 and spec[0:10] == 'realsense:':
+          fmod = 'feeds_realsense'
+        feed_mods[fmod] = true
+        h.decls_or_stmts.append(inspect.parse_declaration('var ' + stim + " = signal(0, tensor([2, 2, 3], dtype='uint8'))"))
+        h.decls_or_stmts.append(inspect.parse_declaration('var __cnt_' + prm.name + ' = signal(0, 0)'))
+        h.decls_or_stmts.append(inspect.parse_declaration('var __feed_' + prm.name + ' = ' + fmod + ".Feed('" + spec + "', " + stim + ', __stop, __cnt_' + prm.name + ')'))
+        feed_names.append(prm.name)
+      else:
+        var init_lit = STIMULUS[ptype]
+        h.decls_or_stmts.append(inspect.parse_declaration('var ' + stim + ' = signal(' + string(rate) + ', ' + init_lit + ')'))
+        if ptype == 'bool':
+          // a live square wave beats a constant: enables actually enable
+          any_bool = true
+          h.decls_or_stmts.append(inspect.parse_statement(stim + ' <- logic.not_gate(' + stim + '[-1])'))
       if len(ctor_args) > 0:
         ctor_args = ctor_args + ', '
       ctor_args = ctor_args + stim
+  for fmod2 in feed_mods:
+    var has_mod = false
+    for im2 in h.imports:
+      if len(im2.packages) > 0 and im2.packages[0] == fmod2:
+        has_mod = true
+    if not has_mod:
+      h.imports.append(inspect.Import(packages=[fmod2], symbols=[]))
   if any_bool:
     var has_logic = false
     for im in h.imports:
@@ -1485,6 +1773,13 @@ func harness(doc, for_native :bool = false) -> string:
     if not has_logic:
       h.imports.append(inspect.Import(packages=['logic'], symbols=[]))
   h.decls_or_stmts.append(inspect.parse_declaration('var __c = ' + v['name'] + '(' + ctor_args + ')'))
+  // feeds start once the component is wired; the page reads each feed's
+  // frame count through a SignalView store ('feed_<input>')
+  for fname in feed_names:
+    h.decls_or_stmts.append(inspect.parse_statement('__feed_' + fname + '.run()'))
+    if not for_native:
+      h.decls_or_stmts.append(inspect.parse_statement(
+        "web.expose('feed_" + fname + "', web.SignalView(__cnt_" + fname + '))'))
   // probe selection: outputs marked '@df(..., probe=true)' claim the
   // harness output for themselves; with none marked, every output prints
   var all_out = []
@@ -1499,13 +1794,42 @@ func harness(doc, for_native :bool = false) -> string:
         probed.append(p.name)
   if len(probed) == 0:
     probed = all_out
+  // output views: for the page, every probed output is handed over as a
+  // store exposed as 'view_<name>' -- an 'image' output as web.ImageView,
+  // a 'text' output as web.SignalView (its value shows on the node) --
+  // instead of being printed; the headless harness has no page, so it
+  // keeps the printed probe
+  var views = {}
+  for p3 in _typedecl(h).properties:
+    var pa3 = _df_ann(p3)
+    if pa3 != nil:
+      views[p3.name] = _ann_get(pa3, 'view', 'text')
   for oname in probed:
-    h.decls_or_stmts.append(inspect.parse_statement(
-      'when __c.' + oname + " changes as __e:\n  print('" + oname + " = ' + string(__e.value))\n"))
+    var vw = 'text'
+    if oname in views:
+      vw = views[oname]
+    if vw == 'image' and not for_native:
+      h.decls_or_stmts.append(inspect.parse_declaration(
+        'var __v_' + oname + ' = web.ImageView(__c.' + oname + ')'))
+      h.decls_or_stmts.append(inspect.parse_statement(
+        "web.expose('view_" + oname + "', __v_" + oname + ')'))
+    else:
+      if not for_native:
+        h.decls_or_stmts.append(inspect.parse_declaration(
+          'var __v_' + oname + ' = web.SignalView(__c.' + oname + ')'))
+        h.decls_or_stmts.append(inspect.parse_statement(
+          "web.expose('view_" + oname + "', __v_" + oname + ')'))
+      else:
+        h.decls_or_stmts.append(inspect.parse_statement(
+          'when __c.' + oname + " changes as __e:\n  print('" + oname + " = ' + string(__e.value))\n"))
   if for_native:
     // named-arg form: suffix registrations don't reach inspect.compile'd
     // programs, and a native harness may be run through one
     h.decls_or_stmts.append(inspect.parse_statement('wait(ms=1500)'))
   else:
     h.decls_or_stmts.append(inspect.parse_statement('web.serve()'))
+  // a feed actor loops until told to stop; the script cannot end (its
+  // actor threads are joined) until it is
+  if len(feed_names) > 0:
+    h.decls_or_stmts.append(inspect.parse_statement('__stop.set(true)'))
   return inspect.unparse(h)

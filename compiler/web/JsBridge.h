@@ -1,13 +1,21 @@
 #pragma once
 
-#ifdef __EMSCRIPTEN__
+#ifdef ROXAL_ENABLE_WEB
 
-// Roxal <-> JavaScript bridge for the WebAssembly build.
+// Roxal <-> JavaScript bridge.
 //
-// The VM runs on a Worker (-sPROXY_TO_PTHREAD), so it cannot touch the DOM: a
-// Worker's `emscripten::val` sees the Worker's own global scope, not the page.
-// Every JS operation is therefore proxied to the browser main thread, which owns
-// a handle table of live JS values. Roxal holds int32 handles into that table.
+// Two hosts share this file. In the WebAssembly build the VM runs on a Worker
+// (-sPROXY_TO_PTHREAD) and cannot touch the DOM, so every JS operation is
+// proxied to the browser main thread, which owns a handle table of live JS
+// values; Roxal holds int32 handles into that table. In a NATIVE build the VM
+// is a local process and the UI is a browser page connected over a WebSocket
+// (compiler/web/SocketHost.*); only the state-bridge half of the protocol --
+// the store ops and the inbound calls -- is meaningful there, and the DOM
+// half is absent (no `dom` module).
+//
+// The codec, the inbound queue and the callback registry below are host
+// neutral; what differs is the Transport (bottom of this file), which a host
+// installs before running scripts.
 //
 // One generic (handle, op, name, args) protocol covers the whole JS surface, so
 // new capabilities cost no C++ per API. See ../../web-integration-plan.md.
@@ -21,7 +29,7 @@
 //     synchronous round trip costs a main-thread event-loop turn. Anything that
 //     returns a value flushes the queue first, so ordering is never violated.
 //
-// The wire format below is duplicated in wasm/roxal-bridge.js. Keep them in step;
+// The wire format below is duplicated in wasm/roxal-wire.js. Keep them in step;
 // the encoding is deliberately small enough to read side by side.
 
 #include "Value.h"
@@ -60,6 +68,10 @@ enum class Tag : uint8_t {
     // receiver handle is a fresh one owned by the returned callable, so the
     // binding keeps its receiver alive independently of the original value.
     Method  = 12,
+    // [Str dtype][u32 ndim][u32 dims..][u32 byteLen][bytes]: a tensor by
+    // value, host byte order, dtype-native layout. The Bytes payload sits
+    // last so the JS half can view it in place, as it does for Tag::Bytes.
+    Tensor  = 13,
 };
 
 // Operations. Those marked (deferred) have no result and are queued rather than
@@ -190,7 +202,8 @@ bool canIssueOps();
 // Implemented in ObjJsValue.cpp.
 Value jsValue(uint32_t handle);
 
-// Enqueue work posted by the browser main thread. Never blocks.
+// Enqueue work posted by the host thread that receives it (the browser main
+// thread, or the socket reader). Never blocks.
 //   Callback   — `id` is the callback id, `name`/`member` unused
 //   StoreCall  — `name` is the store, `member` the method, `id` the promise id
 //   StoreWrite — `name` is the store, `member` the property, `id` unused
@@ -255,7 +268,43 @@ size_t drainInboundOnly(Inbound kind);
 // Release every handle and callback; used at module teardown.
 void shutdown();
 
+// Block the calling (VM) thread until inbound work is queued or `maxWaitUs`
+// elapses. The host loop parks here between turns instead of sleeping a fixed
+// quantum, so a store call is serviced as soon as it lands.
+void waitForInbound(int64_t maxWaitUs);
+
+// ----------------------------------------------------------------- transport
+//
+// How encoded batches leave the VM. The wasm host proxies them to the browser
+// main thread and can block for a reply; the native host streams them over a
+// socket and has no JavaScript to reply. exec() consults opNeedsReply() so
+// store traffic -- which never needs one -- flows over either.
+class Transport {
+public:
+    virtual ~Transport() = default;
+    // Deliver a batch that expects no reply. Must not block on the far side.
+    virtual void send(const std::vector<uint8_t>& batch) = 0;
+    // Deliver a batch whose LAST op expects a reply and block for it. Returns
+    // the encoded value. Throws when this host has no JavaScript surface.
+    virtual std::vector<uint8_t> roundTrip(const std::vector<uint8_t>& batch) = 0;
+    // True when the calling thread may issue operations at all.
+    virtual bool canIssueOps() = 0;
+    // Consume a "the far side lost its state" flag (a client reconnected):
+    // the host loop then redefines every store. Default: never.
+    virtual bool takeResync() { return false; }
+};
+
+// Install the host's transport. The wasm build installs its own at startup;
+// a native host installs one (SocketHost) before serving scripts. nullptr
+// detaches -- canIssueOps() is then false and web.expose() refuses.
+void setTransport(Transport* transport);
+Transport* transport();
+
+// Does an op produce a value the issuer waits for? Store ops and deferred
+// writes do not; DOM reads and calls do.
+bool opNeedsReply(Op op);
+
 } // namespace web
 } // namespace roxal
 
-#endif // __EMSCRIPTEN__
+#endif // ROXAL_ENABLE_WEB

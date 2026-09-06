@@ -2,7 +2,7 @@
 #include <atomic>
 #include <cstdint>
 
-#ifdef __EMSCRIPTEN__
+#ifdef ROXAL_ENABLE_WEB
 
 #include "Value.h"
 
@@ -47,4 +47,4 @@ extern std::atomic<std::uint64_t> g_inboundDrained;
 } // namespace web
 } // namespace roxal
 
-#endif // __EMSCRIPTEN__
+#endif // ROXAL_ENABLE_WEB

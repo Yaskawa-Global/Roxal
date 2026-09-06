@@ -9,8 +9,10 @@ retype: true
 type Typed object:
   @df(id=1, x=0, y=0, payload='real')
   var gain:signal = nil
+
   @df(id=2, x=0, y=1, payload='tensor')
   var img:signal = nil
+
   @df(id=3, x=0, y=2, payload='bool')
   var en:signal = nil
 
@@ -27,8 +29,10 @@ import logic
 type Typed object:
   @df(id=1, x=0, y=0, payload='real')
   var gain:signal = nil
+
   @df(id=2, x=0, y=1, payload='tensor')
   var img:signal = nil
+
   @df(id=3, x=0, y=2, payload='bool')
   var en:signal = nil
 

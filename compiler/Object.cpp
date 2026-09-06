@@ -42,6 +42,7 @@
 #include "dataflow/Signal.h"
 #include "dataflow/DataflowEngine.h"
 #include "Object.h"
+#include <mutex>
 #include "ModuleSys.h"
 
 using namespace roxal;
@@ -5421,6 +5422,17 @@ bool ObjTensor::isOnGpu() const
 
 void ObjTensor::ensureCpu() const
 {
+    // Reached through rawData() from ANY thread that reads the data -- the
+    // engine's content-equality change detection, an inference worker
+    // binding this tensor as the next model's input, the VM thread indexing
+    // an element -- and it REPLACES ort_value_. Two threads materialising
+    // the same GPU-resident tensor raced on that shared_ptr and on the
+    // device value one of them had just dropped: intermittent heap
+    // corruption with chained CUDA models (nn_signal_chain). One
+    // process-wide lock: only GPU-resident tensors ever pay for it, and the
+    // check below is repeated under it.
+    static std::mutex materialize;
+    std::lock_guard<std::mutex> lock(materialize);
     if (!isOnGpu()) return;
 
     auto& cuda = CudaRuntime::instance();
@@ -5892,14 +5904,26 @@ void ObjTensor::setIndex(const Value* indices, size_t count, const Value& v)
 Value ObjTensor::reshape(const std::vector<int64_t>& newShape) const
 {
     int64_t newNumel = 1;
-    for (auto s : newShape) newNumel *= s;
+    for (auto s : newShape) {
+        if (s < 0)
+            throw std::runtime_error("Tensor reshape: a dimension cannot be negative");
+        newNumel *= s;
+    }
     if (newNumel != numel())
-        throw std::runtime_error("Tensor reshape: total elements must match");
+        throw std::runtime_error("Tensor reshape: total elements must match ("
+                                 + std::to_string(newNumel) + " asked for, "
+                                 + std::to_string(numel()) + " present)");
 
-    // Create result and copy data element-by-element (works with both backends)
+    // Elements are stored contiguously in row-major order, so the new
+    // tensor holds the same bytes in the same order: one memcpy, not the
+    // per-element walk this used to do (which cost ~50 ms on a video
+    // frame).  The buffer is NOT shared: under the ONNX backend it is an
+    // Ort::Value carrying its own shape, and a model handed a tensor whose
+    // buffer disagreed with its shape would be fed the wrong rank.
     auto result = newTensorObj(newShape, dtype_);
-    for (int64_t i = 0; i < newNumel; ++i)
-        result->setAt(i, at(i));
+    const size_t bytes = static_cast<size_t>(newNumel) * tensorDTypeSize(dtype_);
+    if (bytes > 0)
+        std::memcpy(result->rawDataMut(), rawData(), bytes);
     return Value::objVal(std::move(result));
 }
 
@@ -5927,6 +5951,8 @@ bool ObjTensor::equals(const ObjTensor* other, double eps) const
 #endif
 
     int64_t n = numel();
+    if (n == 0)
+        return true;   // same shape and dtype, nothing to differ
 
     // Bitwise-identical buffers are equal for any eps, and a memcmp is far
     // cheaper than the per-element eps walk below — this matters for signal
@@ -5936,6 +5962,32 @@ bool ObjTensor::equals(const ObjTensor* other, double eps) const
     size_t byteCount = static_cast<size_t>(n) * tensorDTypeSize(dtype_);
     if (byteCount > 0 && std::memcmp(rawData(), other->rawData(), byteCount) == 0)
         return true;
+
+    // Bitwise-different buffers.  Integer dtypes differ by at least one
+    // unit somewhere, so they are unequal under any eps below 1 (the
+    // default, and what signal change detection uses) -- no walk at all.
+    // Floats get a typed walk over the raw buffers: the generic at()
+    // accessor takes the materialization lock and switches on the dtype
+    // per element, and on a video frame (3.8M elements, consecutive frames
+    // sharing a long identical prefix) that was ~100 ms per publish.
+    const bool floating = dtype_ == TensorDType::Float16
+                       || dtype_ == TensorDType::Float32
+                       || dtype_ == TensorDType::Float64;
+    if (!floating && eps < 1.0)
+        return false;
+
+    bool equal = true;
+    const void* a = rawData();
+    const void* b = other->rawData();
+    const bool typed = withTensorDType(dtype_, [&]<typename T>() {
+        const T* pa = static_cast<const T*>(a);
+        const T* pb = static_cast<const T*>(b);
+        for (int64_t i = 0; i < n; ++i) {
+            if (std::abs(double(pa[i]) - double(pb[i])) > eps) { equal = false; return; }
+        }
+    });
+    if (typed)
+        return equal;
 
     for (int64_t i = 0; i < n; ++i) {
         if (std::abs(at(i) - other->at(i)) > eps)

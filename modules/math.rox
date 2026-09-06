@@ -216,8 +216,12 @@ func softmax(x):
   """softmax function: exp(x_i) / sum(exp(x_j)) (works on vector or 1D tensor)"""
 
 @builtin
-func argmax(x):
-  """index of maximum element (works on vector or 1D tensor)"""
+func argmax(x, axis = nil):
+  """Index of the largest element. Given an axis, reduce along it instead:
+  the result is a tensor of indices with that axis removed, so scores of
+  shape [1, classes, height, width] become a class map [1, height, width]
+  with axis=1. A negative axis counts from the end. Without an axis, a
+  vector or tensor gives one index, counting in row-major order."""
 
 @builtin
 func min(x) -> real:

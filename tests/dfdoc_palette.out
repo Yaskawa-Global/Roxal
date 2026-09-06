@@ -1,7 +1,13 @@
 func  dfdoc_palette_fixture.plain(a:int, b:real=) -> ["real"]
+    doc: a docstring reaches the palette, so the editor can describe the node
 func  dfdoc_palette_fixture.untyped(v:nil) -> ["bool"]
+    doc: 
 func  dfdoc_palette_fixture.multi(v:real) -> ["real", "real"]
+    doc: 
 component  dfdoc_palette_fixture.wiring(s:signal) -> ["signal"]
+    doc: 
 component  dfdoc_palette_fixture.Widget() -> []
+    doc: 
 math.atan2 params: 2  outputs: ["real"]
+math.atan2 doc: arc tangent of y/x
 math funcs > 20: true  atan2 found: true

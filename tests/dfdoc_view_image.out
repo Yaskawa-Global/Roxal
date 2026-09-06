@@ -1,0 +1,77 @@
+img: text
+count: text
+bad view: false unknown output view: movie
+not an output: false only output ports carry a view
+set: true
+img: image
+count: text
+---
+@dataflow_diagram(version=1, next_id=4)
+
+type Pic object:
+  @df(id=1, x=0, y=0, payload='real')
+  var t:signal = nil
+
+  @df(id=2, x=500, y=0, view='image')
+  var img:signal = nil
+
+  @df(id=3, x=500, y=60)
+  var count:signal = nil
+
+  proc init(t:signal, freq:real=2):
+    this.t = t
+    img = nil
+    count = nil
+
+--- web harness
+@dataflow_diagram(version=1, next_id=4)
+
+import web
+
+type Pic object:
+  @df(id=1, x=0, y=0, payload='real')
+  var t:signal = nil
+
+  @df(id=2, x=500, y=0, view='image')
+  var img:signal = nil
+
+  @df(id=3, x=500, y=60)
+  var count:signal = nil
+
+  proc init(t:signal, freq:real=2):
+    this.t = t
+    img = nil
+    count = nil
+var __in_t = signal(2, 0.0)
+var __c = Pic(__in_t)
+var __v_img = web.ImageView(__c.img)
+web.expose('view_img', __v_img)
+var __v_count = web.SignalView(__c.count)
+web.expose('view_count', __v_count)
+web.serve()
+
+--- headless harness
+@dataflow_diagram(version=1, next_id=4)
+
+type Pic object:
+  @df(id=1, x=0, y=0, payload='real')
+  var t:signal = nil
+
+  @df(id=2, x=500, y=0, view='image')
+  var img:signal = nil
+
+  @df(id=3, x=500, y=60)
+  var count:signal = nil
+
+  proc init(t:signal, freq:real=2):
+    this.t = t
+    img = nil
+    count = nil
+var __in_t = signal(2, 0.0)
+var __c = Pic(__in_t)
+when __c.img changes as __e:
+  print('img = ' + string(__e.value))
+when __c.count changes as __e:
+  print('count = ' + string(__e.value))
+wait(ms=1500)
+

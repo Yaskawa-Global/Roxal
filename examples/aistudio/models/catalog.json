@@ -1,0 +1,188 @@
+{
+  "models": [
+    {
+      "name": "dfine",
+      "file": "dfine_nano_fp32.onnx",
+      "label": "D-FINE nano",
+      "blurb": "COCO object detection, 80 classes. Pair with vision.dfine_blob before and vision.dfine_detections after.",
+      "license": "Apache-2.0",
+      "url": "https://github.com/Peterande/D-FINE",
+      "pre": "vision.dfine_blob",
+      "post": "vision.dfine_detections",
+      "inputs": [
+        {
+          "name": "pixel_values",
+          "dtype": "float32",
+          "shape": [
+            "batch_size",
+            3,
+            "height",
+            "width"
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "name": "logits",
+          "dtype": "float32",
+          "shape": [
+            "batch_size",
+            300,
+            80
+          ]
+        },
+        {
+          "name": "pred_boxes",
+          "dtype": "float32",
+          "shape": [
+            "batch_size",
+            300,
+            4
+          ]
+        }
+      ],
+      "opset": 16,
+      "bytes": 15258358
+    },
+    {
+      "name": "depth",
+      "file": "depth_anything_v2_small.onnx",
+      "label": "Depth Anything V2 small",
+      "blurb": "Monocular relative depth. Pair with vision.depth_blob before and vision.depth_image after.",
+      "license": "Apache-2.0",
+      "url": "https://huggingface.co/onnx-community/depth-anything-v2-small",
+      "pre": "vision.depth_blob",
+      "post": "vision.depth_image",
+      "inputs": [
+        {
+          "name": "pixel_values",
+          "dtype": "float32",
+          "shape": [
+            "batch_size",
+            3,
+            "height",
+            "width"
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "name": "predicted_depth",
+          "dtype": "float32",
+          "shape": [
+            "floor(1.0*batch_size)",
+            "14*floor(height/14)",
+            "14*floor(width/14)"
+          ]
+        }
+      ],
+      "opset": 14,
+      "bytes": 99060839
+    },
+    {
+      "name": "mosaic",
+      "file": "fast_neural_style_mosaic.onnx",
+      "label": "Style transfer (mosaic)",
+      "blurb": "fast-neural-style, mosaic weights. Pair with vision.style_blob before and vision.chw_image after.",
+      "license": "BSD-3-Clause",
+      "url": "https://github.com/onnx/models/tree/main/validated/vision/style_transfer/fast_neural_style",
+      "pre": "vision.style_blob",
+      "post": "vision.chw_image",
+      "inputs": [
+        {
+          "name": "input1",
+          "dtype": "float32",
+          "shape": [
+            1,
+            3,
+            224,
+            224
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output1",
+          "dtype": "float32",
+          "shape": [
+            1,
+            3,
+            224,
+            224
+          ]
+        }
+      ],
+      "opset": 9,
+      "bytes": 6728029
+    },
+    {
+      "name": "mobilenet",
+      "file": "mobilenetv2.onnx",
+      "label": "MobileNet v2",
+      "blurb": "ImageNet classification, 1000 classes. Pair with vision.classify_blob before and vision.top_class after.",
+      "license": "Apache-2.0",
+      "url": "https://github.com/onnx/models/tree/main/validated/vision/classification/mobilenet",
+      "pre": "vision.classify_blob",
+      "post": "vision.top_class",
+      "inputs": [
+        {
+          "name": "input",
+          "dtype": "float32",
+          "shape": [
+            "batch_size",
+            3,
+            224,
+            224
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output",
+          "dtype": "float32",
+          "shape": [
+            "batch_size",
+            1000
+          ]
+        }
+      ],
+      "opset": 12,
+      "bytes": 13964571
+    },
+    {
+      "name": "segment",
+      "file": "deeplabv3_mobilenetv2_voc.onnx",
+      "label": "DeepLabV3 MobileNetV2",
+      "blurb": "Semantic segmentation over the 21 Pascal VOC classes -- person, chair, sofa, tv monitor, bottle, potted plant and the rest -- answering with a class number per pixel. Pair with vision.segment_blob before and vision.segment_overlay (or vision.segment_image) after.",
+      "license": "Apache-2.0",
+      "url": "https://huggingface.co/ketiswp/google-coral-DeepLabV3-MobileNetV2-1.0-PascalVOC-fp32-onnx",
+      "pre": "vision.segment_blob",
+      "post": "vision.segment_overlay",
+      "inputs": [
+        {
+          "name": "ImageTensor:0",
+          "dtype": "uint8",
+          "shape": [
+            1,
+            513,
+            513,
+            3
+          ]
+        }
+      ],
+      "outputs": [
+        {
+          "name": "SemanticPredictions:0",
+          "dtype": "int64",
+          "shape": [
+            1,
+            513,
+            513
+          ]
+        }
+      ],
+      "opset": 16,
+      "bytes": 8435666
+    }
+  ]
+}

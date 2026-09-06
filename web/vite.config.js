@@ -1,5 +1,9 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 // The two headers are not optional. Roxal's VM spawns pthreads (the GC reclaimer
 // and the dataflow engine actor) during construction, Emscripten maps those onto
@@ -17,11 +21,26 @@ const crossOriginIsolation = {
 
 export default defineConfig({
     plugins: [react()],
-    server: { headers: crossOriginIsolation },
+    // Relative asset paths: the Electron shell loads dist/aistudio.html from
+    // the filesystem, and a hosted deploy may mount the pages under a prefix.
+    base: './',
+    // The wire codec (wasm/roxal-wire.js) is imported from the repo, one
+    // directory up: single-sourced with the wasm glue, so allow serving it.
+    server: { headers: crossOriginIsolation, fs: { allow: [resolve(here, '..')] } },
     preview: { headers: crossOriginIsolation },
     // roxal.js is an Emscripten MODULARIZE bundle, not an ES module: it is loaded
     // from public/ with a script tag and hands us a global factory. Keeping it out
     // of the bundler is deliberate -- Vite must not try to rewrite its worker
     // spawning or its .wasm/.data fetches.
     optimizeDeps: { exclude: ['roxal'] },
+    // Two pages from one project: the IDE at / and AI Studio at /aistudio.html
+    // (a later deploy may mount them as sibling paths of one domain).
+    build: {
+        rollupOptions: {
+            input: {
+                main: resolve(here, 'index.html'),
+                aistudio: resolve(here, 'aistudio.html'),
+            },
+        },
+    },
 });

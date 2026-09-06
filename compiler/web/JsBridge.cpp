@@ -1,16 +1,18 @@
-#ifdef __EMSCRIPTEN__
+#ifdef ROXAL_ENABLE_WEB
 
 #include "JsBridge.h"
+#ifdef __EMSCRIPTEN__
 #include "ObjJsValue.h"
+#include <emscripten/em_asm.h>
+#include <emscripten/threading.h>
+#endif
 
 #include "ArgsView.h"
 #include "Object.h"
 #include "VM.h"
 #include "dataflow/Signal.h"   // signal properties cross as their current value
 
-#include <emscripten/em_asm.h>
-#include <emscripten/threading.h>
-
+#include <condition_variable>
 #include <cstdlib>
 #include <iostream>
 #include <cstring>
@@ -52,7 +54,10 @@ struct PendingInbound {
     std::vector<uint8_t> args;   // encoded argument list / value
 };
 std::mutex g_pendingMutex;
+std::condition_variable g_pendingCv;
 std::deque<PendingInbound> g_pending;
+
+Transport* g_transport = nullptr;
 
 StoreCallHandler  g_onStoreCall;
 StoreWriteHandler g_onStoreWrite;
@@ -83,9 +88,23 @@ void queueInboundFromMainThread(Inbound kind, uint32_t id,
     work.store  = name   ? name   : "";
     work.member = member ? member : "";
     work.args.assign(args, args + len);
-    std::lock_guard<std::mutex> lock(g_pendingMutex);
-    g_pending.push_back(std::move(work));
+    {
+        std::lock_guard<std::mutex> lock(g_pendingMutex);
+        g_pending.push_back(std::move(work));
+    }
+    g_pendingCv.notify_all();
 }
+
+void waitForInbound(int64_t maxWaitUs)
+{
+    if (maxWaitUs <= 0) return;
+    std::unique_lock<std::mutex> lock(g_pendingMutex);
+    if (!g_pending.empty()) return;
+    g_pendingCv.wait_for(lock, std::chrono::microseconds(maxWaitUs),
+                         [] { return !g_pending.empty(); });
+}
+
+void setTransport(Transport* transport) { g_transport = transport; }
 
 void setStoreActorPredicate(StoreIsActorFn isActor)
 {
@@ -190,6 +209,22 @@ void Encoder::value(const Value& v)
     // to what the signal reads right now.
     if (isSignal(v)) { value(asSignal(v)->signal->lastValue()); return; }
 
+    // A tensor crosses by value: dtype, shape, then its bytes. rawData() brings
+    // an ORT-backed (possibly GPU-resident) tensor to host memory first.
+    if (isTensor(v)) {
+        const ObjTensor* t = asTensor(v);
+        tag(Tag::Tensor);
+        str(to_string(t->dtype()));
+        const auto& shape = t->shape();
+        u32(static_cast<uint32_t>(shape.size()));
+        for (int64_t d : shape) u32(static_cast<uint32_t>(d));
+        const size_t len = static_cast<size_t>(t->numel()) * tensorDTypeSize(t->dtype());
+        u32(static_cast<uint32_t>(len));
+        const uint8_t* b = static_cast<const uint8_t*>(t->rawData());
+        buf_.insert(buf_.end(), b, b + len);
+        return;
+    }
+
     // A callable becomes a JS function that queues an invocation back to the VM.
     if (isClosure(v)) {
         tag(Tag::Func);
@@ -198,8 +233,8 @@ void Encoder::value(const Value& v)
     }
 
     throw std::runtime_error(
-        "dom: cannot pass this value to JavaScript (unsupported type); "
-        "pass a number, string, bool, nil, list, dict, function, or a JS handle");
+        "web: cannot pass this value to JavaScript (unsupported type); "
+        "pass a number, string, bool, nil, list, dict, tensor, function, or a JS handle");
 }
 
 // ------------------------------------------------------------------ Decoder
@@ -243,7 +278,12 @@ Value Decoder::value()
         case Tag::Int:    return Value::intVal(static_cast<int32_t>(u32()));
         case Tag::Real:   return Value::realVal(f64());
         case Tag::Str:    return Value::stringVal(ustring::fromUTF8(str()));
-        case Tag::Handle: return jsValue(u32());
+        case Tag::Handle:
+#ifdef __EMSCRIPTEN__
+            return jsValue(u32());
+#else
+            throw std::runtime_error("web: JavaScript handles do not exist on this host");
+#endif
         case Tag::List: {
             const uint32_t n = u32();
             std::vector<Value> elts;
@@ -264,6 +304,9 @@ Value Decoder::value()
             return Value::dictVal(entries);
         }
         case Tag::Method: {
+#ifndef __EMSCRIPTEN__
+            throw std::runtime_error("web: JavaScript methods do not exist on this host");
+#else
             // Bind receiver+name into a Roxal callable. `recv` is a Value, so the
             // receiver handle is released by the GC when the binding dies -- the
             // binding cannot outlive its handle, nor leak it.
@@ -297,6 +340,26 @@ Value Decoder::value()
                 for (size_t i = first; i < args.size(); ++i) e.value(args[i]);
                 return exec(e);
             });
+#endif
+        }
+        case Tag::Tensor: {
+            if (static_cast<Tag>(u8()) != Tag::Str)
+                throw std::runtime_error("web: malformed tensor dtype");
+            const TensorDType dtype = tensorDTypeFromString(str());
+            const uint32_t ndim = u32();
+            std::vector<int64_t> shape;
+            shape.reserve(ndim);
+            for (uint32_t i = 0; i < ndim; ++i) shape.push_back(static_cast<int64_t>(u32()));
+            const uint32_t len = u32();
+            if (p_ + len > end_)
+                throw std::runtime_error("web: truncated tensor payload");
+            int64_t numel = 1;
+            for (int64_t d : shape) numel *= d;
+            if (static_cast<size_t>(numel) * tensorDTypeSize(dtype) != len)
+                throw std::runtime_error("web: tensor payload does not match its shape and dtype");
+            std::vector<uint8_t> bytes(p_, p_ + len);
+            p_ += len;
+            return Value::objVal(newTensorObj(shape, dtype, std::move(bytes)));
         }
         case Tag::Bytes: {
             // Raw bytes become a PACKED byte list -- the compact list
@@ -321,30 +384,87 @@ Value Decoder::value()
 
 // --------------------------------------------------------------------- calls
 
+bool opNeedsReply(Op op)
+{
+    switch (op) {
+        case Op::Global: case Op::Get: case Op::Call: case Op::Index:
+        case Op::New: case Op::Listen: case Op::TypeOf: case Op::UnicodeCase:
+            return true;
+        default:
+            return false;
+    }
+}
+
+#ifdef __EMSCRIPTEN__
+namespace {
+
+// The wasm transport: hand a batch to the browser main thread through the
+// proxying queue and block this (Worker) thread for its malloc'd response.
+class EmscriptenTransport final : public Transport {
+public:
+    void send(const std::vector<uint8_t>& batch) override
+    {
+        uint8_t* response = proxyExec(batch.data(), batch.size());
+        if (response) std::free(response);
+    }
+
+    std::vector<uint8_t> roundTrip(const std::vector<uint8_t>& batch) override
+    {
+        uint8_t* response = proxyExec(batch.data(), batch.size());
+        if (!response) return {};
+        // Response layout: [u32 byteLen][payload].
+        uint32_t len;
+        std::memcpy(&len, response, 4);
+        std::vector<uint8_t> out(response + 4, response + 4 + len);
+        std::free(response);
+        return out;
+    }
+
+    bool canIssueOps() override
+    {
+        // The main thread must not: exec() proxies TO the main thread and blocks
+        // for the reply, so issuing from there is a self-deadlock.
+        return !emscripten_is_main_browser_thread();
+    }
+
+private:
+    static uint8_t* proxyExec(const uint8_t* data, size_t len)
+    {
+        return reinterpret_cast<uint8_t*>(MAIN_THREAD_EM_ASM_INT({
+            return Module.roxalBridge.exec($0, $1);
+        }, reinterpret_cast<int>(data), static_cast<int>(len)));
+    }
+};
+
+} // namespace
+#endif
+
+Transport* transport()
+{
+#ifdef __EMSCRIPTEN__
+    // The wasm build has exactly one possible transport; install it on first
+    // use so the host needs no setup call.
+    static EmscriptenTransport s_emscripten;
+    if (!g_transport) g_transport = &s_emscripten;
+#endif
+    return g_transport;
+}
+
 bool canIssueOps()
 {
-    // The main thread must not: exec() proxies TO the main thread and blocks for
-    // the reply, so issuing from there is a self-deadlock.
-    return !emscripten_is_main_browser_thread();
+    Transport* t = transport();
+    return t != nullptr && t->canIssueOps();
 }
 
 namespace {
-
-// Hand a request buffer to the main thread and return its malloc'd response
-// (nullptr when the batch produced no value). Blocks this thread.
-uint8_t* proxyExec(const uint8_t* data, size_t len)
-{
-    return reinterpret_cast<uint8_t*>(MAIN_THREAD_EM_ASM_INT({
-        return Module.roxalBridge.exec($0, $1);
-    }, reinterpret_cast<int>(data), static_cast<int>(len)));
-}
 
 void requireIssuable(const char* what)
 {
     if (!canIssueOps())
         throw std::runtime_error(
-            std::string("dom: ") + what + " attempted on the browser main thread; "
-            "DOM work must run on the VM thread");
+            std::string("web: ") + what + " attempted with no web host attached "
+            "(a native VM needs `roxal --web-host`; in the browser, DOM work must "
+            "run on the VM thread)");
 }
 
 } // namespace
@@ -364,21 +484,14 @@ Value exec(const Encoder& request)
     const auto& r = request.bytes();
     batch.insert(batch.end(), r.begin(), r.end());
 
-    uint8_t* response = proxyExec(batch.data(), batch.size());
-    if (!response) return Value::nilVal();
-
-    // Response layout: [u32 byteLen][payload].
-    uint32_t len;
-    std::memcpy(&len, response, 4);
-    try {
-        Decoder dec(response + 4, len);
-        Value v = dec.value();
-        std::free(response);
-        return v;
-    } catch (...) {
-        std::free(response);   // the decoder throws on JS-reported errors
-        throw;
+    if (r.empty() || !opNeedsReply(static_cast<Op>(r[0]))) {
+        transport()->send(batch);
+        return Value::nilVal();
     }
+    const std::vector<uint8_t> response = transport()->roundTrip(batch);
+    if (response.empty()) return Value::nilVal();
+    Decoder dec(response.data(), response.size());
+    return dec.value();   // throws on a JS-reported error
 }
 
 void defer(const Encoder& request)
@@ -393,10 +506,8 @@ void defer(const Encoder& request)
 void flush()
 {
     if (t_deferred.empty() || !canIssueOps()) return;
-    const auto& d = t_deferred.bytes();
-    uint8_t* response = proxyExec(d.data(), d.size());
+    transport()->send(t_deferred.bytes());
     t_deferred.clear();
-    if (response) std::free(response);
 }
 
 // ----------------------------------------------------------------- callbacks
@@ -453,14 +564,18 @@ void drainInbound()
         g_inboundDrained.fetch_add(1, std::memory_order_relaxed);
 
         // Decode the payload once. A malformed payload must not be fatal -- the
-        // handler simply sees no arguments.
+        // handler simply sees no arguments -- but it must be SAID, or the
+        // symptom is an arity error at the call site with no hint why.
         std::vector<Value> args;
         try {
             Decoder dec(work.args.data(), work.args.size());
             Value arg = dec.value();
             if (isList(arg))        args = asList(arg)->getElements();
             else if (!arg.isNil())  args.push_back(arg);
-        } catch (const std::exception&) {
+        } catch (const std::exception& e) {
+            VM::emitDiagnostic(
+                std::string("web: could not decode inbound arguments: ") + e.what(),
+                OutputSeverity::Error, "web.bridge");
         }
 
         // Containment: this runs from the dispatch loop, which has no call site to
@@ -568,6 +683,7 @@ void shutdown()
 } // namespace web
 } // namespace roxal
 
+#ifdef __EMSCRIPTEN__
 // Called from JS on the browser main thread. `kind` selects the flavour of work;
 // see roxal::web::Inbound. Deliberately one entry point rather than three, so the
 // queueing discipline (never block the main thread) lives in exactly one place.
@@ -578,5 +694,6 @@ void roxal_web_queue_inbound(int kind, uint32_t id, const char* name, const char
     roxal::web::queueInboundFromMainThread(
         static_cast<roxal::web::Inbound>(kind), id, name, member, args, len);
 }
+#endif
 
-#endif // __EMSCRIPTEN__
+#endif // ROXAL_ENABLE_WEB

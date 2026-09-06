@@ -1,0 +1,22 @@
+# The Strict overrun policy applies to CLOCKED work only. An event-driven
+# island (no clocked signal) is evaluated by the event path in the tick gap,
+# and a slow node there -- a model inference on a camera frame -- must not
+# stop the engine, even though the program also has a 20 Hz clocked signal
+# whose grid the engine ticks on.
+const grid = signal(20, 0)         # puts the engine on a 50 ms grid
+const frame = signal(0, 0)         # event-driven source
+
+func slow(n: int) -> int:
+  var t0 = Time(kind='steady')
+  while Time(kind='steady').diff(t0).microseconds() < 150000:
+    var spin = n + 1               # ~150 ms of work, three times the period
+  return n * 2
+
+const out = slow(frame)
+frame.set(1)
+wait(ms=400)
+print(out.value)
+frame.set(2)
+wait(ms=400)
+print(out.value)
+print('engine alive: ' + string(grid.value == 0))

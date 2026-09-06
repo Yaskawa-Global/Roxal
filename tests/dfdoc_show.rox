@@ -1,0 +1,28 @@
+// dfdoc: a node's 'show' flag (live values on its outgoing links) is a
+// display preference kept in the annotation: on by default, `show=false`
+// when hidden, cleared again when shown
+import dfdoc
+
+var doc = dfdoc.new_document('Show', [{'name': 'freq', 'default': 2.0}])['doc']
+var w = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'signal', 'label': 'w', 'clock': 'freq', 'init': 0.0, 'x': 0, 'y': 0})['id']
+var out = dfdoc.apply(doc, {'op': 'add_node', 'kind': 'output', 'name': 'out', 'x': 200, 'y': 0})['id']
+
+func shows(d) -> string:
+  var text = ''
+  for n in dfdoc.view(d)['nodes']:
+    if text != '':
+      text = text + ' '
+    text = text + "{n['name']}:{n['show']}"
+  return text
+
+print(shows(doc))
+print(dfdoc.apply(doc, {'op': 'set_show', 'id': w, 'show': false})['ok'])
+print(shows(doc))
+print(dfdoc.apply(doc, {'op': 'set_show', 'id': 99, 'show': false})['ok'])
+var src = dfdoc.save(doc)
+print('show=false' in src)
+var again = dfdoc.load(src)['doc']
+print(shows(again))
+print(dfdoc.apply(again, {'op': 'set_show', 'id': w, 'show': true})['ok'])
+print(shows(again))
+print('show=' in dfdoc.save(again))

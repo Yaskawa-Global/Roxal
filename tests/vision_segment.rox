@@ -1,0 +1,42 @@
+// vision: the segmentation helpers around a class map, without a model --
+// a hand-built class map stands in for what DeepLabV3 answers with.
+import vision
+
+// preprocessing: any frame becomes the model's [1, 513, 513, 3] uint8 input
+var frame = tensor(60, 80, 3, dtype='uint8')
+var blob = vision.segment_blob(frame)
+print(blob.shape())
+print(blob.dtype())
+
+// a class map: the left half background, the right half 'person' (15)
+var classes = tensor(1, 4, 6, dtype='int64')
+var y = 0
+while y < 4:
+  var x = 3
+  while x < 6:
+    classes[0, y, x] = 15
+    x = x + 1
+  y = y + 1
+
+// the colour map: background black, person the VOC colour (192, 128, 128)
+var img = vision.segment_image(classes)
+print(img.shape())
+print(img.dtype())
+print(img[0, 0, 0] + img[0, 0, 1] + img[0, 0, 2])
+print(img[0, 5, 0])
+print(img[0, 5, 1])
+print(img[0, 5, 2])
+
+// the class at the centre names what is in the middle of the view
+print(vision.center_class(classes))
+print(vision.voc_label(0))
+print(vision.voc_label(15))
+print(vision.voc_label(99))
+
+// a map without its batch axis is accepted as it is
+print(vision.segment_image(classes.reshape(4, 6)).shape())
+
+// the overlay keeps both, at the class map's resolution
+var over = vision.segment_overlay(frame, classes)
+print(over.shape())
+print(over.dtype())

@@ -103,7 +103,9 @@ target_link_options(roxal_wasm PRIVATE
     -sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','FS','ENV','stringToNewUTF8','UTF8ArrayToString','HEAPU8']
 
     # Main-thread half of the JS bridge. --pre-js so Module.roxalBridge exists
-    # before any wasm code can proxy an operation to it.
+    # before any wasm code can proxy an operation to it. The shared wire codec
+    # goes first: the bridge reads it from globalThis.RoxalWire.
+    "--pre-js=${CMAKE_CURRENT_SOURCE_DIR}/roxal-wire.js"
     "--pre-js=${CMAKE_CURRENT_SOURCE_DIR}/roxal-bridge.js"
     -sMODULARIZE=1
     -sEXPORT_NAME=createRoxal
@@ -137,4 +139,5 @@ add_dependencies(roxal_wasm roxal_wasm_assets)
 
 set_property(TARGET roxal_wasm APPEND PROPERTY LINK_DEPENDS "${_wasm_stdlib_stamp}")
 set_property(TARGET roxal_wasm APPEND PROPERTY LINK_DEPENDS
-             "${CMAKE_CURRENT_SOURCE_DIR}/roxal-bridge.js")
+             "${CMAKE_CURRENT_SOURCE_DIR}/roxal-bridge.js"
+             "${CMAKE_CURRENT_SOURCE_DIR}/roxal-wire.js")

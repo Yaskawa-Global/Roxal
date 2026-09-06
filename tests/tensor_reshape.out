@@ -1,0 +1,16 @@
+[6]
+1
+6
+[3, 2]
+1
+2
+3
+6
+[1, 2, 3]
+6
+[2, 3]
+[6, 1]
+int32 int32
+1
+99
+Tensor reshape: total elements must match (8 asked for, 6 present)
