@@ -100,6 +100,11 @@
 #include <stdexcept>
 #include <atomic>
 #include <dlfcn.h>   // dlopen the qt module plugin on `import qt`
+#ifdef __linux__
+#include <pthread.h>
+#include <sched.h>
+#include <cstring>
+#endif
 
 using namespace roxal;
 
@@ -115,6 +120,70 @@ std::string VM::consumeNativeCallOverrun()
     std::string result;
     result.swap(nativeCallOverrun_);
     return result;
+}
+
+#ifdef __linux__
+namespace {
+// The CPUs the process started with, captured during static initialization --
+// on the main thread, before anything can have re-pinned it.
+struct StartupCpus {
+    cpu_set_t set;
+    StartupCpus()
+    {
+        CPU_ZERO(&set);
+        if (sched_getaffinity(0, sizeof(set), &set) != 0)
+            CPU_ZERO(&set);
+    }
+};
+const StartupCpus startupCpus;
+}
+#endif
+
+bool VM::demoteCurrentThreadToNonRT()
+{
+#ifdef __linux__
+    std::string failure;
+
+    // Keep SCHED_RESET_ON_FORK as it is: clearing it needs CAP_SYS_NICE even
+    // when lowering the policy, so asking for plain SCHED_OTHER fails with
+    // EPERM -- leaving the thread RT -- for a host running on RLIMIT_RTPRIO.
+    const int current = sched_getscheduler(0);
+    const int resetOnFork = current == -1 ? 0 : (current & SCHED_RESET_ON_FORK);
+    sched_param param {};
+    param.sched_priority = 0;
+    if (const int rc = pthread_setschedparam(pthread_self(), SCHED_OTHER | resetOnFork, &param); rc != 0)
+        failure = std::string("SCHED_OTHER: ") + std::strerror(rc);
+
+    const int rtCore = rtCoreExclusion();
+    if (rtCore >= 0 && rtCore < CPU_SETSIZE) {
+        cpu_set_t cpus = startupCpus.set;
+        CPU_CLR(rtCore, &cpus);
+        if (CPU_COUNT(&cpus) == 0) {
+            // Started on the RT core alone: everything else that is online.
+            const unsigned numCpus = std::thread::hardware_concurrency();
+            for (unsigned i = 0; i < numCpus && i < CPU_SETSIZE; ++i)
+                if (static_cast<int>(i) != rtCore)
+                    CPU_SET(i, &cpus);
+        }
+        if (CPU_COUNT(&cpus) > 0) {
+            if (const int rc = pthread_setaffinity_np(pthread_self(), sizeof(cpus), &cpus); rc != 0)
+                failure += (failure.empty() ? "" : "; ") + std::string("CPU set: ") + std::strerror(rc);
+        }
+    }
+
+    if (failure.empty())
+        return true;
+    // Once per process: every thread Roxal starts calls this, so a host set up
+    // this way would otherwise get the same warning for each of them.
+    static std::atomic<bool> reported { false };
+    if (!reported.exchange(true))
+        emitDiagnostic("could not make a worker thread non-RT (" + failure
+                       + "); it keeps its creator's scheduling and CPUs",
+                       OutputSeverity::Warning, "embed");
+    return false;
+#else
+    return true;
+#endif
 }
 
 namespace {

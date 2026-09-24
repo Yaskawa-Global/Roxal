@@ -203,8 +203,8 @@ int DapStdioAdapter::run()
                                             // builtin console sink)
     OutputRouter::setSink(session_.get());
 
-    writer_ = std::thread([this] { writerLoop(); });
-    reader_ = std::thread([this] { readerLoop(); });
+    writer_ = std::thread([this] { VM::demoteCurrentThreadToNonRT(); writerLoop(); });
+    reader_ = std::thread([this] { VM::demoteCurrentThreadToNonRT(); readerLoop(); });
 
     // The session flags flip on the debug worker with no gate notification:
     // a 100ms poll is plenty for these once-per-session transitions.

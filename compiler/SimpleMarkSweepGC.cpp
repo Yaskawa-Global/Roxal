@@ -35,7 +35,6 @@
 
 #ifdef __linux__
 #include <pthread.h>
-#include <sched.h>
 #endif
 
 // ---- Shadow-scan capture helpers --------------------------------------------
@@ -358,16 +357,9 @@ void SimpleMarkSweepGC::stopCollectorThread() {
 }
 
 void SimpleMarkSweepGC::collectorThreadMain() {
-#ifdef __linux__
-    // A thread spawned from an RT-scheduled (SCHED_FIFO) parent inherits the
-    // parent's policy -- the collector must never compete at RT priority.
-    {
-        struct sched_param param {};
-        param.sched_priority = 0;
-        pthread_setschedparam(pthread_self(), SCHED_OTHER, &param);
-    }
-    int appliedExcludeCore = -1;
-#endif
+    // The collector must never compete at RT priority or on the RT core.
+    VM::demoteCurrentThreadToNonRT();
+    int appliedRtCore = VM::rtCoreExclusion();
 
     std::unique_lock<std::mutex> lock(mutex_);
     while (!collectorState_->stop.load(std::memory_order_acquire)) {
@@ -455,26 +447,12 @@ void SimpleMarkSweepGC::collectorThreadMain() {
             continue;
         }
 
-#ifdef __linux__
-        // Keep the collector off the RT core (FC sets rtCoreExclusion when
-        // pinned; it may be configured after this thread starts, so re-check
-        // per collection).
-        if (VM* vm = vm_.load(std::memory_order_acquire)) {
-            const int excludeCore = vm->rtCoreExclusion();
-            if (excludeCore != appliedExcludeCore && excludeCore >= 0) {
-                cpu_set_t cpuset;
-                CPU_ZERO(&cpuset);
-                const unsigned int numCpus = std::thread::hardware_concurrency();
-                for (unsigned int i = 0; i < numCpus; ++i) {
-                    if (static_cast<int>(i) != excludeCore) {
-                        CPU_SET(i, &cpuset);
-                    }
-                }
-                pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
-                appliedExcludeCore = excludeCore;
-            }
+        // A host may reserve its RT core after this thread started: re-check
+        // per collection.
+        if (const int rtCore = VM::rtCoreExclusion(); rtCore != appliedRtCore) {
+            VM::demoteCurrentThreadToNonRT();
+            appliedRtCore = rtCore;
         }
-#endif
 
         // Barrier: same condition as the inline paths -- all registered
         // threads parked AND no RT yield-section in flight.  This thread is

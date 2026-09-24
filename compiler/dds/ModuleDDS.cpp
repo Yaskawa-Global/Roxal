@@ -2523,7 +2523,10 @@ void ModuleDDS::startReaderThread()
             return;
         }
         readerBindingsChanged.store(true);
-        readerThread = std::thread([this](){ readerThreadLoop(); });
+        readerThread = std::thread([this](){
+            VM::demoteCurrentThreadToNonRT();
+            readerThreadLoop();
+        });
     }
 }
 

@@ -356,12 +356,25 @@ public:
 
 
 
-    /// Set the RT core index that actor threads should avoid.
-    /// Set to -1 (default) to disable actor thread affinity restrictions.
-    /// When set (e.g. to 3), spawned actor threads will be pinned to all cores
-    /// except this one and will use SCHED_OTHER (non-RT) scheduling.
-    void setRTCoreExclusion(int coreIndex) { rtCoreExclusion_ = coreIndex; }
-    int rtCoreExclusion() const { return rtCoreExclusion_; }
+    /// The CPU core a real-time host reserves for its RT threads, which every
+    /// thread Roxal starts keeps off (see demoteCurrentThreadToNonRT).  -1 (the
+    /// default) reserves none.  Static so a host can set it before the VM --
+    /// and the threads its constructor starts, like the dataflow engine's --
+    /// exists; set later, it reaches only threads started after.
+    static void setRTCoreExclusion(int coreIndex) { rtCoreExclusion_.store(coreIndex, std::memory_order_relaxed); }
+    static int rtCoreExclusion() { return rtCoreExclusion_.load(std::memory_order_relaxed); }
+
+    /// Make the calling thread a non-RT worker: SCHED_OTHER, and -- when an RT
+    /// core is reserved -- the CPUs the process started with minus that core
+    /// (every other online CPU if the process started on the RT core alone,
+    /// e.g. under `taskset -c <rt>`).  Every thread Roxal starts calls this
+    /// first thing: a thread inherits its creator's policy and CPU set, and
+    /// the creator can be an RT thread -- a host control loop driving a
+    /// script.  Leaves SCHED_RESET_ON_FORK as it is (clearing it needs
+    /// CAP_SYS_NICE).  Returns false if the policy or CPU set could not be
+    /// applied; the first such failure is also reported as a warning
+    /// diagnostic.  Linux only; a no-op (true) elsewhere.
+    static bool demoteCurrentThreadToNonRT();
 
     /// ABI guard: `sizeof(VM)` as libroxal itself was compiled (with the
     /// library's ROXAL_ENABLE_* feature flags).  Deliberately OUT-OF-LINE so a
@@ -919,8 +932,8 @@ protected:
     // identity of the underlying ObjFunction.
     Value combinatorRelayFunction {}; // ObjFunction
 
-    // Real-time host configuration
-    int rtCoreExclusion_ { -1 }; // -1 = disabled (desktop), >=0 = exclude this core for actor threads
+    // Real-time host configuration: -1 = no reserved RT core (desktop)
+    static inline std::atomic<int> rtCoreExclusion_ { -1 };
 
 
     // Host UI event-loop integration (e.g. Qt). When set (serviced on the main

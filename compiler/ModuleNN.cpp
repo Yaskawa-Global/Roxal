@@ -242,7 +242,10 @@ public:
 
     void start() {
         running = true;
-        workerThread = std::thread(&InferenceWorker::workerLoop, this);
+        workerThread = std::thread([this] {
+            VM::demoteCurrentThreadToNonRT();
+            workerLoop();
+        });
         std::lock_guard<std::mutex> lock(workersMutex());
         workers().push_back(this);
     }

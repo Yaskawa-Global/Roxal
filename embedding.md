@@ -281,6 +281,20 @@ producers include the driver.
 roxal::OutputRouter::setSink(&mySink);    // before execution starts
 ```
 
+**Name your RT core before the VM exists.** A new thread starts with its
+creator's scheduling policy and CPU set, and a Roxal worker's creator is often
+your RT driver: driven script code constructs an actor, opens a DDS reader or
+loads a model. So every thread Roxal starts first calls
+`VM::demoteCurrentThreadToNonRT()`, which makes it `SCHED_OTHER` and keeps it
+off the core named with `VM::setRTCoreExclusion()`. Name it before the first
+`VM::instance()` -- the constructor already starts the dataflow engine's
+thread -- and have any worker thread your driver starts call the same
+function.
+
+```cpp
+roxal::VM::setRTCoreExclusion(rtCore);    // before VM::instance()
+```
+
 ## Moving from the superseded API
 
 `run()`, `runWithImports()`, `setup()`, `setupLine()`, `runLine()`,

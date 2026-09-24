@@ -28,6 +28,23 @@ func _last_error() -> string:
 if _version()[0:3] != '5.0':
   raise RuntimeException('opencv module expects OpenCV 5.0.x but libcvxshim.so reports ' + _version() + ' — rebuild the shim (modules/opencv/shim/build.sh) against the pinned deps/opencv')
 
+@cfunc(lib=cvxlib, cname='cvx_start_thread_pool', ret='int')
+func _start_thread_pool() -> int:
+  _
+
+# OpenCV's worker pool is made by the first thread that runs a parallel
+# operation and inherits that thread's scheduling and CPU set.  Make it from an
+# actor -- a non-RT thread, off any RT core the host reserves -- so importing
+# this from a script driven by a host's RT loop does not put the workers there.
+# (Actor methods reach module functions only through a const.)
+const _start_pool = _start_thread_pool
+
+type _ThreadPoolStarter actor:
+  func start() -> int:
+    return _start_pool()
+
+wait(for=_ThreadPoolStarter().start())
+
 @cfunc(lib=cvxlib, cname='cvx_imread', args='const char* path, int channels', ret='void*', free='cvx_mat_release', blocking=true)
 func _imread(path: string, channels: int):
   _

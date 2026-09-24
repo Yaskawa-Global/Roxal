@@ -19,6 +19,7 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/videoio.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -55,6 +56,20 @@ extern "C" {
 const char* cvx_last_error(void) { return g_lastError.c_str(); }
 
 const char* cvx_version(void) { return CV_VERSION; }
+
+// OpenCV runs parallel work on one process-wide pool of worker threads, made
+// by the first thread that runs a parallel operation and reused after.  New
+// threads inherit their creator's scheduling policy and CPU set, so init.rox
+// calls this from a non-RT thread at import -- a first call from a host's RT
+// loop would otherwise put the workers on its RT core.  Returns the pool size.
+int cvx_start_thread_pool(void)
+{
+    CVX_TRY
+    const int n = cv::getNumThreads();
+    cv::parallel_for_(cv::Range(0, 2 * std::max(n, 2)), [](const cv::Range&) {});
+    return n;
+    CVX_CATCH(-1)
+}
 
 //
 // Mat handles (used where OpenCV determines the output size, e.g. image decode)

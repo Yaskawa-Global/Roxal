@@ -460,7 +460,10 @@ std::vector<RemoteTypeDependency> collectRemoteTypeDependencies(const Value& act
 ComputeConnection::ComputeConnection(int fd, bool startReader) : fd_(fd)
 {
     if (startReader)
-        readerThread_ = make_ptr<std::thread>([this]() { readerLoop(); });
+        readerThread_ = make_ptr<std::thread>([this]() {
+            VM::demoteCurrentThreadToNonRT();
+            readerLoop();
+        });
 }
 
 ComputeConnection::~ComputeConnection()
@@ -942,6 +945,7 @@ void ComputeConnection::handleIncomingCall(uint64_t callId, int64_t actorId,
                  args,
                  callSpec,
                  workerReadyPromise = std::move(workerReadyPromise)]() mutable {
+        VM::demoteCurrentThreadToNonRT();
         SimpleMarkSweepGC::ExternalParticipant gcParticipant(SimpleMarkSweepGC::instance());
         Value callee = Value::nilVal();
         Value completion = Value::nilVal();

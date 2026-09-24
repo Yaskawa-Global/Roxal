@@ -102,7 +102,10 @@ void AsyncIOManager::start()
 {
     if (!running.load()) {
         running = true;
-        workerThread = std::thread(&AsyncIOManager::workerLoop, this);
+        workerThread = std::thread([this] {
+            VM::demoteCurrentThreadToNonRT();
+            workerLoop();
+        });
     }
 }
 

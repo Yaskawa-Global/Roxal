@@ -238,8 +238,8 @@ void SocketHost::start(ScriptInbox& inbox)
     OutputRouter::setSink(this);
     setTransport(this);
     stopping_.store(false, std::memory_order_release);
-    writerThread_ = std::thread([this] { writerLoop(); });
-    acceptThread_ = std::thread([this] { acceptLoop(); });
+    writerThread_ = std::thread([this] { VM::demoteCurrentThreadToNonRT(); writerLoop(); });
+    acceptThread_ = std::thread([this] { VM::demoteCurrentThreadToNonRT(); acceptLoop(); });
 }
 
 void SocketHost::shutdown()
@@ -319,7 +319,7 @@ void SocketHost::serveClient(int fd)
     // Stores exposed before this client arrived are unknown to it: ask the
     // VM thread to redefine them on its next host-loop turn.
     resync_.store(true, std::memory_order_release);
-    readerThread_ = std::thread([this, fd] { readerLoop(fd); });
+    readerThread_ = std::thread([this, fd] { VM::demoteCurrentThreadToNonRT(); readerLoop(fd); });
 }
 
 bool SocketHost::handshake(int fd)

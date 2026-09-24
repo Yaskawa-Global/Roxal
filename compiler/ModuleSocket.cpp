@@ -33,7 +33,10 @@ void ModuleSocket::startAsyncThread()
 {
     if (!running) {
         running = true;
-        asyncThread = std::thread(&ModuleSocket::asyncWorker, this);
+        asyncThread = std::thread([this] {
+            VM::demoteCurrentThreadToNonRT();
+            asyncWorker();
+        });
     }
 }
 

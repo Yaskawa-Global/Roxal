@@ -585,6 +585,7 @@ void ComputeServer::listen(std::uint16_t port)
         }
 
         std::thread([this, clientFd]() {
+            VM::demoteCurrentThreadToNonRT();
             try {
                 handleClient(clientFd);
             } catch (const std::exception& e) {
@@ -787,6 +788,7 @@ void ComputeServer::handleClient(int clientFd)
                              args = std::move(args),
                              callSpec,
                              workerReadyPromise = std::move(workerReadyPromise)]() mutable {
+                    VM::demoteCurrentThreadToNonRT();
                     SimpleMarkSweepGC::ExternalParticipant workerParticipant(SimpleMarkSweepGC::instance());
                     Value completion = Value::nilVal();
                     Value result = Value::nilVal();

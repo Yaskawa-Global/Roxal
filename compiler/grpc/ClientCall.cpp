@@ -113,7 +113,10 @@ std::shared_ptr<StreamHandle> ClientCall::StartStream(
     handle->started = true;
 
     // Start background reader thread
-    handle->readerThread = std::thread(&ClientCall::ServerReadLoop, this, handle);
+    handle->readerThread = std::thread([this, handle] {
+        roxal::VM::demoteCurrentThreadToNonRT();
+        ServerReadLoop(handle);
+    });
 
     return handle;
 }
@@ -169,7 +172,10 @@ std::shared_ptr<StreamHandle> ClientCall::StartServerStream(
     handle->cq->Next(&gotTag, &ok);
 
     // NOW start the background reader thread (after writes are complete)
-    handle->readerThread = std::thread(&ClientCall::ServerReadLoop, this, handle);
+    handle->readerThread = std::thread([this, handle] {
+        roxal::VM::demoteCurrentThreadToNonRT();
+        ServerReadLoop(handle);
+    });
 
     return handle;
 }

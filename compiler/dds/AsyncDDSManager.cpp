@@ -1,6 +1,7 @@
 #ifdef ROXAL_ENABLE_DDS
 
 #include "AsyncDDSManager.h"
+#include "VM.h"
 
 using namespace roxal;
 
@@ -19,7 +20,10 @@ void AsyncDDSManager::start()
 {
     if (!running.load()) {
         running = true;
-        workerThread = std::thread(&AsyncDDSManager::workerLoop, this);
+        workerThread = std::thread([this] {
+            VM::demoteCurrentThreadToNonRT();
+            workerLoop();
+        });
     }
 }
 

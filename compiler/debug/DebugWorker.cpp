@@ -7,7 +7,10 @@
 namespace roxal {
 
 DebugWorker::DebugWorker(StopCoordinator& coordinator)
-    : coordinator_(coordinator), thread_([this] { run(); })
+    : coordinator_(coordinator), thread_([this] {
+          VM::demoteCurrentThreadToNonRT();
+          run();
+      })
 {
 }
 

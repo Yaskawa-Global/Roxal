@@ -7,42 +7,8 @@
 #endif
 #include <algorithm>
 #include <iostream>
-#ifdef __linux__
-#include <pthread.h>
-#include <sched.h>
-#endif
 
 using namespace roxal;
-
-namespace {
-// Actor workers are ALWAYS non-RT: a
-// worker spawned from an RT-scheduled parent (e.g. an actor constructed
-// from a SCHED_FIFO control-loop slice) inherits the parent's policy and
-// would compete with the control loop at RT priority.  Demote
-// unconditionally -- same pattern as the dedicated GC collector thread --
-// and additionally keep the worker off the host's reserved RT core when
-// core exclusion is configured.
-void demoteWorkerToNonRT()
-{
-#ifdef __linux__
-    struct sched_param param {};
-    param.sched_priority = 0;
-    pthread_setschedparam(pthread_self(), SCHED_OTHER, &param);
-
-    const int excludeCore = VM::instance().rtCoreExclusion();
-    if (excludeCore >= 0) {
-        cpu_set_t cpuset;
-        CPU_ZERO(&cpuset);
-        const unsigned int numCpus = std::thread::hardware_concurrency();
-        for (unsigned int i = 0; i < numCpus; ++i) {
-            if (static_cast<int>(i) != excludeCore)
-                CPU_SET(i, &cpuset);
-        }
-        pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
-    }
-#endif
-}
-} // namespace
 
 #ifdef ROXAL_COMPUTE_SERVER
 namespace {
@@ -342,9 +308,10 @@ void Thread::act(Value actorInstance)
     actorInstanceRaw.store(spawnInst, std::memory_order_release);
 
     osthread = make_ptr<std::thread>([this]() {
-        // Actors always run on their own NON-RT thread (see
-        // demoteWorkerToNonRT): never inherit an RT parent's policy.
-        demoteWorkerToNonRT();
+        // Actors always run on their own NON-RT thread: never inherit an RT
+        // parent's policy or core (e.g. an actor constructed from a
+        // SCHED_FIFO control-loop slice).
+        VM::demoteCurrentThreadToNonRT();
 
         // Hoisted above the try: the outer catch must be able to resolve the
         // in-flight call's promise (R2 below) -- destroying it unresolved

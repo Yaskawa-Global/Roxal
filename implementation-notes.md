@@ -1903,10 +1903,11 @@ output serialization mutex. Consequently it is not an RT sink and an RT
 embedding must install its own sink before calling `runFor()`.
 
 Roxal deliberately does not create an output worker thread. If a core async
-sink is added later, its worker must explicitly undo any scheduling inherited
-from the creating RT thread (on Linux, select `SCHED_OTHER` with priority zero)
-and observe the host's configured RT-core exclusion, following the actor and GC
-worker precedents.
+sink is added later, its worker must call `VM::demoteCurrentThreadToNonRT()`
+first, like every thread Roxal starts: a thread inherits the scheduling policy
+and CPU set of the (possibly RT) thread that created it, and the call makes it
+`SCHED_OTHER` and keeps it off the host's RT core (`VM::setRTCoreExclusion()`,
+set by the host before the VM is constructed).
 
 
 ## Debugging an Embedded VM
@@ -2889,8 +2890,9 @@ A dedicated non-RT thread exists in **every build profile**: it is the sole
 runtime **reclaimer**, draining the retire queue whenever producers wake it
 (10 ms idle poll as a lost-wake backstop — also how RT-section retires get
 picked up). Without it, refcount-dead objects would sit undestroyed until an
-unrelated tracing collection. The thread demotes itself to `SCHED_OTHER` (an
-RT parent's policy is inherited).
+unrelated tracing collection. The thread demotes itself
+(`VM::demoteCurrentThreadToNonRT()`: an RT parent's policy and core are
+inherited).
 
 The CMake option (**default ON on Linux**, OFF elsewhere; exported as
 `ROXAL_HAS_GC_DEDICATED_THREAD` in `roxal_features.cmake` and defined on the
@@ -2898,8 +2900,9 @@ The CMake option (**default ON on Linux**, OFF elsewhere; exported as
 
 - **ON**: this thread also performs every runtime collection. Mutators
   reaching a safepoint park-and-wait instead of self-electing, and RT-only
-  workloads collect without any mutator's cooperation. It honours
-  `VM::rtCoreExclusion()` affinity, re-checked per collection.
+  workloads collect without any mutator's cooperation. It re-checks
+  `VM::rtCoreExclusion()` per collection, for a host that names its RT core
+  after the VM exists.
 - **OFF (inline collections)**: whichever registered thread reaches a
   safepoint first self-elects and collects (and reclaims its own batch);
   everyone else waits. The thread here only reclaims between collections —

@@ -161,7 +161,10 @@ void ThreadManager::enqueueActorFinalize(ActorInstance* inst)
     }
     if (!lifecycleRunning_) {
         lifecycleRunning_ = true;
-        lifecycleThread_ = std::thread([this] { lifecycleMain(); });
+        lifecycleThread_ = std::thread([this] {
+            VM::demoteCurrentThreadToNonRT();
+            lifecycleMain();
+        });
     }
     lifecycleQueue_.push_back(inst);
     lifecycleCv_.notify_one();
