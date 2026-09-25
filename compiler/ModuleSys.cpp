@@ -4698,7 +4698,7 @@ static constexpr uint8_t SerializeMagic = 0x52;        // 'R'
 // 4: ObjModuleType's record grew declAnnotations (annotations on top-level
 // var/const/type declarations).  A serialized function embeds its module type
 // via ObjFunction::write, so the shared writeValue() stream changed shape.
-static constexpr uint32_t SerializeFormatVersion = 5;   // 5: Chunk debug metadata
+static constexpr uint32_t SerializeFormatVersion = 6;
 
 Value ModuleSys::serialize_builtin(VM& vm, ArgsView args)
 {
