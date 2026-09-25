@@ -160,6 +160,7 @@ Value ModuleGrpc::getOrCreateModule(const std::string& name)
         return it->second;
 
     Value moduleVal = Value::moduleTypeVal(toUnicodeString(name));
+    asModuleType(moduleVal)->kind = ModuleKind::Proto;
     ObjModuleType::allModules.push_back(moduleVal);
     (*protoModules)[name] = moduleVal;
     // make available as global

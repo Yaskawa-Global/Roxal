@@ -129,6 +129,8 @@ inline bool isNilAcceptableTargetType(ValueType t) {
 // mid-read (module cache load, remote value decode) would sweep the
 // partially linked objects.  Every context self-registers via GCRootBase
 // and traces its registered objects for its whole lifetime.
+struct ModuleLinkTable;
+
 struct SerializationContext : public GCRootBase {
     SerializationContext() = default;
     ~SerializationContext() override = default;
@@ -146,6 +148,17 @@ struct SerializationContext : public GCRootBase {
     // take them either.
     std::vector<Value> retained;
     uint64_t nextId = 1;
+
+    // Module linking for a .roc: a cache never contains a module by value.
+    // The module being cached is written as a "self" reference, each of its
+    // direct dependencies as its index in the file's dependency table, and
+    // any other module is an error (it would mean a foreign module's code
+    // leaked into this module's graph).  Set by the cache writer and reader
+    // (RoxalCompiler); null for network serialization, which keeps writing
+    // modules by value.  Traced by traceRoot.  (Defined after Value, which
+    // is incomplete here.)
+    std::unique_ptr<ModuleLinkTable> link;
+    static constexpr uint32_t ModuleLinkSelf = 0xFFFFFFFFu;
 
 private:
     // MUST remain last: unregister before retained/id maps are destroyed.
@@ -631,6 +644,12 @@ protected:
     void decRefObj();
     void incWeakObj();
     void decWeakObj();
+};
+
+// See SerializationContext::link.
+struct ModuleLinkTable {
+    Value self;                 // the module being cached
+    std::vector<Value> deps;    // by dependency index; nil where not linkable (transitive)
 };
 
 

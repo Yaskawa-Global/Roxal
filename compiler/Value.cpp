@@ -215,6 +215,11 @@ void SerializationContext::traceRoot(ValueVisitor& visitor) const
             visitor.visit(v);
         }
     }
+    if (link) {
+        visitor.visit(link->self);
+        for (const Value& dep : link->deps)
+            visitor.visit(dep);
+    }
 }
 
 Value Value::objRef(Obj* o)
@@ -3542,6 +3547,33 @@ void roxal::writeValue(std::ostream& out, const Value& v, roxal::ptr<Serializati
             out.write(reinterpret_cast<char*>(&id),2);
             break; }
         case ValueType::Type: {
+            if (ctx->link != nullptr && v.isObj() && isModuleType(v)) {
+                // A module in a .roc: by reference into the file's dependency
+                // table (see SerializationContext::ModuleLinkTable), never by
+                // value.
+                uint32_t index = SerializationContext::ModuleLinkSelf;
+                if (!(ctx->link->self.isObj() && ctx->link->self.asObj() == v.asObj())) {
+                    bool found = false;
+                    for (size_t i = 0; i < ctx->link->deps.size(); ++i) {
+                        const Value& dep = ctx->link->deps[i];
+                        if (dep.isObj() && dep.asObj() == v.asObj()) {
+                            index = static_cast<uint32_t>(i);
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        const ObjModuleType* m = asModuleType(v);
+                        throw std::runtime_error("module cache: module '"
+                            + toUTF8StdString(m->fullName.isEmpty() ? m->name : m->fullName)
+                            + "' is not a dependency of the module being cached");
+                    }
+                }
+                uint8_t refTag = 2;
+                out.write(reinterpret_cast<char*>(&refTag), 1);
+                out.write(reinterpret_cast<char*>(&index), 4);
+                break;
+            }
             uint8_t isObjType = v.isObj() ? 1 : 0;
             out.write(reinterpret_cast<char*>(&isObjType), 1);
             if (isObjType) {
@@ -3705,6 +3737,22 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
                 if (!in)
                     throw std::runtime_error("readValue: unable to read builtin type tag");
                 return Value::typeVal(static_cast<ValueType>(subType));
+            }
+            if (isObjType == 2) {
+                // module reference (see the matching branch in writeValue)
+                uint32_t index = 0;
+                in.read(reinterpret_cast<char*>(&index), 4);
+                if (!in)
+                    throw std::runtime_error("readValue: unable to read module reference");
+                if (!ctx->link)
+                    throw std::runtime_error("readValue: module reference outside a module cache");
+                Value resolved = index == SerializationContext::ModuleLinkSelf
+                                     ? ctx->link->self
+                                     : (index < ctx->link->deps.size() ? ctx->link->deps[index]
+                                                                        : Value::nilVal());
+                if (!isModuleType(resolved))
+                    throw std::runtime_error("readValue: unresolved module reference");
+                return resolved;
             }
 
             uint8_t flag;

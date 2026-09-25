@@ -138,6 +138,11 @@ enum class OpCode {
                      // present) followed by a constant index (the asserted
                      // expression's source text). Stack, top last:
                      // [message?] [left right]? -- all consumed.
+    ImportModule,    // an import statement, at runtime: constant index of the
+                     // module. A user module's body runs once per VM (on the
+                     // first import of it to execute); a builtin's _init runs
+                     // each time. Leaves the body's result (or nil) on the
+                     // stack for the Pop that follows.
     _Last
 };
 

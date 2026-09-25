@@ -453,6 +453,8 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
             return constantInstruction("SET_NEW_MODULE_VAR", offset, doubleByteArg);
         case OpCode::ImportModuleVars:
             return simpleInstruction("IMPORT_MODULE_VARS", offset);
+        case OpCode::ImportModule:
+            return constantInstruction("IMPORT_MODULE", offset, doubleByteArg);
         case OpCode::GetLocal:
             return argInstruction("GET_LOCAL", offset, doubleByteArg);
         case OpCode::SetLocal:

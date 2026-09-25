@@ -4,6 +4,8 @@
 #include <onnxruntime_cxx_api.h>
 #endif
 #include <stdexcept>
+#include <filesystem>
+#include <chrono>
 #include <cassert>
 #include <unordered_map>
 #include <unordered_set>
@@ -4510,6 +4512,11 @@ void ObjModuleType::write(std::ostream& out, roxal::ptr<SerializationContext> ct
         writeValue(out, entry.second, ctx);
     }
 
+    writeMetadata(out);
+}
+
+void ObjModuleType::writeMetadata(std::ostream& out) const
+{
     // Persist the cstruct annotation map so cached modules know which type
     // declarations should recreate their FFI metadata when reloaded.
     uint32_t cstructCount = static_cast<uint32_t>(cstructArch.size());
@@ -4658,8 +4665,8 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
             ustring aliasFullName = ustring::fromUTF8(alias);
             if (aliasFullName.isEmpty())
                 aliasFullName = varName;
-            // Store the alias so reconcileModuleReferences() knows which fully
-            // qualified module should be rebound to this slot.
+            // Keep the alias: it records which fully qualified module this
+            // slot was bound to.
             registerModuleAlias(varName, aliasFullName);
         }
 
@@ -4667,6 +4674,11 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
         vars.store(varName, stored, true);
     }
 
+    readMetadata(in);
+}
+
+void ObjModuleType::readMetadata(std::istream& in)
+{
     // Rebuild the cstruct metadata so the VM can mark cached object types as
     // FFI-compatible when they are constructed.
     cstructArch.clear();
@@ -4773,6 +4785,8 @@ void ObjModuleType::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
 
 void ObjModuleType::trace(ValueVisitor& visitor) const
 {
+    visitor.visit(initFunction);
+    linkInfo.traceValues(visitor);
     // Unlocked by necessity -- taking varsLock here would invert against
     // mutators that hold it across GC-touching work (see the visitRoots
     // comment in SimpleMarkSweepGC.cpp).  Safe under the coverage invariant:
@@ -4798,6 +4812,8 @@ void ObjModuleType::dropReferences()
     sourcePath = ustring();
     propertyCTypes.clear();
     declAnnotations.clear();
+    initFunction = Value::nilVal();
+    linkInfo.deps.clear();
 }
 
 void ObjModuleType::registerModuleAlias(const ustring& alias,
@@ -7217,6 +7233,22 @@ unique_ptr<ObjModuleType, UnreleasedObj> roxal::newModuleTypeObj(const ustring& 
 }
 
 ObjModuleType::~ObjModuleType() {}
+
+SourceStamp SourceStamp::of(const std::string& path)
+{
+    SourceStamp stamp;
+    std::error_code ec;
+    auto mtime = std::filesystem::last_write_time(path, ec);
+    if (ec)
+        return stamp;
+    auto size = std::filesystem::file_size(path, ec);
+    if (ec)
+        return stamp;
+    stamp.mtimeNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        mtime.time_since_epoch()).count();
+    stamp.size = size;
+    return stamp;
+}
 
 
 

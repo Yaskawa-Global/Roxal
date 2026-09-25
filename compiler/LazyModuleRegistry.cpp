@@ -108,6 +108,8 @@ void LazyModuleRegistry::doLoad(VM& vm, const std::string& name)
             return;
         it->second.instance = instance;
     }
+    if (isModuleType(instance->moduleType()))
+        asModuleType(instance->moduleType())->kind = ModuleKind::Builtin;
 
     // 2. Add module's additional search paths
     vm.appendModulePaths(instance->additionalModulePaths());

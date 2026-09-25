@@ -1473,10 +1473,9 @@ plugin both link.
 ### Bytecode cache (`.roc`)
 
 Compiled modules are cached as `.roc` files next to their `.rox` source (the
-dot-prefix is just to keep the directory listing tidy). The compiler reads
-the cache when source mtime ≤ cache mtime; otherwise it recompiles and
-overwrites. `--recompile` deletes all caches under the source root before
-running.
+dot-prefix is just to keep the directory listing tidy). `--recompile` deletes
+all caches under the source root before running; `--nocache` neither reads nor
+writes them.
 
 `--check` (parse, type-deduce and compile without executing, for editors and
 CI) forces `CacheMode::NoCache`, so it neither reads nor writes: a cache hit
@@ -1485,18 +1484,73 @@ anything, and a read-only check should not leave `.roc` files behind. It shares
 `precompileFile()` with `--precompile`, which does the opposite — its whole
 point is to populate the caches. Note that `--check` cannot catch what only the
 VM decides: whether a call lifts into a dataflow node, the multi-return and
-destructure arity guards, and every signal-versus-value error are all run-time. Cache reads happen via `compiler.loadFileCache` (top-level scripts
-and builtin-module companions) or `RoxalCompiler::loadModuleFromCache`
-(nested `import`s during compilation).
+destructure arity guards, and every signal-versus-value error are all run-time.
+Cache reads happen via `RoxalCompiler::loadFileCache` (top-level scripts and
+builtin-module companions) or `loadModuleFromCache` (imported modules, from
+`ensureUserModule`).
 
-Each cache read creates a *fresh* `SerializationContext` and reconstructs
-every `Obj` in the file's reachable graph — including `ObjModuleType`s,
-`ObjObjectType`s, `ObjFunction`s, and the `Chunk` constants those functions
-reference. There is **no cross-file dedup**: loading `foo.roc` and `bar.roc`
-where both reference the same `foo.module` produces two distinct
-`ObjModuleType*` instances. This is by design — the cache file is self-
-contained — but it means an extra pass is needed to glue the deserialized
-fragments back into a coherent module graph.
+**One module per file.** A `.roc` holds exactly one module: its main
+function and the functions, types and constants that module declares. It
+never contains another module — not an imported user module's code, not a
+builtin's member table, not a snapshot of anyone's `vars`. Every other module
+the graph refers to is written as a *reference* into the file's dependency
+table (`SerializationContext::link`, see `writeValue`'s `ValueType::Type`
+branch: tag 2 + index, `ModuleLinkSelf` for the module itself). The writer
+throws if any module outside that table is reached, so a foreign module's code
+leaking into a graph fails the cache write rather than producing a file that
+embeds it.
+
+The layout (`storeModuleCache` / `loadModuleFromCache`,
+`ModuleCacheVersion`):
+
+1. **Header**: magic, version, debug tier, the module's own `SourceStamp`
+   (mtime + size), then the dependency table — every module this one was
+   compiled against, direct *and* transitive: kind (`ModuleKind`), dotted
+   name, resolved path, stamp, direct flag, and the import annotation names
+   (`.idl`/`.proto`). This is `ObjModuleType::linkInfo`, gathered per
+   `ModuleScope` during the compile (`recordDependency`) and published to the
+   module at the end of `visit(File)`.
+2. **Module record**: what the compiler produced besides code — `constVars`,
+   `registeredSuffixes`, the import bindings (`ImportBinding`: the components
+   of each import statement and its dependency index), and the metadata
+   `ObjModuleType::writeMetadata` covers (`cstructArch`, `propertyCTypes`,
+   `typeMembers`, `declAnnotations`).
+3. **The function**, via `writeValue` with the link table set.
+
+**Validity is exact.** A file is used only if the source's stamp *and every
+dependency's stamp* equal what the header recorded — compared for equality,
+not "cache newer than source", so a source replaced by an older copy (`cp -p`,
+`rsync -a`, an archive) is caught. Editing a leaf module therefore invalidates
+every importer's cache automatically; each importer recompiles only its own
+code. A direct user dependency must also still resolve to the same file
+through the current search path (`findImport`), or the cache does not
+describe what a fresh compile would do here. Sources are stamped *before* they
+are read (`ensureUserModule`, `compile()`), so an edit that lands mid-compile
+reads as stale on the next run instead of as a valid cache.
+
+**Loading** (`loadModuleFromCache(module, target)`): validate the header;
+resolve the direct dependencies by name, in import order — a user module
+through `ensureUserModule` (its own cache, or a compile), a builtin through
+`getBuiltinModuleType` (which may lazy-load it), an `.idl`/`.proto` through
+the VM's importer with the recorded annotations; read the record and the
+function with those resolutions; and only then apply everything to `target`
+and replay the bindings through `bindImport`. A failed load leaves the target
+untouched and returns nil, and the caller compiles into the *same* target —
+which matters in an import cycle, where the target is already registered and
+referenced. Each loaded module registers its own function graph with the
+debug index under its own source.
+
+There is no reconciliation pass any more: because no module is ever
+deserialized by value from a cache, deserialization cannot create duplicate
+module objects, and there is nothing to merge. (`ObjModuleType::write`/`read`
+by value still exist for network serialization.)
+
+The cache's between-run behaviour (invalidation on a leaf edit, import-order
+independence, once-per-program bodies, sizes, cycles, an older-mtime copy,
+the debug tier, `--precompile`, `.idl` restoration) is covered by
+`tests/module_cache/run_cache_tests.py`, which `runtests.py` lists as
+`modcache_<name>`; each scenario runs roxal several times in a private
+directory.
 
 ### Annotations at runtime
 
@@ -1523,9 +1577,9 @@ and they leave `inspect` unable to see anything else. `@cstruct` keeps its
 lowered form as well, because the VM consumes it directly when rebuilding FFI
 metadata.
 
-Adding to `ObjModuleType` means the `propertyCTypes` checklist: `write`, `read`,
-`dropReferences`, `mergeModuleTypes` (in `reconcileModuleReferences` — only the
-incremental/re-link path exercises it) and a `ModuleCacheVersion` bump. **GC:**
+Adding to `ObjModuleType` means the `propertyCTypes` checklist: `write`, `read`
+(by value, for network serialization), `writeMetadata`/`readMetadata` (the
+`.roc` module record), `dropReferences` and a `ModuleCacheVersion` bump. **GC:**
 `ptr<ast::Annotation>` is a `shared_ptr`, and no AST node holds a `Value`, so
 this needs no tracing in `ObjModuleType::trace()` or `SimpleMarkSweepGC.cpp` —
 the CLAUDE.md rule about new `Value` members does not apply.
@@ -1576,39 +1630,39 @@ hand rather than parsing, which pins the contract that conversion is a pure
 function of a node. The evaluating half is covered by
 `tests/inspect_signatures.rox` and `tests/inspect_var_annotations.rox`.
 
-### `reconcileModuleReferences`
+### Module linking
 
-After a successful `loadModuleFromCache`, `reconcileModuleReferences`
-([compiler/RoxalCompiler.cpp](compiler/RoxalCompiler.cpp)) walks every
-function in the deserialized chunk and substitutes "duplicate" instances
-with the **canonical** one — the live ObjModuleType already held by either a
-loaded `BuiltinModule`, a global, or a previously-canonicalized peer.
+A user module enters a VM through exactly one path,
+`RoxalCompiler::ensureUserModule` ([compiler/RoxalCompiler.cpp](compiler/RoxalCompiler.cpp)):
+the VM's user-module registry (`VM::lookupUserModule` /
+`registerUserModule`, keyed by dotted name) is consulted first; otherwise a
+fresh `ObjModuleType` is created and **registered before** it is loaded or
+compiled, then filled from its `.roc` or by `compile()`. Registering first is
+what makes import cycles safe: a cycle, whether through a body's `import` or a
+cache's dependency table, finds the registered, partly populated module
+instead of recursing. The result carries `kind` (`ModuleKind`), `linkInfo`,
+and `initFunction` — the compiled main function, run by `OpCode::ImportModule`.
 
-The two invariants that hold after reconcile:
+**Package nodes are per VM.** `import pkg.sub` binds `pkg` in the importer and
+`sub` under the `pkg` node (`bindImport`); the node is registered under its
+dotted name, so every importer of anything under `pkg` shares it, as in
+Python's `sys.modules`. A folder module (`pkg/init.rox`) is itself the node for
+`pkg`, whichever of `import pkg` and `import pkg.sub` came first (the later
+one loads or compiles into the node), and `import pkg.sub` imports `pkg` first
+when its folder is a module, parents before children.
 
-1. **One canonical `ObjModuleType` per module name** for the duration of
-   the program. `canonicalizeModuleValue` is *memoized* per reconcile pass
-   (a `unordered_map<ObjModuleType*, Value>` keyed on the fresh input
-   pointer). The first decision sticks, and both directions of the mapping
-   are recorded — when input X resolves to canonical Y, future queries with
-   either X *or* Y as input return Y. This eliminates non-determinism
-   where two duplicates each pick the other as "canonical" depending on
-   transient `vars` snapshot state.
-
-2. **Merging is non-destructive.** `mergeModuleTypes` walks `source->vars`
-   and stores only entries the target doesn't already have. If source and
-   target both carry a same-named type (`ObjObjectType` / `ObjEventType`)
-   with a different pointer, the source pointer is recorded in a
-   `canonicalTypeMemo` so chunk-constant occurrences of the dup can be
-   substituted later. This preserves "live" state already attached to the
-   canonical module's types — most importantly, `builtinInfo` patched onto
-   method functions by `linkMethod`.
-
-After the per-function walk, a second sweep over each function's
-`chunk->constants` substitutes any `ObjObjectType` / `ObjEventType` constant
-that appears in `canonicalTypeMemo` with its canonical Value, so bytecode
-that references types by chunk-constant index sees the same pointer as
-runtime dispatch.
+**Bodies run once per VM.** Every import statement compiles to
+`ImportModule <module>` + `Pop`. At runtime the op does a compare-and-swap on
+the module's `initState` (`NotStarted` → `Running`): the thread that wins
+calls `initFunction` like any zero-argument closure, with
+`CallFrame::initsModule` set so `opReturn` marks the module `Done` on return
+(end of file or a module-level `return` alike). `Done`, or `Running` on the
+same thread (a circular import), pushes nil and the module is used as it is,
+partly initialized, as in Python; `Running` on another thread is a runtime
+error. For a builtin the op calls the module's `_init` (if it declares one) on
+every import. The compile order therefore no longer decides whether a body
+runs, which is what made the old cache order-dependent. A body that raises
+stays `Running`.
 
 Builtin-module developers can compile with `-DDEBUG_BUILTINS` (or
 uncommenting `DEBUG_BUILTINS` in `CMakeLists.txt`'s `add_compile_definitions`

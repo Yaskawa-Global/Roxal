@@ -2199,6 +2199,73 @@ struct ObjPackageType : public ObjTypeSpec
     void trace(ValueVisitor& visitor) const override { (void)visitor; }
 };
 
+// What a module is, which decides how it is linked: how an importer's .roc
+// refers to it and what an import of it does at runtime.
+enum class ModuleKind : uint8_t {
+    Script,     // a top-level program (a file, the REPL, a submitted string)
+    User,       // a .rox module resolved through the module search path
+    Builtin,    // a native module (ModuleSys, ModuleNN, ...), with or without a companion .rox
+    Package,    // a namespace node created for the package components of a dotted import
+    Idl,        // a module generated from a .idl file (dds)
+    Proto,      // a module generated from a .proto file (grpc)
+};
+
+// Identity of a source file at one moment: a .roc records the stamp of its own
+// source and of every source it was compiled against, and is valid only while
+// every stamp still matches EXACTLY.  (A newer-cache-than-source rule misses a
+// source replaced by an older copy: rsync -a, cp -p, archive extraction.)
+struct SourceStamp {
+    int64_t mtimeNs { 0 };
+    uint64_t size { 0 };
+
+    bool isSet() const { return mtimeNs != 0 || size != 0; }
+    bool operator==(const SourceStamp& other) const {
+        return mtimeNs == other.mtimeNs && size == other.size;
+    }
+    bool operator!=(const SourceStamp& other) const { return !(*this == other); }
+
+    // The file's current stamp; unset if it cannot be stat'ed.
+    static SourceStamp of(const std::string& path);
+};
+
+// One module this module was compiled against.  Recorded in its .roc so a
+// load can re-resolve the module by name, re-validate it by stamp, and
+// re-import an .idl/.proto file with the same annotations.
+struct ModuleDep {
+    ModuleKind kind { ModuleKind::User };
+    ustring qualifiedName;                  // dotted module name (or the builtin registry key)
+    std::string resolvedPath;               // canonical source path; empty for a builtin
+    SourceStamp stamp;                      // of resolvedPath, at compile time
+    std::vector<std::string> annotations;   // import-statement annotation names (.idl/.proto)
+    bool direct { true };                   // false: reached only through another dependency
+    // The dependency's module, for the cache writer's link table (traced by
+    // ObjModuleType::trace and the compiler's ModuleScope); the objects are
+    // pinned by the VM anyway (allModules / the registry).
+    Value module { Value::nilVal() };
+};
+
+// One import statement's binding into this module: `import a.b.c` binds `a`
+// here, `b` under the `a` package node and the module `c` under `b`.
+struct ImportBinding {
+    std::vector<ustring> components;
+    uint32_t depIndex { 0 };                // into ModuleLinkInfo::deps
+};
+
+// Everything a .roc needs to link this module back into a VM, kept on the
+// module so it is there whether the module was compiled or loaded from cache.
+// Holds Values only through ModuleDep::module (see traceValues).
+struct ModuleLinkInfo {
+    SourceStamp stamp;                      // this module's own source
+    std::vector<ModuleDep> deps;
+    std::vector<ImportBinding> bindings;
+
+    template<typename Visitor>
+    void traceValues(Visitor& visitor) const {
+        for (const auto& dep : deps)
+            visitor.visit(dep.module);
+    }
+};
+
 struct ObjModuleType : public ObjTypeSpec
 {
     ObjModuleType(const ustring& typeName);
@@ -2208,6 +2275,18 @@ struct ObjModuleType : public ObjTypeSpec
     ustring name;
     ustring fullName;
     ustring sourcePath;
+    ModuleKind kind { ModuleKind::Script };
+
+    ModuleLinkInfo linkInfo;
+
+    // The module's compiled main function (a user module's body), run once per
+    // VM by the first import of it to execute.  Set by the compiler's
+    // ensureUserModule; nil for a module that has no body of its own (builtin,
+    // package, .idl/.proto) and for a top-level script.
+    Value initFunction { Value::nilVal() };
+    enum class InitState : uint8_t { NotStarted, Running, Done };
+    std::atomic<InitState> initState { InitState::NotStarted };
+    std::atomic<uint64_t> initOwner { 0 };  // thread id running the body while Running
 
     // variables declared at runtime via VM OpCode::DefineModuleVar
     VariablesMap vars;
@@ -2260,6 +2339,12 @@ struct ObjModuleType : public ObjTypeSpec
 
     void write(std::ostream& out, roxal::ptr<SerializationContext> ctx = nullptr) const override;
     void read(std::istream& in, roxal::ptr<SerializationContext> ctx = nullptr) override;
+
+    // The compile-time metadata (cstructArch, propertyCTypes, typeMembers,
+    // declAnnotations) on its own: the .roc module record uses this without
+    // the by-value write()'s name/vars framing.
+    void writeMetadata(std::ostream& out) const;
+    void readMetadata(std::istream& in);
 
     void trace(ValueVisitor& visitor) const override;
     void dropReferences() override;

@@ -734,6 +734,12 @@ import mymodule.submodule.toplevel
 
 If you need to have several .rox files in your module, you can place them in a folder containing a specially named `init.rox` file, and the import will execute that file as the module's file (the module name will be the folder name).  This file could, for example, import other files from that folder to help implement the module.
 
+As in Python, importing something *inside* such a folder module runs the folder's `init.rox` first: `import mymodule.submodule` imports `mymodule` (running `mymodule/init.rox`, if there is one) and then `submodule`.  A folder without an `init.rox` is just a namespace.
+
+A module's top-level code runs **once**, the first time an `import` of it executes, however many modules import it; later imports just bind the name.  Two modules may import each other: the second import finds the first module partly initialized (only what ran before its `import` statement exists yet), again as in Python, so put such cross-references inside functions rather than at the top level.
+
+Compiled modules are cached in `.roc` files beside their source.  Editing a module — including one that other modules import — is picked up automatically on the next run; nothing needs recompiling by hand (`--recompile` and `--nocache` remain available).
+
 ### Module search paths
 
 Roxal resolves `import` statements by searching a list of module paths. The

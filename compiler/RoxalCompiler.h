@@ -34,7 +34,9 @@ public:
                   const std::string& sourceNameOverride = "");
 
     // Attempt to load/store cached bytecode for a standalone source file (.rox)
-    Value loadFileCache(const std::filesystem::path& sourcePath) const;
+    // `target`: the module to load into (a builtin's companion script); nil
+    // creates the script's module, as compile() would.
+    Value loadFileCache(const std::filesystem::path& sourcePath, Value target = Value::nilVal());
     void storeFileCache(const std::filesystem::path& sourcePath, const Value& function) const;
 
     void setOutputBytecodeDisassembly(bool outputBytecodeDisassembly);
@@ -150,18 +152,9 @@ protected:
     std::vector<std::string> modulePaths;
     bool cacheReadEnabled;
     bool cacheWriteEnabled;
-    bool currentModuleHasDynamicImport{false};
-    // Dynamic (.idl/.proto) imports made by the module being compiled,
-    // recorded into the .roc cache so cache loads can re-import them.
-    // The annotation names attached to the import statement are carried
-    // verbatim (the compiler does not interpret them; the importer backing
-    // the import decides what, if anything, they mean).
-    struct DynImport {
-        std::string path;
-        std::vector<std::string> annotations;
-    };
-    std::vector<DynImport> currentDynamicImports;
     VM* moduleResolverVM;
+    // The VM whose module registries this compilation resolves against.
+    VM& resolverVM() const;
 
     // Persistent TypeDeducer for REPL mode to maintain type info across lines
     ptr<TypeDeducer> replTypeDeducer;
@@ -356,9 +349,39 @@ protected:
     Scope moduleScope();
     Scope enclosingModuleScope(Scope s);
 
-    Value loadModuleFromCache(const ModuleInfo& module) const;
+    // Load `module`'s .roc into `target` (nil: create the module) and return
+    // its main function; nil when there is no usable cache, with `target`
+    // untouched.  Every module the file refers to is resolved by name first,
+    // a user module through ensureUserModule.
+    Value loadModuleFromCache(const ModuleInfo& module, Value target);   // loads dependencies: compiles
     void storeModuleCache(const ModuleInfo& module, const Value& function) const;
-    void reconcileModuleReferences(const Value& function) const;
+
+    // The one path by which a user module enters a VM: the registry's
+    // canonical ObjModuleType if it is already there, else the module loaded
+    // from its .roc or compiled from `sourcePath` (and cached), registered
+    // under `fullName` and given its initFunction.  Throws on a compile
+    // failure.
+    Value ensureUserModule(const ModuleInfo& module, const ustring& fullName,
+                           const std::string& sourcePath);
+
+    // Emit the runtime half of an import: OpCode::ImportModule on the module
+    // (see the opcode), and the Pop of what it leaves.
+    void emitImportModule(const Value& module, const std::string& comment);
+
+    // Bind an import into `importer`: `components` as written in the import
+    // statement (`a.b.c` binds `a` in the importer, `b` under the `a`
+    // package node, and `module` as `c` under `b`).  Package nodes are
+    // per-VM (see VM::lookupUserModule), so the same hierarchy is visible
+    // wherever the package is imported; a .roc load replays the same call.
+    static void bindImport(VM& vm, ObjModuleType* importer,
+                           const std::vector<ustring>& components, const Value& module);
+
+    // Record a module the one being compiled depends on (deduplicated by
+    // name), plus, for a user module, the dependencies it was itself compiled
+    // against, so the importer's .roc can be invalidated by any of them.
+    // Returns the entry's index for an ImportBinding.
+    uint32_t recordDependency(ModuleDep dep);
+    void publishLinkInfoToModule();
 
 
     // stack new states when we enter new functions to compile
@@ -560,8 +583,15 @@ protected:
         }
         virtual ~ModuleScope() {}
 
+        // What this module imports, gathered while its body compiles and
+        // handed to the ObjModuleType at the end (publishLinkInfoToModule).
+        // Per scope, not per compiler: a nested import compiles on this same
+        // compiler and must not clobber the importer's list.
+        ModuleLinkInfo linkInfo;
+
         void traceValues(ValueVisitor& visitor) const override {
             FunctionScope::traceValues(visitor);
+            linkInfo.traceValues(visitor);
             if (moduleType.isObj())
                 visitor.visit(moduleType);
         }

@@ -6135,6 +6135,15 @@ Value VM::opReturn()
     if (returningFrame.isContinuationCallback)
         thread->continuationCallbackReturned = true;
 
+    // A module body pushed by OpCode::ImportModule: however it returned
+    // (end of file or a module-level `return`), the module is initialized.
+    if (returningFrame.initsModule) {
+        ObjFunction* fn = asFunction(asClosure(returningFrame.closure)->function);
+        if (isModuleType(fn->moduleType))
+            asModuleType(fn->moduleType)->initState.store(ObjModuleType::InitState::Done,
+                                                          std::memory_order_release);
+    }
+
     Value result = pop();
     closeUpvalues(returningFrame.slots);
 
@@ -11008,6 +11017,58 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                 popN(2);
                 break;
             }
+            case OpCode::ImportModule: {
+                // The runtime half of an import statement (see OpCode).  The
+                // compile-time half (loading the module, binding the name)
+                // already happened; this runs the body, once per VM, or a
+                // builtin's _init.
+                Value moduleVal = readConstant();
+                debug_assert_msg(isModuleType(moduleVal), "ImportModule expects a module constant");
+                ObjModuleType* module = asModuleType(moduleVal);
+
+                Value callee { Value::nilVal() };
+                if (module->kind == ModuleKind::Builtin) {
+                    auto initFn = module->vars.load(toUnicodeString("_init"));
+                    if (initFn.has_value() && isClosure(*initFn))
+                        callee = *initFn;
+                } else {
+                    auto expected = ObjModuleType::InitState::NotStarted;
+                    if (module->initState.compare_exchange_strong(expected,
+                                                                  ObjModuleType::InitState::Running)) {
+                        module->initOwner.store(thread->id(), std::memory_order_relaxed);
+                        if (!isFunction(module->initFunction)) {
+                            runtimeError("module '" + toUTF8StdString(module->fullName)
+                                         + "' has no compiled body (its compilation failed)");
+                            return errorReturn;
+                        }
+                        callee = Value::closureVal(module->initFunction);
+                    } else if (expected == ObjModuleType::InitState::Running
+                               && module->initOwner.load(std::memory_order_relaxed) != thread->id()) {
+                        runtimeError("module '" + toUTF8StdString(module->fullName)
+                                     + "' is being initialized by another thread");
+                        return errorReturn;
+                    }
+                    // Done, or Running on this thread (a circular import): the
+                    // module is used as it is, partly initialized, as in Python.
+                }
+
+                if (callee.isNil()) {
+                    push(Value::nilVal());
+                    break;
+                }
+
+                // Call with no arguments: the callee slot becomes the frame's
+                // slot 0 and receives the result on return, exactly as
+                // Closure + Call did.
+                push(callee);
+                CallSpec callSpec(uint16_t(0));
+                if (!callValue(callee, callSpec))
+                    return errorReturn;
+                frame = thread->frames.end()-1;
+                if (module->kind != ModuleKind::Builtin)
+                    frame->initsModule = true;
+                break;
+            }
             case OpCode::ImportModuleVars: {
                 // given a list of var identifiers and two module types, copy the list of vars from
                 //  one module's vars to the other (copy the declarations, not deep copying values)
@@ -15345,7 +15406,7 @@ void VM::executeBuiltinModuleScript(const std::string& path, Value moduleType)
     Value fn { Value::nilVal() };
     bool loadedFromCache = false;
     if (!cacheSourcePath.empty()) {
-        Value cached = compiler.loadFileCache(cacheSourcePath);
+        Value cached = compiler.loadFileCache(cacheSourcePath, moduleType);
         if (cached.isNonNil()) {
             fn = cached;
             loadedFromCache = true;
@@ -15384,6 +15445,8 @@ void VM::registerBuiltinModule(ptr<BuiltinModule> module)
     // handled by onModuleLoaded() hooks, called during lazy loading
     builtinModules.push_back(module);
     if (module) {
+        if (isModuleType(module->moduleType()))
+            asModuleType(module->moduleType())->kind = ModuleKind::Builtin;
         appendModulePaths(module->additionalModulePaths());
     }
 }

@@ -85,7 +85,7 @@ static unsigned long currentProcessId()
     return static_cast<unsigned long>(::getpid());
 #endif
 }
-constexpr std::uint32_t ModuleCacheVersion = 62;   // 62: debug-tier byte in the cache header (61: chunk debug metadata tables)
+constexpr std::uint32_t ModuleCacheVersion = 64;   // 64: one module per file, dependencies by reference (63: OpCode::ImportModule)
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -122,6 +122,70 @@ ustring makeFullModuleName(const ustring& packagePath,
         full += moduleName;
     }
     return full.isEmpty() ? moduleName : full;
+}
+
+// .roc header/record primitives.  Reads throw on a short stream or an
+// implausible count, so a corrupt or truncated file invalidates (the loader
+// recompiles) instead of being misparsed or allocating unboundedly.
+struct CacheWriter {
+    std::ostream& out;
+    void u8(uint8_t v)   { out.write(reinterpret_cast<const char*>(&v), 1); }
+    void u32(uint32_t v) { out.write(reinterpret_cast<const char*>(&v), 4); }
+    void i32(int32_t v)  { out.write(reinterpret_cast<const char*>(&v), 4); }
+    void i64(int64_t v)  { out.write(reinterpret_cast<const char*>(&v), 8); }
+    void u64(uint64_t v) { out.write(reinterpret_cast<const char*>(&v), 8); }
+    void str(const std::string& v) {
+        u32(static_cast<uint32_t>(v.size()));
+        if (!v.empty())
+            out.write(v.data(), v.size());
+    }
+    void ustr(const ustring& v) { std::string utf8; v.toUTF8String(utf8); str(utf8); }
+    void stamp(const SourceStamp& v) { i64(v.mtimeNs); u64(v.size); }
+};
+
+struct CacheReader {
+    std::istream& in;
+    template<typename T> T raw() {
+        T v {};
+        in.read(reinterpret_cast<char*>(&v), sizeof(T));
+        if (!in)
+            throw std::runtime_error("module cache: truncated");
+        return v;
+    }
+    uint8_t u8()   { return raw<uint8_t>(); }
+    uint32_t u32() { return raw<uint32_t>(); }
+    int32_t i32()  { return raw<int32_t>(); }
+    int64_t i64()  { return raw<int64_t>(); }
+    uint64_t u64() { return raw<uint64_t>(); }
+    uint32_t count(uint32_t max) {
+        uint32_t n = u32();
+        if (n > max)
+            throw std::runtime_error("module cache: implausible count");
+        return n;
+    }
+    std::string str() {
+        uint32_t n = count(1u << 24);
+        std::string v(n, '\0');
+        if (n)
+            in.read(v.data(), n);
+        if (!in)
+            throw std::runtime_error("module cache: truncated");
+        return v;
+    }
+    ustring ustr() { return ustring::fromUTF8(str()); }
+    SourceStamp stamp() { SourceStamp v; v.mtimeNs = i64(); v.size = u64(); return v; }
+};
+
+std::vector<ustring> splitQualifiedName(const ustring& qualified)
+{
+    std::vector<ustring> parts;
+    std::string utf8 = toUTF8StdString(qualified);
+    std::stringstream ss(utf8);
+    std::string item;
+    while (std::getline(ss, item, '.'))
+        if (!item.empty())
+            parts.push_back(toUnicodeString(item));
+    return parts;
 }
 
 } // namespace
@@ -192,10 +256,20 @@ Value RoxalCompiler::compile(std::istream& source, const std::string& name,
         gcNoPark.emplace();
 
     Value function { Value::nilVal() };
-    currentModuleHasDynamicImport = false;
-    currentDynamicImports.clear();
 
     const std::string sourceName = sourceNameOverride.empty() ? name : sourceNameOverride;
+
+    // Stamp a file-backed source before it is parsed (an edit landing
+    // mid-compile then reads as stale next run, not as a valid cache).  This
+    // covers what does not come through ensureUserModule: top-level scripts
+    // and builtin companion scripts.  A synthetic name (REPL, -e) stamps as
+    // unset.
+    SourceStamp sourceStamp;
+    {
+        std::error_code ec;
+        if (!sourceName.empty() && std::filesystem::is_regular_file(sourceName, ec) && !ec)
+            sourceStamp = SourceStamp::of(sourceName);
+    }
 
     ptr<ast::AST> ast {};
     try {
@@ -246,6 +320,12 @@ Value RoxalCompiler::compile(std::istream& source, const std::string& name,
         enterModuleScope("", toUnicodeString(moduleName), toUnicodeString(sourceName), existingModule);
 
         auto module { asModuleScope(moduleScope()) };
+
+        if (isModuleType(module->moduleType)) {
+            ObjModuleType* moduleTypeObj = asModuleType(module->moduleType);
+            if (!moduleTypeObj->linkInfo.stamp.isSet())
+                moduleTypeObj->linkInfo.stamp = sourceStamp;
+        }
 
         // Seed suffix registry from implicitly imported modules (e.g. sys)
         // that may have registered @suffix functions.
@@ -358,7 +438,7 @@ Value RoxalCompiler::compile(std::istream& source, const std::string& name,
     return function;
 }
 
-Value RoxalCompiler::loadFileCache(const std::filesystem::path& sourcePath) const
+Value RoxalCompiler::loadFileCache(const std::filesystem::path& sourcePath, Value target)
 {
     // Same coverage rationale as compile(): cache deserialization runs
     // outside execute() and must count as Running so collections wait for
@@ -384,21 +464,16 @@ Value RoxalCompiler::loadFileCache(const std::filesystem::path& sourcePath) cons
         if (resolved.extension() != ".rox")
             return Value::nilVal();
 
-        std::filesystem::path cachePath = moduleCachePathFor(resolved);
-        if (cachePath.empty())
-            return Value::nilVal();
-        if (!std::filesystem::exists(cachePath))
-            return Value::nilVal();
-
-        auto sourceTime = std::filesystem::last_write_time(resolved);
-        auto cacheTime = std::filesystem::last_write_time(cachePath);
-        if (cacheTime < sourceTime)
-            return Value::nilVal();
-
         ModuleInfo module{};
-        module.cachePath = cachePath;
-        module.resolvedPath = resolved;   // lets the debug index retain source text
-        return loadModuleFromCache(module);
+        module.cachePath = moduleCachePathFor(resolved);
+        module.resolvedPath = resolved;
+        module.name = toUnicodeString(resolved.stem().string());
+        if (module.cachePath.empty() || !std::filesystem::exists(module.cachePath))
+            return Value::nilVal();
+        // Validity (this source's stamp and every dependency's) is the
+        // loader's to decide.
+        module.cacheValid = true;
+        return loadModuleFromCache(module, std::move(target));
     } catch (...) {
         return Value::nilVal();
     }
@@ -427,478 +502,6 @@ void RoxalCompiler::storeFileCache(const std::filesystem::path& sourcePath, cons
         // ignore cache write failures
     }
 }
-
-void RoxalCompiler::reconcileModuleReferences(const Value& function) const
-{
-    if (function.isNil() || !isFunction(function))
-        return;
-
-    VM* resolverVM = moduleResolverVM;
-    if (resolverVM == nullptr)
-        resolverVM = &VM::instance();
-
-    // Helpers --------------------------------------------------------------
-
-    // Memo: maps a fresh-deserialized ObjModuleType* to its decided canonical
-    // Value (which itself wraps an ObjModuleType*). Populated lazily by
-    // canonicalizeModuleValue and consulted on every subsequent call within
-    // this reconcile pass — eliminates the target/source role-flipping
-    // previously observed when two deserialized duplicates each picked the
-    // other as "canonical" depending on transient var-count state.
-    std::unordered_map<ObjModuleType*, Value> canonicalModuleMemo;
-
-    // Memo: maps a fresh-deserialized ObjObjectType* (or ObjEventType*) to its
-    // canonical Value, populated when mergeModuleTypes sees the same-named
-    // type already present in the target module. Used to substitute fresh
-    // duplicate type instances out of chunk constants after the module-level
-    // walk completes.
-    std::unordered_map<Obj*, Value> canonicalTypeMemo;
-
-    // Keys in the two memos above are raw Obj* pointers. Pin them with strong
-    // Value refs for the lifetime of this reconcile pass so a future change
-    // that triggers GC mid-walk can't invalidate the keys. (Current code
-    // doesn't run GC during reconcile, but treat memo keys as load-bearing.)
-    std::vector<Value> memoKeyPins;
-
-    auto mergeModuleTypes = [&](ObjModuleType* target, ObjModuleType* source) {
-        if (target == nullptr || source == nullptr || target == source)
-            return;
-
-        if (!source->fullName.isEmpty())
-            target->fullName = source->fullName;
-        if (!source->sourcePath.isEmpty())
-            target->sourcePath = source->sourcePath;
-
-        // Non-destructive merge: store source entries only if target doesn't
-        // already have the name. When both sides hold a type with the same
-        // name but a different pointer, record source's pointer as aliasing
-        // the canonical (target's) so chunk constants can be substituted later.
-        auto sourceVars = source->vars.snapshot();
-        for (const auto& entry : sourceVars) {
-            int32_t nameHash = entry.first.hashCode();
-            auto existing = target->vars.load(nameHash);
-            if (existing.has_value() && !existing.value().isNil()) {
-                if (entry.second.isObj() && existing.value().isObj()
-                    && entry.second.asObj() != existing.value().asObj()) {
-                    bool isType =
-                        isObjectType(entry.second) || isEventType(entry.second);
-                    bool isExistingType =
-                        isObjectType(existing.value()) || isEventType(existing.value());
-                    if (isType && isExistingType) {
-                        canonicalTypeMemo.emplace(entry.second.asObj(), existing.value().strongRef());
-                        memoKeyPins.push_back(entry.second.strongRef());  // pin key
-                        memoKeyPins.push_back(existing.value().strongRef());  // pin canonical
-                    }
-                }
-                // Keep target's value — don't overwrite.
-            } else {
-                target->vars.store(entry);
-            }
-        }
-        // Union of constVar markers (source's set, plus whatever target had).
-        for (auto h : source->constVars)
-            target->constVars.insert(h);
-
-        auto sourceAliases = source->moduleAliasSnapshot();
-        for (const auto& alias : sourceAliases) {
-            if (target->moduleAliasFullName(alias.first).isEmpty())
-                target->registerModuleAlias(alias.first, alias.second);
-        }
-
-        for (const auto& kv : source->cstructArch) {
-            if (target->cstructArch.find(kv.first) == target->cstructArch.end())
-                target->cstructArch[kv.first] = kv.second;
-        }
-        for (const auto& kv : source->propertyCTypes) {
-            auto& tgtProps = target->propertyCTypes[kv.first];
-            for (const auto& pkv : kv.second) {
-                if (tgtProps.find(pkv.first) == tgtProps.end())
-                    tgtProps[pkv.first] = pkv.second;
-            }
-        }
-        for (const auto& kv : source->declAnnotations) {
-            if (target->declAnnotations.find(kv.first) == target->declAnnotations.end())
-                target->declAnnotations[kv.first] = kv.second;
-        }
-    };
-
-    auto toKey = [](const ustring& value) {
-        std::string result;
-        value.toUTF8String(result);
-        return result;
-    };
-
-    auto moduleQualifiedName = [&](ObjModuleType* module) {
-        if (module->fullName.isEmpty())
-            return module->name;
-        return module->fullName;
-    };
-
-    // Resolve a builtin module by its qualified name, falling back to the leaf
-    // component (e.g. "ai.nn" -> "nn"); nil if no such builtin is registered.
-    // A deserialized module that names a builtin must resolve to the live,
-    // populated instance -- its native @builtin members cannot be rebuilt from
-    // a cache, so any fabricated duplicate would be an empty stub.
-    auto resolveBuiltinModule = [&](const ustring& qualifiedName) -> Value {
-        Value builtin = resolverVM->getBuiltinModuleType(qualifiedName);
-        if (builtin.isNil()) {
-            int32_t dot = qualifiedName.lastIndexOf('.');
-            if (dot >= 0)
-                builtin = resolverVM->getBuiltinModuleType(qualifiedName.tempSubString(dot + 1));
-        }
-        return isModuleType(builtin) ? builtin : Value::nilVal();
-    };
-
-    auto canonicalizeModuleValue = [&](const Value& moduleValue) -> Value {
-        Value strong = moduleValue.strongRef();
-        if (!isModuleType(strong))
-            return strong;
-
-        ObjModuleType* module = asModuleType(strong);
-
-        // Memo hit: same fresh input always returns same canonical within
-        // this reconcile pass. Prevents two deserialized duplicates from
-        // each picking the other as canonical on alternate calls.
-        auto memoIt = canonicalModuleMemo.find(module);
-        if (memoIt != canonicalModuleMemo.end())
-            return memoIt->second.strongRef();
-
-        // Decide canonical and record memo. Also memo canonical->canonical so
-        // a later call with the canonical pointer as input stays stable.
-        auto record = [&](const Value& canonical) -> Value {
-            Value strongCanonical = canonical.strongRef();
-            canonicalModuleMemo.emplace(module, strongCanonical);
-            memoKeyPins.push_back(strong);  // pin the input key alive
-            if (isModuleType(strongCanonical)) {
-                ObjModuleType* canonMt = asModuleType(strongCanonical);
-                if (canonMt != module) {
-                    canonicalModuleMemo.emplace(canonMt, strongCanonical);
-                    memoKeyPins.push_back(strongCanonical);  // pin canonical too
-                }
-            }
-            return strongCanonical;
-        };
-
-        ustring qualified = moduleQualifiedName(module);
-        Value builtin = resolveBuiltinModule(qualified);
-        if (builtin.isNonNil()) {
-            mergeModuleTypes(asModuleType(builtin), module);
-            return record(builtin);
-        }
-
-        // Register the chosen canonical user-module Value in the
-        // VM-wide registry.  This is what makes the cache-load path
-        // self-bootstrapping: when a builtin-module companion script
-        // (e.g. robot.rox) is loaded from cache, compileImport never
-        // runs for its transitive user modules, so no pre-compile
-        // registration happens — reconcile picks one deserialised
-        // duplicate as canonical (the "first one wins" via memo) and
-        // the registry must learn that choice so the next reconcile
-        // pass (e.g. for the user script that imports the same
-        // modules) canonicalises consistently.  Skipped for builtin
-        // modules (handled above) and for empty qualified names.
-        auto registerCanonical = [&](const Value& canonical) {
-            if (qualified.isEmpty() || !isModuleType(canonical))
-                return;
-            resolverVM->registerUserModule(qualified, canonical.strongRef());
-        };
-
-        // Cross-compiler user-module registry takes precedence over
-        // the global/allModules fallbacks: if another compilation has
-        // registered a canonical ObjModuleType for this qualified
-        // name, every reference to a same-named cache-loaded
-        // duplicate should resolve to it.  This is the deterministic
-        // counterpart to the order-dependent findExistingModule
-        // fallback below.
-        if (!qualified.isEmpty()) {
-            auto registered = resolverVM->lookupUserModule(qualified);
-            if (registered.has_value() && isModuleType(registered.value())) {
-                Value canonical = registered.value();
-                if (asModuleType(canonical) != module) {
-                    mergeModuleTypes(asModuleType(canonical), module);
-                    return record(canonical);
-                }
-            }
-        }
-
-        // Prefer an existing global module with the same name
-        auto globalOpt = resolverVM->loadGlobal(module->name);
-        if (globalOpt.has_value() && isModuleType(globalOpt.value())) {
-            Value globalMod = globalOpt.value();
-            mergeModuleTypes(asModuleType(globalMod), module);
-            registerCanonical(globalMod);
-            return record(globalMod);
-        }
-
-        // Try to match an existing module by name/fullName (e.g., dynamically imported IDL/proto)
-        auto findExistingModule = [&](const ustring& name, const ustring& fullName) -> Value {
-            auto modules = ObjModuleType::allModules.get();
-            Value best { Value::nilVal() };
-            size_t bestVars = 0;
-            for (const auto& modVal : modules) {
-                if (!isModuleType(modVal))
-                    continue;
-                ObjModuleType* m = asModuleType(modVal);
-                if (m == module)
-                    continue;
-                auto varCount = m->vars.snapshot().size();
-                if (!fullName.isEmpty()) {
-                    if (m->fullName == fullName)
-                        if (varCount >= bestVars) {
-                            best = modVal.strongRef();
-                            bestVars = varCount;
-                        }
-                }
-                if (m->name == name)
-                    if (varCount >= bestVars) {
-                        best = modVal.strongRef();
-                        bestVars = varCount;
-                    }
-            }
-            return best;
-        };
-
-        Value existing = findExistingModule(module->name, qualified);
-        if (existing.isNonNil()) {
-            mergeModuleTypes(asModuleType(existing), module);
-            registerCanonical(existing);
-            return record(existing);
-        }
-
-        // No prior match: this deserialised module is itself canonical.
-        // Register it so the next reconcile pass canonicalises against it.
-        registerCanonical(strong);
-        return record(strong);
-    };
-
-    // Substitute a constant/value: if it's a fresh-deserialized type that
-    // mergeModuleTypes flagged as duplicating a canonical one, return the
-    // canonical Value; otherwise return the original unchanged.
-    auto canonicalizeTypeIfDup = [&](const Value& v) -> Value {
-        if (!v.isObj())
-            return v;
-        if (!isObjectType(v) && !isEventType(v))
-            return v;
-        auto it = canonicalTypeMemo.find(v.asObj());
-        if (it == canonicalTypeMemo.end())
-            return v;
-        return it->second.strongRef();
-    };
-
-    // Walk every function owned by the entry chunk and collect the module
-    // types they reference (both directly and via nested functions).  At the
-    // same time, remember any alias information recorded on the module so we
-    // can restore the import table after we rebuild the canonical module
-    // hierarchy below.
-    std::unordered_set<ObjFunction*> visited;
-    std::vector<ObjFunction*> stack;
-    using AliasList = std::vector<std::pair<ustring, ustring>>;
-    std::unordered_map<ObjModuleType*, AliasList> moduleImports;
-    std::unordered_map<std::string, Value> canonicalModules;
-
-    auto enqueueFunction = [&](const Value& fnValue) {
-        if (!isFunction(fnValue))
-            return;
-
-        ObjFunction* candidate = asFunction(fnValue);
-        if (visited.insert(candidate).second)
-            stack.push_back(candidate);
-    };
-
-    enqueueFunction(function);
-
-    while (!stack.empty()) {
-        ObjFunction* fn = stack.back();
-        stack.pop_back();
-
-        if (!isModuleType(fn->moduleType) || fn->chunk == nullptr)
-            continue;
-
-        Value fnModuleValue = canonicalizeModuleValue(fn->moduleType);
-        fn->moduleType = fnModuleValue.weakRef();
-        ObjModuleType* moduleType = asModuleType(fnModuleValue);
-
-        std::unordered_set<int32_t> importHashes;
-        AliasList imports;
-
-        auto aliasSnapshot = moduleType->moduleAliasSnapshot();
-        for (const auto& alias : aliasSnapshot) {
-            if (importHashes.insert(alias.first.hashCode()).second)
-                imports.emplace_back(alias.first, alias.second);
-        }
-
-        if (imports.empty()) {
-            // Fall back to the variable table when the module did not record
-            // explicit alias metadata (this covers older cache files or
-            // modules that populated the table manually).
-            // Only include MODULE-typed entries — non-module vars (types,
-            // functions, values) belong to the module's content and must not
-            // be funneled through the import-rebuild loop below, which would
-            // replace them with placeholder modules of the same name.
-            for (const auto& entry : moduleType->vars.snapshot()) {
-                if (!isModuleType(entry.second))
-                    continue;
-                const ustring& name = entry.first;
-                if (importHashes.insert(name.hashCode()).second)
-                    imports.emplace_back(name, ustring());
-            }
-        }
-
-        for (auto& constant : fn->chunk->constants) {
-            if (isFunction(constant)) {
-                enqueueFunction(constant);
-                Value moduleTypeValue = asFunction(constant)->moduleType;
-                if (isModuleType(moduleTypeValue)) {
-                    Value moduleValue = canonicalizeModuleValue(moduleTypeValue);
-                    asFunction(constant)->moduleType = moduleValue.weakRef();
-                    if (isModuleType(moduleValue)) {
-                        ObjModuleType* imported = asModuleType(moduleValue);
-                        canonicalModules[toKey(moduleQualifiedName(imported))] = moduleValue.strongRef();
-                    }
-                }
-            } else if (isModuleType(constant)) {
-                Value moduleValue = canonicalizeModuleValue(constant);
-                constant = moduleValue;
-                if (isModuleType(moduleValue)) {
-                    ObjModuleType* imported = asModuleType(moduleValue);
-                    canonicalModules[toKey(moduleQualifiedName(imported))] = moduleValue.strongRef();
-                }
-            } else if (isObjectType(constant) || isEventType(constant)) {
-                constant = canonicalizeTypeIfDup(constant);
-            }
-        }
-
-        // Also process functions stored in paramDefaultFunc (parameter default value functions).
-        // (This worklist interleaves canonicalization mutations into its traversal, so it
-        // stays hand-rolled -- but its REACHABILITY contract is the same as
-        // ModuleDebugIndex::forEachFunctionInGraph: chunk constants + paramDefaultFunc.
-        // Keep them in sync.)
-        for (auto& kv : fn->paramDefaultFunc) {
-            if (isFunction(kv.second)) {
-                enqueueFunction(kv.second);
-                Value moduleTypeValue = asFunction(kv.second)->moduleType;
-                if (isModuleType(moduleTypeValue)) {
-                    Value moduleValue = canonicalizeModuleValue(moduleTypeValue);
-                    asFunction(kv.second)->moduleType = moduleValue.weakRef();
-                    if (isModuleType(moduleValue)) {
-                        ObjModuleType* imported = asModuleType(moduleValue);
-                        canonicalModules[toKey(moduleQualifiedName(imported))] = moduleValue.strongRef();
-                    }
-                }
-            }
-        }
-
-        moduleImports[moduleType] = std::move(imports);
-    }
-
-    std::unordered_map<std::string, Value> ensuredModules;
-
-    std::function<Value(const ustring&)> ensureModuleHierarchy =
-        [&](const ustring& fullName) -> Value {
-            if (fullName.isEmpty())
-                return Value::nilVal();
-
-            std::string key = toKey(fullName);
-            auto ensuredIt = ensuredModules.find(key);
-            if (ensuredIt != ensuredModules.end())
-                return ensuredIt->second.strongRef();
-
-            Value moduleValue { Value::nilVal() };
-            auto canonicalIt = canonicalModules.find(key);
-            if (canonicalIt != canonicalModules.end()) {
-                moduleValue = canonicalIt->second.strongRef();
-            } else {
-                auto gExisting = resolverVM->loadGlobal(fullName);
-                if (!gExisting.has_value()) {
-                    int32_t dotIndexTmp = fullName.lastIndexOf('.');
-                    if (dotIndexTmp >= 0) {
-                        ustring local = fullName.tempSubString(dotIndexTmp + 1);
-                        gExisting = resolverVM->loadGlobal(local);
-                    }
-                }
-                // A builtin module must resolve to its live, populated instance
-                // rather than a fabricated empty placeholder (see resolveBuiltinModule).
-                Value builtin = resolveBuiltinModule(fullName);
-                if (gExisting.has_value() && isModuleType(gExisting.value())) {
-                    moduleValue = gExisting.value().strongRef();
-                } else if (builtin.isNonNil()) {
-                    moduleValue = builtin.strongRef();
-                } else {
-                    // Lazily create placeholder modules for missing entries so we
-                    // can rebuild a consistent hierarchy (e.g. when a cached
-                    // module references a package parent that was not serialized
-                    // in the cache file).
-                    int32_t dotIndex = fullName.lastIndexOf('.');
-                    ustring localName = dotIndex >= 0 ? fullName.tempSubString(dotIndex + 1)
-                                                                 : fullName;
-                    moduleValue = Value::moduleTypeVal(localName);
-                    ObjModuleType* created = asModuleType(moduleValue);
-                    created->fullName = fullName;
-                    ObjModuleType::allModules.push_back(moduleValue);
-                }
-            }
-
-            ObjModuleType* moduleType = asModuleType(moduleValue);
-            if (moduleType->fullName.isEmpty())
-                moduleType->fullName = fullName;
-
-            ensuredModules.emplace(key, moduleValue.strongRef());
-            canonicalModules[key] = moduleValue.strongRef();
-
-            int32_t dotIndex = fullName.lastIndexOf('.');
-            if (dotIndex >= 0) {
-                ustring parentFullName = fullName.tempSubString(0, dotIndex);
-                Value parentValue = ensureModuleHierarchy(parentFullName);
-                if (parentValue.isNonNil()) {
-                    ustring alias = fullName.tempSubString(dotIndex + 1);
-                    ObjModuleType* parentModule = asModuleType(parentValue);
-                    // Recreate the parent->child relationship so lookups on
-                    // the parent module continue to work as they did during
-                    // the original compile.
-                    parentModule->vars.store(alias, moduleValue, true);
-                    parentModule->registerModuleAlias(alias, fullName);
-                }
-            }
-
-            return moduleValue.strongRef();
-        };
-
-    for (const auto& canonicalEntry : canonicalModules)
-        ensureModuleHierarchy(ustring::fromUTF8(canonicalEntry.first));
-
-    for (const auto& entry : moduleImports) {
-        ObjModuleType* moduleType = entry.first;
-
-        std::unordered_map<int32_t, ustring> previousAliases;
-        for (const auto& alias : moduleType->moduleAliasSnapshot())
-            previousAliases.emplace(alias.first.hashCode(), alias.second);
-
-        moduleType->vars.clear();
-        moduleType->clearModuleAliases();
-
-        for (const auto& alias : entry.second) {
-            const ustring& aliasName = alias.first;
-            ustring aliasFullName = alias.second;
-            if (aliasFullName.isEmpty()) {
-                auto fallback = previousAliases.find(aliasName.hashCode());
-                if (fallback != previousAliases.end())
-                    aliasFullName = fallback->second;
-            }
-            if (aliasFullName.isEmpty())
-                aliasFullName = aliasName;
-
-            Value moduleValue = ensureModuleHierarchy(aliasFullName);
-            if (moduleValue.isNonNil()) {
-                // Re-populate the module with the canonical module reference
-                // and re-register the alias so subsequent cache loads know
-                // where the import originated.
-                moduleType->vars.store(aliasName, moduleValue, true);
-                moduleType->registerModuleAlias(aliasName, aliasFullName);
-            }
-        }
-    }
-}
-
 
 void RoxalCompiler::setOutputBytecodeDisassembly(bool outputBytecodeDisassembly)
 {
@@ -1070,9 +673,11 @@ std::any RoxalCompiler::visit(ptr<ast::File> ast)
             throw std::runtime_error("unimplemented accept() alternative");
     }
 
-    // Hand this module's compile-time type member metadata to its ObjModuleType
-    // so importers (including ones that load us from cache) can use it.
+    // Hand this module's compile-time type member metadata and its import
+    // record to its ObjModuleType so importers (including ones that load us
+    // from cache) and the cache writer can use them.
     publishTypeMembersToModule();
+    publishLinkInfoToModule();
 
     emitReturn();
     return {};
@@ -1372,6 +977,194 @@ std::any RoxalCompiler::visit(ptr<ast::Annotation> ast)
 }
 
 
+VM& RoxalCompiler::resolverVM() const
+{
+    return moduleResolverVM != nullptr ? *moduleResolverVM : VM::instance();
+}
+
+Value RoxalCompiler::ensureUserModule(const ModuleInfo& module, const ustring& fullName,
+                                      const std::string& sourcePath)
+{
+    VM& vm = resolverVM();
+
+    Value moduleType { Value::nilVal() };
+    if (auto canon = vm.lookupUserModule(fullName); canon.has_value() && isModuleType(*canon)) {
+        ObjModuleType* existing = asModuleType(*canon);
+        if (existing->kind != ModuleKind::Package) {
+            if (existing->fullName.isEmpty())
+                existing->fullName = fullName;
+            return *canon;
+        }
+        // A package node stands in for `pkg` when `import pkg.sub` came before
+        // `import pkg` (the folder module pkg/init.rox).  The folder module
+        // loads or compiles into that node, so both statements are bound to
+        // one object.
+        moduleType = *canon;
+    } else {
+        // Register the module BEFORE it is loaded or compiled, so a circular
+        // import (its body, or its cache's dependency list, leading back to
+        // one of its ancestors) finds the registered, partly populated module
+        // instead of recursing through a fresh allocation each time.
+        moduleType = Value::objVal(newModuleTypeObj(module.name));
+        ObjModuleType::allModules.push_back(moduleType);
+        vm.registerUserModule(fullName, moduleType);
+    }
+    ObjModuleType* target = asModuleType(moduleType);
+    target->kind = ModuleKind::User;
+    target->fullName = fullName;
+
+    // Stamp the source before it is read (an edit that lands mid-compile then
+    // shows as a mismatch on the next run instead of as a valid cache), and
+    // before the body compiles (a circular importer records it).
+    target->linkInfo.stamp = SourceStamp::of(sourcePath);
+
+    Value function { Value::nilVal() };
+    bool prevRepl = replModeFlag;
+    replModeFlag = false; // don't auto-print expressions when compiling imported module
+    try {
+        if (module.cacheValid)
+            function = loadModuleFromCache(module, moduleType);
+
+        if (function.isNil()) {
+            std::ifstream sourcestream(sourcePath);
+            if (!sourcestream.is_open())
+                throw std::runtime_error("unable to open module source: " + sourcePath);
+
+            function = compile(sourcestream, sourcePath, moduleType);
+            if (function.isNil())
+                throw std::runtime_error("compilation failed for module: " + toUTF8StdString(module.name));
+            storeModuleCache(module, function);
+        }
+    } catch (...) {
+        replModeFlag = prevRepl;
+        throw;
+    }
+    replModeFlag = prevRepl;
+
+    target->initFunction = function;
+    return moduleType;
+}
+
+void RoxalCompiler::emitImportModule(const Value& module, const std::string& comment)
+{
+    uint16_t constIdx = makeConstant(module);
+    emitOpArgsBytes(OpCode::ImportModule, constIdx, comment);
+    emitByte(OpCode::Pop);
+}
+
+void RoxalCompiler::bindImport(VM& vm, ObjModuleType* importer,
+                               const std::vector<ustring>& components, const Value& module)
+{
+    if (importer == nullptr || components.empty() || !isModuleType(module))
+        return;
+
+    // Walk (creating as needed) the package nodes for the leading components.
+    // A node is looked up by its dotted name, so `import pkg.a` and
+    // `import pkg.b` in different modules share one `pkg`; and a folder module
+    // (pkg/init.rox) imported earlier is itself the node for `pkg`.
+    ObjModuleType* parent = importer;
+    ustring packageFullName;
+    for (size_t i = 0; i + 1 < components.size(); ++i) {
+        const ustring& pkgName = components[i];
+        if (!packageFullName.isEmpty())
+            packageFullName += ".";
+        packageFullName += pkgName;
+
+        Value pkgModule { Value::nilVal() };
+        if (auto existing = vm.lookupUserModule(packageFullName);
+            existing.has_value() && isModuleType(*existing)) {
+            pkgModule = *existing;
+        } else {
+            pkgModule = Value::moduleTypeVal(pkgName);
+            ObjModuleType* created = asModuleType(pkgModule);
+            created->fullName = packageFullName;
+            created->kind = ModuleKind::Package;
+            ObjModuleType::allModules.push_back(pkgModule);
+            vm.registerUserModule(packageFullName, pkgModule);
+        }
+
+        parent->vars.store(pkgName, pkgModule);
+        parent->registerModuleAlias(pkgName, packageFullName);
+        parent = asModuleType(pkgModule);
+    }
+
+    ObjModuleType* imported = asModuleType(module);
+    const ustring& leafName = components.back();
+    ustring leafFullName = imported->fullName.isEmpty() ? imported->name : imported->fullName;
+    parent->vars.store(leafName, module);
+    parent->registerModuleAlias(leafName, leafFullName);
+}
+
+uint32_t RoxalCompiler::recordDependency(ModuleDep dep)
+{
+    const ObjModuleType* depModule = isModuleType(dep.module) ? asModuleType(dep.module) : nullptr;
+    auto moduleScopePtr = asModuleScope(moduleScope());
+    auto& deps = moduleScopePtr->linkInfo.deps;
+    ustring selfName;
+    if (isModuleType(moduleScopePtr->moduleType))
+        selfName = asModuleType(moduleScopePtr->moduleType)->fullName;
+
+    auto find = [&](ModuleKind kind, const ustring& name) -> int {
+        for (size_t i = 0; i < deps.size(); ++i)
+            if (deps[i].kind == kind && deps[i].qualifiedName == name)
+                return static_cast<int>(i);
+        return -1;
+    };
+
+    int index = find(dep.kind, dep.qualifiedName);
+    if (index >= 0) {
+        // Reached transitively before (an entry copied from a dependency's
+        // record, whose module may be unresolved), now imported here: refresh
+        // it from this import, keeping its index.
+        ModuleDep& existing = deps[index];
+        existing.direct = true;
+        existing.resolvedPath = dep.resolvedPath;
+        existing.stamp = dep.stamp;
+        existing.annotations = dep.annotations;
+        existing.module = dep.module;
+        return static_cast<uint32_t>(index);
+    }
+
+    dep.direct = true;
+    deps.push_back(std::move(dep));
+    index = static_cast<int>(deps.size() - 1);
+
+    // A user module's own dependencies (recorded when it compiled, or read
+    // from its cache) become this module's transitive ones: user modules,
+    // whose stamps invalidate this module's cache, and .idl/.proto imports,
+    // which a cache load of this module may have to re-import (they keep
+    // their annotations for that).  Builtins need neither.  In a circular
+    // import the dependency is still compiling and contributes what it has
+    // so far; it never lists this module itself.
+    if (depModule != nullptr && depModule->kind == ModuleKind::User) {
+        for (const auto& transitive : depModule->linkInfo.deps) {
+            if (transitive.kind == ModuleKind::Builtin)
+                continue;
+            if (transitive.qualifiedName == selfName)
+                continue;
+            if (find(transitive.kind, transitive.qualifiedName) >= 0)
+                continue;
+            ModuleDep copy = transitive;
+            copy.direct = false;
+            deps.push_back(std::move(copy));
+        }
+    }
+    return static_cast<uint32_t>(index);
+}
+
+void RoxalCompiler::publishLinkInfoToModule()
+{
+    auto moduleScopePtr = asModuleScope(moduleScope());
+    if (!isModuleType(moduleScopePtr->moduleType))
+        return;
+    ObjModuleType* moduleTypeObj = asModuleType(moduleScopePtr->moduleType);
+    // The stamp is not the scope's to set: ensureUserModule took it before
+    // the source was read.
+    moduleTypeObj->linkInfo.deps = moduleScopePtr->linkInfo.deps;
+    moduleTypeObj->linkInfo.bindings = moduleScopePtr->linkInfo.bindings;
+}
+
+
 std::any RoxalCompiler::visit(ptr<ast::Import> ast)
 {
 
@@ -1395,8 +1188,6 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
 
     bool builtinModule = false;
     ustring builtinRegistryKey;  // dotted name for lazy registry lookup
-    if (module.isProto || module.isIdl)
-        currentModuleHasDynamicImport = true;
 
     // Import annotations are generic: the compiler does not interpret them.
     // Their NAMES are handed to the importer backing the import (e.g. the
@@ -1456,6 +1247,50 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
         }
     }
 
+    // `import pkg.sub` imports the package first when its folder is itself a
+    // module (pkg/init.rox), as Python runs a package's __init__ before a
+    // submodule.  A folder without init.rox is a plain namespace node.  The
+    // folder module registers under the package's dotted name, so bindImport
+    // below finds it as the node for that component.
+    if (!builtinModule && !module.isProto && !module.isIdl && ast->packages.size() > 1) {
+        std::vector<ustring> prefix;
+        for (size_t i = 0; i + 1 < ast->packages.size(); ++i) {
+            prefix.push_back(ast->packages[i]);
+            ModuleInfo pkg = findImport(prefix);
+            if (pkg.invalidFolder && !pkg.resolvedPath.empty()) {
+                // A plain namespace folder: record that its init.rox is
+                // absent (kind Package, no stamp), so one appearing later
+                // invalidates this module's cache.
+                ModuleDep dep;
+                dep.kind = ModuleKind::Package;
+                dep.qualifiedName = join(prefix, ".");
+                dep.resolvedPath = pkg.resolvedPath.string();
+                recordDependency(std::move(dep));
+                continue;
+            }
+            if (pkg.moduleClash || pkg.invalidFolder || !pkg.isPackage
+                || pkg.name.isEmpty() || pkg.resolvedPath.empty())
+                continue;
+            ustring pkgFullName = makeFullModuleName(pkg.packagePath, pkg.name);
+            Value pkgModule { Value::nilVal() };
+            try {
+                pkgModule = ensureUserModule(pkg, pkgFullName, pkg.resolvedPath.string());
+            } catch (std::exception& e) {
+                error(e.what());
+                return {};
+            }
+            emitImportModule(pkgModule, "import " + toUTF8StdString(pkgFullName));
+
+            ModuleDep dep;
+            dep.kind = ModuleKind::User;
+            dep.qualifiedName = pkgFullName;
+            dep.resolvedPath = pkg.resolvedPath.string();
+            dep.stamp = asModuleType(pkgModule)->linkInfo.stamp;
+            dep.module = pkgModule;
+            recordDependency(std::move(dep));
+        }
+    }
+
     // has this module already been imported?
     auto importedEntry = importedModules.find(module);
     bool imported = importedEntry != importedModules.end();
@@ -1476,44 +1311,15 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
             importedModules[module] = importedModuleType;
 
             if (isModuleType(importedModuleType)) {
-                bool hasConstant = false;
-                for (const auto& constant : currentChunk()->constants) {
-                    if (constant.is(importedModuleType, true)) {
-                        hasConstant = true;
-                        break;
-                    }
-                }
-                if (!hasConstant)
-                    makeConstant(importedModuleType);
                 ObjModuleType* builtinType = asModuleType(importedModuleType);
                 if (builtinType->fullName.isEmpty())
                     builtinType->fullName = moduleFullName;
-
-                // Check if the builtin module has an _init() function and call it if so
-                // This allows builtin modules to perform native initialization when imported
-                auto initFnOpt = builtinType->vars.load(toUnicodeString("_init"));
-                if (initFnOpt.has_value() && isClosure(initFnOpt.value())) {
-                    // Emit code to call module._init()
-                    // The value is already a closure, so just load it as a constant and call it
-                    emitConstant(*initFnOpt, "_init closure");
-
-                    CallSpec callSpec {};
-                    callSpec.allPositional = true;
-                    callSpec.argCount = 0;
-                    auto bytes = callSpec.toBytes();
-                    assert(bytes.size()==1);
-                    emitBytes(OpCode::Call, bytes[0]);
-
-                    // Pop the return value (we don't need it)
-                    emitByte(OpCode::Pop);
-                }
             }
         } else if (module.isProto) {
             try {
 #ifdef ROXAL_ENABLE_GRPC
                 importedModuleType = VM::instance().importProtoModule(absoluteModuleFilePath);
                 importedModules[module] = importedModuleType;
-                currentDynamicImports.push_back({absoluteModuleFilePath, importAnnotations});
 #else
                 throw std::runtime_error("proto import requires ROXAL_ENABLE_GRPC");
 #endif
@@ -1526,7 +1332,6 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
 #ifdef ROXAL_ENABLE_DDS
                 importedModuleType = VM::instance().importIdlModule(absoluteModuleFilePath, importAnnotations);
                 importedModules[module] = importedModuleType;
-                currentDynamicImports.push_back({absoluteModuleFilePath, importAnnotations});
 #else
                 throw std::runtime_error("IDL import requires ROXAL_ENABLE_DDS");
 #endif
@@ -1535,207 +1340,67 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
                 return {};
             }
         } else {
-            // Cross-compiler canonicalisation: if another compilation
-            // has already loaded this user module, reuse its
-            // ObjModuleType rather than producing a fresh one.  Each
-            // RoxalCompiler has its own per-compilation
-            // `importedModules` map, so without a process-wide
-            // registry two top-level compilations (e.g. a builtin
-            // module's companion .rox followed by a user script that
-            // imports the same transitive user module) would produce
-            // distinct ObjModuleType pointers for the same name.
-            // That would break `linkMethod`: the native binding
-            // lands on one ObjObjectType, but instances constructed
-            // later use the other.
-            VM& vm = VM::instance();
-            if (auto canon = vm.lookupUserModule(moduleFullName); canon.has_value()) {
-                importedModuleType = *canon;
-                if (isModuleType(importedModuleType)) {
-                    ObjModuleType* imported = asModuleType(importedModuleType);
-                    if (imported->fullName.isEmpty())
-                        imported->fullName = moduleFullName;
-
-                    // Anchor the canonical Value in this compilation's
-                    // constant pool so GC keeps it alive while this
-                    // compilation runs.
-                    bool hasConstant = false;
-                    for (const auto& constant : currentChunk()->constants) {
-                        if (constant.is(importedModuleType, true)) {
-                            hasConstant = true;
-                            break;
-                        }
-                    }
-                    if (!hasConstant)
-                        makeConstant(importedModuleType);
-                }
-                importedModules[module] = importedModuleType;
-                // No Closure+Call emit: the canonical module's body has
-                // already run during the compilation that first loaded
-                // it.  Re-executing would re-declare its consts /
-                // procs / types and either fail or duplicate state.
-            } else {
-                // compile or load it, emit code to execute it
-                Value function { Value::nilVal() }; // ObjFunction
-                bool prevRepl = replModeFlag;
-                bool loadedFromCache = false;
-
-                try {
-                    if (module.cacheValid)
-                        function = loadModuleFromCache(module);
-
-                    if (function.isNonNil())
-                        loadedFromCache = true;
-
-                    if (!loadedFromCache) {
-                        std::ifstream sourcestream(absoluteModuleFilePath);
-                        if (!sourcestream.is_open())
-                            throw std::runtime_error("unable to open module source: " + absoluteModuleFilePath);
-
-                        replModeFlag = false; // don't auto-print expressions when compiling imported module
-
-                        // Pre-allocate the ObjModuleType and register
-                        // it BEFORE the body compiles so a circular
-                        // import (this module's body re-importing one
-                        // of its ancestors via the registry path)
-                        //  sees the already-registered (partially-
-                        // populated) value rather than infinitely
-                        // recursing through a fresh allocation each
-                        // time.
-                        Value preallocated = Value::objVal(newModuleTypeObj(module.name));
-                        ObjModuleType::allModules.push_back(preallocated);
-                        vm.registerUserModule(moduleFullName, preallocated);
-
-                        function = compile(sourcestream,
-                                           !absoluteModuleFilePath.empty() ?
-                                                  absoluteModuleFilePath
-                                                : toUTF8StdString(module.name),
-                                           preallocated);
-                        if (function.isNil())
-                            throw std::runtime_error("compilation failed for module: " + toUTF8StdString(module.name));
-                        storeModuleCache(module, function);
-                    }
-
-                    replModeFlag = prevRepl;
-
-                    importedModuleType = asFunction(function)->moduleType;
-                    if (isModuleType(importedModuleType)) {
-                        ObjModuleType* imported = asModuleType(importedModuleType);
-                        imported->fullName = moduleFullName;
-                    }
-
-                    // Cache-load path didn't pre-register (the
-                    // canonical ObjModuleType is materialised by
-                    // deserialisation).  Register it now so the next
-                    // compilation that imports this module will
-                    // canonicalise against it.  The fresh-compile
-                    // path already registered the pre-allocated
-                    // module above; this is a no-op for it
-                    // (registerUserModule is insert-only).
-                    if (loadedFromCache && isModuleType(importedModuleType))
-                        vm.registerUserModule(moduleFullName, importedModuleType);
-
-                    // emit code to place module's main chunk on stack as closure
-                    assert(asFunction(function)->upvalueCount == 0);
-                    {
-                        uint16_t constIdx = makeConstant(function);
-                        emitOpArgsBytes(OpCode::Closure, constIdx);
-                    }
-
-                    // call it to have it executed (which will result in module vars being declared)
-                    CallSpec callSpec {};
-                    callSpec.allPositional = true;
-                    callSpec.argCount = 0;
-                    auto bytes = callSpec.toBytes();
-                    assert(bytes.size()==1);
-                    emitBytes(OpCode::Call, bytes[0]);
-
-                    // Discard the module's return value so subsequent locals start at the expected slot
-                    emitByte(OpCode::Pop);
-
-                    importedModules[module] = importedModuleType;
-
-                } catch (std::exception& e) {
-                    replModeFlag = prevRepl;
-                    error(e.what());
-                    return {};
-                }
+            // A user module: one canonical ObjModuleType per VM, loaded or
+            // compiled at most once (ensureUserModule).
+            try {
+                importedModuleType = ensureUserModule(module, moduleFullName,
+                                                      absoluteModuleFilePath);
+            } catch (std::exception& e) {
+                error(e.what());
+                return {};
             }
         }
     } else { // already previously imported
         importedModuleType = importedEntry->second;
     }
 
-    // create or retrieve package modules and build module hierarchy
+    // The runtime half: run the module's body (once per VM) or a builtin's
+    // _init.  Every import statement emits it, whichever compilation loaded
+    // the module -- the op, not the compile order, decides whether the body
+    // still has to run.  .idl/.proto modules and package nodes have no body.
+    if (builtinModule || (!module.isProto && !module.isIdl))
+        emitImportModule(importedModuleType, "import " + toUTF8StdString(moduleFullName));
+
+    // Record what this module was compiled against, and bind the import.
     const auto& importingModuleType = asFunction(asFuncScope(funcScope())->function)->moduleType;
-    auto& importingModuleVars = asModuleType(importingModuleType)->vars;
-
-    std::vector<ustring> importComponents;
-    if (module.isProto || module.isIdl) {
-        // split packagePath on '/'
-        std::string pkg = toUTF8StdString(module.packagePath);
-        std::stringstream ss(pkg);
-        std::string item;
-        while (std::getline(ss, item, '/')) {
-            if (!item.empty())
-                importComponents.push_back(toUnicodeString(item));
-        }
-        importComponents.push_back(module.name);
-    } else {
-        importComponents = ast->packages;
-    }
-
-    Value parentModuleVal { Value::nilVal() };
-    ustring packagePath;
-    for(size_t i=0; i+1 < importComponents.size(); ++i) {
-        ustring pkgName { importComponents[i] };
-        ModuleInfo pkgInfo;
-        pkgInfo.modulePathRoot = module.modulePathRoot;
-        pkgInfo.packagePath = packagePath;
-        pkgInfo.name = pkgName;
-        pkgInfo.isPackage = true;
-
-        Value pkgModuleVal {};
-        auto pkgEntry = importedModules.find(pkgInfo);
-        if (pkgEntry == importedModules.end()) {
-            pkgModuleVal = Value::moduleTypeVal(pkgName);
-            ObjModuleType::allModules.push_back(pkgModuleVal);
-            importedModules[pkgInfo] = pkgModuleVal;
+    {
+        ModuleDep dep;
+        dep.qualifiedName = moduleFullName;
+        if (builtinModule) {
+            dep.kind = ModuleKind::Builtin;
+            dep.qualifiedName = builtinRegistryKey.isEmpty() ? module.name : builtinRegistryKey;
         } else {
-            pkgModuleVal = pkgEntry->second;
+            dep.kind = module.isProto ? ModuleKind::Proto
+                     : module.isIdl   ? ModuleKind::Idl
+                                      : ModuleKind::User;
+            dep.resolvedPath = absoluteModuleFilePath;
+            dep.annotations = importAnnotations;
+            if (dep.kind == ModuleKind::User && isModuleType(importedModuleType))
+                dep.stamp = asModuleType(importedModuleType)->linkInfo.stamp;
+            else
+                dep.stamp = SourceStamp::of(absoluteModuleFilePath);   // .idl / .proto
         }
+        dep.module = importedModuleType;
+        uint32_t depIndex = recordDependency(std::move(dep));
 
-        ObjModuleType* pkgModule = asModuleType(pkgModuleVal);
-        ustring pkgFullName = makeFullModuleName(pkgInfo.packagePath, pkgName);
-        pkgModule->fullName = pkgFullName;
-
-        if (parentModuleVal.isObj()) {
-            ObjModuleType* parentModule = asModuleType(parentModuleVal);
-            parentModule->vars.store(pkgName, pkgModuleVal);
-            parentModule->registerModuleAlias(pkgName, pkgFullName);
+        std::vector<ustring> importComponents;
+        if (module.isProto || module.isIdl) {
+            // split packagePath on '/'
+            std::string pkg = toUTF8StdString(module.packagePath);
+            std::stringstream ss(pkg);
+            std::string item;
+            while (std::getline(ss, item, '/')) {
+                if (!item.empty())
+                    importComponents.push_back(toUnicodeString(item));
+            }
+            importComponents.push_back(module.name);
         } else {
-            importingModuleVars.store(pkgName, pkgModuleVal);
-            ObjModuleType* importingModule = asModuleType(importingModuleType);
-            importingModule->registerModuleAlias(pkgName, pkgFullName);
+            importComponents = ast->packages;
         }
 
-        parentModuleVal = pkgModuleVal;
-        if (!packagePath.isEmpty())
-            packagePath += "/";
-        packagePath += pkgName;
-    }
-
-    if (parentModuleVal.isObj()) {
-        ObjModuleType* parentModule = asModuleType(parentModuleVal);
-        parentModule->vars.store(module.name, importedModuleType);
-        parentModule->registerModuleAlias(module.name, moduleFullName);
-    }
-
-    // For non-nested imports expose the module directly in the importing module
-    if (importComponents.size() <= 1) {
-        ustring moduleName { module.name };
-        importingModuleVars.store(moduleName, importedModuleType);
-        ObjModuleType* importingModule = asModuleType(importingModuleType);
-        importingModule->registerModuleAlias(moduleName, moduleFullName);
+        asModuleScope(moduleScope())->linkInfo.bindings.push_back({importComponents, depIndex});
+        bindImport(resolverVM(), asModuleType(importingModuleType), importComponents,
+                   importedModuleType);
     }
 
 
@@ -1767,24 +1432,10 @@ std::any RoxalCompiler::visit(ptr<ast::Import> ast)
         emitByte(OpCode::ImportModuleVars);
     }
 
-    // Propagate registered suffixes from the imported module into this compiler's registry.
-    // If the module was loaded from cache, registeredSuffixes may be empty;
-    // rebuild it by scanning function annotations.
+    // Propagate registered suffixes from the imported module into this
+    // compiler's registry (a cached module carries them in its record).
     if (isModuleType(importedModuleType)) {
         ObjModuleType* imported = asModuleType(importedModuleType);
-        if (imported->registeredSuffixes.empty()) {
-            imported->vars.forEach([&](const VariablesMap::NameValue& nv) {
-                if (isClosure(nv.second)) {
-                    ObjFunction* fn = asFunction(asClosure(nv.second)->function);
-                    for (const auto& annot : fn->annotations) {
-                        if (annot->name == "suffix" && annot->args.size() == 1) {
-                            if (auto s = dynamic_ptr_cast<ast::Str>(annot->args[0].second))
-                                imported->registeredSuffixes[s->str] = nv.first;
-                        }
-                    }
-                }
-            });
-        }
         for (const auto& [suf, funcName] : imported->registeredSuffixes) {
             auto existing = suffixRegistry.find(suf);
             if (existing != suffixRegistry.end() && existing->second.moduleName != imported->name) {
@@ -6372,6 +6023,8 @@ RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<ustring>& 
         } else {
             module.invalidFolder = true;
             module.name = ustring();
+            // Where an init.rox would be: an importer records its absence.
+            module.resolvedPath = initPath;
             return module;
         }
     }
@@ -6410,12 +6063,10 @@ RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<ustring>& 
             module.cachePath.clear();
         }
 
-        if (cacheReadEnabled && !module.cachePath.empty() && std::filesystem::exists(module.cachePath)) {
-            auto sourceTime = std::filesystem::last_write_time(module.resolvedPath);
-            auto cacheTime = std::filesystem::last_write_time(module.cachePath);
-            if (cacheTime >= sourceTime)
-                module.cacheValid = true;
-        }
+        // Whether the file is usable (its stamps for this source and every
+        // dependency) is the loader's to decide.
+        if (cacheReadEnabled && !module.cachePath.empty() && std::filesystem::exists(module.cachePath))
+            module.cacheValid = true;
     } catch (...) {
         module.cacheValid = false;
         module.cachePath.clear();
@@ -6424,153 +6075,256 @@ RoxalCompiler::ModuleInfo RoxalCompiler::findImport(const std::vector<ustring>& 
     return module;
 }
 
-Value RoxalCompiler::loadModuleFromCache(const ModuleInfo& module) const
+Value RoxalCompiler::loadModuleFromCache(const ModuleInfo& module, Value target)
 {
+    // A .roc (see storeModuleCache for the layout) holds ONE module: a header
+    // with the stamps of its source and of everything it was compiled
+    // against, a record of its compile-time metadata and import bindings,
+    // and its main function, in which every other module is a reference into
+    // the header's dependency table.  Loading is: validate all stamps, resolve
+    // the direct dependencies by name (each through its own cache or a
+    // compile), read the function with those resolved, and only then apply
+    // the result to `target` -- so a stale or corrupt file costs nothing and
+    // a failed load leaves the target untouched for the compile that follows.
     if (module.isProto || module.isIdl)
         return Value::nilVal();
 
-    if (!cacheReadEnabled || module.cachePath.empty())
+    if (!cacheReadEnabled || module.cachePath.empty() || module.resolvedPath.empty())
         return Value::nilVal();
 
-    try {
-        std::ifstream cacheStream(module.cachePath, std::ios::binary);
-        if (!cacheStream.is_open())
-            return Value::nilVal();
+    VM& vm = resolverVM();
 
+    std::ifstream cacheStream(module.cachePath, std::ios::binary);
+    if (!cacheStream.is_open())
+        return Value::nilVal();
+    CacheReader r { cacheStream };
+
+    // 1. Header: format, this module's own stamp, the dependency table.
+    SourceStamp ownStamp;
+    std::vector<ModuleDep> deps;
+    try {
         char magic[4];
         cacheStream.read(magic, sizeof(magic));
-        if (!cacheStream || magic[0] != ModuleCacheMagic[0] ||
-            magic[1] != ModuleCacheMagic[1] ||
-            magic[2] != ModuleCacheMagic[2] ||
-            magic[3] != ModuleCacheMagic[3])
+        if (!cacheStream || std::memcmp(magic, ModuleCacheMagic, sizeof(magic)) != 0)
             return Value::nilVal();
-
-        std::uint32_t version = 0;
-        cacheStream.read(reinterpret_cast<char*>(&version), sizeof(version));
-        if (!cacheStream || version != ModuleCacheVersion)
+        if (r.u32() != ModuleCacheVersion)
             return Value::nilVal();
-
         // Debug tier is part of cache compatibility: a stripped cache must
         // not satisfy a debug-enabled run (silently removing debugger
         // support), nor a debug cache a stripped run.  Mismatch recompiles.
-        uint8_t cachedDebugTier = 0;
-        cacheStream.read(reinterpret_cast<char*>(&cachedDebugTier), 1);
-        if (!cacheStream || cachedDebugTier != (debugInfoEnabled_ ? 1 : 0))
+        if (r.u8() != (debugInfoEnabled_ ? 1 : 0))
             return Value::nilVal();
 
-        uint8_t flags = 0;
-        cacheStream.read(reinterpret_cast<char*>(&flags), sizeof(flags));
-        if (!cacheStream)
+        // The source must be EXACTLY what was compiled (a newer-cache rule
+        // would miss a source replaced by an older copy).
+        ownStamp = r.stamp();
+        SourceStamp current = SourceStamp::of(module.resolvedPath.string());
+        if (!current.isSet() || current != ownStamp)
             return Value::nilVal();
-        bool cachedHasDynamicImport = (flags & 0x1) != 0;
 
-        std::vector<DynImport> dynamicImports;
-        if (cachedHasDynamicImport) {
-            uint32_t count = 0;
-            cacheStream.read(reinterpret_cast<char*>(&count), sizeof(count));
-            for (uint32_t i = 0; i < count; ++i) {
-                uint32_t len = 0;
-                cacheStream.read(reinterpret_cast<char*>(&len), sizeof(len));
-                if (len == 0)
-                    continue;
-                std::string path(len, '\0');
-                cacheStream.read(path.data(), len);
-                uint32_t acount = 0;
-                cacheStream.read(reinterpret_cast<char*>(&acount), sizeof(acount));
-                // Sanity-bound the counts so a corrupt/truncated cache
-                // invalidates (recompiles) instead of misparsing.
-                if (!cacheStream || acount > 256)
+        uint32_t depCount = r.count(1u << 16);
+        deps.reserve(depCount);
+        for (uint32_t i = 0; i < depCount; ++i) {
+            ModuleDep dep;
+            dep.kind = static_cast<ModuleKind>(r.u8());
+            dep.qualifiedName = r.ustr();
+            dep.resolvedPath = r.str();
+            dep.stamp = r.stamp();
+            dep.direct = r.u8() != 0;
+            uint32_t annotationCount = r.count(256);
+            for (uint32_t a = 0; a < annotationCount; ++a)
+                dep.annotations.push_back(r.str());
+            deps.push_back(std::move(dep));
+        }
+
+        // Every dependency, transitive ones included, must still be the
+        // source this module was compiled against.
+        std::unordered_map<std::string, SourceStamp> stamps;
+        for (const auto& dep : deps) {
+            if (dep.kind == ModuleKind::Builtin)
+                continue;
+            if (dep.resolvedPath.empty())
+                return Value::nilVal();
+            if (dep.kind == ModuleKind::Package) {
+                // A namespace folder: its init.rox must still be absent.
+                std::error_code ec;
+                if (std::filesystem::exists(dep.resolvedPath, ec))
                     return Value::nilVal();
-                std::vector<std::string> annotations;
-                for (uint32_t a = 0; a < acount; ++a) {
-                    uint32_t alen = 0;
-                    cacheStream.read(reinterpret_cast<char*>(&alen), sizeof(alen));
-                    if (!cacheStream || alen > 4096)
-                        return Value::nilVal();
-                    std::string name(alen, '\0');
-                    if (alen > 0)
-                        cacheStream.read(name.data(), alen);
-                    annotations.push_back(std::move(name));
-                }
-                dynamicImports.push_back({path, std::move(annotations)});
+                continue;
             }
+            auto it = stamps.find(dep.resolvedPath);
+            if (it == stamps.end())
+                it = stamps.emplace(dep.resolvedPath, SourceStamp::of(dep.resolvedPath)).first;
+            if (!it->second.isSet() || it->second != dep.stamp)
+                return Value::nilVal();
+        }
+    } catch (...) {
+        return Value::nilVal();
+    }
+
+    // 2. Resolve the direct dependencies, in import order.  A user module
+    //    goes through ensureUserModule (its own cache, or a compile) and
+    //    must still resolve to the same file through the current search
+    //    path, or this cache does not describe what a fresh compile would do
+    //    here.  A failure to load or compile a dependency propagates: it is
+    //    a compile error of this module, not a stale cache.
+    std::vector<Value> resolved(deps.size(), Value::nilVal());
+    for (size_t i = 0; i < deps.size(); ++i) {
+        const ModuleDep& dep = deps[i];
+        if (!dep.direct || dep.kind == ModuleKind::Package)
+            continue;
+        switch (dep.kind) {
+            case ModuleKind::User: {
+                ModuleInfo info = findImport(splitQualifiedName(dep.qualifiedName));
+                if (info.name.isEmpty() || info.moduleClash || info.invalidFolder
+                    || info.isProto || info.isIdl
+                    || info.resolvedPath.string() != dep.resolvedPath)
+                    return Value::nilVal();
+                resolved[i] = ensureUserModule(info, dep.qualifiedName, dep.resolvedPath);
+                break;
+            }
+            case ModuleKind::Builtin: {
+                Value builtin = vm.getBuiltinModuleType(dep.qualifiedName);
+                if (!isModuleType(builtin))
+                    return Value::nilVal();
+                resolved[i] = builtin;
+                break;
+            }
+            case ModuleKind::Idl:
+#ifdef ROXAL_ENABLE_DDS
+                resolved[i] = vm.importIdlModule(dep.resolvedPath, dep.annotations);
+                break;
+#else
+                return Value::nilVal();
+#endif
+            case ModuleKind::Proto:
+#ifdef ROXAL_ENABLE_GRPC
+                resolved[i] = vm.importProtoModule(dep.resolvedPath);
+                break;
+#else
+                return Value::nilVal();
+#endif
+            default:
+                return Value::nilVal();
+        }
+        if (!isModuleType(resolved[i]))
+            return Value::nilVal();
+    }
+
+    // The transitive entries were copied from the direct dependencies'
+    // records at compile time.  Those dependencies are now loaded (or
+    // rebuilt), so their records say what they were REALLY compiled against
+    // here: every entry must be in this table with the same path and stamp.
+    // This is what catches a dependency's own import resolving to a
+    // different file (another search root) -- the old file still exists with
+    // its old stamp, so the stamp check above cannot -- and a dependency
+    // that now imports something this module never saw.  A dependency still
+    // mid-load in a cycle has an empty record and contributes nothing.
+    for (size_t i = 0; i < deps.size(); ++i) {
+        if (!deps[i].direct || deps[i].kind != ModuleKind::User)
+            continue;
+        for (const auto& actual : asModuleType(resolved[i])->linkInfo.deps) {
+            if (actual.kind == ModuleKind::Builtin)
+                continue;
+            bool found = false;
+            for (const auto& recorded : deps) {
+                if (recorded.kind == actual.kind && recorded.qualifiedName == actual.qualifiedName) {
+                    found = recorded.resolvedPath == actual.resolvedPath
+                            && recorded.stamp == actual.stamp;
+                    break;
+                }
+            }
+            if (!found)
+                return Value::nilVal();
+        }
+    }
+
+    try {
+        // 3. The module record, into locals.
+        ustring name = r.ustr();
+        ustring fullName = r.ustr();
+        ustring sourcePath = r.ustr();
+
+        uint32_t constCount = r.count(1u << 20);
+        std::unordered_set<int32_t> constVars;
+        for (uint32_t i = 0; i < constCount; ++i)
+            constVars.insert(r.i32());
+
+        uint32_t suffixCount = r.count(4096);
+        std::unordered_map<ustring, ustring> suffixes;
+        for (uint32_t i = 0; i < suffixCount; ++i) {
+            ustring suffix = r.ustr();
+            suffixes[suffix] = r.ustr();
         }
 
+        uint32_t bindingCount = r.count(1u << 16);
+        std::vector<ImportBinding> bindings;
+        bindings.reserve(bindingCount);
+        for (uint32_t i = 0; i < bindingCount; ++i) {
+            ImportBinding binding;
+            uint32_t componentCount = r.count(64);
+            for (uint32_t c = 0; c < componentCount; ++c)
+                binding.components.push_back(r.ustr());
+            binding.depIndex = r.u32();
+            if (binding.depIndex >= deps.size())
+                throw std::runtime_error("module cache: binding refers past the dependency table");
+            bindings.push_back(std::move(binding));
+        }
+
+        Value scratch { Value::moduleTypeVal(ustring()) };   // the metadata, until applied
+        asModuleType(scratch)->readMetadata(cacheStream);
+
+        // 4. The function.  Module references resolve through the link table:
+        //    `self` is the target, the rest are the dependencies above.
+        if (target.isNil()) {
+            // A top-level script: its module is created here, as compile()
+            // would create it, and is what the cached function links to.
+            target = Value::objVal(newModuleTypeObj(name));
+            ObjModuleType::allModules.push_back(target);
+        }
         auto ctx = ptr<SerializationContext>::from_raw(new SerializationContext());
-        Value value = readValue(cacheStream, ctx);
-        if (!isFunction(value))
+        ctx->link = std::make_unique<ModuleLinkTable>();
+        ctx->link->self = target;
+        ctx->link->deps = resolved;
+        Value function = readValue(cacheStream, ctx);
+        if (!isFunction(function))
             return Value::nilVal();
 
-        // Re-import dynamic modules so module references can be reconciled.
-        // dynImportGlobals collects the global module names each IDL import
-        // registered (may be several top-level modules, none matching the
-        // file stem -- e.g. spliced ROS includes).
-        std::vector<std::string> dynImportGlobals;
-        for (const auto& imp : dynamicImports) {
-            try {
-                std::filesystem::path p(imp.path);
-                auto ext = p.extension().string();
-                if (ext == ".idl") {
-#ifdef ROXAL_ENABLE_DDS
-                    VM::instance().importIdlModule(imp.path, imp.annotations,
-                                                   &dynImportGlobals);
-#endif
-                } else if (ext == ".proto") {
-#ifdef ROXAL_ENABLE_GRPC
-                    VM::instance().importProtoModule(imp.path);
-#endif
-                }
-            } catch (...) {
-                // ignore failures; reconcile will still run with whatever is available
-            }
-        }
+        // 5. Everything read: apply to the target.
+        ObjModuleType* moduleType = asModuleType(target);
+        if (moduleType->fullName.isEmpty())
+            moduleType->fullName = fullName;
+        if (moduleType->sourcePath.isEmpty())
+            moduleType->sourcePath = sourcePath;
+        moduleType->constVars = std::move(constVars);
+        moduleType->registeredSuffixes = std::move(suffixes);
+        ObjModuleType* metadata = asModuleType(scratch);
+        moduleType->cstructArch = std::move(metadata->cstructArch);
+        moduleType->propertyCTypes = std::move(metadata->propertyCTypes);
+        moduleType->typeMembers = std::move(metadata->typeMembers);
+        moduleType->declAnnotations = std::move(metadata->declAnnotations);
+        for (size_t i = 0; i < deps.size(); ++i)
+            deps[i].module = resolved[i];
+        moduleType->linkInfo.stamp = ownStamp;
+        moduleType->linkInfo.deps = std::move(deps);
+        moduleType->linkInfo.bindings = std::move(bindings);
+        for (const auto& binding : moduleType->linkInfo.bindings)
+            bindImport(vm, moduleType, binding.components, resolved[binding.depIndex]);
 
-        if (cachedHasDynamicImport) {
-            std::unordered_map<std::string, Value> importedGlobals;
-            auto collectGlobal = [&](const std::string& name) {
-                auto g = VM::instance().loadGlobal(toUnicodeString(name));
-                if (g.has_value() && isModuleType(g.value()))
-                    importedGlobals[name] = g.value().strongRef();
-            };
-            for (const auto& imp : dynamicImports)
-                collectGlobal(std::filesystem::path(imp.path).stem().string());
-            for (const auto& name : dynImportGlobals)
-                collectGlobal(name);
-
-            if (!importedGlobals.empty()) {
-                // Shared function-graph walker: an inline walk over the
-                // constants alone silently misses default-argument functions.
-                ModuleDebugIndex::forEachFunctionInGraph(value, [&](ObjFunction* f) {
-                    if (isModuleType(f->moduleType)) {
-                        ObjModuleType* mt = asModuleType(f->moduleType);
-                        for (const auto& entry : importedGlobals) {
-                            mt->vars.store(toUnicodeString(entry.first), entry.second, true);
-                        }
-                    }
-                });
-            }
-        }
-        reconcileModuleReferences(value);
-
-        // Debug index registration for cache-loaded graphs -- AFTER
-        // successful reconciliation, so a failed load can never replace the
-        // previous valid generation.  The deserialized chunks carry their
-        // debug tables; retained text comes from the source file when the
-        // path is known.  There is no per-module/session ownership of the
-        // returned generation token yet: supersede-on-reregister and
-        // shutdown clearAll() are the retirement paths.
-        if (debugInfoEnabled_ && isFunction(value)) {
+        // Debug index registration for the cache-loaded graph -- after the
+        // load has succeeded, so a failed load can never replace the previous
+        // valid generation.  One module per file, so it is registered under
+        // its own source, with its own text.
+        if (debugInfoEnabled_) {
             std::string text;
-            if (!module.resolvedPath.empty()) {
-                std::ifstream tf(module.resolvedPath, std::ios::binary);
-                if (tf)
-                    text.assign(std::istreambuf_iterator<char>(tf),
-                                std::istreambuf_iterator<char>());
-            }
-            ModuleDebugIndex::instance().registerFunctionGraph(value, std::move(text));
+            std::ifstream tf(module.resolvedPath, std::ios::binary);
+            if (tf)
+                text.assign(std::istreambuf_iterator<char>(tf),
+                            std::istreambuf_iterator<char>());
+            ModuleDebugIndex::instance().registerFunctionGraph(function, std::move(text));
         }
 
-        return value;
+        return function;
     } catch (...) {
         return Value::nilVal();
     }
@@ -6580,17 +6334,19 @@ void RoxalCompiler::storeModuleCache(const ModuleInfo& module, const Value& func
 {
     if (!cacheWriteEnabled || module.cachePath.empty() || function.isNil() || !isFunction(function))
         return;
+    if (!isModuleType(asFunction(function)->moduleType))
+        return;
+    const ObjModuleType* moduleType = asModuleType(asFunction(function)->moduleType);
+    // Not file-backed (a REPL fragment, -e): nothing a load could validate.
+    if (!moduleType->linkInfo.stamp.isSet())
+        return;
 
     // Write to a sibling temp file and rename only once the whole cache is on
     // disk.  A partially written .roc must never be left where a later run
-    // would load it: the reader trusts the length fields it finds, so a
-    // truncated file does not merely fail -- it can allocate unboundedly
-    // before it does.  (Hit for real by an annotation argument whose
-    // expression kind writeExpr() cannot serialize.)
-    //
-    // The temp name carries the process id: two roxal processes compiling the
-    // same module at once must not share it, or one would truncate the other's
-    // file mid-write and the loser would rename a partial cache into place.
+    // would load it.  The temp name carries the process id: two roxal
+    // processes compiling the same module at once must not share it, or one
+    // would truncate the other's file mid-write and the loser would rename a
+    // partial cache into place.
     const std::filesystem::path tmpPath =
         std::filesystem::path(module.cachePath)
             .concat("." + std::to_string(currentProcessId()) + ".tmp");
@@ -6598,31 +6354,56 @@ void RoxalCompiler::storeModuleCache(const ModuleInfo& module, const Value& func
         std::ofstream cacheStream(tmpPath, std::ios::binary | std::ios::trunc);
         if (!cacheStream.is_open())
             return;
+        CacheWriter w { cacheStream };
 
+        // Header
         cacheStream.write(ModuleCacheMagic, sizeof(ModuleCacheMagic));
-        cacheStream.write(reinterpret_cast<const char*>(&ModuleCacheVersion), sizeof(ModuleCacheVersion));
-        const uint8_t debugTier = debugInfoEnabled_ ? 1 : 0;
-        cacheStream.write(reinterpret_cast<const char*>(&debugTier), 1);
-        uint8_t flags = currentModuleHasDynamicImport ? 0x1 : 0x0;
-        cacheStream.write(reinterpret_cast<const char*>(&flags), sizeof(flags));
-        if (currentModuleHasDynamicImport) {
-            uint32_t count = static_cast<uint32_t>(currentDynamicImports.size());
-            cacheStream.write(reinterpret_cast<const char*>(&count), sizeof(count));
-            for (const auto& imp : currentDynamicImports) {
-                uint32_t len = static_cast<uint32_t>(imp.path.size());
-                cacheStream.write(reinterpret_cast<const char*>(&len), sizeof(len));
-                cacheStream.write(imp.path.data(), len);
-                uint32_t acount = static_cast<uint32_t>(imp.annotations.size());
-                cacheStream.write(reinterpret_cast<const char*>(&acount), sizeof(acount));
-                for (const auto& name : imp.annotations) {
-                    uint32_t alen = static_cast<uint32_t>(name.size());
-                    cacheStream.write(reinterpret_cast<const char*>(&alen), sizeof(alen));
-                    cacheStream.write(name.data(), alen);
-                }
-            }
+        w.u32(ModuleCacheVersion);
+        w.u8(debugInfoEnabled_ ? 1 : 0);
+        w.stamp(moduleType->linkInfo.stamp);
+        const auto& deps = moduleType->linkInfo.deps;
+        w.u32(static_cast<uint32_t>(deps.size()));
+        for (const auto& dep : deps) {
+            w.u8(static_cast<uint8_t>(dep.kind));
+            w.ustr(dep.qualifiedName);
+            w.str(dep.resolvedPath);
+            w.stamp(dep.stamp);
+            w.u8(dep.direct ? 1 : 0);
+            w.u32(static_cast<uint32_t>(dep.annotations.size()));
+            for (const auto& annotation : dep.annotations)
+                w.str(annotation);
         }
 
+        // Module record: what the compiler produced besides code
+        w.ustr(moduleType->name);
+        w.ustr(moduleType->fullName);
+        w.ustr(moduleType->sourcePath);
+        w.u32(static_cast<uint32_t>(moduleType->constVars.size()));
+        for (int32_t hash : moduleType->constVars)
+            w.i32(hash);
+        w.u32(static_cast<uint32_t>(moduleType->registeredSuffixes.size()));
+        for (const auto& entry : moduleType->registeredSuffixes) {
+            w.ustr(entry.first);
+            w.ustr(entry.second);
+        }
+        const auto& bindings = moduleType->linkInfo.bindings;
+        w.u32(static_cast<uint32_t>(bindings.size()));
+        for (const auto& binding : bindings) {
+            w.u32(static_cast<uint32_t>(binding.components.size()));
+            for (const auto& component : binding.components)
+                w.ustr(component);
+            w.u32(binding.depIndex);
+        }
+        moduleType->writeMetadata(cacheStream);
+
+        // The function: this module as `self`, each direct dependency by its
+        // index, any other module an error (see SerializationContext::link).
         auto ctx = ptr<SerializationContext>::from_raw(new SerializationContext());
+        ctx->link = std::make_unique<ModuleLinkTable>();
+        ctx->link->self = asFunction(function)->moduleType.strongRef();
+        ctx->link->deps.reserve(deps.size());
+        for (const auto& dep : deps)
+            ctx->link->deps.push_back(dep.direct ? dep.module : Value::nilVal());
         writeValue(cacheStream, function, ctx);
 
         cacheStream.flush();
@@ -6634,8 +6415,17 @@ void RoxalCompiler::storeModuleCache(const ModuleInfo& module, const Value& func
         std::filesystem::rename(tmpPath, module.cachePath, ec);
         if (ec)
             std::filesystem::remove(tmpPath, ec);
+    } catch (std::exception& e) {
+        // A cache write failure is not the program's problem (it runs from
+        // the compile), but it must not pass unnoticed in development: a
+        // module that keeps recompiling, or a writer that refuses a graph it
+        // should link (a module outside the dependency table), is a bug.
+        #ifdef DEBUG_BUILD
+        std::cerr << "[cache] not written: " << module.cachePath.string() << ": " << e.what() << std::endl;
+        #endif
+        std::error_code ec;
+        std::filesystem::remove(tmpPath, ec);
     } catch (...) {
-        // Ignore cache write failures, but never leave the partial file behind.
         std::error_code ec;
         std::filesystem::remove(tmpPath, ec);
     }

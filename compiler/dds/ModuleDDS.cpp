@@ -237,6 +237,7 @@ Value ModuleDDS::getOrCreateModule(const std::string& name)
         return it->second;
 
     Value moduleVal = Value::moduleTypeVal(toUnicodeString(name));
+    asModuleType(moduleVal)->kind = ModuleKind::Idl;
     ObjModuleType::allModules.push_back(moduleVal);
     (*idlModules)[name] = moduleVal;
 
@@ -257,6 +258,7 @@ Value ModuleDDS::getOrCreateNestedModule(Value topModuleVal, const std::vector<s
             continue;
         }
         Value childVal = Value::moduleTypeVal(uname);
+        asModuleType(childVal)->kind = ModuleKind::Idl;
         ObjModuleType::allModules.push_back(childVal);
         mod->vars.store(uname, childVal, true);
         current = childVal;

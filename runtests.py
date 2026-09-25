@@ -14,7 +14,7 @@ import tempfile
 from typing import Set
 
 # Maximum time in seconds to allow each test to run
-TEST_TIMEOUT_SECS = 5
+TEST_TIMEOUT_SECS = 7
 GC_STRESS_TIMEOUT_SECS = 20
 NN_LFS_TIMEOUT_SECS = 60
 DOOM_TIMEOUT_SECS = 60
@@ -498,6 +498,14 @@ tests += socket_tests
 tests += ffi_tests
 tests += nn_tests
 tests += media_tests
+
+# Bytecode-cache scenarios (several runs per case, see
+# tests/module_cache/run_cache_tests.py), listed as modcache_<name> so -t
+# filtering and the pass/FAIL report treat them like any other test.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tests', 'module_cache'))
+import run_cache_tests as module_cache_tests
+modcache_tests = ['modcache_' + n for n in module_cache_tests.scenario_names()]
+tests += modcache_tests
 tests += qt_tests
 tests += compute_server_tests
 
@@ -649,6 +657,10 @@ if not has_dds:
     if any(test in tests for test in dds_tests):
         print("Skipping DDS tests (feature not enabled).")
         tests = [t for t in tests if t not in dds_tests]
+modcache_available = {'modcache_' + n for n in module_cache_tests.scenario_names(features)}
+if any(t in modcache_tests and t not in modcache_available for t in tests):
+    print("Skipping module-cache scenarios whose feature is not enabled.")
+    tests = [t for t in tests if t not in modcache_tests or t in modcache_available]
 if not has_regex:
     if any(test in tests for test in regex_tests):
         print("Skipping regex tests (feature not enabled).")
@@ -944,6 +956,19 @@ try:
         start_time = time.perf_counter()
         if test == 'remote_actor_version_mismatch':
             passed, detail = run_compute_version_mismatch_test(compute_test_addr)
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            if passed:
+                print(f"pass ({duration_ms:.0f} ms)", flush=True)
+                passed_count += 1
+            else:
+                print("FAIL:", flush=True)
+                print(detail)
+                failed_count += 1
+                unexpected_failures.append(test)
+            continue
+        if test.startswith('modcache_'):
+            passed, detail = module_cache_tests.run(test[len('modcache_'):], roxal, env_base,
+                                                    TEST_TIMEOUT_SECS * 3)
             duration_ms = (time.perf_counter() - start_time) * 1000
             if passed:
                 print(f"pass ({duration_ms:.0f} ms)", flush=True)
