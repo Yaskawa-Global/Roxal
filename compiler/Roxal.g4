@@ -91,9 +91,12 @@ declaration
  | statement
  ;
 
+// Every statement may be annotated (for tools such as editors; the compiler
+// ignores statement annotations).  As for declarations, an annotation must be
+// on the line directly above what it annotates (checked in ASTGenerator).
 statement
- : expr_stmt (if_clause | until_clause)? NEWLINE
- | compound_stmt
+ : annotation* expr_stmt (if_clause | until_clause)? NEWLINE
+ | annotation* compound_stmt
  ;
 
 until_clause
@@ -319,8 +322,11 @@ object_type_decl
     )
  ;
 
+// annotations go above 'private', as for methods and members (a public nested
+// type takes them through type_decl)
 nested_type_decl
- : PRIVATE? type_decl
+ : annotation* PRIVATE type_decl
+ | type_decl
  ;
 
 enum_type_decl

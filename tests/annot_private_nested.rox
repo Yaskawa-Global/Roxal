@@ -1,0 +1,21 @@
+// Annotations on a private nested type go above 'private' (as for methods and
+// members), so what unparse prints parses back.
+import inspect
+
+var src = """type A object:
+  var b = 0
+  @meta('inner')
+  private type B object:
+    var v = 1
+  @meta('pub')
+  type C object
+"""
+
+var t1 = inspect.parse(src, 'pn')
+var s1 = inspect.unparse(t1)
+print("same as source: " + string(s1 == src))
+for n in t1.decls_or_stmts[0].nested_types:
+  var names = []
+  for a in n.annotations:
+    names.append(a.name + string(len(a.args)))
+  print(n.name + " " + n.access + " " + string(names))

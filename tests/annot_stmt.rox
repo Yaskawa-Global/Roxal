@@ -1,0 +1,47 @@
+# Annotations on statements: accepted on every statement kind (for tools such
+# as the action-flow editor), ignored by the compiler -- the program runs as if
+# they were absent.
+@first
+var n = 0
+@assign(order=1)
+n = 5
+@call
+print(n)
+@loop(kind="while")
+while n > 3:
+  @dec
+  n = n - 1
+@branch
+if n == 3:
+  @then
+  print("three")
+else:
+  print("not three")
+@iter(pos=[10, -20])
+for i in [1, 2]:
+  print(i)
+@m
+match n:
+  case 3:
+    print("m3")
+  default:
+    print("other")
+@s
+scope:
+  @inner
+  print("in scope")
+@guarded
+n = 10 if n == 3
+print(n)
+
+func f() -> int:
+  var k = 0
+  @lbl
+  label again
+  k = k + 1
+  @jmp
+  jump again if k < 3
+  @ret
+  return k
+
+print(f())

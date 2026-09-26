@@ -252,6 +252,22 @@ public:
 protected:
     void setSourceInfo(ptr<ast::AST> ast, antlr4::ParserRuleContext* context);
     void setSourceInfo(ptr<ast::AST> ast, antlr4::tree::TerminalNode* terminal);
+    void setSourceInfo(ptr<ast::AST> ast, antlr4::Token* start, antlr4::Token* stop);
+
+    // Interval of an annotated construct: starts after its leading annotation*
+    // run (see AST::annotations).
+    void setSourceInfo(ptr<ast::AST> ast, antlr4::ParserRuleContext* context,
+                       const std::vector<RoxalParser::AnnotationContext*>& annotCtxs);
+
+    // Build the Annotation nodes of an annotation* run onto target.  Unless
+    // requireAdjacent is false (the file-level run), reports an annotation
+    // separated from what follows it by a blank or comment line.
+    void collectAnnotations(const std::vector<RoxalParser::AnnotationContext*>& annotCtxs,
+                            const ptr<ast::AST>& target, bool requireAdjacent = true);
+
+    // Neighbouring DEFAULT_CHANNEL tokens (skipping comments), or nullptr.
+    antlr4::Token* nextDefaultToken(antlr4::Token* tok) const;
+    antlr4::Token* prevDefaultToken(antlr4::Token* tok) const;
     ustring normalizeIdentifier(const std::string& text);
     ustring identifierFromTerminal(antlr4::tree::TerminalNode* terminal);
     ustring identifierFromContext(antlr4::ParserRuleContext* context);

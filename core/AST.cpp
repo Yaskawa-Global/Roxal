@@ -13,6 +13,27 @@ void AST::output(std::ostream& os, int indent) const
     os << spaces(indent) << "AST" << std::endl;
 }
 
+void AST::outputAnnotations(std::ostream& os, int indent) const
+{
+    for (auto& annot : annotations)
+        annot->output(os, indent+1);
+}
+
+LinePos AST::extentStart() const
+{
+    // The minimum, not the first annotation: a Function's docstring-synthesized
+    // @doc sits in its body; a type's @doc has no position at all (line 0).
+    LinePos start = interval.first;
+    for (const auto& a : annotations) {
+        if (!a || a->interval.first.line == 0)
+            continue;
+        const LinePos& p = a->interval.first;
+        if (p.line < start.line || (p.line == start.line && p.pos < start.pos))
+            start = p;
+    }
+    return start;
+}
+
 void AST::outputType(std::ostream& os, int indent) const
 {
     if (type.has_value()) {
@@ -291,6 +312,7 @@ void Suite::acceptChildren(ASTVisitor& v, Anys& results)
 void Suite::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Suite" << std::endl;
+    outputAnnotations(os, indent);
     //sourceOut();
 
     for(auto& declOrStmt :declsOrStmts ) {
@@ -334,6 +356,7 @@ void ExpressionStatement::acceptChildren(ASTVisitor& v, Anys& results)
 void ExpressionStatement::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"ExprStmt" << std::endl;
+    outputAnnotations(os, indent);
     //sourceOut();
     expr->output(os,indent+1);
     if (atHost)
@@ -368,6 +391,7 @@ void ReturnStatement::acceptChildren(ASTVisitor& v, Anys& results)
 void ReturnStatement::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Return" << std::endl;
+    outputAnnotations(os, indent);
     //sourceOut();
     if (expr.has_value())
         expr.value()->output(os,indent+1);
@@ -399,6 +423,7 @@ void BreakStatement::acceptChildren(ASTVisitor& v, Anys& results)
 void BreakStatement::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Break" << std::endl;
+    outputAnnotations(os, indent);
 }
 
 
@@ -427,6 +452,7 @@ void ContinueStatement::acceptChildren(ASTVisitor& v, Anys& results)
 void ContinueStatement::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Continue" << std::endl;
+    outputAnnotations(os, indent);
 }
 
 
@@ -455,6 +481,7 @@ void JumpStatement::acceptChildren(ASTVisitor& v, Anys& results)
 void JumpStatement::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Jump " << toUTF8StdString(name) << std::endl;
+    outputAnnotations(os, indent);
 }
 
 
@@ -483,6 +510,7 @@ void LabelStatement::acceptChildren(ASTVisitor& v, Anys& results)
 void LabelStatement::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Label " << toUTF8StdString(name) << std::endl;
+    outputAnnotations(os, indent);
 }
 
 
@@ -519,6 +547,7 @@ void IfStatement::acceptChildren(ASTVisitor& v, Anys& results)
 void IfStatement::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"If" << std::endl;
+    outputAnnotations(os, indent);
     //sourceOut();
     for(auto& condSuite :conditionalSuites ) {
         os << spaces(indent+1) << "if cond:" << std::endl;
@@ -561,6 +590,7 @@ void WhileStatement::acceptChildren(ASTVisitor& v, Anys& results)
 void WhileStatement::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"While" << std::endl;
+    outputAnnotations(os, indent);
     //sourceOut();
     os << spaces(indent)+" cond:" << std::endl;
     condition->output(os,indent+2);
@@ -589,6 +619,7 @@ std::any ForStatement::accept(ASTVisitor& v)
 void ForStatement::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"for" << std::endl;
+    outputAnnotations(os, indent);
     for(const auto& target : targetList)
         target->output(os,indent+1);
     os << spaces(indent)+" in:" << std::endl;
@@ -626,6 +657,7 @@ std::any WhenStatement::accept(ASTVisitor& v)
 void WhenStatement::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"When" << std::endl;
+    outputAnnotations(os, indent);
     os << spaces(indent+1) << "trigger:" << std::endl;
     trigger->output(os, indent+2);
     if (matchesBecomes) {
@@ -669,6 +701,7 @@ std::any UntilStatement::accept(ASTVisitor& v)
 void UntilStatement::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Until" << std::endl;
+    outputAnnotations(os, indent);
     os << spaces(indent+1) << "stmt:" << std::endl;
     stmt->output(os, indent+2);
     os << spaces(indent+1) << "condition:" << std::endl;
@@ -701,6 +734,7 @@ std::any AdheringIfStatement::accept(ASTVisitor& v)
 void AdheringIfStatement::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"AdheringIf" << std::endl;
+    outputAnnotations(os, indent);
     os << spaces(indent+1) << "stmt:" << std::endl;
     stmt->output(os, indent+2);
     os << spaces(indent+1) << "condition:" << std::endl;
@@ -733,6 +767,7 @@ std::any RaiseStatement::accept(ASTVisitor& v)
 void RaiseStatement::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Raise" << std::endl;
+    outputAnnotations(os, indent);
     if (exception.has_value())
         exception.value()->output(os, indent+2);
 }
@@ -763,6 +798,7 @@ std::any AssertStatement::accept(ASTVisitor& v)
 void AssertStatement::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Assert" << std::endl;
+    outputAnnotations(os, indent);
     condition->output(os, indent+2);
     if (message.has_value())
         message.value()->output(os, indent+2);
@@ -795,6 +831,7 @@ std::any TryStatement::accept(ASTVisitor& v)
 void TryStatement::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Try" << std::endl;
+    outputAnnotations(os, indent);
     os << spaces(indent+1) << "body:" << std::endl;
     body->output(os, indent+2);
     for(const auto& ec : exceptClauses) {
@@ -845,6 +882,7 @@ std::any MatchStatement::accept(ASTVisitor& v)
 void MatchStatement::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"Match" << std::endl;
+    outputAnnotations(os, indent);
     os << spaces(indent+1) << "expr:" << std::endl;
     matchExpr->output(os, indent+2);
     for(const auto& [patterns, suite] : cases) {
@@ -893,6 +931,7 @@ std::any WithStatement::accept(ASTVisitor& v)
 void WithStatement::output(std::ostream& os, int indent) const
 {
     os << spaces(indent)+"With" << std::endl;
+    outputAnnotations(os, indent);
     os << spaces(indent+1) << "contextExpr:" << std::endl;
     contextExpr->output(os, indent+2);
     os << spaces(indent+1) << "body:" << std::endl;

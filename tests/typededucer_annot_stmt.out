@@ -1,0 +1,48 @@
+File
+ VarDecl n
+  Num 0:int
+ ExprStmt
+  @act
+    x =
+     Num 1:int
+    y =
+     Num -2:int
+  Assignment =
+   Variable n
+   BinaryOp +  → int
+    Variable n
+    Num 1:int
+ AdheringIf
+  @guard
+  stmt:
+   ExprStmt
+    Assignment =
+     Variable n
+     Num 5:int
+  condition:
+   BinaryOp >  → bool
+    Variable n
+    Num 0:int
+ While
+  @loop
+  cond:
+   BinaryOp >  → bool
+    Variable n
+    Num 3:int
+  body:
+   Suite
+    ExprStmt
+     @dec
+     Assignment =
+      Variable n
+      BinaryOp -  → int
+       Variable n
+       Num 1:int
+ Suite
+  @s
+  ExprStmt
+   Call
+    Variable print
+    args:
+     Variable n
+

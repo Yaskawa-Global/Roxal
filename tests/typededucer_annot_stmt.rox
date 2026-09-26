@@ -1,0 +1,12 @@
+var n = 0
+@act(x=1, y=-2)
+n = n + 1
+@guard
+n = 5 if n > 0
+@loop
+while n > 3:
+  @dec
+  n = n - 1
+@s
+scope:
+  print(n)

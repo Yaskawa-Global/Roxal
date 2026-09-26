@@ -1,0 +1,15 @@
+same as source: true
+fixpoint: true
+VarDecl []
+ExpressionStatement ["act"]
+ExpressionStatement ["act", "flow"]
+FuncDecl []
+Suite ["sc"]
+AdheringIfStatement 1 inner 0
+var k = 0
+@act(x=12, y=3)
+k = 1
+@branch
+if k == 1:
+  print(k)
+

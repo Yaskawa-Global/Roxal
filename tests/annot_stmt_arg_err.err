@@ -1,0 +1,1 @@
+.*annot_stmt_arg_err\.rox:6:0: error: annotation @bad argument must be a literal

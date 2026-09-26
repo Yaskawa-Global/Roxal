@@ -1,0 +1,7 @@
+# Statement annotations take the same literal-only arguments as declaration
+# annotations (a bare name is a literal; an expression is not).
+var n = 0
+@ok(n, x=[1, -2], y={'a': "b"})
+n = 1
+@bad(x=n + 1)
+n = 2

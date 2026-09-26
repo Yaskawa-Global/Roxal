@@ -62,7 +62,7 @@ Some non-strict automatic conversions: (see conversions.md for details):
   * object instance → dict (of public member variables)
 
 Function body scope is strict by default.  To convert types in strict context, casting/constructor syntax is required. e.g. `byte(5)`, `string(6)`.  Most automatic convenience conversions available in non-strict context can be used with explicit construction in strict context.
-(strict vs non-strict can be controlled via annotations)
+(strict vs non-strict can be controlled with the `@strict` and `@nonstrict` annotations; see Annotations below)
 
 **User-defined conversions** can be declared via `operator <type>()` methods on object types (see Operator Overloading section).  By default, user-defined conversions require explicit invocation (e.g., `string(obj)`).  Mark the method with the `implicit` modifier (placed inline before `func`/`proc`, after `private` if present) to allow implicit invocation:
 
@@ -1761,6 +1761,40 @@ x = compute() if cond          // assignment is gated; if cond is false, x is un
 
 `if` and `until` cannot be used together on the same statement.
 
+
+## Annotations
+
+An *annotation* is a note attached to a piece of code.  It is written on its own line starting with `@` (a name, optionally followed by arguments in parentheses), directly above the thing it describes:
+
+```php
+@nonstrict
+func parse_width(text :string) -> real:
+  var w :real = text    // allowed: non-strict converts "2.5" to 2.5
+  return w
+```
+
+An annotation is not code that runs.  It tells something that reads your program what to do with the annotated item: the compiler, a library such as `testing`, or a tool such as an editor.  Function bodies are strict by default, so without `@nonstrict` the assignment above is a compile error ("unable to convert string to real in strict mode").  Other annotations you will meet in this guide:
+
+  * `@strict` / `@nonstrict` choose the conversion rules for a function, or for a whole file (see Type conversions above).
+  * `@suffix("cm")` makes a function handle literals like `5cm` (see Literal Suffixes).
+  * `@test` marks a test function for the `testing` module (see Testing, next).
+  * `@ros` on an import, and `@cfunc` / `@cstruct` / `@ctype` for calling C libraries (see the DDS and FFI sections).
+
+An annotation nobody reads has no effect.  So annotations are also a way for tools to keep their own information with your code.  For example, a visual editor can record where each box goes in its diagram:
+
+```php
+@df(x=10, y=-5.5)
+var a = 1
+
+@act(x=40, y=80)
+a = a + 1
+```
+
+**Where annotations can go.**  On imports; on declarations (`var`/`const`, `func`/`proc`, `type`); on parameters, properties and methods; and on every statement: assignments, calls, `if`, `while`, `for`, `match`, `scope`, `label`/`jump`, and the rest.  The compiler ignores annotations on statements, so those are only for tools.  Several annotations can be stacked, one per line.
+
+**It must be directly above.**  Put an annotation on the line right before the item it annotates, or right before the next annotation in a stack.  A blank line or a comment line in between is an error, so an annotation can never drift onto the wrong line.  A comment at the end of the annotation's own line is fine.  The one exception is the very top of a file: annotations there followed by a blank line apply to the whole file (e.g. `@strict` on its own at the top makes the file strict).
+
+**Arguments are plain data**: numbers, strings, bools, `nil`, lists and dicts of those, negative numbers, suffixed literals such as `2s`, and bare names.  Other expressions, like `@meta(f())`, are an error.
 
 ## Testing (the `testing` module)
 

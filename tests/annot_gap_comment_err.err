@@ -1,0 +1,1 @@
+.*annot_gap_comment_err\.rox:5:0: error: annotation @doc_like must be on the line directly before the declaration or statement it applies to

@@ -1,0 +1,56 @@
+// inspect: statement annotations survive parse -> unparse -> parse, keep
+// comments/blank lines above them with their statement, and can be added
+// programmatically (the action-flow editor's round trip).
+import inspect
+
+var src = """var n = 0
+
+# before the call
+@act(x=10, y=20)
+print(n)
+@act(x=30)
+@flow(next=[1, 2])
+n = n + 1   # after assignment
+
+func f():
+  # lead inside
+  @step
+  while n < 3:
+    @act
+    n = n + 1
+  @jmp
+  jump done
+  @lbl
+  label done
+  @cond
+  n = 0 if n > 100
+
+@sc
+scope:
+  print(n)
+"""
+
+var t1 = inspect.parse(src, 'stmt_rt')
+var s1 = inspect.unparse(t1)
+print("same as source: " + string(s1 == src))
+var s2 = inspect.unparse(inspect.parse(s1, 'stmt_rt2'))
+print("fixpoint: " + string(s1 == s2))
+
+// annotation placement on the tree
+var ds = t1.decls_or_stmts
+for i in range(..<len(ds)):
+  var names = []
+  for a in ds[i].annotations:
+    names.append(a.name)
+  print(ds[i].kind() + " " + string(names))
+
+// the single-line `x if c` form carries them on its wrapper
+var fbody = ds[3].function.body.decls_or_stmts
+print(fbody[3].kind() + " " + string(len(fbody[3].annotations)) + " inner " + string(len(fbody[3].stmt.annotations)))
+
+// add annotations through the tree and unparse
+var t = inspect.parse("var k = 0\nk = 1\nif k == 1:\n  print(k)\n", 'stmt_ed')
+var stmts = t.decls_or_stmts
+stmts[1].annotations.append(inspect.Annotation(name='act', args=[inspect.Arg(name='x', value=inspect.Num(value=12)), inspect.Arg(name='y', value=inspect.Num(value=3))]))
+stmts[2].annotations.append(inspect.Annotation(name='branch'))
+print(inspect.unparse(t))

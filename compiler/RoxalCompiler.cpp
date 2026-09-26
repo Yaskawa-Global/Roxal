@@ -85,7 +85,7 @@ static unsigned long currentProcessId()
     return static_cast<unsigned long>(::getpid());
 #endif
 }
-constexpr std::uint32_t ModuleCacheVersion = 64;   // 64: one module per file, dependencies by reference (63: OpCode::ImportModule)
+constexpr std::uint32_t ModuleCacheVersion = 65;   // 65: annotated declarations' line = their own line, not the @ line (64: one module per file, dependencies by reference)
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -667,6 +667,7 @@ std::any RoxalCompiler::visit(ptr<ast::File> ast)
         else if (std::holds_alternative<ptr<Statement>>(declOrStmt)) {
             auto& stmt = std::get<ptr<Statement>>(declOrStmt);
             markStmtStart(stmt);   // debug metadata: top-level statement boundary
+            checkAnnotationArgs(stmt->annotations, stmt);   // otherwise ignored
             results.push_back(stmt->accept(*this));
         }
         else
@@ -2357,8 +2358,8 @@ void RoxalCompiler::checkAnnotationArgs(const std::vector<ptr<ast::Annotation>>&
         for (const auto& arg : annot->args) {
             if (isSerializableAnnotArg(arg.second))
                 continue;
-            // Annotation nodes carry no source interval, so report against the
-            // declaration they are attached to.
+            // Report at the annotation itself; a synthesized one (a type's
+            // @doc) has no position, so fall back to what it is attached to.
             SourceNodeScope annotationSource(
                 *this, (annot->interval.first.line > 0) ? ptr<ast::AST>(annot) : location);
             error("annotation @" + toUTF8StdString(annot->name)
@@ -2472,6 +2473,10 @@ std::any RoxalCompiler::visit(ptr<ast::FuncDecl> ast)
             function->annotations.push_back(annot);
     checkAnnotationArgs(function->annotations, ast);
     for(const auto& annot : function->annotations) {
+        // diagnostics about an annotation point at it (the declaration's own
+        // position is its func line, below its annotations)
+        SourceNodeScope annotSource(
+            *this, (annot->interval.first.line > 0) ? ptr<ast::AST>(annot) : ptr<ast::AST>(ast));
         if (annot->name == "doc") {
             std::string d;
             for(size_t i=0;i<annot->args.size();++i) {
@@ -2843,6 +2848,9 @@ std::any RoxalCompiler::visit(ptr<ast::Suite> ast)
         } else if (std::holds_alternative<ptr<Statement>>(declOrStmt)) {
             auto& s = std::get<ptr<Statement>>(declOrStmt);
             markStmtStart(s);
+            // statement annotations are for tools and generate no code; they
+            // take the same literal-only arguments as declaration annotations
+            checkAnnotationArgs(s->annotations, s);
             results.push_back(s->accept(*this));
         } else
             throw std::runtime_error("unimplemented accept() alternative");

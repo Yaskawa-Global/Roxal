@@ -1,0 +1,7 @@
+# A comment line between an annotation and what it annotates is an error too
+# (a trailing comment on the annotation's own line is fine).
+var n = 0
+@meta('m')   # fine
+@doc_like
+# not fine
+var m = 1

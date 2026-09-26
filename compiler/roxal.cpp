@@ -533,7 +533,12 @@ static int repl()
         if (endsWithColon)
             waitingIndent = true;
 
-        bool complete = !waitingIndent && indents.size()==1 && ( !trimmed.empty() || line.empty() );
+        // an annotation line annotates the line after it, so keep reading; an
+        // empty line after it ends the input (the annotation is then file-level)
+        bool annotationLine = indent == 0 && !trimmed.empty() && trimmed.front() == '@';
+
+        bool complete = !waitingIndent && indents.size()==1 && !annotationLine
+                        && ( !trimmed.empty() || line.empty() );
 
         if (complete) {
             try {

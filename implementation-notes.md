@@ -1552,6 +1552,33 @@ the debug tier, `--precompile`, `.idl` restoration) is covered by
 `modcache_<name>`; each scenario runs roxal several times in a private
 directory.
 
+### Annotations in the AST
+
+`AST::annotations` lives on the base node. The grammar puts `annotation*` in
+front of imports, declarations, parameters, type members/methods and the
+`statement` rule (so every statement). `ASTGenerator::collectAnnotations()` is
+the one place that builds them, and it enforces the adjacency rule: an
+annotation's last content line must be directly followed by the next
+annotation or the target. The parser cannot see that gap itself (the
+indentation lexer drops blank lines, comments are off-channel), so it is
+measured from token lines the same way the grammar's
+`leadingAnnotationIsFileLevel()` predicate does. The file-level run is exempt,
+since the gap after it is what makes it file-level.
+
+**A node's `interval` never includes its annotations** (each `Annotation`
+carries its own). Statement boundaries in the debug metadata
+(`markStmtStart`), breakpoints, stop lines and diagnostics all use
+`interval.first`, so an annotated construct is at its own first line, not at
+its `@` line. Anything that needs the full source span (the `inspect` trivia
+pass attributing comments and blank lines) uses `AST::extentStart()`, which is
+the earliest of the interval and its positioned annotations.
+
+Statement annotations exist for tools. They reach `inspect`, `--ast` and
+unparse (`AstPrinter::node()` prints them for any `Statement`; a single-line
+`x if c` carries them on its outer `AdheringIfStatement`/`UntilStatement`).
+The compiler only checks their arguments with `checkAnnotationArgs()` and
+otherwise ignores them, so they are not in the `.roc` either.
+
 ### Annotations at runtime
 
 Annotations are retained past compilation in exactly two places, both of them

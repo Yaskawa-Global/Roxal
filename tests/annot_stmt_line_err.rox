@@ -1,0 +1,6 @@
+# A diagnostic for an annotated statement points at the statement's own line,
+# not at its annotations above.
+var n = 0
+@a
+@b(x=1)
+break

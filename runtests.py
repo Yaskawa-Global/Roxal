@@ -209,6 +209,8 @@ tests = [
     'cachereload_builtin',
     'method_named_param',
     'annot1', 'annot_import', 'annot_file_level', 'annot_ros_nonidl', 'generic', 'objscopes',
+    'annot_stmt', 'typededucer_annot_stmt', 'annot_stmt_arg_err', 'annot_stmt_line_err',
+    'annot_gap_blank_err', 'annot_gap_comment_err', 'repl_annot_err',
     'actor1', 'actor2', 'actor3', 'actor4', 'actor5', 'actor6', 'actor7', 'actor8', 'actor9',
     'actor_init', 'actor_stack', 'actor_future', 'future_ready', 'future_builtin_resolve', 'future_typed_param_resolve', 'wait_duration', 'wait_duration_dim_err', 'wait_duration_mixed_err',
     'allof_futures', 'anyof_futures', 'anyof_event', 'anyof_signal',
@@ -378,6 +380,7 @@ inspect_tests = [
     'inspect_unparse', 'inspect_edit', 'inspect_fragments',
     'inspect_fragment_err', 'inspect_unparse_err', 'inspect_roundtrip_corpus',
     'inspect_compile', 'inspect_compile_err', 'inspect_annot_roundtrip',
+    'inspect_stmt_annot_roundtrip', 'inspect_debuginfo_annot', 'annot_private_nested',
     'inspect_render', 'inspect_debuginfo', 'inspect_debuginfo_params', 'debug_stop',
     'debug_exclude_guard',
     # the assert statement

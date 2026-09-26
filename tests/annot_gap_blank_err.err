@@ -1,0 +1,1 @@
+.*annot_gap_blank_err\.rox:7:2: error: annotation @act must be on the line directly before the declaration or statement it applies to

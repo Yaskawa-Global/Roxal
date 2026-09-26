@@ -1037,10 +1037,14 @@ void attachTrivia(InspectConv& cx, const ast::AST& root, const Value& rootV,
     if (typeid(root) != typeid(ast::File))
         gran.push_back(&root);
     collectGranularity(root, gran);
+    // Trivia belongs to a node's whole source extent: its interval excludes
+    // any annotation lines above it (see ast::AST::annotations), but comments
+    // and blank lines above those lines are the annotated node's.
     std::sort(gran.begin(), gran.end(), [](const ast::AST* a, const ast::AST* b) {
-        if (a->interval.first.line != b->interval.first.line)
-            return a->interval.first.line < b->interval.first.line;
-        return a->interval.first.pos < b->interval.first.pos;
+        ast::LinePos sa = a->extentStart(), sb = b->extentStart();
+        if (sa.line != sb.line)
+            return sa.line < sb.line;
+        return sa.pos < sb.pos;
     });
 
     std::unordered_map<const ast::AST*, std::vector<std::string>> leading;
@@ -1049,16 +1053,16 @@ void attachTrivia(InspectConv& cx, const ast::AST& root, const Value& rootV,
     std::vector<std::string> endComments;
 
     for (auto* g : gran)
-        firstOwnedLine[g] = g->interval.first.line;
+        firstOwnedLine[g] = g->extentStart().line;
 
     for (auto& c : comments) {
         if (!lines.blankBefore(c.line, c.pos)) {
             // trailing: deepest granularity node whose line range contains it
             const ast::AST* best = nullptr;
             for (auto* g : gran) {
-                if (g->interval.first.line <= c.line && c.line <= g->interval.second.line)
+                if (g->extentStart().line <= c.line && c.line <= g->interval.second.line)
                     best = g;   // sorted by start: later match == deeper/closer
-                if (g->interval.first.line > c.line)
+                if (g->extentStart().line > c.line)
                     break;
             }
             if (best)
@@ -1067,7 +1071,7 @@ void attachTrivia(InspectConv& cx, const ast::AST& root, const Value& rootV,
             // leading: next granularity node below the comment
             const ast::AST* next = nullptr;
             for (auto* g : gran) {
-                if (g->interval.first.line > c.line) {
+                if (g->extentStart().line > c.line) {
                     next = g;
                     break;
                 }

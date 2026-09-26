@@ -1,0 +1,11 @@
+# An annotation must be on the line directly above what it annotates; a blank
+# line in between is an error (except at the top of the file, where it makes
+# the annotation file-level).
+var n = 0
+
+func f():
+  @act(x=1)
+
+  n = 1
+
+f()

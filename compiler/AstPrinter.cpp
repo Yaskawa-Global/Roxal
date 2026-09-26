@@ -319,6 +319,13 @@ void AstPrinter::node(const ast::AST& n)
     if (t == typeid(Function)) { function(static_cast<const Function&>(n)); return; }
     if (t == typeid(PropertyAccessor)) { propertyAccessor(static_cast<const PropertyAccessor&>(n)); return; }
 
+    // statement annotations, one line each above the statement (declarations
+    // print their own above).  Only statements in statement position reach
+    // here -- a body Suite goes through body() -- and a single-line `x if c`
+    // carries them on its outer wrapper, not on the inlined inner statement.
+    if (dynamic_cast<const Statement*>(&n))
+        annotations(n);
+
     if (t == typeid(Suite)) {
         // a Suite in statement position is a `scope:` block
         emitLine("scope:");

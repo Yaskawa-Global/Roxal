@@ -238,8 +238,16 @@ struct AST
 
     void outputType(std::ostream& os, int indent) const;
 
-    // annotations (select AST node types)
+    // annotations (declarations, imports, parameters, type members, statements)
+    //  A node's interval never includes its annotations -- each Annotation
+    //  carries its own -- so a construct's line is its own first line (for
+    //  breakpoints, diagnostics).  extentStart() is where the construct begins
+    //  in the source text including any annotation lines above it.
     std::vector<ptr<Annotation>> annotations;
+
+    LinePos extentStart() const;
+
+    void outputAnnotations(std::ostream& os, int indent) const;
 
 
     // user-defined attributes

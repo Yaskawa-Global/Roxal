@@ -9,3 +9,4 @@
 ../tests/annot1.rox: OK
 ../tests/annot_file_level.rox: OK
 ../tests/annot_import.rox: OK
+../tests/annot_stmt.rox: OK

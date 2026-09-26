@@ -123,16 +123,55 @@ LinePos ASTGenerator::tokenEndPos(antlr4::Token* tok) const
 
 void ASTGenerator::setSourceInfo(ptr<AST> ast, antlr4::ParserRuleContext* context)
 {
+    setSourceInfo(ast, context->start, context->stop);
+}
+
+void ASTGenerator::setSourceInfo(ptr<AST> ast, antlr4::Token* startTok, antlr4::Token* stopTok)
+{
     ast->source = source;
 
-    LinePos start = remapFragmentPos({ context->start->getLine(), context->start->getCharPositionInLine() });
-    LinePos end   = remapFragmentPos(tokenEndPos(context->stop));
+    LinePos start = remapFragmentPos({ startTok->getLine(), startTok->getCharPositionInLine() });
+    LinePos end   = remapFragmentPos(tokenEndPos(stopTok));
 
     ast->interval = std::make_pair(start, end);
 
     #ifdef DEBUG_BUILD
     ast->fullSource = stringInterval(*source,ast->interval.first.line, ast->interval.first.pos, ast->interval.second.line, ast->interval.second.pos);
     #endif
+}
+
+void ASTGenerator::setSourceInfo(ptr<AST> ast, antlr4::ParserRuleContext* context,
+                                 const std::vector<RoxalParser::AnnotationContext*>& annotCtxs)
+{
+    antlr4::Token* start = context->start;
+    if (!annotCtxs.empty())
+        if (auto* after = nextDefaultToken(annotCtxs.back()->stop))
+            start = after;
+    setSourceInfo(ast, start, context->stop);
+}
+
+antlr4::Token* ASTGenerator::nextDefaultToken(antlr4::Token* tok) const
+{
+    if (!tokenStream || !tok)
+        return nullptr;
+    for (size_t i = tok->getTokenIndex() + 1; i < tokenStream->size(); ++i) {
+        antlr4::Token* t = tokenStream->get(i);
+        if (t->getChannel() == antlr4::Token::DEFAULT_CHANNEL)
+            return t;
+    }
+    return nullptr;
+}
+
+antlr4::Token* ASTGenerator::prevDefaultToken(antlr4::Token* tok) const
+{
+    if (!tokenStream || !tok)
+        return nullptr;
+    for (long i = long(tok->getTokenIndex()) - 1; i >= 0; --i) {
+        antlr4::Token* t = tokenStream->get(size_t(i));
+        if (t->getChannel() == antlr4::Token::DEFAULT_CHANNEL)
+            return t;
+    }
+    return nullptr;
 }
 
 void ASTGenerator::setSourceInfo(ptr<AST> ast, antlr4::tree::TerminalNode* terminal)
@@ -582,20 +621,9 @@ std::any ASTGenerator::visitFile_input(RoxalParser::File_inputContext *context)
     ptr<File> file = make_ptr<File>();
     setSourceInfo(file, context);
 
-    if (context->annotation().size() > 0) {
-
-        for(size_t i=0; i < context->annotation().size();i++) {
-
-            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(context->annotation().at(i)));
-
-            ptr<Annotation> annotation = make_ptr<Annotation>();
-            annotation->name = annotInfo->accessed;
-            annotation->args = *annotInfo->args;
-            setSourceInfo(annotation, context->annotation().at(i));
-
-            file->annotations.push_back(annotation);
-        }
-    }
+    // file-level: the parser predicate already classified the run, and the
+    // blank line after it is exactly what makes it file-level
+    collectAnnotations(context->annotation(), file, /*requireAdjacent=*/false);
 
 
 
@@ -650,17 +678,10 @@ std::any ASTGenerator::visitImport_stmt(RoxalParser::Import_stmtContext *context
     visitStart();
 
     ptr<Import> import = make_ptr<Import>();
-    setSourceInfo(import, context);
+    setSourceInfo(import, context, context->annotation());
 
     // annotations attached to this import (e.g. @ros above an IDL import)
-    for (size_t i = 0; i < context->annotation().size(); i++) {
-        auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(context->annotation().at(i)));
-        ptr<Annotation> annotation = make_ptr<Annotation>();
-        annotation->name = annotInfo->accessed;
-        annotation->args = *annotInfo->args;
-        setSourceInfo(annotation, context->annotation().at(i));
-        import->annotations.push_back(annotation);
-    }
+    collectAnnotations(context->annotation(), import);
 
     for(auto i=0; i<context->IDENTIFIER().size(); i++) {
         auto component { identifierFromTerminal(context->IDENTIFIER().at(i)) };
@@ -716,7 +737,7 @@ std::any ASTGenerator::visitDeclaration(RoxalParser::DeclarationContext *context
     else
         throw std::runtime_error("unimplemented declaration type");
 
-    setSourceInfo(decl, context);
+    // the declaration's own visitor set its interval (excluding annotations)
     return typeValue(decl);
 
     visitEnd();
@@ -824,7 +845,10 @@ std::any ASTGenerator::visitStatement(RoxalParser::StatementContext *context)
         stmt = ifStmt;
     }
 
-    setSourceInfo(stmt, context);
+    // on the outermost node: for `x = 1 if c` that is the if wrapper, which
+    // is what the source spells as one statement
+    collectAnnotations(context->annotation(), stmt);
+    setSourceInfo(stmt, context, context->annotation());
     return typeValue(stmt);
 
     visitEnd();
@@ -1355,7 +1379,7 @@ std::any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
     visitStart();
 
     ptr<VarDecl> vardecl = make_ptr<VarDecl>();
-    setSourceInfo(vardecl,context);
+    setSourceInfo(vardecl, context, context->annotation());
     vardecl->isConst = (context->CONST() != nullptr);
 
     // Declaring destructure: 'var [a, b :real] = expr'
@@ -1380,14 +1404,7 @@ std::any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
             vardecl->targets.push_back(target);
         }
 
-        for (size_t i = 0; i < context->annotation().size(); i++) {
-            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(context->annotation().at(i)));
-            ptr<Annotation> annotation = make_ptr<Annotation>();
-            annotation->name = annotInfo->accessed;
-            annotation->args = *annotInfo->args;
-            setSourceInfo(annotation, context->annotation().at(i));
-            vardecl->annotations.push_back(annotation);
-        }
+        collectAnnotations(context->annotation(), vardecl);
 
         vardecl->initializer = as<Expression>(visitExpression(context->expression()));
         return typeValue(vardecl);
@@ -1395,20 +1412,7 @@ std::any ASTGenerator::visitVar_decl(RoxalParser::Var_declContext *context)
 
     vardecl->name = identifierFromTerminal(context->IDENTIFIER());
 
-    if (context->annotation().size() > 0) {
-
-        for(size_t i=0; i< context->annotation().size();i++) {
-
-            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(context->annotation().at(i)));
-
-            ptr<Annotation> annotation = make_ptr<Annotation>();
-            annotation->name = annotInfo->accessed;
-            annotation->args = *annotInfo->args;
-            setSourceInfo(annotation, context->annotation().at(i));
-
-            vardecl->annotations.push_back(annotation);
-        }
-    }
+    collectAnnotations(context->annotation(), vardecl);
 
     if (context->COLON()) { // type specified
         if (context->const_qualifier()) {
@@ -1474,22 +1478,9 @@ std::any ASTGenerator::visitFunc_decl(RoxalParser::Func_declContext *context)
     visitStart();
 
     ptr<FuncDecl> funcdecl = make_ptr<FuncDecl>();
-    setSourceInfo(funcdecl,context);
+    setSourceInfo(funcdecl, context, context->annotation());
 
-    if (context->annotation().size() > 0) {
-
-        for(size_t i=0; i< context->annotation().size();i++) {
-
-            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(context->annotation().at(i)));
-
-            ptr<Annotation> annotation = make_ptr<Annotation>();
-            annotation->name = annotInfo->accessed;
-            annotation->args = *annotInfo->args;
-            setSourceInfo(annotation, context->annotation().at(i));
-
-            funcdecl->annotations.push_back(annotation);
-        }
-    }
+    collectAnnotations(context->annotation(), funcdecl);
 
     auto func = visitFunction(context->function());
     funcdecl->func = as<Function>(func);
@@ -1627,20 +1618,7 @@ std::any ASTGenerator::visitParameter(RoxalParser::ParameterContext *context)
         param->variadic = true;
     }
 
-   if (context->annotation().size() > 0) {
-
-        for(size_t i=0; i< context->annotation().size();i++) {
-
-            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(context->annotation().at(i)));
-
-            ptr<Annotation> annotation = make_ptr<Annotation>();
-            annotation->name = annotInfo->accessed;
-            annotation->args = *annotInfo->args;
-            setSourceInfo(annotation, context->annotation().at(i));
-
-            param->annotations.push_back(annotation);
-        }
-    }
+    collectAnnotations(context->annotation(), param);
 
     if (context->const_qualifier()) {
         if (context->const_qualifier()->CONST())
@@ -1714,7 +1692,7 @@ std::any ASTGenerator::visitObject_type_decl(RoxalParser::Object_type_declContex
     visitStart();
 
         ptr<TypeDecl> typeDecl = make_ptr<TypeDecl>();
-        setSourceInfo(typeDecl, context);
+        setSourceInfo(typeDecl, context, context->annotation());
 
         bool isActor = (context->ACTOR() != nullptr);
         bool isInterface = (context->INTERFACE() != nullptr);
@@ -1725,14 +1703,7 @@ std::any ASTGenerator::visitObject_type_decl(RoxalParser::Object_type_declContex
         else
             typeDecl->kind = TypeDecl::Object;
 
-        for (auto* annotCtx : context->annotation()) {
-            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(annotCtx));
-            ptr<Annotation> annotation = make_ptr<Annotation>();
-            annotation->name = annotInfo->accessed;
-            annotation->args = *annotInfo->args;
-            setSourceInfo(annotation, annotCtx);
-            typeDecl->annotations.push_back(annotation);
-        }
+        collectAnnotations(context->annotation(), typeDecl);
 
         typeDecl->name = identifierFromTerminal(context->IDENTIFIER());
 
@@ -1800,6 +1771,13 @@ std::any ASTGenerator::visitObject_type_decl(RoxalParser::Object_type_declContex
         for (auto* nestedCtx : context->nested_type_decl()) {
             auto nested = as<TypeDecl>(visitType_decl(nestedCtx->type_decl()));
             nested->access = nestedCtx->PRIVATE() ? Access::Private : Access::Public;
+            if (!nestedCtx->annotation().empty()) {
+                // the ones above 'private' come first in source order
+                auto inner = std::move(nested->annotations);
+                nested->annotations.clear();
+                collectAnnotations(nestedCtx->annotation(), nested);
+                nested->annotations.insert(nested->annotations.end(), inner.begin(), inner.end());
+            }
             typeDecl->nestedTypes.push_back(nested);
         }
 
@@ -1814,17 +1792,10 @@ std::any ASTGenerator::visitEnum_type_decl(RoxalParser::Enum_type_declContext *c
     visitStart();
 
         ptr<TypeDecl> typeDecl = make_ptr<TypeDecl>();
-        setSourceInfo(typeDecl, context);
+        setSourceInfo(typeDecl, context, context->annotation());
         typeDecl->kind = TypeDecl::Enumeration;
 
-        for (auto* annotCtx : context->annotation()) {
-            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(annotCtx));
-            ptr<Annotation> annotation = make_ptr<Annotation>();
-            annotation->name = annotInfo->accessed;
-            annotation->args = *annotInfo->args;
-            setSourceInfo(annotation, annotCtx);
-            typeDecl->annotations.push_back(annotation);
-        }
+        collectAnnotations(context->annotation(), typeDecl);
 
         typeDecl->name = identifierFromTerminal(context->IDENTIFIER());
 
@@ -1862,17 +1833,10 @@ std::any ASTGenerator::visitEvent_type_decl(RoxalParser::Event_type_declContext 
     visitStart();
 
         ptr<TypeDecl> typeDecl = make_ptr<TypeDecl>();
-        setSourceInfo(typeDecl, context);
+        setSourceInfo(typeDecl, context, context->annotation());
         typeDecl->kind = TypeDecl::Event;
 
-        for (auto* annotCtx : context->annotation()) {
-            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(annotCtx));
-            ptr<Annotation> annotation = make_ptr<Annotation>();
-            annotation->name = annotInfo->accessed;
-            annotation->args = *annotInfo->args;
-            setSourceInfo(annotation, annotCtx);
-            typeDecl->annotations.push_back(annotation);
-        }
+        collectAnnotations(context->annotation(), typeDecl);
 
         typeDecl->name = identifierFromTerminal(context->IDENTIFIER());
 
@@ -1961,20 +1925,7 @@ std::any ASTGenerator::visitMethod(RoxalParser::MethodContext *context)
 
 
     // TODO: should visitAnnotation before visitFunction?
-    if (context->annotation().size() > 0) {
-
-        for(size_t i=0; i< context->annotation().size();i++) {
-
-            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(context->annotation().at(i)));
-
-            ptr<Annotation> annotation = make_ptr<Annotation>();
-            annotation->name = annotInfo->accessed;
-            annotation->args = *annotInfo->args;
-            setSourceInfo(annotation, context->annotation().at(i));
-
-            function->annotations.push_back(annotation);
-        }
-    }
+    collectAnnotations(context->annotation(), function);
 
     return typeValue(function);
     visitEnd();
@@ -1992,21 +1943,14 @@ std::any ASTGenerator::visitMember_var(RoxalParser::Member_varContext *context)
     if (hasAccessors) {
         // Create PropertyAccessor instead of VarDecl
         ptr<PropertyAccessor> propAccessor = make_ptr<PropertyAccessor>();
-        setSourceInfo(propAccessor, context);
+        setSourceInfo(propAccessor, context, context->annotation());
 
         propAccessor->access = (context->PRIVATE() != nullptr) ? Access::Private : Access::Public;
         propAccessor->isConst = (context->CONST() != nullptr);
         propAccessor->name = identifierFromTerminal(context->IDENTIFIER());
 
         // Get annotations
-        for (auto* annotCtx : context->annotation()) {
-            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(annotCtx));
-            ptr<Annotation> annotation = make_ptr<Annotation>();
-            annotation->name = annotInfo->accessed;
-            annotation->args = *annotInfo->args;
-            setSourceInfo(annotation, annotCtx);
-            propAccessor->annotations.push_back(annotation);
-        }
+        collectAnnotations(context->annotation(), propAccessor);
 
         // Get const qualifier on type (parsed but not yet used for PropertyAccessor)
         // if (context->const_qualifier()) { ... }
@@ -2054,20 +1998,13 @@ std::any ASTGenerator::visitMember_var(RoxalParser::Member_varContext *context)
     else {
         // Regular var declaration without accessors
         ptr<VarDecl> varDecl = make_ptr<VarDecl>();
-        setSourceInfo(varDecl, context);
+        setSourceInfo(varDecl, context, context->annotation());
 
         varDecl->access = (context->PRIVATE()!=nullptr) ? Access::Private : Access::Public;
         varDecl->isConst = (context->CONST() != nullptr);
         varDecl->name = identifierFromTerminal(context->IDENTIFIER());
 
-        for (auto* annotCtx : context->annotation()) {
-            auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(annotCtx));
-            ptr<Annotation> annotation = make_ptr<Annotation>();
-            annotation->name = annotInfo->accessed;
-            annotation->args = *annotInfo->args;
-            setSourceInfo(annotation, annotCtx);
-            varDecl->annotations.push_back(annotation);
-        }
+        collectAnnotations(context->annotation(), varDecl);
 
         if (context->const_qualifier()) {
             if (context->const_qualifier()->CONST())
@@ -2169,6 +2106,39 @@ std::any ASTGenerator::visitProperty_setter(RoxalParser::Property_setterContext 
 
     return result;
     visitEnd();
+}
+
+
+// Build the Annotation nodes for an annotation* run and append them to
+// target->annotations (after any already there, e.g. a synthesized @doc).
+void ASTGenerator::collectAnnotations(const std::vector<RoxalParser::AnnotationContext*>& annotCtxs,
+                                      const ptr<AST>& target, bool requireAdjacent)
+{
+    for (auto* annotCtx : annotCtxs) {
+        auto annotInfo = anyas<ptr<ArgsOrAccessorInfo>>(visitAnnotation(annotCtx));
+        ptr<Annotation> annotation = make_ptr<Annotation>();
+        annotation->name = annotInfo->accessed;
+        annotation->args = *annotInfo->args;
+        setSourceInfo(annotation, annotCtx);
+        target->annotations.push_back(annotation);
+
+        // An annotation must sit on the line directly above what it annotates
+        // (or above the next annotation of the run).  The indentation lexer
+        // drops blank lines and comments are off-channel, so the grammar cannot
+        // see a gap -- measure it as leadingAnnotationIsFileLevel() does: from
+        // the annotation's last content token (its rule ends in NEWLINE) to the
+        // next real token.
+        if (requireAdjacent) {
+            antlr4::Token* last = prevDefaultToken(annotCtx->stop);
+            antlr4::Token* next = nextDefaultToken(annotCtx->stop);
+            if (last && next && next->getType() != antlr4::Token::EOF
+                && next->getLine() > last->getLine() + 1)
+                reportError(annotCtx->start,
+                            "annotation @" + toUTF8StdString(annotation->name)
+                            + " must be on the line directly before the declaration or statement"
+                              " it applies to (no blank or comment lines in between)");
+        }
+    }
 }
 
 
