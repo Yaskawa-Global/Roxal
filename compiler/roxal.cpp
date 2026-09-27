@@ -382,6 +382,9 @@ static int repl()
 
     std::stringstream stream;
     VM& vm { VM::instance() };
+    // Every line would be refused; the reason was reported as it happened.
+    if (vm.initFailed())
+        return 1;
 
     std::string buffer;
     std::vector<int> indents {0};

@@ -209,15 +209,17 @@ int main()
            "fresh program executes actor work");
     expect(sink.take() == "42\n", "actor result is delivered before completion");
 
-    // Fresh programs do not share their module declarations.
+    // Fresh programs do not share their module declarations: in the second
+    // the name is undefined, and reading it fails the run.  (Reading an
+    // undeclared module-level name is a runtime error, @strict or not.)
     expect(runProgram(vm, "var phase_a_fresh = 7\n", "phase_a_fresh_one") ==
                ExecutionStatus::OK,
            "first fresh program completes");
-    expect(runProgram(vm, "@strict\nprint(phase_a_fresh)\n",
-                      "phase_a_fresh_two") ==
-               ExecutionStatus::CompileError,
+    expect(runProgram(vm, "print(phase_a_fresh)\n", "phase_a_fresh_two") ==
+               ExecutionStatus::RuntimeError,
            "second fresh program cannot see the first program's declarations");
-    sink.take(); // discard the expected compile diagnostic
+    expect(sink.take().empty(),
+           "the second fresh program prints nothing of the first's");
 
     // In contrast, session fragments share compiler, module and session
     // Thread state, and they are not complete script launches for hooks.
@@ -238,7 +240,10 @@ int main()
                hooks->completes.size() == completesBeforeFragments,
            "fragment evaluation does not fire full-program lifecycle hooks");
 
-    expect(hooks->starts.size() == 5 && hooks->completes.size() == 5,
+    // Six launches above -- the prelude program, body2, the import program,
+    // the actor program and both fresh programs.  A launch that fails at
+    // runtime still started, so it fires its pair too.
+    expect(hooks->starts.size() == 6 && hooks->completes.size() == 6,
            "every full-program launch fires one start/complete hook pair");
     expect(hooks->starts == hooks->completes,
            "start and complete hooks retain executing-thread affinity");
@@ -366,6 +371,48 @@ int main()
         expect(gc.currentEpoch() != epochBefore,
                "gc() did not return until the deferred collection had run");
         sink.take();
+    }
+
+    // ---- A failed launch does not fail the next one ------------------------
+    // A driver slice binds its thread to the run's own domain.  A synchronous
+    // launch that followed a driven one on the same thread once cleared THAT
+    // domain's error flag instead of the default domain's, and so failed
+    // before its first statement whenever an earlier synchronous run had
+    // failed.
+    {
+        expect(runProgram(vm, "print(phase_k_undeclared)\n", "phase_k_fails") ==
+                   ExecutionStatus::RuntimeError,
+               "a synchronous program that reads an undeclared name fails");
+        {
+            std::stringstream source("print('driven')\n");
+            ProgramOptions options;
+            options.sourceName = "phase_k_driven";
+            PrepareProgramResult prepared = vm.prepareProgram(source, std::move(options));
+            expect(prepared.status == PrepareStatus::Ready,
+                   "a program prepares after a failed synchronous run");
+            AttachDriverResult driver = vm.attachEmbeddedRuntime();
+            expect(driver.status == AttachStatus::Attached,
+                   "a runtime attaches after a failed synchronous run");
+            SubmitResult submitted = driver.runtime->submit(std::move(prepared.program));
+            expect(submitted.status == SubmitStatus::Accepted,
+                   "the driven program is accepted");
+            SliceState last = SliceState::Idle;
+            const auto giveUp = std::chrono::steady_clock::now()
+                                + std::chrono::seconds(30);
+            while (std::chrono::steady_clock::now() < giveUp) {
+                last = driver.runtime->driveFor(TimeDuration::milliSecs(5)).state;
+                if (last == SliceState::ExecutionEnded ||
+                    last == SliceState::ExecutionFailed)
+                    break;
+            }
+            expect(last == SliceState::ExecutionEnded,
+                   "a driven run after a failed synchronous one completes");
+            vm.shutdownEmbeddedRuntime();
+        }
+        expect(runProgram(vm, "print('next')\n", "phase_k_next") == ExecutionStatus::OK,
+               "the next synchronous launch is not failed by an earlier run");
+        expect(sink.take() == "driven\nnext\n",
+               "both later programs ran");
     }
 
     // ---- Collection is deferred, not blocked, during preparation ---------
@@ -876,10 +923,11 @@ int main()
 
         // The exit criterion: a fresh program does NOT inherit session
         // lifetime, however much the session has accumulated.
-        expect(runProgram(vm, "@strict\nprint(phase_f_x)\n", "phase_f_isolation") ==
-                   ExecutionStatus::CompileError,
+        expect(runProgram(vm, "print(phase_f_x)\n", "phase_f_isolation") ==
+                   ExecutionStatus::RuntimeError,
                "a fresh program cannot see the session's declarations");
-        sink.take();   // discard the expected compile diagnostic
+        expect(sink.take().empty(),
+               "a fresh program prints nothing of the session's");
 
         // Preparation refuses rather than compiling against state a live
         // fragment is still mutating.

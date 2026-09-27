@@ -1,0 +1,5 @@
+# Run with tests/init_failure on the module path, whose sys.rox shadows the
+# builtin one and lacks sys.Time.  The VM must report that it could not set
+# itself up and exit -- not hang (it once waited forever on its own
+# singleton's initialization guard) -- and must not run this script.
+print('this line must not run')

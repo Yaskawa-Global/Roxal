@@ -58,6 +58,7 @@ enum class PrepareFragmentStatus {
     CompileError,
     SessionBusy,       // a fragment is still live; its state cannot be touched
     ShuttingDown,
+    InitFailed,        // the VM failed to set itself up (VM::initError())
 };
 
 struct PrepareFragmentResult {

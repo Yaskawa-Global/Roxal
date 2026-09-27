@@ -31,6 +31,10 @@ compares their output with the corresponding .out file.  It will output each tes
 When creating new language features, create some tests to add to the tests/ and `runtests.py` script list.
 If a test is expected to generate a runtime error, there is a mechanism to provide an .err file containing a regex to match the expected stderr output.
 Some tests also use the --ast option to compare the AST dump with the .out file.
+`runtests.py` also runs the C++ test programs registered with CMake `add_test` (listed as `ctest_<name>`, e.g. `-t 'ctest_*'`).
+A test of the host embedding API (constructing the VM, driving runs, shutting down) belongs there, as its own executable, not in a `_runtests()` suite.
+`runtests.py` also runs the C++ test programs registered with CMake `add_test` (listed as `ctest_<name>`, e.g. `-t 'ctest_*'`).
+A test of the host embedding API (constructing the VM, driving runs, shutting down) belongs there, as its own executable, not in a `_runtests()` suite.
 
 To see the compiled bytecodes, use the --dis option (with --recompile).
 

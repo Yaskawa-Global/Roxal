@@ -1393,7 +1393,20 @@ Builtin modules are registered in one of two ways (`VM::VM`):
 - **Eagerly** via `registerBuiltinModule(make_ptr<ModuleX>())`. Their `.rox`
   is executed during VM construction (`executeBuiltinModuleScript`) and
   `registerBuiltins(vm)` runs via `defineBuiltinFunctions()` — both happen
-  before user scripts compile.
+  before user scripts compile. A failure in either (the script missing,
+  failing to compile or raising, or a registration throwing) is latched in
+  `VM::initError()`, and every execution entry point then refuses with
+  `InitFailed`. Construction carries on rather than throwing, because a
+  function-local static whose constructor throws is constructed again on the
+  next `instance()` call, over a collector and threads already half set up.
+  Code that can run inside the constructor must not call `VM::instance()`,
+  including indirectly through static helpers such as
+  `currentOrDefaultDomain()`: re-entering a function-local static's
+  initialization waits on its own guard forever. Use the member forms
+  (`domainForThisThread()`). `instance()` aborts with a message if it is
+  re-entered from the constructing thread. A relative script path resolves
+  against the module search path before the working directory, so a stray
+  `sys.rox` where the process starts cannot replace the builtin one.
 
 - **Lazily** via `lazyModuleRegistry.registerFactory(name, factory)`. The
   module instance, its `.rox` execution, and `registerBuiltins` all fire on
@@ -1676,7 +1689,25 @@ dotted name, so every importer of anything under `pkg` shares it, as in
 Python's `sys.modules`. A folder module (`pkg/init.rox`) is itself the node for
 `pkg`, whichever of `import pkg` and `import pkg.sub` came first (the later
 one loads or compiles into the node), and `import pkg.sub` imports `pkg` first
-when its folder is a module, parents before children.
+when its folder is a module, parents before children. Each name is bound to
+what the import resolves to *now*, replacing an earlier binding, so a
+re-import after a forget (below) reaches the new revision through a fragment
+session's module and through a shared node alike.
+
+**Forgetting, and why modules are never freed.** The registry keeps the first
+revision of every module for the VM's lifetime. `VM::forgetUserModules`
+(host API; see `embedding.md`) drops selected entries under
+`preparationMutex_`, so the next import loads afresh. A module is *stale* when
+its own source or any entry in `linkInfo.deps` no longer matches its stamp
+(the same test a `.roc` header gets). Because `deps` carries transitive
+entries, one pass over the registry finds every importer of a selected
+module. An unselected importer refuses the whole forget: left behind, it would
+run the old revision beside the new one. Package nodes have no source and are
+never stale; they stay registered and are rebound instead. A forgotten
+revision is not freed. `ObjModuleType::allModules` pins every module ever
+created, and a function holds its module only through a weak `moduleType`
+reference, so unpinning a module that live closures still use would leave them
+dangling. Freeing old revisions needs a strong function-to-module link first.
 
 **Bodies run once per VM.** Every import statement compiles to
 `ImportModule <module>` + `Pop`. At runtime the op does a compare-and-swap on
@@ -1705,10 +1736,11 @@ Slack/Discord/Notion/IPython-magic conventions):
 - `/run <file>` — compile and execute a Roxal script file against the REPL
   module. The script body re-runs on every `/run`; its imports are subject
   to the user-module cache below.
-- `/reload` — drop the VM-level user-module registry and the REPL
-  `RoxalCompiler`'s `importedModules` map. The next `import` (or the next
-  `/run` that does an import) recompiles dependency modules from source —
-  picks up `.rox` file edits made between runs.
+- `/reload` — `VM::clearUserModuleRegistry()`, i.e. `forgetUserModules`
+  of every entry, which also clears the session `RoxalCompiler`'s
+  `importedModules` map. The next `import` (or the next `/run` that does an
+  import) loads dependency modules afresh, picking up `.rox` edits made
+  between runs.
 - `/quit` — exit the REPL. Ctrl-D also works (linenoise EOF).
 
 Because the user-module registry is process-lifetime, an interactive REPL
@@ -1717,10 +1749,11 @@ session caches every imported dependency after first use — a subsequent
 but **not** edits to its dependencies' `.rox` files unless `/reload` is
 issued first.
 
-To make re-imports actually rebind in the REPL, `OpCode::ImportModuleVars`
-uses `overwrite=true` *only* when the target module is the REPL module
-(`replModuleValue`). For non-REPL modules the historical "first import
-wins" behaviour is preserved.
+Re-imports rebind in the REPL: `import m` and `import pkg.m` because
+`bindImport` always binds to the current resolution, and `import m.*`
+because `OpCode::ImportModuleVars` uses `overwrite=true` when the target
+module is the REPL module (`replModuleValue`). For `import m.*` into
+non-REPL modules the historical "first import wins" behaviour is preserved.
 
 **Known limitation — Python `reload` semantics, not IPython
 `%autoreload 2`:** existing user-created instances retain their *old*

@@ -67,6 +67,7 @@ enum class PrepareStatus {
     Ready,
     CompileError,
     ShuttingDown,
+    InitFailed,        // the VM failed to set itself up (VM::initError())
 };
 
 struct CompileDiagnostics {

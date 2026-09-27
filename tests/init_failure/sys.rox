@@ -1,0 +1,4 @@
+# A stand-in for the builtin sys module script, found first on the search
+# path by init_failure_sys_stub: it defines none of the types sys's native
+# half expects, so the VM cannot finish setting itself up.
+var placeholder = 1

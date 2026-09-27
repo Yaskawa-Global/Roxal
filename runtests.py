@@ -8,6 +8,7 @@ import subprocess
 import argparse
 import fnmatch
 import glob
+import json
 import re
 import time
 import tempfile
@@ -15,6 +16,7 @@ from typing import Set
 
 # Maximum time in seconds to allow each test to run
 TEST_TIMEOUT_SECS = 7
+CTEST_TIMEOUT_SECS = 120   # a whole C++ test program, not one script
 GC_STRESS_TIMEOUT_SECS = 20
 NN_LFS_TIMEOUT_SECS = 60
 DOOM_TIMEOUT_SECS = 60
@@ -52,6 +54,7 @@ parser.add_argument('--nogc', action='store_true', help='Disable Roxal garbage c
 parser.add_argument('--recompile', action='store_true', help='Delete cached .roc files before running tests')
 parser.add_argument('--build', action='store_true', help='Invoke cmake --build before running the tests')
 parser.add_argument('--test', '-t', type=str, metavar='PATTERN', help='Only run tests matching PATTERN (shell-style wildcards: * ? [seq])')
+parser.add_argument('--no-ctest', action='store_true', help='Skip the C++ test programs (ctest_*); ctest itself runs them')
 args = parser.parse_args()
 
 
@@ -307,7 +310,7 @@ tests = [
     'except_type_mismatch', 'except_type_mismatch_err',
     'zero_division', 'zero_division_uncaught_err', 'zero_division_actor', 'actor_proc_uncaught', 'actor_func_exception_reuse',
     'stacktrace', 'exception_stacktrace', 'object_user_ref_cycle', 'gc_list_cycle', 'gc_liveness', 'actor_registry_stress',
-    'property_count', 'property_accessor', 'property_accessor_oneliner', 'dict_property_getters', 'cmdline_execute', 'repl_run', 'invalid_option', 'fileio_basic', 'fileio_binary',
+    'property_count', 'property_accessor', 'property_accessor_oneliner', 'dict_property_getters', 'cmdline_execute', 'repl_run', 'invalid_option', 'init_failure_sys_stub', 'fileio_basic', 'fileio_binary',
     'fileio_read_binary', 'fileio_write_binary', 'fileio_actor_write', 'fileio_delete', 'fileio_extra', 'fileio_packed',
     'fileio_sync', 'fileio_async_param', 'fileio_list_dir',
     'string_concat_roundtrip', 'actor_concat_stress',
@@ -509,6 +512,40 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tes
 import run_cache_tests as module_cache_tests
 modcache_tests = ['modcache_' + n for n in module_cache_tests.scenario_names()]
 tests += modcache_tests
+
+
+def discover_ctest_executables(build_dir: str) -> dict:
+    """The C++ test programs CMake registers with add_test, as
+    {'ctest_<name>': (command, working_directory)}.  The entry that runs this
+    script is left out, as is any program this build did not produce."""
+    try:
+        proc = subprocess.run(['ctest', '--test-dir', build_dir, '--show-only=json-v1'],
+                              capture_output=True, text=True, timeout=60)
+        listing = json.loads(proc.stdout) if proc.returncode == 0 else {}
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return {}
+    found = {}
+    for entry in listing.get('tests', []):
+        command = entry.get('command') or []
+        if not command or any(os.path.basename(part) == 'runtests.py' for part in command):
+            continue
+        if not (os.path.isfile(command[0]) and os.access(command[0], os.X_OK)):
+            continue
+        workdir = next((prop.get('value') for prop in entry.get('properties', [])
+                        if prop.get('name') == 'WORKING_DIRECTORY'), build_dir)
+        found['ctest_' + entry['name']] = (command, workdir)
+    return found
+
+
+# C++ test programs, listed as ctest_<name>.  Each is a host that owns its
+# process and the VM singleton -- constructing it, attaching drivers, shutting
+# it down -- which a _runtests() suite, running inside a roxal invocation,
+# cannot do.  Discovered from CTest so a new add_test target runs here without
+# being listed twice.
+ctest_executables = {} if args.no_ctest else discover_ctest_executables(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 os.environ.get('ROXAL_BUILD_DIR', 'build')))
+tests += sorted(ctest_executables)
 tests += qt_tests
 tests += compute_server_tests
 
@@ -969,6 +1006,28 @@ try:
                 failed_count += 1
                 unexpected_failures.append(test)
             continue
+        if test in ctest_executables:
+            command, workdir = ctest_executables[test]
+            try:
+                proc = subprocess.run(command, cwd=workdir, capture_output=True,
+                                      timeout=CTEST_TIMEOUT_SECS, env=env_base)
+                passed = proc.returncode == 0
+                detail = (f"-- return code {proc.returncode} --\n"
+                          + proc.stdout.decode(errors='replace')
+                          + proc.stderr.decode(errors='replace'))
+            except subprocess.TimeoutExpired:
+                passed = False
+                detail = f"-- timeout after {CTEST_TIMEOUT_SECS} s --"
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            if passed:
+                print(f"pass ({duration_ms:.0f} ms)", flush=True)
+                passed_count += 1
+            else:
+                print("FAIL:", flush=True)
+                print(detail)
+                failed_count += 1
+                unexpected_failures.append(test)
+            continue
         if test.startswith('modcache_'):
             passed, detail = module_cache_tests.run(test[len('modcache_'):], roxal, env_base,
                                                     TEST_TIMEOUT_SECS * 3)
@@ -1089,6 +1148,9 @@ try:
             input_data = f"/run {rel_script}\n/quit\n".encode()
         if test == 'invalid_option':
             cmd = [roxal, '--bogus']
+        if test == 'init_failure_sys_stub':
+            # its own sys.rox, first on the search path
+            cmd = [cmd[0], '-p', os.path.join(project_root, 'tests', 'init_failure'), *cmd[1:]]
         if test == 'gc_construct_stress':
             # degenerate 1KB threshold: GC requested from the first allocations,
             # including during VM construction (see the .rox header comment)

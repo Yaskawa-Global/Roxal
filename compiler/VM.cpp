@@ -207,10 +207,9 @@ namespace {
 // singleton exists and copied into the instance once it is constructed.
 std::atomic<size_t> configuredStackLimit{VM::DefaultMaxStack};
 std::atomic<size_t> configuredCallFrameLimit{VM::DefaultMaxCallFrames};
-// Tracks whether VM::instance() has already materialized the singleton so
-// later configureStackLimits() calls can update it in-place.
-std::atomic<bool> vmConstructed{false};
 std::atomic<VM::CacheMode> configuredCacheMode{VM::CacheMode::Normal};
+// True on the thread running the VM constructor, for as long as it runs.
+thread_local bool constructingVMOnThisThread = false;
 std::mutex configuredModulePathsMutex;
 std::vector<std::string> configuredModulePaths;
 
@@ -712,7 +711,7 @@ void VM::configureStackLimits(size_t stackSize, size_t callFrameLimit)
     configuredStackLimit.store(stackSize, std::memory_order_relaxed);
     configuredCallFrameLimit.store(callFrameLimit, std::memory_order_relaxed);
 
-    if (vmConstructed.load(std::memory_order_acquire)) {
+    if (vmConstructed_.load(std::memory_order_acquire)) {
         VM::instance().setStackLimits(stackSize, callFrameLimit);
     }
 }
@@ -722,7 +721,7 @@ void VM::configureCacheMode(CacheMode mode)
 {
     configuredCacheMode.store(mode, std::memory_order_relaxed);
 
-    if (vmConstructed.load(std::memory_order_acquire)) {
+    if (vmConstructed_.load(std::memory_order_acquire)) {
         VM::instance().setCacheMode(mode);
     }
 }
@@ -732,7 +731,7 @@ void VM::configureModulePaths(const std::vector<std::string>& modulePaths)
     std::lock_guard<std::mutex> lock(configuredModulePathsMutex);
     appendUnique(configuredModulePaths, modulePaths);
 
-    if (vmConstructed.load(std::memory_order_acquire)) {
+    if (vmConstructed_.load(std::memory_order_acquire)) {
         VM::instance().appendModulePaths(modulePaths);
     }
 }
@@ -1327,6 +1326,13 @@ void roxal::scheduleEventHandlers(Value eventWeak, ObjEventType* ev, Value event
 VM::VM()
     : cacheModeSetting(CacheMode::Normal)
 {
+    // See instance(): a setup step that reaches back for the singleton
+    // must fail loudly rather than wait on its initialization guard.
+    struct ConstructingMark {
+        ConstructingMark()  { constructingVMOnThisThread = true; }
+        ~ConstructingMark() { constructingVMOnThisThread = false; }
+    } constructingMark;
+
     stackLimit = configuredStackLimit.load(std::memory_order_relaxed);
     callFrameLimit = configuredCallFrameLimit.load(std::memory_order_relaxed);
     cacheModeSetting = configuredCacheMode.load(std::memory_order_relaxed);
@@ -1428,7 +1434,8 @@ VM::VM()
     // Other modules' .rox files are executed during lazy loading
     ptr<Thread> initThread = Thread::create(defaultDomain_, ThreadKind::Init);
     thread = initThread;
-    executeBuiltinModuleScript("sys.rox", getBuiltinModuleType(toUnicodeString("sys")));
+    if (!executeBuiltinModuleScript("sys.rox", getBuiltinModuleType(toUnicodeString("sys"))))
+        noteInitFailure("the sys module script failed to load");
 
     // Export pure Roxal functions from sys module to globals
     // (sys predates the module system and registers symbols directly as globals)
@@ -1518,7 +1525,8 @@ VM::VM()
         }
     }
 
-    executeBuiltinModuleScript("math.rox", getBuiltinModuleType(toUnicodeString("math")));
+    if (!executeBuiltinModuleScript("math.rox", getBuiltinModuleType(toUnicodeString("math"))))
+        noteInitFailure("the math module script failed to load");
     thread = nullptr;
 
     // Reset thread ids so the first real VM thread starts at 2
@@ -1623,7 +1631,13 @@ VM::VM()
         combinatorRelayFunction = fn;
     }
 
-    vmConstructed.store(true, std::memory_order_release);
+    // Anything above that failed through runtimeError() (a builtin
+    // registration that threw, say) left the error pending; latch it.
+    if (hasRuntimeError())
+        noteInitFailure("VM initialization failed");
+    clearRuntimeErrorFlag();
+
+    vmConstructed_.store(true, std::memory_order_release);
 
     // Dedicated GC collector thread (ROXAL_GC_DEDICATED_THREAD builds; no-op
     // otherwise).  Spawned only after vmConstructed: the collector frees
@@ -1664,13 +1678,35 @@ VM::~VM()
 
 void VM::shutdownIfConstructed()
 {
-    if (vmConstructed.load(std::memory_order_acquire))
+    if (vmConstructed_.load(std::memory_order_acquire))
         instance().shutdown();
 }
 
 bool VM::constructed()
 {
-    return vmConstructed.load(std::memory_order_acquire);
+    return vmConstructed_.load(std::memory_order_acquire);
+}
+
+void VM::failIfReenteredDuringConstruction()
+{
+    if (!constructingVMOnThisThread)
+        return;
+    // Not through the output sink: routing reaches for the VM too.
+    std::fputs("fatal: VM::instance() was called while the VM itself was being "
+               "constructed (a setup step reached back for the singleton it is "
+               "part of); aborting rather than deadlocking\n", stderr);
+    std::fflush(stderr);
+    std::abort();
+}
+
+void VM::noteInitFailure(const std::string& fallback)
+{
+    if (!initError_.empty())
+        return;
+    std::string reason;
+    if (hasRuntimeError())
+        reason = takeRuntimeErrorMessage();
+    initError_ = reason.empty() ? fallback : std::move(reason);
 }
 
 void VM::shutdown()
@@ -2013,12 +2049,16 @@ ExecutionStatus VM::stageProgramSync(std::istream& source, ProgramOptions option
     if (embeddedRuntimeAttached_.load(std::memory_order_acquire))
         return ExecutionStatus::Busy;
 
-    clearRuntimeErrorFlag();
+    // The launch runs in the default domain, so that is the flag to start
+    // clean -- not the domain this thread happens to have bound.
+    clearDefaultDomainRuntimeError();
     PrepareProgramResult prepared = prepareProgram(source, std::move(options));
     // A shut-down VM compiled nothing, so it is not a CompileError: Busy is
     // the status that says no work was done and the VM is not yours to run.
     if (prepared.status == PrepareStatus::ShuttingDown)
         return ExecutionStatus::Busy;
+    if (prepared.status == PrepareStatus::InitFailed)
+        return ExecutionStatus::InitFailed;
     if (prepared.status != PrepareStatus::Ready)
         return ExecutionStatus::CompileError;
     return activatePrepared(std::move(prepared.program));
@@ -2099,6 +2139,12 @@ ExecutionStatus VM::executeStagedSync()
 
     thread.reset();
     freeObjects();
+
+    // Nothing of this run may reach the next launch: the failure is in
+    // `result` (and its text in the domain's error message), and a flag left
+    // set would fail whichever launch next runs in the default domain before
+    // its first statement.  finalizeRunRecord does the same for a driven run.
+    clearDefaultDomainRuntimeError();
 
     return result;
 }
@@ -2181,6 +2227,13 @@ PrepareProgramResult VM::prepareProgram(std::istream& source,
     // can only discover is unusable at submit().
     if (shutdownComplete_.load(std::memory_order_acquire)) {
         result.status = PrepareStatus::ShuttingDown;
+        return result;
+    }
+    // A VM that failed to set itself up compiles nothing: a program built
+    // on a half-registered sys module would fail later and more obscurely.
+    if (initFailed()) {
+        result.status = PrepareStatus::InitFailed;
+        result.diagnostics.message = initError_;
         return result;
     }
 
@@ -2736,7 +2789,7 @@ void VM::restartDataflowEngineIfStopped()
 
 ptr<Thread> VM::spawnActorThread(const Value& actorInstance, bool debugExcluded)
 {
-    ptr<Thread> t = Thread::create(currentOrDefaultDomain(), ThreadKind::Actor);
+    ptr<Thread> t = Thread::create(domainForThisThread(), ThreadKind::Actor);
     if (debugExcluded)
         t->debugExcluded.store(true, std::memory_order_release);
     threads.store(t->id(), t);
@@ -4119,7 +4172,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                         inst = Value::actorInstanceVal(callee);
 
                         // spawn Thread to handle actor method calls
-                        ptr<Thread> newThread = Thread::create(currentOrDefaultDomain(), ThreadKind::Actor);
+                        ptr<Thread> newThread = Thread::create(domainForThisThread(), ThreadKind::Actor);
                         threads.store(newThread->id(), newThread);
                         newThread->act(inst);
 
@@ -13003,7 +13056,7 @@ VM::SourceLocation VM::currentSourceLocation() const
 
 std::string VM::takeRuntimeErrorMessage()
 {
-    ExecutionDomain& d = *currentOrDefaultDomain();
+    ExecutionDomain& d = *domainForThisThread();
     std::lock_guard<std::mutex> lock(d.errorMutex);
     return std::move(d.errorMessage);
 }
@@ -13043,7 +13096,7 @@ void VM::runtimeError(const std::string& format, ...)
         // Retained on the raising thread's DOMAIN for the run's handle: the
         // flag says THAT it failed, this says why.  Taken by whoever
         // publishes the failure.
-        ExecutionDomain& d = *currentOrDefaultDomain();
+        ExecutionDomain& d = *domainForThisThread();
         std::lock_guard<std::mutex> lock(d.errorMutex);
         d.errorMessage = message;
     }
@@ -15338,7 +15391,7 @@ Value VM::getBuiltinModuleType(const ustring& name)
     return Value::nilVal();
 }
 
-void VM::executeBuiltinModuleScript(const std::string& path, Value moduleType)
+bool VM::executeBuiltinModuleScript(const std::string& path, Value moduleType)
 {
     // Cover compile + module-script invoke (see ScopedGCMutatorCover); runs
     // on host threads outside execute() (VM construction, robot bootstrap).
@@ -15364,12 +15417,15 @@ void VM::executeBuiltinModuleScript(const std::string& path, Value moduleType)
         candidates.push_back(candidate);
     };
 
+    // The search path before the working directory: a bare "sys.rox" must
+    // never pick up whatever file of that name sits where the process
+    // happened to start.
     if (requested.is_absolute()) {
         addCandidate(requested);
     } else {
-        addCandidate(requested);
         for (const auto& root : searchRoots)
             addCandidate(std::filesystem::path(root) / requested);
+        addCandidate(requested);
     }
 
     for (const auto& candidate : candidates) {
@@ -15394,7 +15450,7 @@ void VM::executeBuiltinModuleScript(const std::string& path, Value moduleType)
             oss << ")";
         }
         runtimeError(oss.str());
-        return;
+        return false;
     }
 
     std::filesystem::path cacheSourcePath;
@@ -15428,7 +15484,7 @@ void VM::executeBuiltinModuleScript(const std::string& path, Value moduleType)
     }
 
     if (fn.isNil())
-        return;
+        return false;   // the compiler has reported why
 
     Value closure { Value::closureVal(fn) };
     ptr<Thread> t = Thread::create(defaultDomain_, ThreadKind::Init);
@@ -15442,9 +15498,10 @@ void VM::executeBuiltinModuleScript(const std::string& path, Value moduleType)
     threads.store(t->id(), t);
     thread = t;
     resetStack();
-    invokeClosure(asClosure(closure), {});
+    const ExecutionStatus status = invokeClosure(asClosure(closure), {}).first;
     thread = nullptr;
     threads.erase(t->id());
+    return status == ExecutionStatus::OK;
 }
 
 void VM::registerBuiltinModule(ptr<BuiltinModule> module)
@@ -15481,17 +15538,113 @@ void VM::registerUserModule(const ustring& qualifiedName, const Value& moduleTyp
     userModuleRegistry.emplace(qualifiedName, moduleType);
 }
 
-void VM::clearUserModuleRegistry()
+VM::ForgetModulesResult VM::forgetUserModules(
+    const std::function<bool(const UserModuleInfo&)>& select)
 {
+    // No compilation may link against the registry while it changes.
+    std::lock_guard<std::mutex> preparation(preparationMutex_);
+
+    // Entries leave the registry only here (under the preparation lock) and
+    // at shutdown, so its modules outlive this call: plain pointers will do,
+    // with no Values held on a host thread's stack.
+    std::vector<std::pair<ustring, ObjModuleType*>> registered;
     {
         std::lock_guard<std::mutex> guard(userModuleRegistryMutex);
-        userModuleRegistry.clear();
+        registered.reserve(userModuleRegistry.size());
+        for (const auto& [name, module] : userModuleRegistry) {
+            if (isModuleType(module))
+                registered.emplace_back(name, asModuleType(module));
+        }
     }
-    // Also wipe the session compiler's importedModules cache so its
-    // per-instance short-circuit doesn't bypass the now-empty VM registry on
-    // the next compile.
+
+    std::unordered_map<std::string, SourceStamp> stamps;   // one stat per file
+    auto currentStamp = [&](const std::string& path) -> const SourceStamp& {
+        auto it = stamps.find(path);
+        if (it == stamps.end())
+            it = stamps.emplace(path, SourceStamp::of(path)).first;
+        return it->second;
+    };
+    // The test a .roc load applies to its header (see
+    // RoxalCompiler::loadModuleFromCache): every source the module was
+    // compiled against must still be exactly what it was.
+    auto isStale = [&](const ObjModuleType& module) {
+        if (module.kind == ModuleKind::Package)
+            return false;   // a namespace node has no source of its own
+        const std::string own = toUTF8StdString(module.sourcePath);
+        if (!own.empty() && module.linkInfo.stamp.isSet()
+            && currentStamp(own) != module.linkInfo.stamp)
+            return true;
+        for (const auto& dep : module.linkInfo.deps) {
+            if (dep.kind == ModuleKind::Builtin)
+                continue;
+            if (dep.kind == ModuleKind::Package) {
+                // A namespace folder: stale once it gains an init.rox.
+                std::error_code ec;
+                if (std::filesystem::exists(dep.resolvedPath, ec))
+                    return true;
+                continue;
+            }
+            if (currentStamp(dep.resolvedPath) != dep.stamp)
+                return true;
+        }
+        return false;
+    };
+
+    std::unordered_set<ustring> selected;
+    for (const auto& [name, module] : registered) {
+        UserModuleInfo info;
+        info.name = toUTF8StdString(name);
+        if (module->kind != ModuleKind::Package)
+            info.sourcePath = toUTF8StdString(module->sourcePath);
+        info.kind = module->kind;
+        info.stale = isStale(*module);
+        if (select(info))
+            selected.insert(name);
+    }
+
+    ForgetModulesResult result;
+    if (selected.empty())
+        return result;
+
+    // An importer left behind would keep the revision it linked while new
+    // imports got the new one.  Its dependency list includes what it reached
+    // transitively, so one pass finds importers at any depth.
+    for (const auto& [name, module] : registered) {
+        if (selected.count(name))
+            continue;
+        for (const auto& dep : module->linkInfo.deps) {
+            if (dep.kind != ModuleKind::Builtin && selected.count(dep.qualifiedName)) {
+                result.blockedBy.push_back(toUTF8StdString(name));
+                break;
+            }
+        }
+    }
+    if (!result.blockedBy.empty()) {
+        std::sort(result.blockedBy.begin(), result.blockedBy.end());
+        return result;
+    }
+
+    {
+        std::lock_guard<std::mutex> guard(userModuleRegistryMutex);
+        for (const auto& name : selected) {
+            userModuleRegistry.erase(name);
+            result.forgotten.push_back(toUTF8StdString(name));
+        }
+    }
+    std::sort(result.forgotten.begin(), result.forgotten.end());
+
+    // The session compiler keeps its own map of what it has imported, which
+    // would otherwise short-circuit the registry on the next fragment.  The
+    // entries not forgotten are found again through the registry.
     if (replSession_ && replSession_->compiler)
         replSession_->compiler->clearImportedModules();
+    return result;
+}
+
+void VM::clearUserModuleRegistry()
+{
+    // Everything is selected, so nothing can block.
+    forgetUserModules([](const UserModuleInfo&) { return true; });
 }
 
 #ifdef ROXAL_ENABLE_GRPC

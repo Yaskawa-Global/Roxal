@@ -9,6 +9,7 @@
 #include <condition_variable>
 #include <array>
 #include <filesystem>
+#include <functional>
 
 #include "core/atomic.h"
 #include "core/Output.h"
@@ -126,10 +127,25 @@ public:
 
     static VM& instance()
     {
+        // Until the singleton exists, a call from the thread constructing it
+        // (a setup step that reaches for the VM it is part of) would wait
+        // forever on the static's initialization guard.  Fail loudly instead.
+        // Once constructed this is one relaxed load beside the guard check
+        // the function-local static already makes on every call.
+        if (!vmConstructed_.load(std::memory_order_relaxed)) [[unlikely]]
+            failIfReenteredDuringConstruction();
         static VM instance; // Guaranteed to be destroyed.
                             // Instantiated on first use.
         return instance;
     }
+
+    /// Why the VM could not finish setting itself up -- a builtin module
+    /// script that failed to load, a builtin registration that threw --
+    /// or empty if it did.  A VM that failed is unusable: every execution
+    /// entry point refuses with InitFailed, and this says why.  The reason
+    /// is also reported through the output sink when it happens.
+    const std::string& initError() const noexcept { return initError_; }
+    bool initFailed() const noexcept { return !initError_.empty(); }
 
     /// Deterministic full teardown: stop and join all VM-owned threads,
     /// unload modules, release the host event loop, and run the final GC.
@@ -195,14 +211,49 @@ public:
     std::optional<Value> lookupUserModule(const ustring& qualifiedName);
     void registerUserModule(const ustring& qualifiedName, const Value& moduleType);
 
-    // REPL-only: drop all cached user-module entries so the next `import X.*`
-    // re-runs each module's body, picking up source edits.  Does NOT reset
-    // existing bindings in the REPL module's vars — paired with the REPL's
-    // overwrite-on-re-import semantics so a subsequent `run` of a script
-    // that re-imports the same modules will rebind to the freshly-loaded
-    // versions.  Old user-created instances retain their old instanceType
-    // and old method tables (Python `reload` semantics — see future task
-    // for IPython %autoreload-2-style in-place class mutation).
+    // A registered user module, as forgetUserModules() shows it to a selector.
+    struct UserModuleInfo {
+        std::string name;        // qualified (dotted) import name
+        std::string sourcePath;  // its source file; empty for a namespace node
+        ModuleKind kind;         // User, or Package for a namespace node
+        // Its source, or the source of a module it was compiled against,
+        // has changed since it was loaded: running it again would run code
+        // that is no longer on disk.
+        bool stale;
+    };
+
+    struct ForgetModulesResult {
+        std::vector<std::string> forgotten;
+        // When non-empty, NOTHING was forgotten: these registered modules
+        // import a selected module without being selected themselves.  They
+        // would keep running the revision they linked while every new
+        // import got the new one.
+        std::vector<std::string> blockedBy;
+    };
+
+    /// Drop the selected user modules from the registry so the next import
+    /// of each loads it afresh: its current source (or a still-valid .roc)
+    /// is compiled and its body runs again.  The registry otherwise keeps
+    /// the first revision of every module it loaded, for the VM's lifetime.
+    ///
+    /// All or nothing: if a registered module the selector did not pick
+    /// imports one it did, nothing changes and `blockedBy` names them --
+    /// widen the selection, or leave it to a restart.  Only the registry is
+    /// consulted: code already linked (a program's own module, a fragment
+    /// session's bindings until it imports again, a script run through
+    /// executeBuiltinModuleScript) keeps the revision it linked, as do
+    /// objects created from it.  A forgotten revision stays in memory:
+    /// modules are never freed (see ObjModuleType::allModules), so forget
+    /// what changed rather than everything on every run.
+    ///
+    /// Waits for any compilation in progress; never call it from one.
+    ForgetModulesResult forgetUserModules(
+        const std::function<bool(const UserModuleInfo&)>& select);
+
+    /// forgetUserModules() of every registered module -- the REPL's
+    /// /reload.  Bindings already in the REPL module's vars are not reset;
+    /// re-issuing an import rebinds them (imports overwrite in the REPL
+    /// module).
     void clearUserModuleRegistry();
 #ifdef ROXAL_ENABLE_GRPC
     Value importProtoModule(const std::string& path);
@@ -629,6 +680,13 @@ public:
     static const ptr<ExecutionDomain>& currentOrDefaultDomain() {
         return thread ? thread->domain : instance().defaultDomain();
     }
+    // The same, for code that already holds the VM.  It never goes through
+    // instance(), so it is safe while the constructor is still running: a
+    // runtime error raised there must not re-enter the singleton's
+    // initialization.
+    const ptr<ExecutionDomain>& domainForThisThread() const {
+        return thread ? thread->domain : defaultDomain_;
+    }
 
     // ---- Debugger stop machinery ----
     // Coordinator for the default domain (constructed eagerly with the VM).
@@ -652,6 +710,12 @@ public:
     inline bool hasRuntimeError() const { return (currentInterrupts().load() & ExecutionDomain::IntrRuntimeError) != 0; }
     inline void setRuntimeErrorFlag()   { currentInterrupts().fetch_or(ExecutionDomain::IntrRuntimeError); }
     inline void clearRuntimeErrorFlag() { currentInterrupts().fetch_and(~uint32_t(ExecutionDomain::IntrRuntimeError)); }
+    // The default domain's flag, whatever this host thread has bound: a
+    // synchronous launch runs there, and a driver slice leaves this thread
+    // bound to its run's own domain until the run is handed over.
+    inline void clearDefaultDomainRuntimeError() {
+        defaultDomain_->interrupts().fetch_and(~uint32_t(ExecutionDomain::IntrRuntimeError));
+    }
     /// The text of the most recent runtime error, taken (and cleared).  The
     /// error itself is a flag; this is what an embedding shows a user when a
     /// run fails.  VM-wide, like the flag: one run at a time is the contract
@@ -744,7 +808,11 @@ public:
     // the current thread
     static thread_local ptr<Thread> thread;
 
-    void executeBuiltinModuleScript(const std::string& path, Value moduleType/*ObjModuleType */);
+    // Compile (or load from cache) and run a module's companion script into
+    // `moduleType`.  A relative path resolves against the module search path
+    // first and the working directory last.  False if the script could not
+    // be found, did not compile or raised an error (each already reported).
+    bool executeBuiltinModuleScript(const std::string& path, Value moduleType/*ObjModuleType */);
 
     // Builtin functions (moved from private)
     void defineBuiltinFunctions();
@@ -844,6 +912,19 @@ protected:
     // Set once shutdown() has run; makes teardown idempotent so the static
     // destructor is a no-op after an explicit host-driven shutdown.
     std::atomic_bool shutdownComplete_ {false};
+
+    // Set once the constructor has completed (see instance() and
+    // constructed()).
+    inline static std::atomic<bool> vmConstructed_ { false };
+    static void failIfReenteredDuringConstruction();
+
+    // Why construction failed (see initError()).  Written only by the
+    // constructor, before vmConstructed_ publishes the instance.
+    std::string initError_;
+    // Record a construction failure, keeping the first.  The pending
+    // runtime error's text, when there is one, is more specific than
+    // `fallback` and is preferred.
+    void noteInitFailure(const std::string& fallback);
     std::atomic_int exitCodeValue {0};
 
     // The attached embedded runtime, if a host has claimed execution

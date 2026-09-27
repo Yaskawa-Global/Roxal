@@ -295,6 +295,59 @@ function.
 roxal::VM::setRTCoreExclusion(rtCore);    // before VM::instance()
 ```
 
+**Check that the VM set itself up.** If a builtin module script is missing or
+broken, or a builtin registration throws, the constructor reports why through
+the output sink and the VM is unusable. `executeProgramSync()`,
+`stageProgramSync()` and `evaluateFragmentSync()` then return `InitFailed`,
+`prepareProgram()` and `prepareFragment()` return their own `InitFailed`,
+and `initError()` says why. Unlike `Busy`, it never clears: report it and stop.
+
+```cpp
+roxal::VM& vm = roxal::VM::instance();
+if (vm.initFailed()) {
+    log(vm.initError());
+    return;
+}
+```
+
+A setup step that calls `VM::instance()` while the VM is still being
+constructed aborts the process with a message. It would otherwise wait forever
+on the singleton's initialization guard.
+
+## Reloading modules between runs
+
+The VM keeps the first revision of every user module it imports for as long as
+it lives, so a later run that imports an edited module still runs the old code.
+A host that lets users edit library modules between runs calls
+`forgetUserModules()` before preparing the next one. The selector sees each
+registered module's name, source path, and whether it is *stale* (its source,
+or the source of anything it was compiled against, has changed). The next
+import of each forgotten module then loads its current source.
+
+```cpp
+const auto result = vm.forgetUserModules([&](const roxal::VM::UserModuleInfo& m) {
+    return m.stale && isUnder(m.sourcePath, libraryRoot);
+});
+if (!result.blockedBy.empty())
+    refuseRun("restart to reload: " + join(result.blockedBy) + " import edited modules");
+```
+
+It is all or nothing. If a registered module you did not select imports one you
+did, nothing is forgotten and `blockedBy` names the importers. Otherwise they
+would keep running the old revision while new imports got the new one.
+
+- **Forget what changed, not everything on every run.** Modules are never
+  freed, so each forgotten revision stays in memory.
+- **What is already linked stays linked.** Only the registry changes. A module
+  loaded some other way (a script run with `executeBuiltinModuleScript()`, a
+  fragment session until it imports again) keeps the revision it imported,
+  and objects created from the old revision keep their old type.
+- **Call it between preparations.** It waits for any compilation in progress
+  and must not be called from inside one, including from the selector.
+
+`clearUserModuleRegistry()` forgets every module; it is what the REPL's
+`/reload` uses.
+
 ## Moving from the superseded API
 
 `run()`, `runWithImports()`, `setup()`, `setupLine()`, `runLine()`,

@@ -22,6 +22,11 @@ PrepareFragmentResult ReplSession::prepareFragment(std::istream& source,
         result.status = PrepareFragmentStatus::ShuttingDown;
         return result;
     }
+    if (vm_->initFailed()) {
+        result.status = PrepareFragmentStatus::InitFailed;
+        result.diagnostics.message = vm_->initError();
+        return result;
+    }
 
     // One producer at a time.  The driver never blocks on this, and the root
     // tracer never touches it.
@@ -111,6 +116,8 @@ ExecutionStatus ReplSession::evaluateFragmentSync(std::istream& source,
         break;
     case PrepareFragmentStatus::SessionBusy:
         return ExecutionStatus::Busy;
+    case PrepareFragmentStatus::InitFailed:
+        return ExecutionStatus::InitFailed;
     case PrepareFragmentStatus::CompileError:
     case PrepareFragmentStatus::ShuttingDown:
     default:

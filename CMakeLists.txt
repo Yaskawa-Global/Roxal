@@ -827,6 +827,12 @@ if(NOT EMSCRIPTEN)
     add_executable(roxal_embedded_host_harness tests/embedded_host_harness.cpp)
     target_link_libraries(roxal_embedded_host_harness PRIVATE roxalcore)
     add_test(NAME RoxalEmbeddedHost COMMAND roxal_embedded_host_harness)
+
+    # A host reloading edited user modules between runs (forgetUserModules);
+    # its own process, so the registry holds only its modules.
+    add_executable(roxal_module_reload_test tests/module_reload_test.cpp)
+    target_link_libraries(roxal_module_reload_test PRIVATE roxalcore)
+    add_test(NAME RoxalModuleReload COMMAND roxal_module_reload_test)
 endif()
 
 # Compile definitions come from roxal_abi (linked PUBLIC above) — the single shared
@@ -897,8 +903,10 @@ if(ROXAL_BUILD_MAIN)
     # Compile definitions are inherited from roxal_abi via roxalcore (linked PUBLIC),
     # the single shared source of truth — see the roxal_abi target above.
 
+    # --no-ctest: runtests.py otherwise also runs the C++ test programs
+    # registered here, which ctest already runs on their own.
     add_test(NAME RoxalSourceTests
-        COMMAND python3 ${CMAKE_SOURCE_DIR}/runtests.py
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/runtests.py --no-ctest
     )
 
     set_tests_properties(RoxalSourceTests PROPERTIES

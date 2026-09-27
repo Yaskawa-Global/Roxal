@@ -13,9 +13,12 @@ enum class ExecutionStatus {
               // completion (frames are live and inspection may be in
               // progress).  Resume comes from the debugger releasing the
               // stop epoch, after which the normal call again succeeds.
-    Busy      // The VM is not this caller's to run: an embedded driver owns
+    Busy,     // The VM is not this caller's to run: an embedded driver owns
               // execution, or the VM has shut down.  NO work was done --
               // neither completion nor a suspension of any work of yours.
+    InitFailed // The VM failed to set itself up and cannot run anything;
+               // VM::initError() says why.  NO work was done, and none ever
+               // will be: unlike Busy, this does not clear.
 };
 
 // True for the two suspended-but-resumable statuses.  Use this in resume

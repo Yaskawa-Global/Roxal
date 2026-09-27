@@ -194,6 +194,10 @@ SliceResult EmbeddedRuntime::driveFor(TimeDuration budget)
             if (active_ && active_.get() == active)
                 finalizing_ = std::move(active_);
         }
+        // The run is no longer this thread's: drop the binding its slices
+        // made, so nothing that runs here later (a synchronous launch after a
+        // detach, say) acts on the finished run's thread and domain.
+        VM::thread.reset();
         // Failure travels on the control, not in the state: Failed is a
         // POST-finalization state.  Publishing it here would let a losing
         // finalizer's wait see "Failed" and return before the winner had

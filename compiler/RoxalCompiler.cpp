@@ -1063,6 +1063,11 @@ void RoxalCompiler::bindImport(VM& vm, ObjModuleType* importer,
     // A node is looked up by its dotted name, so `import pkg.a` and
     // `import pkg.b` in different modules share one `pkg`; and a folder module
     // (pkg/init.rox) imported earlier is itself the node for `pkg`.
+    //
+    // Every name is bound to what the import resolves to NOW, replacing any
+    // earlier binding: after VM::forgetUserModules() a re-import resolves to
+    // a new revision, which a fragment session's module and a shared
+    // namespace node would otherwise keep reaching through the old one.
     ObjModuleType* parent = importer;
     ustring packageFullName;
     for (size_t i = 0; i + 1 < components.size(); ++i) {
@@ -1084,7 +1089,7 @@ void RoxalCompiler::bindImport(VM& vm, ObjModuleType* importer,
             vm.registerUserModule(packageFullName, pkgModule);
         }
 
-        parent->vars.store(pkgName, pkgModule);
+        parent->vars.store(pkgName, pkgModule, /*overwrite=*/true);
         parent->registerModuleAlias(pkgName, packageFullName);
         parent = asModuleType(pkgModule);
     }
@@ -1092,7 +1097,7 @@ void RoxalCompiler::bindImport(VM& vm, ObjModuleType* importer,
     ObjModuleType* imported = asModuleType(module);
     const ustring& leafName = components.back();
     ustring leafFullName = imported->fullName.isEmpty() ? imported->name : imported->fullName;
-    parent->vars.store(leafName, module);
+    parent->vars.store(leafName, module, /*overwrite=*/true);
     parent->registerModuleAlias(leafName, leafFullName);
 }
 
