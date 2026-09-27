@@ -328,10 +328,12 @@ void ModuleNN::onShutdown(VM&)
     InferenceWorker::shutdownAll();
 }
 
-void ModuleNN::onShutdownComplete(VM&)
+std::function<void()> ModuleNN::shutdownCompleteAction()
 {
 #ifdef ROXAL_ENABLE_ONNX
-    OnnxEnvironment::instance().release();
+    return [] { OnnxEnvironment::instance().release(); };
+#else
+    return {};
 #endif
 }
 

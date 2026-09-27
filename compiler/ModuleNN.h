@@ -32,7 +32,7 @@ public:
     // Session::Run is in flight when the VM frees objects and main() returns.
     void onShutdown(VM& vm) override;
     // Releases the ONNX Runtime environment deterministically (see .cpp).
-    void onShutdownComplete(VM& vm) override;
+    std::function<void()> shutdownCompleteAction() override;
 
     inline Value moduleType() const override { return moduleTypeValue; }
 

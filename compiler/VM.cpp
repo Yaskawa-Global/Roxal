@@ -1828,6 +1828,16 @@ void VM::shutdown()
         if (mod)
             mod->onModuleUnloading(*this);
     }
+    // The module instances must go now (their destructors drop their module
+    // types, which the final collections below free), so collect their
+    // shutdown-complete actions first.
+    std::vector<std::function<void()>> shutdownCompleteActions;
+    for (auto& mod : builtinModules) {
+        if (mod) {
+            if (auto action = mod->shutdownCompleteAction())
+                shutdownCompleteActions.push_back(std::move(action));
+        }
+    }
     builtinModules.clear();
     lazyModuleRegistry.clear();
 
@@ -1901,10 +1911,8 @@ void VM::shutdown()
     // Library-level state that must not wait for the exit handlers (ORT's
     // environment: destroyed from __run_exit_handlers, its CUDA provider's
     // teardown read memory another handler had already freed).
-    for (auto& mod : builtinModules) {
-        if (mod)
-            mod->onShutdownComplete(*this);
-    }
+    for (auto& action : shutdownCompleteActions)
+        action();
 
     #ifdef DEBUG_TRACE_MEMORY
     // Final attempt to release any objects that might still be pending

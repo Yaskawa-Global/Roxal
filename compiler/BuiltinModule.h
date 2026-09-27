@@ -4,6 +4,7 @@
 #include "Value.h"
 #include "Object.h"
 #include <core/types.h>
+#include <functional>
 #include <optional>
 #include <algorithm>
 #ifdef DEBUG_BUILTINS
@@ -79,12 +80,14 @@ public:
     // (Threads that read VM memory must already be stopped -- see onShutdown.)
     virtual void onModuleUnloading(VM& vm) {}
 
-    // Called as the very LAST step of VM shutdown: every object has been
-    // freed and every VM thread joined. Use for library-level state that must
-    // be torn down deterministically, before main() returns into the exit
+    // An action run as the very LAST step of VM shutdown: every object has
+    // been freed and every VM thread joined. Use for library-level state that
+    // must be torn down deterministically, before main() returns into the exit
     // handlers -- e.g. an inference runtime's environment, whose destruction
     // from __run_exit_handlers races the teardown of its GPU provider.
-    virtual void onShutdownComplete(VM& vm) {}
+    // Collected before the module instance is destroyed (which happens before
+    // the final collections), so it must not capture the module itself.
+    virtual std::function<void()> shutdownCompleteAction() { return {}; }
 
 protected:
     // only valid after call to setVM() in registerBuiltins(VM&)
