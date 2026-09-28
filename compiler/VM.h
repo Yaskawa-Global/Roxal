@@ -1361,6 +1361,11 @@ private:
     // raised on it (exit, a carried-over error).
     void wakeDomainThreads(const ExecutionDomain& domain);
 
+    // An exception reached the entry frame of a native-invoked execution
+    // uncaught: report it and fail the executing domain like runtimeError(),
+    // but leave the invoker's frames and stack below that frame untouched.
+    void reportUncaughtInInvocation(const std::string& message);
+
     // Serializes reclamation-role handoffs (dedicated collector thread,
     // inline-electing thread's tail, shutdown path).  Contention is ~zero.
     std::mutex freeObjectsMutex_;

@@ -375,7 +375,8 @@ private:
     //
     // The domain is private so a failed or exit()ing body cannot stop the
     // services' evaluation (the actor thread's default domain) -- its outcome
-    // is carried to the run that created the node instead (settleHostTick).
+    // is carried to the run that created the node instead
+    // (FuncNode::carryOutcomeToOwner).
     // The context is created lazily on the first tickFor and discarded
     // whenever a body in it fails or is abandoned; the next tick starts a
     // fresh one, so no suspended frames or raised flags ever outlive the
@@ -383,9 +384,6 @@ private:
     // m_yieldState, reset by clear(), which must not race a tick.
     ptr<roxal::ExecutionDomain> m_hostDomain;
     ptr<roxal::Thread> m_hostThread;
-    // The node whose evaluation raised an error or exit() on the host
-    // context during the current tick (the one its outcome belongs to).
-    ptr<FuncNode> m_failedFunc;
 
     // The host context, created if needed (or replaced, if it holds frames
     // no suspended body accounts for), for a tick called with `caller`
@@ -399,14 +397,12 @@ private:
     // clear() -- never for an error, whose outcome settleHostTick must first
     // carry to its run.
     void abandonYieldedTick();
-    // After a tick: carry a failure or exit() raised on the host context to
-    // the run that owns the node, then discard the context.
+    // After a tick: a body that failed or called exit() in the host context
+    // left its flag raised there (FuncNode has carried the outcome to its
+    // owner) -- discard the context so the next tick runs clean.
     void settleHostTick();
     // The body of tickFor once admitted, locked and bound.
     TickResult runHostTick(TimeDuration budget);
-    // Record the node an evaluation just returned from if the context it ran
-    // in has raised an error or exit().
-    void noteFailedFunc(const ptr<FuncNode>& func, bool failed);
 
     // State for resuming a yielded tick execution
     struct YieldState {

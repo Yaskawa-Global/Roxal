@@ -620,8 +620,10 @@ FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline
             return FuncExecResult::Error;
         }
 
-        DataflowThreadGuard dfGuard;
-        auto result = vm.invokeClosure(asClosure(closure), args, deadline);
+        auto result = [&] {
+            DataflowThreadGuard dfGuard;
+            return vm.invokeClosure(asClosure(closure), args, deadline);
+        }();
 
         if (roxal::isSuspended(result.first)) {
             // VM yielded (deadline) or was debugger-paused -- identical state
@@ -636,6 +638,7 @@ FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline
         }
 
         if (result.first != ExecutionStatus::OK) {
+            carryOutcomeToOwner();
             return FuncExecResult::Error;
         }
 
@@ -775,6 +778,7 @@ FuncExecResult FuncNode::resumeExecution(TimePoint deadline)
     Values inputValues = m_funcYieldState.inputValues;
 
     if (result != ExecutionStatus::OK) {
+        carryOutcomeToOwner();   // still on the thread the body ran on
         VM::thread = savedThread;
         return FuncExecResult::Error;
     }
@@ -798,6 +802,41 @@ FuncExecResult FuncNode::resumeExecution(TimePoint deadline)
     }
 
     return FuncExecResult::Completed;
+}
+
+// Wherever a body runs -- the engine's host context (tickFor), its actor
+// thread (event-driven islands, and every island standalone), or nested in
+// another thread's own code -- its uncaught failure or exit() is the owning
+// run's, as the user decided for host-driven evaluation and as it already is
+// when the body runs in the owner's own domain (standalone, or nested in the
+// owner's code: nothing to carry).  The engine discards its host context
+// after a failure; the actor thread's domain is the default one, which with a
+// driver attached belongs to the services -- left failed, every later
+// evaluation there would bail -- so it is cleared once the failure is carried.
+void FuncNode::carryOutcomeToOwner()
+{
+    using roxal::ExecutionDomain;
+    roxal::Thread* t = roxal::VM::thread.get();
+    if (!t)
+        return;
+    auto owner = ownerDomain();
+    if (!owner || owner == t->domain)
+        return;
+    ExecutionDomain& here = *t->domain;
+    const uint32_t raised = here.interrupts().load()
+        & (ExecutionDomain::IntrRuntimeError | ExecutionDomain::IntrExit);
+    if (!raised)
+        return;
+    auto& vm = roxal::VM::instance();
+    vm.transferDomainOutcome(here, *owner);
+    if (t->domain == vm.defaultDomain() && vm.embeddedDriverAttached()
+        && (raised & ExecutionDomain::IntrRuntimeError)) {
+        {
+            std::lock_guard<std::mutex> lock(here.errorMutex);
+            here.errorMessage.clear();
+        }
+        vm.clearDefaultDomainRuntimeError();
+    }
 }
 
 void FuncNode::abandonSuspendedExecution()

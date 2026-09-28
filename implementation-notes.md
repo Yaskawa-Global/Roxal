@@ -2250,6 +2250,31 @@ never inherits another's frames or raised flags:
   never stop the services' evaluation, and the default domain is never failed
   on a node's behalf while a driver is attached.
 
+The same holds wherever a body runs (`FuncNode::carryOutcomeToOwner`): on the
+engine's actor thread (event-driven and background islands, and every island
+standalone, where the owner shares the default domain and simply fails), or
+nested in another thread's code. With a driver attached, the actor thread's
+default domain is cleared again once the failure is carried, so one node's
+exception cannot stop the services' evaluation.
+
+**An uncaught exception ends the invocation it was raised in, never its
+invoker.** `invokeClosure`/`invokeMethod` mark the frame they push
+(`CallFrame::unwindOnReturn`); the exception unwinder stops there. Beneath that
+frame lie the invoker's frames, and between the two runs native code -- the
+engine's evaluation loop, a signal's `set()` -- that an unwind cannot pass
+through. Unwinding past it used to discard frames whose native callers were
+still live (a `try` around a `set()` whose node raised crashed the VM), and on
+the engine's actor thread, where nothing beneath the node is a caller at all,
+the exception was taken for the actor call's own (its never-ending `run()`),
+stashed for an awaiter that never comes, and silently dropped. Uncaught at the
+boundary, it is reported and fails the executing domain like any uncaught
+exception (`VM::reportUncaughtInInvocation`), and `invokeClosure` returns
+`RuntimeError` to the invoker with its frames intact. Consequently a `try` in
+script code does not catch a node's exception: that is its run's failure, not
+an exception thrown by whatever triggered the evaluation. `execute()` restores
+`Thread::execute_depth` on every return (error returns included), so a thread
+that survives an invocation's failure keeps a correct nesting level.
+
 The debugger's stop coordinator follows the run's domain, so the host context
 is never an epoch member and node bodies do not trap on breakpoints (the
 `DebugGate` still pauses the tick). Anywhere else, a node body may run only

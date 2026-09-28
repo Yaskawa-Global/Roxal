@@ -7003,8 +7003,16 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
         valueGC.safepoint(*thread);
     }
 
-    // Track execution depth for nested calls
+    // Track execution depth for nested calls.  Every exit from here on --
+    // return, yield, pause, and each of the error returns -- restores it: a
+    // thread that survives an error (the engine's actor thread after a
+    // node's uncaught exception) must not keep a phantom nesting level,
+    // which would change its later frame-floor and GC-registration decisions.
     thread->execute_depth++;
+    struct ExecuteDepthScope {
+        Thread* t;
+        ~ExecuteDepthScope() { if (t->execute_depth > 0) t->execute_depth--; }
+    } executeDepthScope { thread.get() };
     size_t frame_depth_on_entry =
         (baseFrameDepth == SIZE_MAX) ? thread->frames.size() : baseFrameDepth;
 
@@ -7301,7 +7309,6 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                 if (hasDeadline || SimpleMarkSweepGC::inGCYieldSectionOnThisThread()
                     || thread->rtYieldOnGC) {
                     stopCoordinator().ackNoPark(*thread);
-                    if (thread->execute_depth > 0) thread->execute_depth--;
                     return std::make_pair(ExecutionStatus::Paused, Value::nilVal());
                 }
                 stopCoordinator().ackAndPark(*thread);
@@ -7324,7 +7331,6 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                 if (debugStatementBoundary(*thread, frame, /*canNotify=*/!rtSlice)) {
                     if (rtSlice) {
                         stopCoordinator().ackNoPark(*thread);
-                        if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(ExecutionStatus::Paused, Value::nilVal());
                     }
                     stopCoordinator().ackAndPark(*thread);
@@ -9954,7 +9960,6 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                     if (thread->execute_depth > 1 && thread->frames.size() < frame_depth_on_entry) {
                         Value returnVal = pop();
 
-                        if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(ExecutionStatus::OK,returnVal);
                     }
 
@@ -9962,7 +9967,6 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                     if (thread->execute_depth == 1 && thread->frames.empty()) {
                         Value returnVal = pop();
 
-                        if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(ExecutionStatus::OK,returnVal);
                     }
 
@@ -9984,13 +9988,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                     // For nested execute() calls, only terminate when we return BELOW the entry depth
                     // Use < (not <=) to avoid early return when a called function returns
                     if (thread->execute_depth > 1 && thread->frames.size() < frame_depth_on_entry) {
-                        if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(ExecutionStatus::OK,result);
                     }
 
                     // For top-level execute(), use original termination logic
                     if (thread->execute_depth == 1 && thread->frames.empty()) {
-                        if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(ExecutionStatus::OK,result);
                     }
 
@@ -11248,7 +11250,6 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
 
         // Deadline check - after every instruction
         if (hasDeadline && TimePoint::currentTime() >= deadline) {
-            if (thread->execute_depth > 0) thread->execute_depth--;
             return yieldReturn;
         }
 
@@ -11273,7 +11274,6 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
             // yield-section / rtYieldOnGC thread -- yield to the host like a
             // deadline expiry.  The frame state stays resumable and rooted.
             if (SimpleMarkSweepGC::inGCYieldSectionOnThisThread() || thread->rtYieldOnGC) {
-                if (thread->execute_depth > 0) thread->execute_depth--;
                 return yieldReturn;
             }
             valueGC.safepoint(*thread);
@@ -11290,7 +11290,6 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
             else {
                 // If deadline-limited, yield instead of blocking
                 if (hasDeadline) {
-                    if (thread->execute_depth > 0) thread->execute_depth--;
                     return yieldReturn;
                 }
 
@@ -11316,7 +11315,6 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
             } else {
                 // If deadline-limited, yield instead of blocking
                 if (hasDeadline) {
-                    if (thread->execute_depth > 0) thread->execute_depth--;
                     return yieldReturn;
                 }
                 // Keep a host UI loop (main thread) pumped while awaiting a future;
@@ -11384,7 +11382,6 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                 thread->awaitedFuture = Value::nilVal();
             } else {
                 if (hasDeadline) {
-                    if (thread->execute_depth > 0) thread->execute_depth--;
                     return yieldReturn;
                 }
                 // Keep a host UI loop (main thread) pumped while awaiting a future;
@@ -11422,7 +11419,6 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
 
     } // for
 
-    if (thread->execute_depth > 0) thread->execute_depth--;
     return std::make_pair(ExecutionStatus::OK, Value::nilVal());
 
 }
@@ -12728,9 +12724,13 @@ bool VM::unwindToExceptionHandler(Value& exc)
             thread && thread->isActorThread() && thread->currentActorCall.isNonNil();
         if (!willForward && thread && !thread->frames.empty()
             && stopCoordinator().stopOnFatal()) {
+            // Only frames of THIS execution can catch it: the scan stops at
+            // the frame a native entered (see the boundary in the loop below).
             bool anyHandler = false;
-            for (const auto& f : thread->frames)
-                if (!f.exceptionHandlers.empty()) { anyHandler = true; break; }
+            for (auto it = thread->frames.rbegin(); it != thread->frames.rend(); ++it) {
+                if (!it->exceptionHandlers.empty()) { anyHandler = true; break; }
+                if (it->unwindOnReturn) break;
+            }
             if (!anyHandler) {
                 auto frame = thread->frames.end() - 1;
                 Chunk* ch = asFunction(asClosure(frame->closure)->function)->chunk.get();
@@ -12773,8 +12773,52 @@ bool VM::unwindToExceptionHandler(Value& exc)
             push(exc);
             return true;
         }
+        // The frame a native entered (invokeClosure / invokeMethod) is the
+        // bottom of THIS execution.  Beneath it lie the invoker's frames, and
+        // between the two runs native code -- the engine's evaluation loop, a
+        // signal's set() -- that an unwind cannot pass through: continuing
+        // would discard frames whose native callers are still on the C stack,
+        // or resume a handler in them from inside this nested execute().  (On
+        // the dataflow engine's actor thread nothing beneath is a caller at
+        // all: its native run() loop is the actor call, and the exception
+        // used to be taken for that call's, stashed for an awaiter that never
+        // comes, and its stack reset under the running loop.)  Uncaught here
+        // is uncaught by the invocation: report it and fail its domain, as an
+        // uncaught exception fails a program, and leave the invoker's frames
+        // for the invoker -- whose invokeClosure returns RuntimeError.
+        if (cf.unwindOnReturn) {
+            unwindFrame();
+            reportUncaughtInInvocation("Uncaught exception: "
+                                       + objExceptionToString(asException(exc)));
+            return false;
+        }
         unwindFrame();
     }
+}
+
+void VM::reportUncaughtInInvocation(const std::string& message)
+{
+    // runtimeError() without its resetStack(): the thread's remaining frames
+    // and stack belong to the invoker and stay intact.
+    {
+        ExecutionDomain& d = *domainForThisThread();
+        std::lock_guard<std::mutex> lock(d.errorMutex);
+        d.errorMessage = message;
+    }
+    setRuntimeErrorFlag();
+    threads.apply([](const std::pair<const uint64_t, ptr<Thread>>& entry){
+        if (entry.second)
+            entry.second->wake();
+    });
+    OutputEventView event;
+    event.kind = OutputKind::Diagnostic;
+    event.severity = OutputSeverity::Error;
+    event.channel = "stderr";
+    event.category = "runtime";
+    const std::string text = "error: " + message;
+    event.text = text;
+    event.flush = true;
+    emitOutput(event, OutputDelivery::LocalAndCallRoute);
 }
 
 void VM::raiseException(Value exc)

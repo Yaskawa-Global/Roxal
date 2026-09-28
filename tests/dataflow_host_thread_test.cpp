@@ -17,6 +17,7 @@
 
 #include "compiler/CallFrame.h"
 #include "compiler/EmbeddedRuntime.h"
+#include "compiler/ExecutionDomain.h"
 #include "compiler/SimpleMarkSweepGC.h"
 #include "compiler/Thread.h"
 #include "compiler/ThreadManager.h"
@@ -196,6 +197,10 @@ struct Scenario {
     // Run the engine under ExecutionScheme::BestEffort (a host that is not
     // real-time): a late tick must be reported and resumed, never abandoned.
     bool bestEffort = false;
+    // The failing node runs on the engine's actor thread (a background
+    // island), not in a host tick: no tick reports it, and the actor
+    // thread's default domain -- the services' -- must be left clean.
+    bool failsOffHostTick = false;
 };
 
 // A Roxal-bodied gate feeding back on itself, then a busy loop of
@@ -273,6 +278,22 @@ const char* kBestEffortLate =
     "print(k)\n"
     "print(n.value > 0)\n";
 
+// node_error's node on a background-domain clock: serviced by the engine's
+// own actor thread even under a host, off the host's tick schedule.
+const char* kBackgroundNodeError =
+    "func check(x :int) -> int:\n"
+    "  if x == 3:\n"
+    "    raise RuntimeException('node boom')\n"
+    "  return x\n"
+    "var c = clock(100)\n"
+    "c.domain(\"background\")\n"
+    "var r = check(c)\n"
+    "c.run()\n"
+    "var k :int = 0\n"
+    "while k < 30000000:\n"
+    "  k = k + 1\n"
+    "print(k)\n";
+
 // A run that leaves a Roxal-bodied node registered and ends; the host's loop
 // keeps ticking, as a control loop does between programs.
 const char* kTickAfterRun =
@@ -325,6 +346,8 @@ const Scenario kScenarios[] = {
       RunState::Completed, nullptr, 7 },
     { "best_effort_late", kBestEffortLate, "300000\ntrue\n", false, true, false,
       RunState::Completed, nullptr, 0, true },
+    { "background_node_error", kBackgroundNodeError, "", false, false, false,
+      RunState::Failed, "node boom", 0, false, true },
 };
 
 int runScenario(const Scenario& scenario)
@@ -416,7 +439,11 @@ int runScenario(const Scenario& scenario)
                + std::to_string(driver.during(TickResult::Yielded)) + " yielded, "
                + std::to_string(driver.during(TickResult::Overrun)) + " overrun)");
     const bool nodeFails = scenario.diagnosticContains || scenario.expectedExitCode != 0;
-    if (nodeFails)
+    if (scenario.failsOffHostTick) {
+        const uint32_t flags = vm.defaultDomain()->interrupts().load();
+        expect((flags & ExecutionDomain::IntrRuntimeError) == 0,
+               name + ": the services' default domain is not left failed");
+    } else if (nodeFails)
         expect(driver.during(TickResult::Error) + driver.after(TickResult::Error) >= 1,
                name + ": the failing tick reported Error to the host");
     else

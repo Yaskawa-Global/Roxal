@@ -405,7 +405,6 @@ void DataflowEngine::clear()
     // Reset yield state to avoid stale references to cleared funcs, and
     // drop the host context a suspended body may still occupy.
     abandonYieldedTick();
-    m_failedFunc = nullptr;
 }
 
 void DataflowEngine::stop()
@@ -1119,15 +1118,6 @@ DataflowEngine::TickResult DataflowEngine::tickFor(TimeDuration budget)
         roxal::VM::instance().resetStack();   // a fresh context: give it its value stack
     debugAdmission.mark(roxal::VM::thread);
 
-    // The failing node is needed only until the tick settles: a FuncNode
-    // held past it is outside every traced set (the engine may have dropped
-    // it), so it must not survive even a tick that throws.
-    struct FailedFuncScope {
-        ptr<FuncNode>& f;
-        explicit FailedFuncScope(ptr<FuncNode>& f) : f(f) { f = nullptr; }
-        ~FailedFuncScope() { f = nullptr; }
-    } failedFuncScope(m_failedFunc);
-
     const TickResult result = runHostTick(budget);
     settleHostTick();
     return result;
@@ -1290,37 +1280,14 @@ void DataflowEngine::abandonYieldedTick()
     discardHostContext();
 }
 
-void DataflowEngine::noteFailedFunc(const ptr<FuncNode>& func, bool failed)
-{
-    // Host ticks only: evaluateIsland also serves the actor thread's paths,
-    // and a record made there would have no settleHostTick to consume it --
-    // the node would be held (untraced) until the engine is destroyed, after
-    // the VM has freed the Values it still references.
-    if (m_failedFunc || !func || !roxal::VM::thread
-        || roxal::VM::thread != m_hostThread)
-        return;
-    const uint32_t raised = roxal::VM::thread->domain->interrupts().load()
-        & (roxal::ExecutionDomain::IntrRuntimeError | roxal::ExecutionDomain::IntrExit);
-    if (failed || raised)
-        m_failedFunc = func;
-}
-
 void DataflowEngine::settleHostTick()
 {
     if (!m_hostDomain)
         return;   // already discarded with an abandoned tick
     const uint32_t raised = m_hostDomain->interrupts().load()
         & (roxal::ExecutionDomain::IntrRuntimeError | roxal::ExecutionDomain::IntrExit);
-    if (raised) {
-        // A body failed or called exit() in the engine's context.  The
-        // outcome is the node's owner's -- the run that created it fails (or
-        // exits) exactly as it would have standalone -- and the context,
-        // with its raised flag, is discarded so the next tick runs clean.
-        if (m_failedFunc)
-            if (auto owner = m_failedFunc->ownerDomain())
-                roxal::VM::instance().transferDomainOutcome(*m_hostDomain, *owner);
+    if (raised)
         abandonYieldedTick();
-    }
 }
 
 
@@ -1346,7 +1313,6 @@ DataflowEngine::TickResult DataflowEngine::resumeTickEvaluation(TimePoint deadli
     if (m_yieldState.funcWasExecuting && m_yieldState.yieldedFunc) {
         const TimePoint resumeStart = TimePoint::currentTime();
         auto result = m_yieldState.yieldedFunc->resumeExecution(deadline);
-        noteFailedFunc(m_yieldState.yieldedFunc, result == FuncExecResult::Error);
         if (result == FuncExecResult::Yielded)
             return TickResult::Yielded;
         if (result == FuncExecResult::Paused)
@@ -1479,7 +1445,6 @@ DataflowEngine::TickResult DataflowEngine::evaluateIsland(
                     budgeted ? TimePoint::currentTime() : TimePoint::zero();
 
                 auto result = func->conditionallyExecute(evaluationTime, deadline);
-                noteFailedFunc(func, result == FuncExecResult::Error);
 
                 if (result == FuncExecResult::Completed) {
                     if (budgeted) {

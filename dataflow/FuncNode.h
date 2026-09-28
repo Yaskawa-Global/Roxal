@@ -227,6 +227,13 @@ protected:
     // that domain is gone.
     ptr<roxal::ExecutionDomain> ownerDomain() const { return m_ownerDomain.lock(); }
 
+private:
+    // After the body ran: a failure (uncaught exception) or exit() it raised
+    // on the executing thread's domain belongs to the owner -- carry it
+    // there, wherever the body ran.  See the definition.
+    void carryOutcomeToOwner();
+public:
+
     void invokeExecutionCallbacks(TimePoint time, const Values& inputValues, const Values& outputValues);
 
 private:
