@@ -39,6 +39,8 @@ build/
 build-*/
 compiler/cpp-gen/
 node_modules/
+# from-source dependency prefixes built by install-deps.sh
+deps/
 
 # gui-user MCP smoke-test scratch (screenshots, display logs)
 .gui-user/
