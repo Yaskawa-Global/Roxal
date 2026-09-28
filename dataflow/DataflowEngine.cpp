@@ -1113,6 +1113,17 @@ DataflowEngine::TickResult DataflowEngine::tickFor(TimeDuration budget)
     // whose next slice would finish a suspended one as program code) -- or
     // no Thread at all once the run has been handed over.  Bound under
     // m_evalMutex, so one evaluator at a time owns the context.
+    // A suspended tick whose network changed cannot resume: its island
+    // layout, node positions and (the rebuild restarts the schedule) tick
+    // grid are gone.  That is neither an error nor lateness, under either
+    // scheme -- the tick restarts on the new network, as a fresh tick.
+    // Decided BEFORE binding: abandoning discards the context the body is
+    // suspended in, and the restarted tick must run in a fresh one, not on
+    // top of the abandoned frames.  (Building the network before starting it
+    // avoids the lost work.)
+    if (m_yieldState.active && yieldedTickStale())
+        abandonYieldedTick();
+
     ThreadRebind onHostContext(hostContextFor(roxal::VM::thread));
     if (roxal::VM::thread->stack.empty())
         roxal::VM::instance().resetStack();   // a fresh context: give it its value stack
@@ -1204,9 +1215,11 @@ DataflowEngine::TickResult DataflowEngine::runHostTick(TimeDuration budget)
 
     // Evaluate islands with deadline support
     std::vector<NetworkIsland> islandsCopy;
+    uint64_t networkGeneration = 0;
     {
         std::lock_guard<std::recursive_mutex> lock(m_mutex);
         islandsCopy = m_networkIslands;
+        networkGeneration = m_networkGeneration.load(std::memory_order_acquire);
     }
 
     for (size_t i = 0; i < islandsCopy.size(); ++i) {
@@ -1231,6 +1244,7 @@ DataflowEngine::TickResult DataflowEngine::runHostTick(TimeDuration budget)
             m_yieldState.islandIndex = i;
             m_yieldState.tickTime = m_tickStart;
             m_yieldState.lateReported = false;
+            m_yieldState.networkGeneration = networkGeneration;
             return result;
         }
 
@@ -1265,6 +1279,13 @@ ptr<roxal::Thread> DataflowEngine::hostContextFor(const ptr<roxal::Thread>& call
     return m_hostThread;
 }
 
+bool DataflowEngine::yieldedTickStale() const
+{
+    return m_networkModified.load()
+        || m_networkGeneration.load(std::memory_order_acquire)
+               != m_yieldState.networkGeneration;
+}
+
 void DataflowEngine::discardHostContext()
 {
     // A tick still bound to it keeps the Thread alive until its binding ends.
@@ -1296,16 +1317,18 @@ DataflowEngine::TickResult DataflowEngine::resumeTickEvaluation(TimePoint deadli
     if (!m_yieldState.active)
         return TickResult::Error;
 
-    if (m_networkModified) {
-        // Network changed - cannot safely resume; the suspended body goes
-        // with the tick.
-        abandonYieldedTick();
-        return TickResult::Error;
-    }
-
     std::vector<NetworkIsland> islandsCopy;
     {
         std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        // Checked under the snapshot's lock: a rebuild racing in after
+        // tickFor's own check (tickPeriod() from another thread, say) must
+        // not hand this tick an island layout it was not suspended in.  The
+        // tick is dropped and the next call starts afresh in a fresh context
+        // -- never in this call, whose bound context is the one discarded.
+        if (yieldedTickStale()) {
+            abandonYieldedTick();
+            return TickResult::Yielded;
+        }
         islandsCopy = m_networkIslands;
     }
 
@@ -2573,6 +2596,7 @@ void DataflowEngine::buildNetworkCacheData()
     m_tickNumber = 0;
     m_runStart = TimePoint::zero();
 
+    m_networkGeneration.fetch_add(1, std::memory_order_acq_rel);
     m_networkModified = false;
 
     // Rebuilds happen on the ticking thread too (tickFor's fresh-tick path):

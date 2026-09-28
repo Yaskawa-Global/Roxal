@@ -294,6 +294,31 @@ const char* kBackgroundNodeError =
     "  k = k + 1\n"
     "print(k)\n";
 
+// The program changes the network -- lifts new functions -- while ticks are
+// suspended in a slow node.  A suspended tick cannot resume on a rebuilt
+// network (its island and node positions, even its tick grid, are gone): it
+// restarts on the new one.  Neither an error nor lateness, under either
+// scheme; and every lifted node computes.
+const char* kNetworkChangeMidTick =
+    "func slow(x :int) -> int:\n"
+    "  var s = 0\n"
+    "  for i in range(..<20000):\n"
+    "    s = s + i\n"
+    "  return x + 1\n"
+    "func twice(x :int) -> int:\n"
+    "  return x * 2\n"
+    "var n = signal(10, 0)\n"
+    "n <- slow(n[-1])\n"
+    "var lifted = []\n"
+    "var k :int = 0\n"
+    "while k < 400000:\n"
+    "  k = k + 1\n"
+    "  if k rem 40000 == 0:\n"
+    "    lifted.append(twice(n))\n"
+    "print(k)\n"
+    "print(len(lifted))\n"
+    "print(n.value > 0)\n";
+
 // A run that leaves a Roxal-bodied node registered and ends; the host's loop
 // keeps ticking, as a control loop does between programs.
 const char* kTickAfterRun =
@@ -348,6 +373,8 @@ const Scenario kScenarios[] = {
       RunState::Completed, nullptr, 0, true },
     { "background_node_error", kBackgroundNodeError, "", false, false, false,
       RunState::Failed, "node boom", 0, false, true },
+    { "network_change_mid_tick", kNetworkChangeMidTick, "400000\n10\ntrue\n",
+      false, true, false },
 };
 
 int runScenario(const Scenario& scenario)

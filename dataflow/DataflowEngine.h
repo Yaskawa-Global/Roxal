@@ -349,6 +349,15 @@ private:
     void invokeTickCallbacks();
 
     std::atomic<bool> m_networkModified;
+    // Bumped by every rebuild (under m_mutex).  A rebuild clears
+    // m_networkModified -- and happens on paths other than the tick (a lift's
+    // initializeNode, an event update, tickPeriod()) -- so a suspended tick
+    // cannot rely on the flag to learn that its island layout, node
+    // positions and tick grid are gone; it compares generations instead.
+    std::atomic<uint64_t> m_networkGeneration { 0 };
+    // True if the suspended tick can no longer be resumed: the network
+    // changed since it started (or a change is pending).
+    bool yieldedTickStale() const;
     std::atomic<bool> m_shouldStop{false};
     // True while run() is looping on the engine actor thread.  An exit/
     // interrupt stops that loop; the embedding re-queues run() for the next
@@ -415,6 +424,9 @@ private:
         ptr<FuncNode> yieldedFunc;
         // BestEffort: this tick's lateness has been reported (once per tick).
         bool lateReported { false };
+        // The network generation the tick started on (see
+        // m_networkGeneration): resumable only on that same network.
+        uint64_t networkGeneration { 0 };
     };
     YieldState m_yieldState;
 

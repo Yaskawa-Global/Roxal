@@ -2234,9 +2234,16 @@ has been handed over there is no binding at all. The context is created on the
 first tick and discarded whenever a body in it fails or is abandoned, so a tick
 never inherits another's frames or raised flags:
 
+- **A network change** under a suspended tick (a lift, a new signal) restarts
+  the tick on the rebuilt network, under either scheme -- neither an error nor
+  lateness, but the suspended work is lost. The rebuild restarts the schedule
+  and clears `m_networkModified`, and runs on paths other than the tick (a
+  lift's `initializeNode`, an event update, `tickPeriod()`), so the tick
+  compares the network generation it started on instead of trusting the flag.
+  The recommended practice is to build a network before starting it. (Any
+  change still restarts every island's tick, not only the changed island's.)
 - **Overrun** (a suspended tick outliving its period) under the `Strict`
-  scheme, and a network change mid-tick, abandon the tick *and* the body
-  suspended in it. A body left behind would be completed by the next resume --
+  scheme abandons the tick *and* the body suspended in it. A body left behind would be completed by the next resume --
   whose `execute()` has no frame floor -- and delivered as another body's
   result. Under `BestEffort` (a host that is not real-time: a UI or simulation
   loop) a late tick is instead reported once through `consumeNodeOverruns()`
