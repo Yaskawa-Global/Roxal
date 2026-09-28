@@ -53,7 +53,10 @@ import debug
 proc expose(name:string, obj):
   """Publish `obj` (an object instance) to the UI under `name`. Its public
   properties become the store's snapshot and its public methods become callable.
-  Calling again with the same name is a no-op."""
+  Exposing the same object again under its name is a no-op; a different object
+  replaces the store (an edited script re-run), and the old one's observers are
+  cancelled. serve() re-exposes "ide", "workspace" and "df", so a script's own
+  store under one of those names is replaced when it calls serve()."""
 
 @builtin
 proc notify(name:string, property=nil):
