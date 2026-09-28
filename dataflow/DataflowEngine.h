@@ -5,6 +5,7 @@
 
 #include <set>
 #include <memory>
+#include <atomic>
 #include <mutex>
 #include <condition_variable>
 
@@ -28,7 +29,10 @@ public:
     enum class TickResult {
         Complete,      // All funcs evaluated for this tick
         Yielded,       // Time budget exhausted mid-evaluation, more work pending
-        Overrun,       // Tick exceeded its period - error condition
+        Overrun,       // Tick exceeded its period (Strict scheme): the
+                       // suspended tick was abandoned.  Under BestEffort a
+                       // late tick is reported (consumeNodeOverruns) and
+                       // resumed instead, never abandoned
         Error,         // Runtime error during execution
         Busy,          // Evaluator lock held (event-island evaluation in
                        // flight on the engine thread); nothing was done --
@@ -134,7 +138,9 @@ public:
     // Time-limited tick execution for RT control loop integration.
     // Handles both starting new ticks and resuming yielded ones.
     // Returns: Complete when tick finished, Yielded if budget exhausted,
-    //          Overrun if tick exceeded its period, Error on failure.
+    //          Overrun if tick exceeded its period (Strict scheme only --
+    //          under BestEffort a late tick is reported and resumed, as
+    //          tick() warns and carries on), Error on failure.
     TickResult tickFor(TimeDuration budget);
 
     // Check if there's pending work from a yielded tick
@@ -295,7 +301,8 @@ private:
 
     DataflowEngine();
 
-    ExecutionScheme m_executionScheme;
+    // Set by the host (possibly from another thread), read by both drivers.
+    std::atomic<ExecutionScheme> m_executionScheme;
 
 public:
     // Diagnostics only: try-lock each engine mutex from the caller's thread
@@ -410,6 +417,8 @@ private:
         TimePoint tickTime;
         bool funcWasExecuting { false };
         ptr<FuncNode> yieldedFunc;
+        // BestEffort: this tick's lateness has been reported (once per tick).
+        bool lateReported { false };
     };
     YieldState m_yieldState;
 

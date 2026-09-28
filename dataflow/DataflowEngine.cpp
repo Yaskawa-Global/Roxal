@@ -1141,6 +1141,21 @@ DataflowEngine::TickResult DataflowEngine::runHostTick(TimeDuration budget)
     if (m_yieldState.active) {
         // Check if we've overrun the tick period
         auto elapsed = TimePoint::currentTime() - m_yieldState.tickTime;
+        if (m_tickPeriod > TimeDuration::zero() && elapsed >= m_tickPeriod
+            && m_executionScheme == ExecutionScheme::BestEffort) {
+            // A host that is not real-time (a UI or simulation loop) wants
+            // the work done, late or not -- the same contract tick() keeps
+            // under this scheme, which warns and carries on.  Report the
+            // lateness once per tick against the node still running in it,
+            // and resume.
+            if (!m_yieldState.lateReported) {
+                m_yieldState.lateReported = true;
+                if (m_yieldState.funcWasExecuting && m_yieldState.yieldedFunc)
+                    recordNodeOverrun(m_yieldState.yieldedFunc->name(),
+                                      elapsed, elapsed - m_tickPeriod);
+            }
+            return resumeTickEvaluation(deadline);
+        }
         if (m_tickPeriod > TimeDuration::zero() && elapsed >= m_tickPeriod) {
             // Tick has exceeded its period - overrun error.  If a specific
             // func was mid-execution across slices when the period expired,
@@ -1224,6 +1239,7 @@ DataflowEngine::TickResult DataflowEngine::runHostTick(TimeDuration budget)
             m_yieldState.active = true;
             m_yieldState.islandIndex = i;
             m_yieldState.tickTime = m_tickStart;
+            m_yieldState.lateReported = false;
             return result;
         }
 

@@ -849,7 +849,7 @@ if(NOT EMSCRIPTEN)
     add_executable(roxal_dataflow_host_thread_test tests/dataflow_host_thread_test.cpp)
     target_link_libraries(roxal_dataflow_host_thread_test PRIVATE roxalcore)
     foreach(scenario busy_loop wait_loop yielding_node overrun_orphan tick_after_run
-                     node_error node_exit)
+                     node_error node_exit best_effort_late)
         add_test(NAME RoxalDataflowHostThread_${scenario}
                  COMMAND roxal_dataflow_host_thread_test ${scenario})
     endforeach()

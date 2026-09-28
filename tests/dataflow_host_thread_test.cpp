@@ -193,6 +193,9 @@ struct Scenario {
     RunState expectedState = RunState::Completed;
     const char* diagnosticContains = nullptr;
     int expectedExitCode = 0;
+    // Run the engine under ExecutionScheme::BestEffort (a host that is not
+    // real-time): a late tick must be reported and resumed, never abandoned.
+    bool bestEffort = false;
 };
 
 // A Roxal-bodied gate feeding back on itself, then a busy loop of
@@ -254,6 +257,22 @@ const char* kOverrunOrphan =
     "  k = k + 1\n"
     "print(k)\n";
 
+// overrun_orphan's schedule under BestEffort: the same late ticks are
+// resumed to completion instead of abandoned, so the node keeps delivering.
+const char* kBestEffortLate =
+    "func slow(x :int) -> int:\n"
+    "  var s = 0\n"
+    "  for i in range(..<20000):\n"
+    "    s = s + i\n"
+    "  return x + 1\n"
+    "var n = signal(1000, 0)\n"
+    "n <- slow(n[-1])\n"
+    "var k :int = 0\n"
+    "while k < 300000:\n"
+    "  k = k + 1\n"
+    "print(k)\n"
+    "print(n.value > 0)\n";
+
 // A run that leaves a Roxal-bodied node registered and ends; the host's loop
 // keeps ticking, as a control loop does between programs.
 const char* kTickAfterRun =
@@ -304,6 +323,8 @@ const Scenario kScenarios[] = {
       RunState::Failed, "node boom", 0 },
     { "node_exit",      kNodeExit,      "",               true,  false, false,
       RunState::Completed, nullptr, 7 },
+    { "best_effort_late", kBestEffortLate, "300000\ntrue\n", false, true, false,
+      RunState::Completed, nullptr, 0, true },
 };
 
 int runScenario(const Scenario& scenario)
@@ -319,6 +340,11 @@ int runScenario(const Scenario& scenario)
     if (!attached.runtime)
         return 1;
     EmbeddedRuntime& runtime = *attached.runtime;
+
+    auto engine = df::DataflowEngine::instance();
+    engine->setExecutionScheme(scenario.bestEffort
+                                   ? df::DataflowEngine::ExecutionScheme::BestEffort
+                                   : df::DataflowEngine::ExecutionScheme::Strict);
 
     // A tick budget far below the slow node's body; the program's slice
     // gets the harness's usual 500us.
@@ -402,6 +428,14 @@ int runScenario(const Scenario& scenario)
     if (scenario.requireOverrun)
         expect(driver.during(TickResult::Overrun) > 0,
                name + ": tickFor abandoned a suspended tick at least once");
+    if (scenario.bestEffort) {
+        expect(driver.during(TickResult::Overrun) == 0 && driver.after(TickResult::Overrun) == 0,
+               name + ": no tick is abandoned under BestEffort ("
+                   + std::to_string(driver.during(TickResult::Overrun)) + " overrun)");
+        // Late, not silent: the lateness reaches the host's overrun drain.
+        expect(!engine->consumeNodeOverruns().empty(),
+               name + ": the late ticks were reported to the host");
+    }
     if (scenario.tickAfterRun)
         expect(driver.after(TickResult::Complete) >= 20,
                name + ": ticks after the run completed ("

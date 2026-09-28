@@ -2234,10 +2234,14 @@ has been handed over there is no binding at all. The context is created on the
 first tick and discarded whenever a body in it fails or is abandoned, so a tick
 never inherits another's frames or raised flags:
 
-- **Overrun** (a suspended tick outliving its period) and a network change
-  mid-tick abandon the tick *and* the body suspended in it. A body left behind
-  would be completed by the next resume -- whose `execute()` has no frame floor
-  -- and delivered as another body's result.
+- **Overrun** (a suspended tick outliving its period) under the `Strict`
+  scheme, and a network change mid-tick, abandon the tick *and* the body
+  suspended in it. A body left behind would be completed by the next resume --
+  whose `execute()` has no frame floor -- and delivered as another body's
+  result. Under `BestEffort` (a host that is not real-time: a UI or simulation
+  loop) a late tick is instead reported once through `consumeNodeOverruns()`
+  and resumed, never abandoned -- the contract `tick()` already keeps for that
+  scheme, where lateness warns and the work completes.
 - **A failing body** (an uncaught exception, or `exit()`) fails the run that
   *created* the node -- the domain `FuncNode` records at construction -- via
   `VM::transferDomainOutcome`: that run's next slice fails with the node's
