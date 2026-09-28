@@ -1,5 +1,6 @@
 #include "ModuleFileIO.h"
 #include "AsyncIOManager.h"
+#include "FileOps.h"
 #include "VM.h"
 #include "Object.h"
 #include <sstream>
@@ -48,7 +49,74 @@ void ModuleFileIO::registerBuiltins(VM& vm)
     link("path_file", [this](VM&, ArgsView a){ return fileio_path_file_builtin(a); }, {}, 0x1);
     link("file_extension", [this](VM&, ArgsView a){ return fileio_file_extension_builtin(a); }, {}, 0x1);
     link("file_without_extension", [this](VM&, ArgsView a){ return fileio_file_without_extension_builtin(a); }, {}, 0x1);
+    link("rename", [this](VM&, ArgsView a){ return fileio_rename_builtin(a); }, {}, 0x3);
+    link("copy", [this](VM&, ArgsView a){ return fileio_copy_builtin(a); }, {}, 0x3);
+    link("remove", [this](VM&, ArgsView a){ return fileio_remove_builtin(a); }, {}, 0x1);
+    link("stat", [this](VM&, ArgsView a){ return fileio_stat_builtin(a); }, {}, 0x1);
+    link("write_file", [this](VM&, ArgsView a){ return fileio_write_file_builtin(a); }, {}, 0x3);
+    link("file_tag", [this](VM&, ArgsView a){ return fileio_file_tag_builtin(a); }, {}, 0x1);
+    link("content_tag", [this](VM&, ArgsView a){ return fileio_content_tag_builtin(a); }, {}, 0x1);
 }
+
+namespace {
+
+Value str(const std::string& s)
+{
+    return Value::stringVal(toUnicodeString(s));
+}
+
+// The script form of a stat result: {'kind', 'size', 'mtime'}, with 'name'
+// first when listing a directory.
+Value statDict(const fileops::StatInfo& info, const std::string* name = nullptr)
+{
+    Value dict = Value::dictVal();
+    ObjDict* d = asDict(dict);
+    if (name)
+        d->store(str("name"), str(*name));
+    d->store(str("kind"), str(fileops::kindName(info.kind)));
+    d->store(str("size"), Value::intVal(static_cast<int64_t>(info.size)));
+    d->store(str("mtime"), info.mtime ? Value::realVal(*info.mtime) : Value::nilVal());
+    return dict;
+}
+
+// The bytes `data` stands for, as write()/write_file() store them: in binary
+// mode a list of bytes (or ints 0-255), in text mode the value's string form
+// as UTF-8. Returns an error message, or nullptr on success.
+const char* toBytes(const Value& data, bool binary, std::string& out)
+{
+    if (!binary) {
+        out = toString(data);
+        return nullptr;
+    }
+    if (!isList(data))
+        return "expects list of bytes in binary mode";
+    ObjList* lst = asList(data);
+    // Fast path: a packed byte list copies out in one shot.
+    if (const std::vector<uint8_t>* pb = lst->packedBytes()) {
+        out.assign(pb->begin(), pb->end());
+        return nullptr;
+    }
+    out.clear();
+    out.reserve(static_cast<size_t>(lst->length()));
+    for (int i = 0; i < lst->length(); ++i) {
+        const Value& v = lst->getElement(i);
+        uint8_t b;
+        if (v.isByte())
+            b = v.asByte();
+        else if (v.isInt()) {
+            int64_t iv = v.asInt();
+            if (iv < 0 || iv > 255)
+                return "int out of byte range";
+            b = static_cast<uint8_t>(iv);
+        } else {
+            return "expects list of bytes or ints";
+        }
+        out.push_back(static_cast<char>(b));
+    }
+    return nullptr;
+}
+
+}  // namespace
 
 Value ModuleFileIO::fileio_open_builtin(ArgsView args)
 {
@@ -266,34 +334,8 @@ Value ModuleFileIO::fileio_write_builtin(ArgsView args)
 
     // Prepare write data synchronously (validation happens here)
     std::string writeData;
-    if (f->binary) {
-        if (!isList(args[1]))
-            throw std::invalid_argument("fileio.write expects list of bytes in binary mode");
-        ObjList* lst = asList(args[1]);
-        // Fast path: a packed byte list copies out in one shot.
-        if (const std::vector<uint8_t>* pb = lst->packedBytes()) {
-            writeData.assign(pb->begin(), pb->end());
-        } else {
-            writeData.reserve(static_cast<size_t>(lst->length()));
-            for (int i = 0; i < lst->length(); ++i) {
-                const Value& v = lst->getElement(i);
-                uint8_t b;
-                if (v.isByte())
-                    b = v.asByte();
-                else if (v.isInt()) {
-                    int iv = v.asInt();
-                    if (iv < 0 || iv > 255)
-                        throw std::invalid_argument("fileio.write int out of byte range");
-                    b = static_cast<uint8_t>(iv);
-                } else {
-                    throw std::invalid_argument("fileio.write expects list of bytes or ints");
-                }
-                writeData.push_back(static_cast<char>(b));
-            }
-        }
-    } else {
-        writeData = toString(args[1]);
-    }
+    if (const char* error = toBytes(args[1], f->binary, writeData))
+        throw std::invalid_argument(std::string("fileio.write ") + error);
 
     // Submit async write operation
     PendingIOOp op;
@@ -342,14 +384,35 @@ Value ModuleFileIO::fileio_file_exists_builtin(ArgsView args)
     if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("fileio.file_exists expects path string");
     std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
-    return std::filesystem::exists(p) && std::filesystem::is_regular_file(p) ? Value::trueVal() : Value::falseVal();
+    std::error_code ec;
+    return std::filesystem::is_regular_file(p, ec) ? Value::trueVal() : Value::falseVal();
 }
 
 Value ModuleFileIO::fileio_list_dir_builtin(ArgsView args)
 {
-    if (args.size() != 1 || !isString(args[0]))
-        throw std::invalid_argument("fileio.list_dir expects path string");
-    std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
+    if (args.size() < 1 || args.size() > 2 || !isString(args[0]))
+        throw std::invalid_argument("fileio.list_dir expects path string and optional details bool");
+    const std::string path = toUTF8StdString(asStringObj(args[0])->s);
+
+    if (args.size() == 2 && args[1].isBool() && args[1].asBool()) {
+        // The details form is new, so it follows the new error model: nil
+        // still means "not a directory", anything else raises.
+        try {
+            auto entries = fileops::listDetails(path);
+            if (!entries)
+                return Value::nilVal();
+            Value resultVal = Value::listVal();
+            ObjList* result = asList(resultVal);
+            for (const auto& e : *entries)
+                result->append(statDict(e.info, &e.name));
+            return resultVal;
+        } catch (const fileops::FileOpError& e) {
+            vm().raiseException(fileOpErrorValue(e, fileIOExceptionType()));
+            return Value::nilVal();
+        }
+    }
+
+    std::filesystem::path p(path);
     std::error_code ec;
     if (!std::filesystem::is_directory(p, ec))
         return Value::nilVal();
@@ -423,7 +486,8 @@ Value ModuleFileIO::fileio_dir_exists_builtin(ArgsView args)
     if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("fileio.dir_exists expects path string");
     std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
-    return std::filesystem::exists(p) && std::filesystem::is_directory(p) ? Value::trueVal() : Value::falseVal();
+    std::error_code ec;
+    return std::filesystem::is_directory(p, ec) ? Value::trueVal() : Value::falseVal();
 }
 
 Value ModuleFileIO::fileio_delete_dir_builtin(ArgsView args)
@@ -460,9 +524,11 @@ Value ModuleFileIO::fileio_file_size_builtin(ArgsView args)
     if (args.size() != 1 || !isString(args[0]))
         throw std::invalid_argument("fileio.file_size expects path string");
     std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
-    if (!std::filesystem::exists(p) || !std::filesystem::is_regular_file(p))
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(p, ec))
         return Value::intVal(0);
-    return Value::intVal(static_cast<int32_t>(std::filesystem::file_size(p)));
+    const uintmax_t size = std::filesystem::file_size(p, ec);
+    return Value::intVal(ec ? 0 : static_cast<int64_t>(size));
 }
 
 Value ModuleFileIO::fileio_absolute_file_path_builtin(ArgsView args)
@@ -506,4 +572,155 @@ Value ModuleFileIO::fileio_file_without_extension_builtin(ArgsView args)
         throw std::invalid_argument("fileio.file_without_extension expects path string");
     std::filesystem::path p(toUTF8StdString(asStringObj(args[0])->s));
     return Value::stringVal(toUnicodeString(p.replace_extension().string()));
+}
+
+// ---------------------------------------------------------------------------
+// Path operations. Each marshals its arguments here, on the calling thread,
+// then runs a fileops call on the I/O worker (the same FIFO as the handle
+// ops, so it is ordered after writes already queued). Failures resolve the
+// future to a FileIOException -- see PendingIOOp::task.
+
+Value ModuleFileIO::fileIOExceptionType()
+{
+    return vm().loadGlobal(toUnicodeString("FileIOException")).value();
+}
+
+Value ModuleFileIO::raiseInvalid(const std::string& op, const std::string& reason)
+{
+    Value detail = Value::dictVal();
+    asDict(detail)->store(str("code"), str("EINVAL"));
+    asDict(detail)->store(str("op"), str(op));
+    asDict(detail)->store(str("reason"), str(reason));
+    Value exc = Value::exceptionVal(str("EINVAL: " + op + ": " + reason),
+                                    fileIOExceptionType(), Value::nilVal(), detail);
+    vm().raiseException(exc);
+    return Value::nilVal();
+}
+
+Value ModuleFileIO::submitPathTask(std::string opName, std::function<Value()> task, bool async)
+{
+    PendingIOOp op;
+    op.type = PendingIOOp::Type::PathTask;
+    op.opName = std::move(opName);
+    op.task = std::move(task);
+    op.errorType = fileIOExceptionType();
+    Value fut = AsyncIOManager::instance().submit(std::move(op));
+    return async ? fut : awaitInVM(fut);
+}
+
+namespace {
+
+// A path argument, or nullopt if it is not a (non-empty) string.
+std::optional<std::string> pathArg(const ArgsView& args, size_t i)
+{
+    if (!args.has(i) || !isString(args[i]))
+        return std::nullopt;
+    std::string p = toUTF8StdString(asStringObj(args[i])->s);
+    if (p.empty())
+        return std::nullopt;
+    return p;
+}
+
+bool boolArg(const ArgsView& args, size_t i)
+{
+    return args.has(i) && args[i].isBool() && args[i].asBool();
+}
+
+}  // namespace
+
+Value ModuleFileIO::fileio_rename_builtin(ArgsView args)
+{
+    auto from = pathArg(args, 0), to = pathArg(args, 1);
+    if (!from || !to)
+        return raiseInvalid("rename", "expects two non-empty path strings");
+    const bool replace = boolArg(args, 2);
+    return submitPathTask("rename", [from = *from, to = *to, replace] {
+        fileops::rename(from, to, replace);
+        return Value::nilVal();
+    }, asyncArg(args, 3));
+}
+
+Value ModuleFileIO::fileio_copy_builtin(ArgsView args)
+{
+    auto from = pathArg(args, 0), to = pathArg(args, 1);
+    if (!from || !to)
+        return raiseInvalid("copy", "expects two non-empty path strings");
+    const bool recurse = boolArg(args, 2);
+    const bool replace = boolArg(args, 3);
+    return submitPathTask("copy", [from = *from, to = *to, recurse, replace] {
+        fileops::copy(from, to, recurse, replace);
+        return Value::nilVal();
+    }, asyncArg(args, 4));
+}
+
+Value ModuleFileIO::fileio_remove_builtin(ArgsView args)
+{
+    auto path = pathArg(args, 0);
+    if (!path)
+        return raiseInvalid("remove", "expects a non-empty path string");
+    const bool recurse = boolArg(args, 1);
+    return submitPathTask("remove", [path = *path, recurse] {
+        fileops::remove(path, recurse);
+        return Value::nilVal();
+    }, asyncArg(args, 2));
+}
+
+Value ModuleFileIO::fileio_stat_builtin(ArgsView args)
+{
+    auto path = pathArg(args, 0);
+    if (!path)
+        return raiseInvalid("stat", "expects a non-empty path string");
+    return submitPathTask("stat", [path = *path] {
+        auto info = fileops::stat(path);
+        return info ? statDict(*info) : Value::nilVal();
+    }, asyncArg(args, 1));
+}
+
+Value ModuleFileIO::fileio_write_file_builtin(ArgsView args)
+{
+    auto path = pathArg(args, 0);
+    if (!path || !args.has(1))
+        return raiseInvalid("write_file", "expects a non-empty path string and data");
+    std::string format = "text";
+    if (args.has(2) && isString(args[2]))
+        format = toUTF8StdString(asStringObj(args[2])->s);
+    if (format != "text" && format != "binary")
+        return raiseInvalid("write_file", "format must be 'text' or 'binary'");
+    const bool atomic = !args.has(3) || !args[3].isBool() || args[3].asBool();
+
+    // Marshal here: the Value must not reach the worker.
+    std::string bytes;
+    if (const char* error = toBytes(args[1], format == "binary", bytes))
+        return raiseInvalid("write_file", error);
+    return submitPathTask("write_file", [path = *path, bytes = std::move(bytes), atomic] {
+        fileops::writeFile(path, bytes, atomic);
+        return Value::nilVal();
+    }, asyncArg(args, 4));
+}
+
+Value ModuleFileIO::fileio_file_tag_builtin(ArgsView args)
+{
+    auto path = pathArg(args, 0);
+    if (!path)
+        return raiseInvalid("file_tag", "expects a non-empty path string");
+    return submitPathTask("file_tag", [path = *path] {
+        return str(fileops::fileTag(path));
+    }, asyncArg(args, 1));
+}
+
+Value ModuleFileIO::fileio_content_tag_builtin(ArgsView args)
+{
+    // Pure computation: no I/O, so no worker round trip.
+    if (!args.has(0))
+        return raiseInvalid("content_tag", "expects a string or a list of bytes");
+    std::string bytes;
+    if (isString(args[0])) {
+        bytes = toUTF8StdString(asStringObj(args[0])->s);
+    } else if (isList(args[0])) {
+        if (const char* error = toBytes(args[0], /*binary=*/true, bytes))
+            return raiseInvalid("content_tag", error);
+    } else {
+        return raiseInvalid("content_tag", "expects a string or a list of bytes");
+    }
+    return str(fileops::contentTag(bytes));
 }

@@ -861,19 +861,84 @@ decides who consumes the future `submit()` returns:
   active suspension, and `finalizeWaitSuspension()` later writes the resolved
   value into it — the script observes a plain synchronous call.
 
-The suspension capture exists at BOTH native result-delivery sites. The second
-one (`processNativeDefaultParamDispatch`, the deferred-default-parameter
-continuation path) was added for this feature: previously a native that
-suspended after being invoked through that path left the suspension dangling,
-and it hijacked the *next* native call's result slot. Any `.rox`-declared
-builtin with a defaulted parameter would have hit it — fileio's
+The suspension capture exists at every native result-delivery site:
+`callNativeFn`, and `VM::finishDeferredNativeCall`, which both continuation
+paths that invoke a native *after* running Roxal code first
+(`processNativeDefaultParamDispatch` for closure-evaluated defaults,
+`processNativeParamConversion` for async parameter conversions) go through.
+Without it, a native that suspended through a deferred path left the
+suspension dangling, and it hijacked the *next* native call's result slot. Any
+`.rox`-declared builtin with a defaulted parameter would hit it — fileio's
 `async:bool=false` default was merely the first. (Init methods are excluded
 from that capture: their result is the receiver by construction.)
 
-I/O errors resolve the future to the op's failure value (`false`/`nil`), same
-as the async path always did — the error-model question is deliberately
-unchanged. Worker shutdown drain semantics (bounded grace, loud abandonment)
-are in `AsyncIOManager::stop()`.
+`finishDeferredNativeCall` is also where a deferred native's *raise* is
+handled, mirroring `callNativeFn`: `raiseException()` inside the native has
+already unwound to the handler (popping the call's callee+args area), so the
+result must not be written back; and a C++ exception from the native becomes
+a catchable Roxal one. Before this was shared, both deferred paths wrote the
+result over the handler's stack — the handler caught a garbage value, and the
+stack underflowed later — and a C++ throw there was fatal instead of
+catchable. That is why builtin-throw catchability used to depend on whether a
+defaulted argument was filled (`tests/native_raise_defaulted.rox`).
+
+The handle ops' I/O errors resolve the future to the op's failure value
+(`false`/`nil`) — kept for compatibility. Worker shutdown drain semantics
+(bounded grace, loud abandonment) are in `AsyncIOManager::stop()`.
+
+### fileio path operations: PathTask and exception-valued futures
+
+`rename`, `copy`, `remove`, `stat`, `write_file` and `file_tag` share one
+worker op type, `PendingIOOp::Type::PathTask`: a `std::function<Value()>`
+built on the VM thread by `ModuleFileIO::submitPathTask()`. The closure
+captures only plain C++ data (strings, the byte buffer) — a captured `Value`
+would be invisible to the GC — and calls into `compiler/FileOps.cpp`, which
+has no VM dependency (tested directly by `roxal_fileops_test`, including
+injected mid-operation failures and the EXDEV / no-directory-rename
+fallbacks through its `testing::` seams).
+
+FileOps reports failure by throwing `fileops::FileOpError` (a POSIX-style
+code, the op, the paths, errno, a reason). It uses POSIX calls rather than
+streams because they report errno — which is where the codes come from, and
+how an OPFS lock conflict arrives (`EACCES` from `open()`).
+`AsyncIOManager::executePathTask` catches it and resolves the future to an
+**exception Value** — a `FileIOException` whose `detail` dict carries the
+pieces (`fileOpErrorValue()`). No new VM machinery is involved:
+`Value::tryResolveFuture` already raises an exception-valued future where it
+is consumed, both on the synchronous path (`awaitFutureInVM`, the
+`pendingWaitFor` epilogue) and via `wait(for=)`. The `FileIOException` type
+is loaded on the VM thread at submit time into `PendingIOOp::errorType`
+(traced by `tracePending`), so the worker never reads globals; building the
+exception and its dict on the worker is legal because it allocates inside
+its `ExternalParticipant` window.
+
+Filesystem capabilities the code cannot discover are asked of the embedding
+host through `fileops::backendTraitsHook` (null = an ordinary POSIX
+filesystem). The wasm host installs it for the OPFS mount at `/data`: OPFS
+cannot move directories (WASMFS answers `EBUSY`, so `rename` copies then
+deletes — decided up front, so a native `EBUSY` from a mount point is never
+mistaken for it), and WASMFS stamps a file object with the time it was first
+looked up in the session (`wasmfs/file.h`), so after a reload an OPFS mtime is
+plausible-looking but wrong — `stat` reports nil instead. And
+`libwasmfs_opfs.js` reports lock contention as `EACCES` only from `open()`
+(`createSyncAccessHandle`); a failed `move()` or `removeEntry()` is always
+`EIO`, the DOMException discarded. An atomic write never opens its target —
+it replaces it by remove-then-move — so a file another handle holds open
+surfaced as `EIO`. Probing with `open(O_WRONLY)` cannot tell: WASMFS shares
+one OPFS access handle among all of a process's opens of a file, so the probe
+succeeds when the lock holder is this same VM -- the common case, a running
+script writing the file the IDE saves. On OPFS, removing or moving an existing
+regular file fails for essentially no other reason (WASMFS checks existence
+and emptiness itself before calling OPFS), so the host declares
+`lockFailuresAreEIO` and FileOps reports that `EIO` as `EACCES`
+(`failMutation`). Measured in Chromium by `web/tests/workspace-fs.spec.js`.
+
+Atomic writes and file copies go through a temporary sibling named
+`.<name>.tmp-<epoch ms>-<8 hex>`; the timestamp makes the newest of several
+sort last by name, which `web.Workspace`'s startup tidy-up relies on (mtime
+is not trustworthy on OPFS). On WASMFS/OPFS the final rename over an existing
+file is remove-then-move inside WASMFS, so "atomic" there means "never a
+partial file", not "never a missing one".
 
 ## Combinators: `sys.allof` / `sys.anyof`
 

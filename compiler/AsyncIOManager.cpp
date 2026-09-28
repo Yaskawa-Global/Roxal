@@ -1,4 +1,5 @@
 #include "AsyncIOManager.h"
+#include "FileOps.h"
 #include "SimpleMarkSweepGC.h"
 #include "VM.h"
 #include <optional>
@@ -26,8 +27,14 @@ const char* opTypeName(PendingIOOp::Type t)
         case PendingIOOp::Type::FileFlush:     return "flush";
         case PendingIOOp::Type::FileClose:     return "close";
         case PendingIOOp::Type::FileSyncFlush: return "flush";
+        case PendingIOOp::Type::PathTask:      return "path op";
     }
     return "op";
+}
+
+std::string opLabel(const PendingIOOp& op)
+{
+    return op.opName.empty() ? std::string(opTypeName(op.type)) : op.opName;
 }
 
 // Script-observable failure result: false for the bool-returning mutation
@@ -46,6 +53,22 @@ Value opFailureValue(PendingIOOp::Type t)
 }
 
 }  // namespace
+
+Value roxal::fileOpErrorValue(const fileops::FileOpError& error, const Value& exType)
+{
+    auto str = [](const std::string& s) { return Value::stringVal(toUnicodeString(s)); };
+    Value detail = Value::dictVal();
+    ObjDict* d = asDict(detail);
+    d->store(str("code"), str(error.code));
+    d->store(str("op"), str(error.op));
+    d->store(str("path"), str(error.path));
+    if (!error.path2.empty())
+        d->store(str("path2"), str(error.path2));
+    if (error.err != 0)
+        d->store(str("errno"), Value::intVal(error.err));
+    d->store(str("reason"), str(error.reason));
+    return Value::exceptionVal(str(error.what()), exType, Value::nilVal(), detail);
+}
 
 AsyncIOManager& AsyncIOManager::instance()
 {
@@ -74,6 +97,7 @@ void AsyncIOManager::tracePending(ValueVisitor& visitor)
     auto visitOps = [&](const std::list<PendingIOOp>& ops) {
         for (const PendingIOOp& op : ops) {
             visitStrong(op.fileValue);
+            visitStrong(op.errorType);
             // An op resolved but not yet discarded still holds its result in
             // the shared state (e.g. a read's byte list) — root it too.
             if (op.future.valid() &&
@@ -294,7 +318,7 @@ void AsyncIOManager::workerLoop()
                 // A failed async op must not be silent: report it, and
                 // resolve the future to a script-observable failure value.
                 std::ostringstream message;
-                message << "fileio: async " << opTypeName(op.type)
+                message << "fileio: async " << opLabel(op)
                         << (op.path.empty() ? std::string() : " '" + op.path + "'")
                         << " failed: " << e.what();
                 VM::emitDiagnostic(message.str(), OutputSeverity::Error,
@@ -302,7 +326,7 @@ void AsyncIOManager::workerLoop()
                 op.promise->set_value(opFailureValue(op.type));
             } catch (...) {
                 VM::emitDiagnostic(
-                    std::string("fileio: async ") + opTypeName(op.type) +
+                    std::string("fileio: async ") + opLabel(op) +
                         " failed with unknown error",
                     OutputSeverity::Error, "fileio");
                 op.promise->set_value(opFailureValue(op.type));
@@ -362,6 +386,8 @@ Value AsyncIOManager::executeOp(PendingIOOp& op)
             return executeFileClose(op);
         case PendingIOOp::Type::FileSyncFlush:
             return executeFileSyncFlush(op);
+        case PendingIOOp::Type::PathTask:
+            return executePathTask(op);
     }
     return Value::nilVal();
 }
@@ -497,4 +523,16 @@ Value AsyncIOManager::executeFileSyncFlush(PendingIOOp& op)
 
     op.file->file->flush();
     return op.file->file->good() ? Value::trueVal() : Value::falseVal();
+}
+
+Value AsyncIOManager::executePathTask(PendingIOOp& op)
+{
+    try {
+        return op.task();
+    } catch (const fileops::FileOpError& e) {
+        return fileOpErrorValue(e, op.errorType);
+    } catch (const std::exception& e) {
+        return fileOpErrorValue(
+            fileops::FileOpError("EIO", op.opName, "", "", 0, e.what()), op.errorType);
+    }
 }

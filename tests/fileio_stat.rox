@@ -1,0 +1,33 @@
+# fileio.stat and list_dir(details=true).
+import fileio
+
+var base = '../tests/tmp_fileio_stat'
+
+if fileio.dir_exists(base):
+  fileio.remove(base, recurse=true)
+fileio.create_dir(base + '/sub', recurse=true)
+fileio.write_file(base + '/b.rox', 'xyz')
+fileio.write_file(base + '/a.txt', 'hello')
+
+var s = fileio.stat(base + '/a.txt')
+print(s['kind'])
+print(s['size'])
+print(typeof(s['mtime']))
+print(s['mtime'] > 1.5e9)
+var d = fileio.stat(base + '/sub')
+print(d['kind'])
+print(d['size'])
+print(fileio.stat(base + '/missing'))
+print(fileio.stat(base + '/a.txt/below'))
+
+for e in fileio.list_dir(base, details=true):
+  print(e['name'] + ' ' + e['kind'] + ' ' + string(e['size']) + ' ' + string(typeof(e['mtime'])))
+print(fileio.list_dir(base + '/a.txt', details=true))
+print(fileio.list_dir(base + '/missing', details=true))
+print(fileio.list_dir(base))          # the default form is unchanged
+
+var fut = fileio.stat(base + '/b.rox', async=true)
+print(wait(for=fut)['size'])
+
+fileio.remove(base, recurse=true)
+print(fileio.dir_exists(base))

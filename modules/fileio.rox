@@ -48,9 +48,11 @@ func file_exists(path:string) -> bool:
   """return true if file exists"""
 
 @builtin
-func list_dir(path:string) -> list:
+func list_dir(path:string, details:bool=false) -> list:
   """list the entries of a directory, sorted; directories carry a trailing
-  '/'. Returns nil if path is not a directory"""
+  '/'. Returns nil if path is not a directory. With details=true, each entry
+  is a stat() dict with 'name' added (no trailing '/'), and a failure other
+  than "not a directory" raises FileIOException"""
 
 @builtin
 func delete_file(path:string) -> bool:
@@ -91,3 +93,59 @@ func file_extension(path:string) -> string:
 @builtin
 func file_without_extension(path:string) -> string:
   """path without extension"""
+
+# ---------------------------------------------------------------------------
+# The functions below raise FileIOException on failure. Its message starts
+# with a code -- "ENOENT: rename 'a' -> 'b': No such file or directory" -- and
+# e.detail is {'code', 'op', 'path'[, 'path2'][, 'errno'], 'reason'}, where
+# 'reason' is the message's tail ("No such file or directory"). Codes: ENOENT,
+# EEXIST, ENOTDIR, EISDIR, ENOTEMPTY, EACCES (also a file locked by another
+# writer), EBUSY, EXDEV, EINVAL, EIO. Except content_tag they run on the I/O
+# worker like read/write: synchronous by default, async=true returns a future
+# (the exception is raised where the future is consumed).
+
+@builtin
+func rename(from:string, to:string, replace:bool=false, async:bool=false):
+  """move a file or directory. An existing target is an error (EEXIST) unless
+  replace=true, which lets a file replace a file -- never a directory. Atomic
+  on one filesystem; a directory the backend cannot move (the browser's OPFS)
+  or a move across filesystems is copied then deleted, which is NOT atomic
+  but leaves the source intact if the copy fails"""
+
+@builtin
+func copy(from:string, to:string, recurse:bool=false, replace:bool=false, async:bool=false):
+  """copy a file, or a directory tree with recurse=true. replace follows
+  rename's rules. A file copy appears at `to` complete or not at all"""
+
+@builtin
+func remove(path:string, recurse:bool=false, async:bool=false):
+  """remove a file, or a directory: an empty one, or any one with
+  recurse=true (ENOTEMPTY otherwise)"""
+
+@builtin
+func stat(path:string, async:bool=false):
+  """a dict with 'kind' ('file', 'dir' or 'other'), 'size' (bytes; 0 for a
+  directory) and 'mtime' (seconds since the epoch, or nil where the
+  filesystem cannot say -- the browser's OPFS), or nil if nothing is at
+  path"""
+
+@builtin
+func write_file(path:string, data, format:string='text', atomic:bool=true, async:bool=false):
+  """write data (a string, or a list of bytes with format='binary') as the
+  whole content of path. atomic=true writes a hidden sibling
+  .<name>.tmp-<ms>-<hex>, syncs it and renames it over path: readers see the
+  old content or the new, and a failure leaves path untouched. (In the
+  browser the final replace is remove-then-move; if the page dies between the
+  two, path is missing and the newest temporary sibling holds the new
+  content.) atomic=false truncates and writes in place"""
+
+@builtin
+func file_tag(path:string, async:bool=false) -> string:
+  """a tag of the file's content for detecting conflicting writes: the FNV-1a
+  64 hash of its bytes in lowercase hex, '-', the byte count, e.g.
+  'cbf29ce484222325-0' for an empty file"""
+
+@builtin
+func content_tag(data) -> string:
+  """file_tag() of data not yet written: a string (as its UTF-8 bytes) or a
+  list of bytes. For a string read from a UTF-8 file, equals that file's tag"""

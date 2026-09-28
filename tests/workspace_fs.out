@@ -1,0 +1,74 @@
+-- first list: orphans restored (newest wins), stale and young temps hidden
+  sub dir 0
+  sub/deep.rox file 4
+  keep.rox file 4
+  lost.rox file 7
+.young.rox.tmp-
+["keep.rox", "lost.rox", "sub/"]
+lost v2
+deep
+-- write and read
+{"tag": "c36adf2b03cacd3c-9"}
+true
+true
+{"tag": "cbf29ce484222325-0"}
+-- CONFLICT
+true
+CONFLICT
+true
+true
+af63f54c86021707-1
+CONFLICT
+-- list: directories first, then files, by name
+  a dir 0
+  src dir 0
+  sub dir 0
+  fresh.rox file 1
+  keep.rox file 4
+  lost.rox file 7
+  notes.txt file 0
+  a/b dir 0
+  a/z.txt file 1
+  a/b dir 0
+  a/z.txt file 1
+{"error": "ENOENT", "message": "ENOENT: list 'nope': No such file or directory"}
+{"error": "ENOTDIR", "message": "ENOTDIR: list 'keep.rox': Not a directory"}
+-- stat
+file
+src/app.rox
+dir
+dir
+nil
+-- mkdir, rename, copy, remove
+{}
+{"error": "EEXIST", "message": "EEXIST: mkdir 'keep.rox': File exists"}
+{}
+{"error": "EEXIST", "message": "EEXIST: rename 'a/fresh.rox' -> 'keep.rox': target exists"}
+{"error": "ENOENT", "message": "ENOENT: rename 'nope' -> 'x': No such file or directory"}
+{}
+  a2/b dir 0
+  a2/fresh.rox file 1
+  a2/z.txt file 1
+{}
+kept
+{"error": "ENOTEMPTY", "message": "ENOTEMPTY: remove 'a2': Directory not empty"}
+{}
+{}
+nil
+-- confinement
+EINVAL
+EINVAL
+EINVAL
+EINVAL
+EINVAL
+EINVAL
+EINVAL
+EINVAL
+EINVAL
+EINVAL
+EINVAL
+EINVAL
+true
+normalized
+false
+false

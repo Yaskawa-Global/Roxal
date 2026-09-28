@@ -183,8 +183,64 @@ type Ide actor:
 # never delays a file save (and vice versa). File operations use fileio --
 # the same API user scripts get -- against /data, which the wasm host backs
 # with OPFS in the browser (persistent across reloads) and a plain directory
-# elsewhere. All synchronous: they run on the actor's own thread.
+# elsewhere. All synchronous: they run on the actor's own thread, one at a
+# time, in the order they were called.
+#
+# Two APIs. The fs_* methods take absolute paths and answer with bare values
+# (roxal/web's IDE uses them). The rest is a file service confined to one
+# root directory -- host_dir('data') unless the constructor is given another:
+#
+#   list(dir='', recursive=false) -> [{'path','kind','size','mtime'}]
+#                                    directories first, then files, by name;
+#                                    recursive lists each directory's
+#                                    contents right after it
+#   read(path)                    -> {'text', 'tag'}
+#   write(path, text, expect=nil) -> {'tag'}; creates parent directories;
+#                                    atomic. With `expect`, writes only if the
+#                                    file's current tag is `expect` ('' for
+#                                    "must not exist"), else returns
+#                                    {'error': 'CONFLICT', 'tag': current, ...}
+#   mkdir(path)                   -> {} (creates parents)
+#   rename(from, to)              -> {} (never replaces an existing target)
+#   copy(from, to)                -> {} (a directory is copied recursively)
+#   remove(path, recursive=false) -> {}
+#   stat(path)                    -> {'path','kind','size','mtime'}, or nil
+#
+# Paths in and out are relative to the root, '/'-separated; '' is the root
+# itself. An absolute path, a '..' segment or a backslash is refused. Tags
+# are fileio.file_tag()s (content hashes): compare them to detect that
+# someone else changed a file. mtime is nil where the filesystem cannot say
+# (the browser's OPFS). A failure is returned, never raised --
+# {'error': CODE, 'message': text} with fileio's codes (ENOENT, EEXIST,
+# EACCES -- including a file another script or tab holds open for writing
+# -- ...),
+# EINVAL for a bad path, or CONFLICT -- because an exception cannot cross
+# the store boundary to the page as anything more specific than "failed".
+#
+# write() checks `expect` and writes as one step with respect to the other
+# Workspace calls, not to other scripts or browser tabs writing the same
+# files.
+#
+# Atomic writes go through hidden siblings '.<name>.tmp-<ms>-<hex>' (see
+# fileio.write_file). list() hides them, and the first call of a session
+# tidies them up: an orphan whose file is missing -- the browser died between
+# the two steps of replacing it -- is renamed back into place (the newest,
+# if several), and leftovers beside an existing file are removed. Siblings
+# younger than 10 s are left alone: they may belong to a write in progress in
+# another tab.
 type Workspace actor:
+  private var base :string = ''
+  private var swept :bool = false
+
+  proc init(root = nil):
+    base = host_dir('data')
+    if root != nil:
+      base = root
+    while len(base) > 1 and base[len(base)-1:len(base)] == '/':
+      base = base[0:len(base)-1]
+    if not fileio.dir_exists(base):
+      fileio.create_dir(base, recurse=true)
+
   func fs_list(dir :string) -> list:
     var entries = fileio.list_dir(dir)
     if entries == nil:
@@ -234,6 +290,294 @@ type Workspace actor:
       return ""
     except e2:
       return string(e2)
+
+  # ---- the rooted file service ----
+
+  func `list`(dir = '', recursive = false):
+    var rel = _rel(dir, true)
+    if rel == nil:
+      return _invalid(dir)
+    try:
+      _sweep_once()
+      var abs = _abs(rel)
+      var s = fileio.stat(abs)
+      if s == nil:
+        return _error('ENOENT', 'list', rel, 'No such file or directory')
+      if s['kind'] != 'dir':
+        return _error('ENOTDIR', 'list', rel, 'Not a directory')
+      return _listing(abs, rel, recursive == true)
+    except e:
+      return _fail(e)
+
+  func read(path):
+    var rel = _rel(path, false)
+    if rel == nil:
+      return _invalid(path)
+    try:
+      _sweep_once()
+      var abs = _abs(rel)
+      var s = fileio.stat(abs)
+      if s == nil:
+        return _error('ENOENT', 'read', rel, 'No such file or directory')
+      if s['kind'] == 'dir':
+        return _error('EISDIR', 'read', rel, 'Is a directory')
+      var text = fileio.read_file(abs)
+      if text == nil:
+        return _error('EIO', 'read', rel, 'could not be read')
+      # The tag of exactly the text returned: a second read for the tag
+      # could see a newer file than this text.
+      return {'text': text, 'tag': fileio.content_tag(text)}
+    except e:
+      return _fail(e)
+
+  func write(path, text, expect = nil):
+    var rel = _rel(path, false)
+    if rel == nil:
+      return _invalid(path)
+    if not (text is string):
+      return _error('EINVAL', 'write', rel, 'text must be a string')
+    if expect != nil and not (expect is string):
+      return _error('EINVAL', 'write', rel, 'expect must be a tag string or nil')
+    try:
+      _sweep_once()
+      var abs = _abs(rel)
+      if expect != nil:
+        var current = _tag_or_empty(abs)
+        if current != expect:
+          var out = _error('CONFLICT', 'write', rel, 'changed since it was read')
+          out['tag'] = current
+          return out
+      var parent = fileio.path_directory(abs)
+      if not fileio.dir_exists(parent):
+        fileio.create_dir(parent, recurse=true)
+      fileio.write_file(abs, text)
+      return {'tag': fileio.content_tag(text)}
+    except e:
+      return _fail(e)
+
+  func mkdir(path):
+    var rel = _rel(path, false)
+    if rel == nil:
+      return _invalid(path)
+    try:
+      var abs = _abs(rel)
+      var s = fileio.stat(abs)
+      if s != nil:
+        if s['kind'] == 'dir':
+          return {}
+        return _error('EEXIST', 'mkdir', rel, 'File exists')
+      if not fileio.create_dir(abs, recurse=true):
+        return _error('EIO', 'mkdir', rel, 'could not be created')
+      return {}
+    except e:
+      return _fail(e)
+
+  func rename(from, to):
+    var rfrom = _rel(from, false)
+    if rfrom == nil:
+      return _invalid(from)
+    var rto = _rel(to, false)
+    if rto == nil:
+      return _invalid(to)
+    try:
+      fileio.rename(_abs(rfrom), _abs(rto))
+      return {}
+    except e:
+      return _fail(e)
+
+  func copy(from, to):
+    var rfrom = _rel(from, false)
+    if rfrom == nil:
+      return _invalid(from)
+    var rto = _rel(to, false)
+    if rto == nil:
+      return _invalid(to)
+    try:
+      var abs = _abs(rfrom)
+      var s = fileio.stat(abs)
+      fileio.copy(abs, _abs(rto), recurse=(s != nil and s['kind'] == 'dir'))
+      return {}
+    except e:
+      return _fail(e)
+
+  func remove(path, recursive = false):
+    var rel = _rel(path, false)
+    if rel == nil:
+      return _invalid(path)
+    try:
+      fileio.remove(_abs(rel), recurse=(recursive == true))
+      return {}
+    except e:
+      return _fail(e)
+
+  func stat(path):
+    var rel = _rel(path, true)
+    if rel == nil:
+      return _invalid(path)
+    try:
+      var s = fileio.stat(_abs(rel))
+      if s == nil:
+        return nil
+      return {'path': rel, 'kind': s['kind'], 'size': s['size'], 'mtime': s['mtime']}
+    except e:
+      return _fail(e)
+
+  # ---- helpers ----
+
+  # `p` as a normalized root-relative path ('' for the root, allowed only
+  # when `allow_root`), or nil if it is not a string or would leave the root.
+  private func _rel(p, allow_root :bool):
+    if not (p is string):
+      return nil
+    if len(p) > 0 and p[0:1] == '/':
+      return nil
+    for ch in p:
+      if ch == '\\':
+        return nil
+    var parts = []
+    for seg in p.split('/'):
+      if seg == '' or seg == '.':
+        continue
+      if seg == '..':
+        return nil
+      parts.append(seg)
+    var rel = ''
+    for seg in parts:
+      if rel == '':
+        rel = seg
+      else:
+        rel = rel + '/' + seg
+    if rel == '' and not allow_root:
+      return nil
+    return rel
+
+  private func _abs(rel :string) -> string:
+    if rel == '':
+      return base
+    return base + '/' + rel
+
+  # Strip the root from a path fileio reported, for messages.
+  private func _relative(p) -> string:
+    if not (p is string):
+      return ''
+    if p == base:
+      return ''
+    var n = len(base)
+    if len(p) > n and p[0:n + 1] == base + '/':
+      return p[n + 1:len(p)]
+    return p
+
+  private func _error(code :string, op :string, rel :string, reason :string) -> dict:
+    return {'error': code, 'message': code + ": " + op + " '" + rel + "': " + reason}
+
+  private func _invalid(p) -> dict:
+    var shown = '(not a string)'
+    if p is string:
+      shown = p
+    return {'error': 'EINVAL',
+            'message': "EINVAL: '" + shown + "': not a path inside the workspace"}
+
+  # A caught exception as a result: fileio's code and reason, paths shown
+  # relative to the root.
+  private func _fail(e) -> dict:
+    var d = e.detail
+    if d is dict and ('code' in d) and ('reason' in d):
+      var msg = d['code'] + ': ' + d['op'] + " '" + _relative(d['path']) + "'"
+      if 'path2' in d:
+        msg = msg + " -> '" + _relative(d['path2']) + "'"
+      return {'error': d['code'], 'message': msg + ': ' + d['reason']}
+    return {'error': 'EIO', 'message': string(e)}
+
+  private func _tag_or_empty(abs :string) -> string:
+    try:
+      return fileio.file_tag(abs)
+    except e :FileIOException:
+      if e.detail['code'] == 'ENOENT':
+        return ''
+      raise
+
+  private func _listing(abs :string, rel :string, recursive :bool) -> list:
+    var out = []
+    var entries = fileio.list_dir(abs, details=true)
+    if entries == nil:
+      return out
+    for want_dirs in [true, false]:
+      for e in entries:
+        if _temp_target(e['name']) != nil:
+          continue
+        var is_dir = e['kind'] == 'dir'
+        if is_dir != want_dirs:
+          continue
+        var p = e['name']
+        if rel != '':
+          p = rel + '/' + p
+        out.append({'path': p, 'kind': e['kind'], 'size': e['size'], 'mtime': e['mtime']})
+        if recursive and is_dir:
+          for sub in _listing(abs + '/' + e['name'], p, true):
+            out.append(sub)
+    return out
+
+  # The file a hidden atomic-write sibling '.<name>.tmp-<ms>-<8 hex>' belongs
+  # to, or nil if `name` is not one.
+  private func _temp_target(name :string):
+    var n = len(name)
+    if n < 18 or name[0:1] != '.' or name[n - 9:n - 8] != '-':
+      return nil
+    for ch in name[n - 8:n]:
+      if not (ch in '0123456789abcdef'):
+        return nil
+    var j = n - 10
+    while j >= 0 and (name[j:j + 1] in '0123456789'):
+      j = j - 1
+    if j == n - 10 or j < 5 or name[j - 4:j + 1] != '.tmp-':
+      return nil
+    return name[1:j - 4]
+
+  # Milliseconds since the epoch in a temp name (see _temp_target).
+  private func _temp_ms(name :string) -> int:
+    var n = len(name)
+    var j = n - 10
+    while j >= 0 and (name[j:j + 1] in '0123456789'):
+      j = j - 1
+    return int(name[j + 1:n - 9])
+
+  private proc _sweep_once():
+    if swept:
+      return
+    swept = true
+    try:
+      _sweep(base, Time.wall_now().seconds() * 1000)
+    except e:
+      print('web.Workspace: tidying temporary files failed: ' + string(e), channel='stderr')
+
+  private proc _sweep(abs :string, now_ms :int):
+    var entries = fileio.list_dir(abs, details=true)
+    if entries == nil:
+      return
+    var present = {}
+    for e in entries:
+      present[e['name']] = true
+    # list_dir sorts by name, and the timestamp in a temp name has a fixed
+    # width, so the last temp of a file is its newest.
+    var newest = {}
+    for e in entries:
+      var target = _temp_target(e['name'])
+      if target != nil and e['kind'] == 'file' and now_ms - _temp_ms(e['name']) > 10000:
+        newest[target] = e['name']
+    for e in entries:
+      var name = e['name']
+      var target = _temp_target(name)
+      if target == nil:
+        if e['kind'] == 'dir':
+          _sweep(abs + '/' + name, now_ms)
+        continue
+      if e['kind'] != 'file' or now_ms - _temp_ms(name) <= 10000:
+        continue
+      if not (target in present) and newest[target] == name:
+        fileio.rename(abs + '/' + name, abs + '/' + target)
+        present[target] = true
+      else:
+        fileio.remove(abs + '/' + name)
 
 # Data-flow diagram service: holds the open diagram DOCUMENTS -- inspect
 # mirror trees -- keyed by file path, and applies the canvas's edit ops to

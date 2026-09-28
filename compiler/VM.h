@@ -614,6 +614,17 @@ public:
     // Called by the nativeContinuation.onComplete callback
     bool processNativeDefaultParamDispatch(Value defaultValue);
 
+    // Invoke a native whose call was deferred (closure defaults or async param
+    // conversions ran first) and deliver its result into the original call's
+    // slot -- the continuation-path counterpart of callNativeFn's post-call
+    // handling, shared by both deferral paths so they cannot drift from it: a
+    // raise (Roxal or C++) inside the native has already unwound to a handler
+    // and must not have its stack written, and a native that suspended on a
+    // wait gets its result slot captured instead.
+    bool finishDeferredNativeCall(const NativeFn& fn, Value* args, size_t argc,
+                                  size_t originalArgCount, bool isInitMethod,
+                                  Value receiver);
+
     // Check if a future's promised type is assignable to the target type.
     // If true, the future can pass through without resolution.
     bool isFutureAssignableTo(const Value& futureVal, ValueType targetVT);

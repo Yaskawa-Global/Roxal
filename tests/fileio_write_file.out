@@ -1,0 +1,16 @@
+one
+two
+["doc.txt"]
+in place
+[1, 2, 3, 255]
+0
+EISDIR
+true
+ENOENT
+EINVAL
+EINVAL
+two
+["adir/", "bin", "doc.txt", "empty", "plain.txt"]
+three
+four
+false

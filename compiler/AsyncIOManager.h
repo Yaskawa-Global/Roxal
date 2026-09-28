@@ -18,6 +18,13 @@ namespace roxal {
 
 // Forward declarations
 class ObjFile;
+namespace fileops { class FileOpError; }
+
+// The script-facing form of a failed path operation: a FileIOException whose
+// message is the error's "<CODE>: ..." text and whose `detail` dict carries
+// {'code', 'op', 'path'[, 'path2'][, 'errno'], 'reason'}. `exType` is the FileIOException
+// type. Safe to call on the I/O worker (inside its GC participation window).
+Value fileOpErrorValue(const fileops::FileOpError& error, const Value& exType);
 
 // Pending async I/O operation
 struct PendingIOOp {
@@ -28,7 +35,8 @@ struct PendingIOOp {
         FileWrite,
         FileFlush,
         FileClose,          // Wait for pending ops then close
-        FileSyncFlush       // Wait for pending ops then flush
+        FileSyncFlush,      // Wait for pending ops then flush
+        PathTask            // A path-level operation (rename, copy, stat, ...)
     };
 
     Type type;
@@ -49,6 +57,16 @@ struct PendingIOOp {
 
     // For close/flush: futures to wait for before executing
     std::vector<std::shared_future<Value>> pendingFutures;
+
+    // PathTask: the operation, run on the worker. It captures only plain C++
+    // data -- a Value captured in the closure would be invisible to the GC.
+    // A fileops::FileOpError it throws (or any other exception) resolves the
+    // future to a FileIOException of `errorType`, so the awaiting script
+    // raises: path operations report failures as exceptions, never as a
+    // diagnostic plus a failure value like the handle ops above.
+    std::function<Value()> task;
+    std::string opName;                 // fileio function name, for messages
+    Value errorType;                    // FileIOException type; traced
 };
 
 class AsyncIOManager {
@@ -108,6 +126,7 @@ private:
     Value executeFileFlush(PendingIOOp& op);
     Value executeFileClose(PendingIOOp& op);
     Value executeFileSyncFlush(PendingIOOp& op);
+    Value executePathTask(PendingIOOp& op);
 
     std::thread workerThread;
     std::atomic<bool> running{false};

@@ -1,0 +1,31 @@
+# fileio.remove: a file, an empty directory, a tree with recurse=true.
+import fileio
+
+var base = '../tests/tmp_fileio_remove'
+
+func code_of(f) -> string:
+  try:
+    f()
+    return 'ok'
+  except e :FileIOException:
+    return e.detail['code']
+
+if fileio.dir_exists(base):
+  fileio.remove(base, recurse=true)
+fileio.create_dir(base + '/full/sub', recurse=true)
+fileio.create_dir(base + '/empty')
+fileio.write_file(base + '/f', 'F')
+fileio.write_file(base + '/full/sub/x', 'X')
+
+fileio.remove(base + '/f')
+print(fileio.file_exists(base + '/f'))
+print(code_of(func(): fileio.remove(base + '/f')))
+fileio.remove(base + '/empty')
+print(fileio.dir_exists(base + '/empty'))
+print(code_of(func(): fileio.remove(base + '/full')))
+print(fileio.file_exists(base + '/full/sub/x'))
+fileio.remove(base + '/full', recurse=true)
+print(fileio.dir_exists(base + '/full'))
+
+fileio.remove(base, recurse=true)
+print(fileio.dir_exists(base))

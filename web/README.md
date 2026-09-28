@@ -179,11 +179,19 @@ unknown name logs a warning and opens the usual file rather than failing to
 boot -- a link outlives the file it names. Opening a file this way also makes
 it the remembered one, so a later visit without the parameter returns to it.
 
-Deliberately language-less for this first pass: no Monarch tokenizer, no
-IntelliSense, no navigation. You still get multi-cursor, find/replace, undo,
-bracket matching and column select, which is most of why one embeds a real editor
-rather than a `<textarea>`. Highlighting comes next; navigation and completion
-need the AST surfaced to JS, which is separate work.
+Roxal support comes from two places. Highlighting is a Monarch tokenizer in
+`src/roxal-language.js`, which runs in the page. Diagnostics and hover come from
+the VM: `web.serve()` exposes an `ide` store (the `Ide` actor in
+`modules/web.rox`), and the editor calls its `check` method as the buffer
+changes, showing the results as markers, and its `describe` method for hover. A
+slow parse runs on that actor's thread, so it never holds up the running app.
+There is no completion or go-to-definition yet.
+
+Files come from the `workspace` store, also exposed by `web.serve()` (the
+`Workspace` actor). This app uses its `fs_*` methods. The rooted methods
+(`list`, `read`, `write` with conflict detection through content tags, `mkdir`,
+`rename`, `copy`, `remove`, `stat`) serve a file tree; they are documented in
+`modules/web.rox`.
 
 Three Vite details, each of which cost a build failure:
 

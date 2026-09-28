@@ -1,0 +1,50 @@
+# fileio.copy: a file, a directory tree with recurse=true, the replace rules.
+import fileio
+
+var base = '../tests/tmp_fileio_copy'
+
+func code_of(f) -> string:
+  try:
+    f()
+    return 'ok'
+  except e :FileIOException:
+    return e.detail['code']
+
+if fileio.dir_exists(base):
+  fileio.remove(base, recurse=true)
+fileio.create_dir(base + '/t/u', recurse=true)
+fileio.write_file(base + '/t/u/v.txt', 'V')
+fileio.write_file(base + '/t/w.txt', 'W')
+fileio.write_file(base + '/a.txt', 'A')
+
+# a file; the source stays
+fileio.copy(base + '/a.txt', base + '/b.txt')
+print(fileio.read_file(base + '/b.txt'))
+print(fileio.read_file(base + '/a.txt'))
+
+# an existing target: EEXIST unless replace=true
+fileio.write_file(base + '/a.txt', 'A2')
+print(code_of(func(): fileio.copy(base + '/a.txt', base + '/b.txt')))
+print(fileio.read_file(base + '/b.txt'))
+fileio.copy(base + '/a.txt', base + '/b.txt', replace=true)
+print(fileio.read_file(base + '/b.txt'))
+
+# a directory needs recurse=true, and never lands on an existing directory
+print(code_of(func(): fileio.copy(base + '/t', base + '/t2')))
+fileio.copy(base + '/t', base + '/t2', recurse=true)
+print(fileio.list_dir(base + '/t2'))
+print(fileio.read_file(base + '/t2/u/v.txt'))
+print(fileio.list_dir(base + '/t'))
+print(code_of(func(): fileio.copy(base + '/t', base + '/t2', recurse=true)))
+print(code_of(func(): fileio.copy(base + '/t', base + '/t2', recurse=true, replace=true)))
+print(code_of(func(): fileio.copy(base + '/a.txt', base + '/t2', replace=true)))
+
+# into itself, from nowhere
+print(code_of(func(): fileio.copy(base + '/t', base + '/t/u/inner', recurse=true)))
+print(code_of(func(): fileio.copy(base + '/nope', base + '/z')))
+
+# no temporaries left behind
+print(fileio.list_dir(base))
+
+fileio.remove(base, recurse=true)
+print(fileio.dir_exists(base))

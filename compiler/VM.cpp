@@ -12064,9 +12064,6 @@ bool VM::processNativeDefaultParamDispatch(Value defaultValue)
         }
     }
 
-    ArgsView view{buf, actual};
-    Value result { fn(*this, view) };
-
     // For init methods (proc that returns void on ObjectInstance), the result should be the instance
     // Native init returns nil, but we want to leave the instance on the stack
     // Check if this is a proc (not func) - init is always a proc
@@ -12075,38 +12072,79 @@ bool VM::processNativeDefaultParamDispatch(Value defaultValue)
                         state.funcType &&
                         state.funcType->func.has_value() &&
                         state.funcType->func.value().isProc;
-    Value finalResult = result;
-    if (isInitMethod) {
-        finalResult = state.receiver;
-    } else {
+    // args live in state.argsBuffer: pop the state only after the call.
+    bool ok = finishDeferredNativeCall(fn, buf, actual, state.originalArgCount,
+                                       isInitMethod, state.receiver);
+    thread->popNativeDefaultParam();
+    return ok;
+}
+
+
+bool VM::finishDeferredNativeCall(const NativeFn& fn, Value* args, size_t argc,
+                                  size_t originalArgCount, bool isInitMethod,
+                                  Value receiver)
+{
+    const size_t stackDepthBefore = static_cast<size_t>(thread->stackTop - thread->stack.begin());
+    const size_t frameDepthBefore = thread->frames.size();
+    thread->lastNativeCallRaised = false;
+
+    Value result;
+    // As in callNativeFn, a C++ exception becomes a catchable Roxal one -- but
+    // raised AFTER the catch block, which only records the message. Running
+    // the VM's unwinder inside the handler is what callNativeFn does, and the
+    // emsdk 6.0.6 wasm backend (-fwasm-exceptions, -O3) compiled this handler
+    // to `__cxa_begin_catch; unreachable` -- clang's IR still had the body --
+    // so every such throw trapped in the browser.
+    bool threw = false;
+    std::string thrown;
+    {
+        struct DepthGuard {
+            Thread* t;
+            explicit DepthGuard(Thread* thread) : t(thread) { t->nativeCallDepth++; }
+            ~DepthGuard() { t->nativeCallDepth--; }
+        } depthGuard(thread.get());
+        try {
+            result = fn(*this, ArgsView{args, argc});
+        } catch (std::exception& e) {
+            threw = true;
+            thrown = e.what();
+        }
     }
-
-    // Clean up original call args from stack and store result.
-    // After processContinuationDispatch pops the closure result, the stack has the
-    // receiver and original args. We need to replace them with the final result.
-    size_t argCount = state.originalArgCount;
-
-    // Mirror of callNativeFn's wait-suspension capture: a native invoked through
-    // the deferred-default path can suspend too (fileio's async=false parks the
-    // thread on the I/O future). Without this, the suspension DANGLED — the
-    // native's placeholder return was stored as the call's result and the still-
-    // active suspension then hijacked the NEXT native call's result slot.
-    // Init methods are excluded: their result is the receiver by construction,
-    // which the deferred-result machinery cannot represent.
-    auto& waitSusp = thread->waitSuspension;
-    if (waitSusp.active && !waitSusp.resultSlot && !isInitMethod) {
-        waitSusp.resultSlot = &*(thread->stackTop - argCount - 1);
-        waitSusp.stackBase = thread->stackTop - argCount;
-        waitSusp.frameDepth = thread->frames.size();
-        thread->popNativeDefaultParam();
+    if (threw) {
+        raiseException(Value::exceptionVal(Value::stringVal(toUnicodeString(thrown))));
+        thread->exceptionJumpPending.store(false, std::memory_order_relaxed);
+        thread->lastNativeCallRaised = true;
         return true;
     }
 
-    // Stack: [receiver, <args>...] - write result to receiver slot, pop args
-    *(thread->stackTop - argCount - 1) = finalResult;
-    popN(argCount);
+    // The native raised: the handler owns the stack now, and the call's
+    // callee+args area was already popped by the unwind.
+    const bool unwound =
+        static_cast<size_t>(thread->stackTop - thread->stack.begin()) < stackDepthBefore
+        || thread->frames.size() < frameDepthBefore;
+    if (thread->exceptionJumpPending.load(std::memory_order_relaxed) || unwound) {
+        thread->exceptionJumpPending.store(false, std::memory_order_relaxed);
+        thread->lastNativeCallRaised = true;
+        return true;
+    }
 
-    thread->popNativeDefaultParam();
+    // A native can suspend on a wait (fileio's async=false parks the thread on
+    // the I/O future): capture the result slot rather than store the native's
+    // placeholder return, or the dangling suspension hijacks the NEXT native
+    // call's result slot. Init methods are excluded: their result is the
+    // receiver by construction, which the deferred-result machinery cannot
+    // represent.
+    auto& waitSusp = thread->waitSuspension;
+    if (waitSusp.active && !waitSusp.resultSlot && !isInitMethod) {
+        waitSusp.resultSlot = &*(thread->stackTop - originalArgCount - 1);
+        waitSusp.stackBase = thread->stackTop - originalArgCount;
+        waitSusp.frameDepth = thread->frames.size();
+        return true;
+    }
+
+    // Stack: [callee/receiver, <args>...] -- the result replaces the callee.
+    *(thread->stackTop - originalArgCount - 1) = isInitMethod ? receiver : result;
+    popN(originalArgCount);
     return true;
 }
 
@@ -12509,26 +12547,17 @@ bool VM::processNativeParamConversion(Value convertedValue)
         }
     }
 
-    ArgsView view{buf, actual};
-    Value result { fn(*this, view) };
-
     // Check if this is an init method (proc returning instance)
     bool isInitMethod = state.includeReceiver &&
                         isObjectInstance(state.receiver) &&
                         state.funcType &&
                         state.funcType->func.has_value() &&
                         state.funcType->func.value().isProc;
-    Value finalResult = result;
-    if (isInitMethod)
-        finalResult = state.receiver;
-
-    // Clean up original call args from stack
-    size_t argCount = state.originalArgCount;
-    *(thread->stackTop - argCount - 1) = finalResult;
-    popN(argCount);
-
+    // args live in state.argsBuffer: pop the state only after the call.
+    bool ok = finishDeferredNativeCall(fn, buf, actual, state.originalArgCount,
+                                       isInitMethod, state.receiver);
     thread->popNativeParamConversion();
-    return true;
+    return ok;
 }
 
 

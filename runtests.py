@@ -313,6 +313,8 @@ tests = [
     'property_count', 'property_accessor', 'property_accessor_oneliner', 'dict_property_getters', 'cmdline_execute', 'repl_run', 'invalid_option', 'init_failure_sys_stub', 'fileio_basic', 'fileio_binary',
     'fileio_read_binary', 'fileio_write_binary', 'fileio_actor_write', 'fileio_delete', 'fileio_extra', 'fileio_packed',
     'fileio_sync', 'fileio_async_param', 'fileio_list_dir',
+    'fileio_rename', 'fileio_copy', 'fileio_stat', 'fileio_write_file', 'fileio_tag',
+    'fileio_remove', 'fileio_errors', 'native_raise_defaulted', 'workspace_fs',
     'string_concat_roundtrip', 'actor_concat_stress',
     'help_doc', 'help_wait', 'help_time_wall_now', 'help_time_wall_now_instance', 'docstring_func',
     'builtin_object_methods', 'math_counter_signal', 'print_flush', 'print_channels',
@@ -364,8 +366,12 @@ fileio_tests = [
     'fileio_basic', 'fileio_binary', 'fileio_read_binary', 'fileio_write_binary',
     'fileio_actor_write', 'fileio_delete', 'fileio_extra', 'fileio_packed',
     'fileio_sync', 'fileio_async_param', 'fileio_list_dir',
+    'fileio_rename', 'fileio_copy', 'fileio_stat', 'fileio_write_file', 'fileio_tag',
+    'fileio_remove', 'fileio_errors', 'native_raise_defaulted', 'workspace_fs',
     'string_concat_roundtrip', 'actor_concat_stress'
 ]
+# The web module's services (it needs inspect and fileio too).
+web_tests = ['workspace_fs']
 dds_tests = ['dds_bounded_ok', 'dds_bounded_fail', 'dds_complex_smoke', 'dds_array_ok', 'dds_array_struct', 'dds_array_multi', 'dds_nested_module',
              'dds_idl_include', 'dds_idl_include_missing', 'dds_idl_stock',
              'dds_ros_import', 'dds_ros_signal_roundtrip', 'dds_ros_camerainfo',
@@ -693,6 +699,9 @@ if not has_grpc and any(test in tests for test in grpc_tests):
 if not has_fileio and any(test in tests for test in fileio_tests):
     print("Skipping fileio tests (feature not enabled).")
     tests = [t for t in tests if t not in fileio_tests]
+if 'web' not in features and any(test in tests for test in web_tests):
+    print("Skipping web module tests (feature not enabled).")
+    tests = [t for t in tests if t not in web_tests]
 if not has_dds:
     if any(test in tests for test in dds_tests):
         print("Skipping DDS tests (feature not enabled).")

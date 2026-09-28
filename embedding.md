@@ -348,6 +348,39 @@ would keep running the old revision while new imports got the new one.
 `clearUserModuleRegistry()` forgets every module; it is what the REPL's
 `/reload` uses.
 
+## Filesystems that lack something
+
+fileio assumes an ordinary POSIX filesystem. If a directory you give scripts
+cannot do everything one can, say so before scripts run, by installing
+`roxal::fileops::backendTraitsHook` (`compiler/FileOps.h`). fileio calls it
+with an existing path and asks three things:
+
+- `canRenameDirs`: can a directory here be renamed? If not, `fileio.rename`
+  copies the directory, then deletes the original. That is not atomic, but the
+  original is left intact if the copy fails.
+- `reliableMTime`: are modification times here real? If not, `fileio.stat`
+  reports `mtime` as nil rather than a wrong time.
+- `lockFailuresAreEIO`: does removing or renaming a file that is open for
+  writing fail with a bare `EIO`, and little else fail that way? If so, fileio
+  reports such an `EIO` on an existing file as `EACCES` ("in use"), which is
+  what scripts and the web IDE are told to expect for a locked file.
+
+```cpp
+roxal::fileops::backendTraitsHook = [](const std::string& path) {
+    roxal::fileops::BackendTraits traits;      // defaults: both true
+    if (isOnMyObjectStore(path)) {
+        traits.canRenameDirs = false;
+        traits.reliableMTime = false;
+        traits.lockFailuresAreEIO = true;
+    }
+    return traits;
+};
+```
+
+The hook is called from fileio's I/O worker thread and from script threads,
+so it must be thread-safe. The
+wasm host installs one for its OPFS mount at `/data` (`wasm/main.cpp`).
+
 ## Moving from the superseded API
 
 `run()`, `runWithImports()`, `setup()`, `setupLine()`, `runLine()`,

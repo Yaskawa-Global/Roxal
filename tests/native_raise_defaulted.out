@@ -1,0 +1,5 @@
+explicit: read_line requires text mode
+defaulted: read_line requires text mode
+defaulted C++: fileio.close expects file handle
+42
+84

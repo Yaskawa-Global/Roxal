@@ -1,0 +1,50 @@
+# fileio.rename: files and directories, the replace rules, and error codes.
+import fileio
+
+var base = '../tests/tmp_fileio_rename'
+
+func code_of(f) -> string:
+  try:
+    f()
+    return 'ok'
+  except e :FileIOException:
+    return e.detail['code']
+
+if fileio.dir_exists(base):
+  fileio.remove(base, recurse=true)
+fileio.create_dir(base + '/dir/sub', recurse=true)
+fileio.write_file(base + '/a.txt', 'A')
+fileio.write_file(base + '/c.txt', 'C')
+fileio.write_file(base + '/dir/sub/x.txt', 'X')
+
+# a file
+fileio.rename(base + '/a.txt', base + '/b.txt')
+print(fileio.list_dir(base))
+
+# an existing target: EEXIST unless replace=true, which only replaces a file
+print(code_of(func(): fileio.rename(base + '/b.txt', base + '/c.txt')))
+print(fileio.read_file(base + '/c.txt'))
+fileio.rename(base + '/b.txt', base + '/c.txt', replace=true)
+print(fileio.read_file(base + '/c.txt'))
+print(code_of(func(): fileio.rename(base + '/c.txt', base + '/dir')))
+print(code_of(func(): fileio.rename(base + '/c.txt', base + '/dir', replace=true)))
+print(code_of(func(): fileio.rename(base + '/dir', base + '/c.txt', replace=true)))
+
+# a directory, with its contents
+fileio.rename(base + '/dir', base + '/moved')
+print(fileio.list_dir(base))
+print(fileio.read_file(base + '/moved/sub/x.txt'))
+
+# into itself, from nowhere, into a missing directory
+print(code_of(func(): fileio.rename(base + '/moved', base + '/moved/sub/deeper')))
+print(code_of(func(): fileio.rename(base + '/nope', base + '/x')))
+print(code_of(func(): fileio.rename(base + '/c.txt', base + '/no/such/x')))
+
+# async: the future resolves when done, or raises where it is consumed
+wait(for=fileio.rename(base + '/c.txt', base + '/d.txt', async=true))
+print(fileio.file_exists(base + '/d.txt'))
+var f = fileio.rename(base + '/nope', base + '/x', async=true)
+print(code_of(func(): wait(for=f)))
+
+fileio.remove(base, recurse=true)
+print(fileio.dir_exists(base))

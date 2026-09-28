@@ -566,12 +566,18 @@ void drainInbound()
         // Decode the payload once. A malformed payload must not be fatal -- the
         // handler simply sees no arguments -- but it must be SAID, or the
         // symptom is an arity error at the call site with no hint why.
+        // Calls and callbacks carry their arguments as a list, spread here; a
+        // store write carries the ONE value written, which may itself be a
+        // list -- spreading that delivered only its first element.
+        Value decoded = Value::nilVal();
         std::vector<Value> args;
         try {
             Decoder dec(work.args.data(), work.args.size());
-            Value arg = dec.value();
-            if (isList(arg))        args = asList(arg)->getElements();
-            else if (!arg.isNil())  args.push_back(arg);
+            decoded = dec.value();
+            if (work.kind != Inbound::StoreWrite) {
+                if (isList(decoded))        args = asList(decoded)->getElements();
+                else if (!decoded.isNil())  args.push_back(decoded);
+            }
         } catch (const std::exception& e) {
             VM::emitDiagnostic(
                 std::string("web: could not decode inbound arguments: ") + e.what(),
@@ -602,8 +608,7 @@ void drainInbound()
                     break;
                 case Inbound::StoreWrite:
                     if (g_onStoreWrite)
-                        g_onStoreWrite(work.store, work.member,
-                                       args.empty() ? Value::nilVal() : args[0]);
+                        g_onStoreWrite(work.store, work.member, decoded);
                     break;
             }
         } catch (const std::exception& e) {

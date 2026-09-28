@@ -1,0 +1,53 @@
+# The error model of fileio's raising functions: a FileIOException (so also a
+# RuntimeException) whose message starts with a code, and whose .detail dict
+# carries the code, the operation and its paths.
+import fileio
+
+var base = '../tests/tmp_fileio_errors'
+
+if fileio.dir_exists(base):
+  fileio.remove(base, recurse=true)
+fileio.create_dir(base)
+fileio.write_file(base + '/a', 'A')
+fileio.write_file(base + '/b', 'B')
+
+try:
+  fileio.rename(base + '/nope', base + '/x')
+except e :FileIOException:
+  print(e.detail['code'])
+  print(e.detail['op'])
+  print(e.detail['path'] == base + '/nope')
+  print(e.detail['path2'] == base + '/x')
+  print(string(e)[0:15])
+  print(typeof(e.detail['errno']))
+  print(e.detail['reason'])
+
+# RuntimeException catches it too
+try:
+  fileio.remove(base + '/nope')
+except e :RuntimeException:
+  print('RuntimeException ' + e.detail['code'])
+
+# a refusal by fileio itself carries no errno
+try:
+  fileio.rename(base + '/a', base + '/b')
+except e:
+  print(string(e)[0:7])
+  print('errno' in e.detail)
+
+# a bad argument value is EINVAL, raised at the call
+try:
+  fileio.write_file(base + '/a', 'x', format='csv')
+except e:
+  print(e.detail['code'] + ' ' + e.detail['op'])
+
+# async=true: nothing is raised until the future is consumed
+var fut = fileio.remove(base + '/nope', async=true)
+print('queued')
+try:
+  wait(for=fut)
+except e:
+  print('at wait: ' + e.detail['code'])
+
+fileio.remove(base, recurse=true)
+print(fileio.dir_exists(base))

@@ -47,6 +47,7 @@
 #include "web/WebHostLoop.h"
 #include "web/UnicodeHost.h"
 #include "web/ScriptInbox.h"
+#include "FileOps.h"
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
@@ -70,6 +71,11 @@ std::atomic<int> g_threadInfo{0};
 constexpr int kInfoIsBrowserMain = 1 << 0;
 constexpr int kInfoVMMainThread  = 1 << 1;
 constexpr int kInfoLatched       = 1 << 2;
+
+#ifdef ROXAL_WASM_WASMFS
+// The OPFS backend mounted at /data, for fileio's backend-traits hook.
+backend_t g_opfsBackend = nullptr;
+#endif
 
 // Sibling imports resolve relative to the script, as they do for the CLI --
 // `import helper` next to /data/app.rox must find /data/helper.rox. Submitted
@@ -457,6 +463,25 @@ int main(int argc, char** argv) {
         if (!opfs || wasmfs_create_directory("/data", 0777, opfs) != 0) {
             std::cerr << "roxal-wasm: OPFS mount failed; /data will not persist" << std::endl;
             ::mkdir("/data", 0777);
+        } else {
+            // Tell fileio what the OPFS mount cannot do: move a directory
+            // (the backend answers EBUSY -- fileio copies then deletes
+            // instead), keep file times (WASMFS stamps a file with the time
+            // it was first looked up this session, so after a reload mtime is
+            // plausible-looking but wrong -- stat reports nil), or say that a
+            // remove/move failed because the file is open for writing
+            // (libwasmfs_opfs.js maps every such failure to EIO; fileio
+            // reports it as EACCES).
+            g_opfsBackend = opfs;
+            roxal::fileops::backendTraitsHook = [](const std::string& path) {
+                roxal::fileops::BackendTraits traits;
+                if (wasmfs_get_backend_by_path(path.c_str()) == g_opfsBackend) {
+                    traits.canRenameDirs = false;
+                    traits.reliableMTime = false;
+                    traits.lockFailuresAreEIO = true;
+                }
+                return traits;
+            };
         }
     } else {
         ::mkdir("/data", 0777);

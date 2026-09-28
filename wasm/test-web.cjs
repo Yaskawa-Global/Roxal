@@ -48,6 +48,11 @@ async function waitFor(pred, ms, what) {
     }
 }
 
+// waitFor for a check: false on timeout instead of aborting the run.
+async function settles(pred, ms) {
+    try { await waitFor(pred, ms, ''); return true; } catch (e) { return false; }
+}
+
 const APP = `
 import web
 
@@ -56,6 +61,7 @@ type App object:
   var label :string = "start"
   var ratio :real = 0.5
   var readonly_note :string = "fixed"
+  var items :list = []
 
   proc bump(amount :int):
     this.count = this.count + amount
@@ -140,6 +146,13 @@ print("served")
     await waitFor(() => store.getSnapshot().label === 'from JS', 15000, 'the write to land');
     check('JS write reaches Roxal and echoes back', store.getSnapshot().label === 'from JS');
 
+    // A list is ONE value: the bridge used to spread it like call arguments,
+    // so only its first element arrived.
+    store.set('items', [1, 2, 3]);
+    check('JS write of a list delivers the whole list',
+          await settles(() => JSON.stringify(store.getSnapshot().items) === '[1,2,3]', 5000),
+          JSON.stringify(store.getSnapshot().items));
+
     // --- coalescing ---------------------------------------------------------
     // Five writes inside ONE Roxal turn must produce ONE notification, not five.
     // This is what keeps a fast-changing value cheap to display.
@@ -208,6 +221,70 @@ web.serve(6)
     check('clock-driven signal updates at its clock rate (10 Hz)', rate > 6 && rate < 16,
           rate.toFixed(1) + '/s');
     await sigDone().catch(() => {});
+
+    // --- the Workspace file service --------------------------------------
+    // web.serve() exposes it as "workspace", rooted at /data. Its results are
+    // plain data, and so are its failures ({error, message}): a store method
+    // that raised would reach the page only as a generic rejection.
+    const wsGen = m.roxalStoreGeneration('workspace');
+    const WS = `
+import web
+type Ctl object:
+  proc quit():
+    web.stop()
+web.expose("ctl", Ctl())
+web.serve(60)
+`;
+    const wsDone = submit(m, WS, 'ws.rox');
+    await waitFor(() => m.roxalStoreGeneration('workspace') > wsGen, 30000, 'a fresh workspace store');
+    const ws = m.roxalStore('workspace');
+    check('workspace advertises the file service',
+          ['list', 'read', 'write', 'mkdir', 'rename', 'copy', 'remove', 'stat']
+              .every(n => ws.methods.includes(n)), JSON.stringify(ws.methods));
+
+    const w1 = await ws.call('write', 'wsjs/a.rox', 'print(1)\n');
+    check('write returns a content tag', w1 && /^[0-9a-f]+-9$/.test(w1.tag), JSON.stringify(w1));
+    const r1 = await ws.call('read', 'wsjs/a.rox');
+    check('read returns the text and the same tag',
+          r1 && r1.text === 'print(1)\n' && r1.tag === w1.tag, JSON.stringify(r1));
+    const w2 = await ws.call('write', 'wsjs/a.rox', 'print(2)\n', r1.tag);
+    check('write expecting the current tag succeeds', w2 && w2.tag && w2.tag !== r1.tag,
+          JSON.stringify(w2));
+    const c = await ws.call('write', 'wsjs/a.rox', 'print(3)\n', r1.tag);
+    check('write expecting a stale tag is a CONFLICT with the current tag',
+          c && c.error === 'CONFLICT' && c.tag === w2.tag, JSON.stringify(c));
+    const kept = await ws.call('read', 'wsjs/a.rox');
+    check('a CONFLICT writes nothing', kept && kept.text === 'print(2)\n', JSON.stringify(kept));
+
+    const up = await ws.call('read', '../x');
+    const abs = await ws.call('read', '/etc/x');
+    check('paths leaving the root are refused (EINVAL)',
+          up.error === 'EINVAL' && abs.error === 'EINVAL', JSON.stringify([up, abs]));
+    const miss = await ws.call('read', 'wsjs/missing.rox');
+    check('a failure resolves as data, not a rejection',
+          miss && miss.error === 'ENOENT' && /missing\.rox/.test(miss.message),
+          JSON.stringify(miss));
+
+    await ws.call('mkdir', 'wsjs/sub');
+    const lst = await ws.call('list', 'wsjs');
+    check('list is plain data, directories first',
+          Array.isArray(lst) && lst.length === 2 && lst[0].path === 'wsjs/sub'
+          && lst[0].kind === 'dir' && lst[1].path === 'wsjs/a.rox' && lst[1].size === 9,
+          JSON.stringify(lst));
+    const rn = await ws.call('rename', 'wsjs/sub', 'wsjs/sub2');
+    const st = await ws.call('stat', 'wsjs/sub2');
+    check('rename a directory, then stat it',
+          rn && !rn.error && st && st.kind === 'dir' && st.path === 'wsjs/sub2',
+          JSON.stringify([rn, st]));
+    const cp = await ws.call('copy', 'wsjs/a.rox', 'wsjs/b.rox');
+    const rb = await ws.call('read', 'wsjs/b.rox');
+    check('copy a file', cp && !cp.error && rb.text === 'print(2)\n', JSON.stringify([cp, rb]));
+    const rm = await ws.call('remove', 'wsjs', true);
+    check('remove a tree', rm && !rm.error && (await ws.call('stat', 'wsjs')) === null,
+          JSON.stringify(rm));
+
+    await m.roxalStore('ctl').call('quit');
+    await wsDone().catch(() => {});
 
     m.ccall('roxal_quit', null, [], []);
     await done().catch(() => {});

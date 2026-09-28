@@ -1,0 +1,48 @@
+# fileio.write_file: whole-file writes, atomic by default.
+import fileio
+
+var base = '../tests/tmp_fileio_write_file'
+var p = base + '/doc.txt'
+
+func code_of(f) -> string:
+  try:
+    f()
+    return 'ok'
+  except e :FileIOException:
+    return e.detail['code']
+
+if fileio.dir_exists(base):
+  fileio.remove(base, recurse=true)
+fileio.create_dir(base)
+
+fileio.write_file(p, 'one')
+print(fileio.read_file(p))
+fileio.write_file(p, 'two')
+print(fileio.read_file(p))
+print(fileio.list_dir(base))           # no temporary left behind
+
+fileio.write_file(base + '/plain.txt', 'in place', atomic=false)
+print(fileio.read_file(base + '/plain.txt'))
+fileio.write_file(base + '/bin', [1, 2, 3, 255], format='binary')
+print(fileio.read_file(base + '/bin', 'binary'))
+fileio.write_file(base + '/empty', '')
+print(fileio.file_size(base + '/empty'))
+
+# a failed write leaves the target as it was
+fileio.create_dir(base + '/adir')
+print(code_of(func(): fileio.write_file(base + '/adir', 'x')))
+print(fileio.dir_exists(base + '/adir'))
+print(code_of(func(): fileio.write_file(base + '/no/parent.txt', 'x')))
+print(code_of(func(): fileio.write_file(p, [1, 300], format='binary')))
+print(code_of(func(): fileio.write_file(p, 'x', format='csv')))
+print(fileio.read_file(p))
+print(fileio.list_dir(base))           # still no temporaries
+
+# async, and ordered with later I/O on the same worker
+wait(for=fileio.write_file(p, 'three', async=true))
+print(fileio.read_file(p))
+fileio.write_file(p, 'four', async=true)
+print(fileio.read_file(p))
+
+fileio.remove(base, recurse=true)
+print(fileio.dir_exists(base))

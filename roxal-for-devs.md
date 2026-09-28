@@ -3014,7 +3014,7 @@ with any buffered I/O.
 * `write(file, data, async=false)` - write data to file
 * `flush(file, async=false)` - flush buffered writes to the underlying file
 * `file_exists(path)` - true if file exists
-* `list_dir(path)` - sorted directory listing; directories carry a trailing `/`; nil if `path` is not a directory
+* `list_dir(path, details=false)` - sorted directory listing; directories carry a trailing `/`; nil if `path` is not a directory. With `details=true` each entry is a `stat()` dict plus `'name'` (no trailing `/`)
 * `dir_exists(path)` - true if directory exists
 * `create_dir(path, recurse=false)` - create a directory (optionally creating parents)
 * `file_size(path)` - size of file in bytes
@@ -3026,7 +3026,60 @@ with any buffered I/O.
 * `delete_file(path)` - delete a file, returning true if it existed
 * `delete_dir(path, recurse=false)` - delete a directory, optionally recursively
 
-**Note:** `read`, `read_line`, `read_file`, and `write` do not block, but return futures that are automatically resolved when used.
+The functions above report failure as `false` or `nil`. The ones below
+**raise** instead, so the reason is never lost:
+
+* `rename(from, to, replace=false, async=false)` - move a file or directory
+* `copy(from, to, recurse=false, replace=false, async=false)` - copy a file, or a directory tree with `recurse=true`
+* `remove(path, recurse=false, async=false)` - remove a file, an empty directory, or any directory with `recurse=true`
+* `stat(path, async=false)` - `{'kind': 'file'|'dir'|'other', 'size': bytes, 'mtime': seconds since the epoch}`, or `nil` if nothing is at `path`. `size` is 0 for a directory; `mtime` is `nil` where the filesystem cannot say (the browser's OPFS storage)
+* `write_file(path, data, format='text', atomic=true, async=false)` - replace the whole content of `path` with `data` (a string, or a list of bytes with `format='binary'`)
+* `file_tag(path, async=false)` - a tag of the file's content, for noticing that someone else changed it (see below)
+* `content_tag(data)` - the tag `data` would have as a file's content
+
+The error is a `FileIOException` (so `except e :RuntimeException:` catches it
+too). Its message starts with a code, and `e.detail` has the pieces:
+
+```php
+try:
+  fileio.rename('draft.txt', 'final.txt')
+except e :FileIOException:
+  print(e)                    // EEXIST: rename 'draft.txt' -> 'final.txt': target exists
+  if e.detail['code'] == 'EEXIST':
+    fileio.rename('draft.txt', 'final.txt', replace=true)
+```
+
+`e.detail` holds `'code'`, `'op'` (the function), `'path'`, `'path2'` (the
+second path of `rename`/`copy`), `'reason'` (the message's last part) and,
+when the operating system gave one, `'errno'`. The codes are `ENOENT` (no such
+file or directory), `EEXIST` (already exists), `ENOTDIR`, `EISDIR`, `ENOTEMPTY`,
+`EACCES` (permission denied -- in the browser also a file that another script
+or tab has open for writing), `EBUSY`, `EXDEV`, `EINVAL` (an argument that makes no sense, like
+moving a directory into itself) and `EIO` (anything else). With `async=true`
+the error is raised where the future is consumed, by `wait(for=...)`.
+
+An existing target is an error for `rename` and `copy` unless `replace=true`,
+and `replace` only ever lets a file replace a file: it never replaces a
+directory, and a directory never replaces a file.
+
+**Atomic writes.** `write_file` writes a hidden sibling
+`.<name>.tmp-<milliseconds>-<hex>`, makes sure it is on disk, and renames it
+over `path`, so a reader sees the old content or the new one, never half of
+it, and a failure leaves `path` as it was. `rename` is atomic too, within one
+filesystem. Two things are not atomic: moving across filesystems, and moving a
+directory in the browser (OPFS cannot move directories) -- both copy, then
+delete the original. If the copy fails the original is untouched. In the
+browser, replacing a file is itself two steps (remove, then move); if the page
+dies between them, `path` is missing and its newest hidden sibling holds the
+new content. `atomic=false` truncates and writes in place.
+
+**Content tags.** `file_tag` hashes a file's bytes (FNV-1a, 64 bit) into a
+string like `'779a65e7023cd2e7-11'` -- the hash in hex, then the byte count.
+Read a file together with its tag, and before writing it back compare the tag
+with `file_tag` again: if they differ, someone changed the file in between.
+`content_tag(text)` gives the tag the file will have after
+`write_file(path, text)`, and the tag of text you just read from a UTF-8
+file, without reading the file again.
 
 
 ### regex

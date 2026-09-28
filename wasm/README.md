@@ -18,7 +18,7 @@ interface — is planned in `../web-integration-plan.md`.
 | Link → `roxal.js` + `roxal.wasm` | ✅ 3.5 MB |
 | Run a script, single-threaded | ❌ needs threads at VM construction |
 | Run a script, `-pthread` | ✅ |
-| Roxal's own test suite, in wasm | ✅ **523/540** — no confirmed wasm defects |
+| Roxal's own test suite, in wasm | ✅ **722/725** — the 3 failures are harness gaps (below) |
 | Browser tab (COOP/COEP) | ✅ see `serve.py` + `index.html` |
 | VM on a Worker, main thread free | ✅ `-sPROXY_TO_PTHREAD`; see `test-host.cjs` |
 | Drive the DOM from Roxal | ✅ `dom` module; see `test-dom.cjs` and `index.html` |
@@ -137,7 +137,8 @@ roxal-bridge.js main-thread half of the JS bridge (--pre-js): handle table,
                 op interpreter, DOM event -> Roxal callback queueing
 test-host.cjs   host-level tests: threading model, inbound queue
 test-dom.cjs    bridge tests for the dom module, against a DOM stub under node
-test-web.cjs    state-bridge tests for the web module (snapshots, coalescing)
+test-web.cjs    state-bridge tests for the web module (snapshots, coalescing,
+                writes, and the workspace file service through the store API)
 run-tests.cjs   runs Roxal's tests/*.rox through the wasm build under node
 ```
 
@@ -180,39 +181,38 @@ Gotchas worth knowing:
   front on the shared memory, so raise it at link time if needed
   (`-sMAXIMUM_MEMORY=4294967296`) rather than expecting to grow into it.
 
-## Test results: 525/540
+## Test results: 722/725
 
-112 tests are feature-gated out (fileio, socket, ffi, grpc, dds, regex, xml,
-media, opencv, realsense, and the two ICU case-mapping tests), mirroring what
-`runtests.py` skips for a build with those features off. 1 known-failing test is
-excluded, as natively.
+`run-tests.cjs` runs the tests `runtests.py` lists, under node, one child
+process per test, against the same `.out`/`.err` files as native. As of
+2026-09-27, 722 of 725 pass. Another 96 listed tests are skipped. Most need a
+feature this build leaves out (socket, ffi with its opencv and realsense
+bindings, grpc, dds, audio), as `runtests.py` skips them natively. Five are
+about the host rather than the language, each with its reason in the runner's
+`UNSUPPORTED` table. Two hit a known wasm defect, described in the runner above
+`inspect_parse_err`.
 
-Of the 15 failures, none is a confirmed wasm defect. Two or three timing-dependent
-tests come and go on top of that number under `JOBS=4` — `rt_execution`,
-`gc_coordination_stress`, `signal_cleanup`, `actor_closure1` have all been seen —
-and each passes when run on its own. The runner prints **every** failure, so the
-count and the list always agree; if they ever disagree, believe neither.
+The three failures are gaps in the harness, not VM defects:
 
 | Failure | Cause |
 |---|---|
-| `typededucer_*` (7) | need `roxal --ast`; the wasm host has no AST-dump mode (`runtests.py:922`) |
-| `stacktrace`, `exception_stacktrace` | traces embed the script path; native passes `../tests/x.rox`, the harness passes a bare name |
-| `import_asset_sibling`, `import_folder_init`, `star_init_coexist` | import from package *directories* (`asset_pkg/`, `folder_init/`, `pkg1/`); the harness only writes flat `.rox` files into the wasm FS |
-| `sys_paths` | asserts cwd is `/tests`; the harness chdirs to `/stdlib` |
-| `repl_run` | REPL, which the host deliberately does not implement |
-| `gc_scanner_selftest` | the *conservative* stack-scanner self-test. We run precise-only, and conservative scanning of wasm locals is exactly what cannot work — expected |
-| `rt_execution` | timing-sensitive; passes when run serially, fails under `JOBS=4` |
-| `gc_coordination_stress` | flaky natively too |
+| `nn_event_async_lift`, `nn_multi_output_lift` | load `../modules/ai/scale-shift.onnx`, but the runner stages only four named models into the wasm FS |
+| `init_failure_sys_stub` | runs the CLI with `-p tests/init_failure`; the runner has no module-path option |
 
-Closing the harness gaps (mirror the tests directory into the wasm FS including
-subdirectories, pass a path-shaped script name, add an `--ast` entry point)
-should take most of these to green.
+Timing-dependent tests can also fail under `JOBS=3` on a loaded machine and pass
+when run on their own; `rt_execution`, `actor_closure1`, `dfdoc_compose_run`
+and `orient_conv_test` have been seen. The runner prints **every** failure, so
+the count and the list always agree; if they ever disagree, believe neither.
 
 ## Known gaps
 
 - `roxal --version` has no wasm equivalent, so `run-tests.cjs` reads the enabled
   feature set from `roxal_features.cmake` instead of self-reporting. Exporting a
   `roxal_features()` from the host would let tooling gate uniformly.
-- fileio is off. Re-enabling it needs `AsyncIOManager` to run inline (its worker
-  thread is now available under pthreads, but OPFS sync access handles are
-  synchronous, so inline is still the better fit) and WASMFS+OPFS mounted.
+- fileio is on, over WASMFS, with its I/O on `AsyncIOManager`'s worker thread
+  as natively. `/data` is OPFS in a browser, so files persist across reloads,
+  and an in-memory directory under node. The preloaded `/stdlib` is effectively
+  read-only under WASMFS, which is why tests write to `../tests/tmp_*`. OPFS
+  cannot move a directory, and WASMFS does not keep OPFS file times; `main.cpp`
+  tells fileio so through `fileops::backendTraitsHook`, and fileio then copies
+  and deletes to rename a directory and reports `mtime` as nil.

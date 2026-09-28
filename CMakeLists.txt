@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.12)
 
-project(roxal VERSION 0.8.43 LANGUAGES CXX C)
+project(roxal VERSION 0.8.44 LANGUAGES CXX C)
 set(ROXAL_PRERELEASE "pre" CACHE STRING "SemVer prerelease label (e.g. alpha.1, rc.1)")
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -525,6 +525,7 @@ endif()
 if(ROXAL_ENABLE_FILEIO)
     list(APPEND COMPILER_SOURCES compiler/ModuleFileIO.cpp)
     list(APPEND COMPILER_SOURCES compiler/AsyncIOManager.cpp)
+    list(APPEND COMPILER_SOURCES compiler/FileOps.cpp)
 endif()
 if(ROXAL_ENABLE_GRPC)
     list(APPEND COMPILER_SOURCES
@@ -774,6 +775,14 @@ add_test(NAME RoxalCallbackRegistry COMMAND roxal_callback_registry_test)
 add_executable(roxal_output_test core/Output_test.cpp core/Output.cpp)
 target_link_libraries(roxal_output_test PRIVATE roxal_abi pthread)
 add_test(NAME RoxalOutput COMMAND roxal_output_test)
+
+# fileio's path operations (FileOps has no VM dependency): the fallback paths
+# and mid-operation failures a .rox test cannot provoke.
+if(ROXAL_ENABLE_FILEIO AND NOT EMSCRIPTEN)
+    add_executable(roxal_fileops_test compiler/fileops_test.cpp compiler/FileOps.cpp)
+    target_include_directories(roxal_fileops_test PRIVATE ${CMAKE_SOURCE_DIR}/compiler)
+    add_test(NAME RoxalFileOps COMMAND roxal_fileops_test)
+endif()
 
 # Build the static library containing the core compiler and VM
 add_library(roxalcore STATIC ${CORE_SOURCES} ${COMPILER_SOURCES} ${GENERATED_SOURCES})

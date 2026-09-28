@@ -1,0 +1,16 @@
+file
+5
+<type real>
+true
+dir
+0
+nil
+nil
+a.txt file 5 <type real>
+b.rox file 3 <type real>
+sub dir 0 <type real>
+nil
+nil
+["a.txt", "b.rox", "sub/"]
+3
+false

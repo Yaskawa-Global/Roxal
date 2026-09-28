@@ -1,0 +1,15 @@
+["b.txt", "c.txt", "dir/"]
+EEXIST
+C
+A
+EEXIST
+EISDIR
+ENOTDIR
+["c.txt", "moved/"]
+X
+EINVAL
+ENOENT
+ENOENT
+true
+ENOENT
+false

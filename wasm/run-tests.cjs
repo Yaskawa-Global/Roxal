@@ -184,6 +184,7 @@ else if (!has('MEDIA_AUDIO'))
     gated.push(...parseList(py, 'media_tests').filter(n => n.startsWith('media_audio')));
 if (!has('AI_NN'))  gated.push(...parseList(py, 'nn_tests'));
 if (!has('INSPECT')) gated.push(...parseList(py, 'inspect_tests'));
+if (!has('WEB'))    gated.push(...parseList(py, 'web_tests'));
 // Tests whose subject is the HOST, not the language: nothing in the VM is
 // wrong when these fail here, so they are excluded with a stated reason
 // rather than left to look like defects. Keep this honest -- if a reason

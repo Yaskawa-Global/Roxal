@@ -1,0 +1,101 @@
+# web.Workspace's rooted file service, called directly (the page reaches the
+# same methods through the "workspace" store): root confinement, result
+# shapes, errors as data, the CONFLICT round trip, and the tidying of the
+# hidden siblings atomic writes leave behind.
+import web
+import fileio
+
+var root = '../tests/tmp_workspace_fs'
+if fileio.dir_exists(root):
+  fileio.remove(root, recurse=true)
+fileio.create_dir(root)
+
+# Leftovers of atomic writes, as a crashed page would leave them. The
+# timestamps are in the names: 1e12 ms is 2001 (stale), `now` is fresh.
+var now = Time.wall_now().seconds() * 1000
+fileio.create_dir(root + '/sub')
+fileio.write_file(root + '/.lost.rox.tmp-1000000000000-0000abcd', 'lost v1')
+fileio.write_file(root + '/.lost.rox.tmp-1000000000001-0000abce', 'lost v2')
+fileio.write_file(root + '/keep.rox', 'kept')
+fileio.write_file(root + '/.keep.rox.tmp-1000000000000-00000001', 'stale')
+fileio.write_file(root + '/.young.rox.tmp-' + string(now) + '-00000002', 'in flight')
+fileio.write_file(root + '/sub/.deep.rox.tmp-1000000000000-00000003', 'deep')
+
+var ws = web.Workspace(root)
+
+func show(entries):
+  for e in entries:
+    print('  ' + e['path'] + ' ' + e['kind'] + ' ' + string(e['size']))
+
+print('-- first list: orphans restored (newest wins), stale and young temps hidden')
+show(ws.`list`('', true))
+var names = fileio.list_dir(root)
+print(names[0][0:15])                  # the young temp, still there
+print(names[1:len(names)])
+print(ws.read('lost.rox')['text'])
+print(ws.read('sub/deep.rox')['text'])
+
+print('-- write and read')
+var w = ws.write('src/app.rox', 'print(1)\n')
+print(w)
+var r = ws.read('src/app.rox')
+print(r['text'] == 'print(1)\n')
+print(r['tag'] == w['tag'])
+print(ws.write('notes.txt', ''))
+
+print('-- CONFLICT')
+var w2 = ws.write('src/app.rox', 'print(2)\n', r['tag'])
+print(w2['tag'] != r['tag'])
+var c = ws.write('src/app.rox', 'print(3)\n', r['tag'])
+print(c['error'])
+print(c['tag'] == w2['tag'])
+print(ws.read('src/app.rox')['text'] == 'print(2)\n')
+print(ws.write('fresh.rox', 'x', '')['tag'])
+print(ws.write('fresh.rox', 'y', '')['error'])
+
+print('-- list: directories first, then files, by name')
+ws.mkdir('a/b')
+ws.write('a/z.txt', 'z')
+show(ws.`list`())
+show(ws.`list`('a'))
+show(ws.`list`('a', true))
+print(ws.`list`('nope'))
+print(ws.`list`('keep.rox'))
+
+print('-- stat')
+print(ws.stat('src/app.rox')['kind'])
+print(ws.stat('src/app.rox')['path'])
+print(ws.stat('a')['kind'])
+print(ws.stat('')['kind'])
+print(ws.stat('missing'))
+
+print('-- mkdir, rename, copy, remove')
+print(ws.mkdir('a/b'))
+print(ws.mkdir('keep.rox'))
+print(ws.rename('fresh.rox', 'a/fresh.rox'))
+print(ws.rename('a/fresh.rox', 'keep.rox'))
+print(ws.rename('nope', 'x'))
+print(ws.copy('a', 'a2'))
+show(ws.`list`('a2', true))
+print(ws.copy('keep.rox', 'keep2.rox'))
+print(ws.read('keep2.rox')['text'])
+print(ws.remove('a2'))
+print(ws.remove('a2', true))
+print(ws.remove('keep2.rox'))
+print(ws.stat('keep2.rox'))
+
+print('-- confinement')
+for bad in ['../x', '/etc/passwd', 'a/../../x', 'a/..', 'a\\b', '']:
+  print(ws.read(bad)['error'])
+print(ws.read(42)['error'])
+print(ws.remove('')['error'])
+print(ws.rename('keep.rox', '../outside.rox')['error'])
+print(ws.copy('/etc/passwd', 'x')['error'])
+print(ws.write('../x', 'y')['error'])
+print(ws.write('ok.txt', 42)['error'])
+print(ws.write('./a//./nested.txt', 'normalized')['tag'] != nil)
+print(ws.read('a/nested.txt')['text'])
+print(fileio.file_exists('../tests/outside.rox'))
+
+fileio.remove(root, recurse=true)
+print(fileio.dir_exists(root))

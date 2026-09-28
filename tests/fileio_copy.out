@@ -1,0 +1,16 @@
+A
+A
+EEXIST
+A
+A2
+EISDIR
+["u/", "w.txt"]
+V
+["u/", "w.txt"]
+EEXIST
+EISDIR
+EISDIR
+EINVAL
+ENOENT
+["a.txt", "b.txt", "t/", "t2/"]
+false

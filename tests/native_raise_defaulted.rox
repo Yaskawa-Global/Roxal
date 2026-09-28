@@ -1,0 +1,37 @@
+# A builtin that raises while one of its parameters took its default goes
+# through the VM's deferred-default path, which used to write the call's
+# result over the handler's stack after the raise had already unwound it:
+# the handler saw a garbage "exception" and the stack underflowed later.
+# Both kinds of raise, both call forms, and a stack that is still sound after.
+import fileio
+
+var f = fileio.open('../tests/native_raise_defaulted.rox', format='binary')
+
+# a Roxal exception raised by the builtin
+try:
+  fileio.read_line(f, false)
+except e:
+  print('explicit: ' + string(e))
+try:
+  fileio.read_line(f)
+except e:
+  print('defaulted: ' + string(e))
+
+# a C++ exception thrown by the builtin
+try:
+  fileio.close(5)
+except e:
+  print('defaulted C++: ' + string(e))
+
+# the frame's stack survives: locals, and a value computed across the raise
+func g() -> int:
+  var local = 40
+  var partial = [1, 2]
+  try:
+    partial.append(fileio.read_line(f))
+  except e:
+    return local + len(partial)
+  return 0
+print(g())
+print(g() + g())
+fileio.close(f)

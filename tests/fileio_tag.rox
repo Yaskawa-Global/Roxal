@@ -1,0 +1,42 @@
+# fileio.file_tag / content_tag: the FNV-1a 64 hash in lowercase hex, '-', and
+# the byte count in DECIMAL ('hello world' pins that: hex would end in '-b').
+import fileio
+
+var base = '../tests/tmp_fileio_tag'
+var p = base + '/f'
+
+func code_of(f) -> string:
+  try:
+    f()
+    return 'ok'
+  except e :FileIOException:
+    return e.detail['code']
+
+if fileio.dir_exists(base):
+  fileio.remove(base, recurse=true)
+fileio.create_dir(base)
+
+var utf8 = "print('héllo wörld ✓')\n"
+print(fileio.content_tag(''))
+print(fileio.content_tag('a'))
+print(fileio.content_tag('hello world'))
+print(fileio.content_tag(utf8))
+
+# a file's tag is the tag of its content
+for text in ['', 'a', 'hello world', utf8]:
+  fileio.write_file(p, text)
+  print(fileio.file_tag(p) == fileio.content_tag(text))
+print(fileio.file_tag(p))
+print(fileio.content_tag([104, 105]) == fileio.content_tag('hi'))
+fileio.write_file(base + '/bin', [0, 255, 10], format='binary')
+print(fileio.file_tag(base + '/bin') == fileio.content_tag([0, 255, 10]))
+
+# text read back from a UTF-8 file tags the same as the file
+print(fileio.content_tag(fileio.read_file(p)) == fileio.file_tag(p))
+
+print(code_of(func(): fileio.file_tag(base + '/missing')))
+print(code_of(func(): fileio.file_tag(base)))
+print(code_of(func(): fileio.content_tag(42)))
+
+fileio.remove(base, recurse=true)
+print(fileio.dir_exists(base))
