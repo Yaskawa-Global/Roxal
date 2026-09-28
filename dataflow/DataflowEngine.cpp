@@ -405,6 +405,7 @@ void DataflowEngine::clear()
     // Reset yield state to avoid stale references to cleared funcs, and
     // drop the host context a suspended body may still occupy.
     abandonYieldedTick();
+    m_failedFunc = nullptr;
 }
 
 void DataflowEngine::stop()
@@ -1291,7 +1292,12 @@ void DataflowEngine::abandonYieldedTick()
 
 void DataflowEngine::noteFailedFunc(const ptr<FuncNode>& func, bool failed)
 {
-    if (m_failedFunc || !func || !roxal::VM::thread)
+    // Host ticks only: evaluateIsland also serves the actor thread's paths,
+    // and a record made there would have no settleHostTick to consume it --
+    // the node would be held (untraced) until the engine is destroyed, after
+    // the VM has freed the Values it still references.
+    if (m_failedFunc || !func || !roxal::VM::thread
+        || roxal::VM::thread != m_hostThread)
         return;
     const uint32_t raised = roxal::VM::thread->domain->interrupts().load()
         & (roxal::ExecutionDomain::IntrRuntimeError | roxal::ExecutionDomain::IntrExit);

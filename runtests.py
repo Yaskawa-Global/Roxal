@@ -149,7 +149,7 @@ tests = [
     'signal_islands', 'signal_domain', 'signal_tensor_isolation', 'signal_tensor_const',
     'multi_return', 'multi_return_arity_err', 'multi_return_nonlist_err', 'multi_return_literal_err', 'test_multi_return_syntax',
     'signal_multi_output', 'signal_wiring_func', 'signal_wiring_mixed_err', 'signal_branch_err', 'signal_sampling',
-    'signal_list_const', 'df_const_arg_err', 'df_overrun_event_ok', 'inspect_df_structure', 'signal_lift_fresh', 'signal_lift_default', 'signal_lift_nodisturb',
+    'signal_list_const', 'df_const_arg_err', 'df_overrun_event_ok', 'df_node_raise_event', 'inspect_df_structure', 'signal_lift_fresh', 'signal_lift_default', 'signal_lift_nodisturb',
     'signal_copyinto_freq_err',
     'var_destructure', 'var_destructure_arity_err', 'var_destructure_nonlist_err', 'var_destructure_const_err',
     'signal_shift', 'signal_deduce', 'signal_variadic_err', 'check_compile_err', 'source_attribution_destructure_err', 'source_attribution_property_err', 'signal_sampled', 'signal_feedback_rate', 'signal_island_rates', 'bitwise_large_int', 'signal_nolift_wait', 'inline_lambda_assign_err',
