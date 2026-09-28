@@ -201,6 +201,8 @@ struct Scenario {
     // island), not in a host tick: no tick reports it, and the actor
     // thread's default domain -- the services' -- must be left clean.
     bool failsOffHostTick = false;
+    // Tick budget override (us); 0 = the default 50us.
+    int tickBudgetUs = 0;
 };
 
 // A Roxal-bodied gate feeding back on itself, then a busy loop of
@@ -319,6 +321,39 @@ const char* kNetworkChangeMidTick =
     "print(len(lifted))\n"
     "print(n.value > 0)\n";
 
+// A lift's initial evaluation runs nested in the program's own execution,
+// inside the host's GC yield section; its body requests a collection.  The
+// nested body must complete -- it cannot be suspended, nothing would resume
+// it -- and leave the program's stack as it found it.
+const char* kLiftCollects =
+    "func bump(x :int) -> int:\n"
+    "  gc()\n"
+    "  return x + 1\n"
+    "var s = signal(10, 0)\n"
+    "var r = bump(s)\n"
+    "var k :int = 0\n"
+    "while k < 1000:\n"
+    "  k = k + 1\n"
+    "print(k)\n"
+    "print(r.value)\n";
+
+// node_exit with a 1us tick budget: execute() checks the deadline after
+// every instruction, so the tick yields right after the body's exit() --
+// the exit must still reach the run.
+const char* kNodeExitSliced =
+    "import sys\n"
+    "func stop(x :int) -> int:\n"
+    "  if x == 3:\n"
+    "    sys.exit(7)\n"
+    "  return x\n"
+    "var c = clock(10)\n"
+    "var r = stop(c)\n"
+    "c.run()\n"
+    "var k :int = 0\n"
+    "while k < 3000000:\n"
+    "  k = k + 1\n"
+    "print(k)\n";
+
 // A run that leaves a Roxal-bodied node registered and ends; the host's loop
 // keeps ticking, as a control loop does between programs.
 const char* kTickAfterRun =
@@ -375,6 +410,9 @@ const Scenario kScenarios[] = {
       RunState::Failed, "node boom", 0, false, true },
     { "network_change_mid_tick", kNetworkChangeMidTick, "400000\n10\ntrue\n",
       false, true, false },
+    { "lift_collects",  kLiftCollects,  "1000\n1\n",      false, false, false },
+    { "node_exit_sliced", kNodeExitSliced, "",            true,  false, false,
+      RunState::Completed, nullptr, 7, false, false, 1 },
 };
 
 int runScenario(const Scenario& scenario)
@@ -398,7 +436,9 @@ int runScenario(const Scenario& scenario)
 
     // A tick budget far below the slow node's body; the program's slice
     // gets the harness's usual 500us.
-    Driver driver(runtime, TimeDuration::microSecs(50), TimeDuration::microSecs(500),
+    Driver driver(runtime,
+                  TimeDuration::microSecs(scenario.tickBudgetUs ? scenario.tickBudgetUs : 50),
+                  TimeDuration::microSecs(500),
                   scenario.tickAfterRun);
     driver.start();
 
