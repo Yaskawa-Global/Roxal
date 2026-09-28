@@ -4,6 +4,7 @@
 #include <algorithm>
 #include "compiler/VM.h"
 #include "compiler/Thread.h"
+#include "compiler/ExecutionDomain.h"
 #include "DataflowEngine.h"
 #include <stdexcept>
 #include <iostream>
@@ -18,6 +19,32 @@ struct DataflowThreadGuard {
     DataflowThreadGuard() { roxal::VM::setOnDataflowThread(true); }
     ~DataflowThreadGuard() { roxal::VM::setOnDataflowThread(false); }
 };
+
+// The domain of the thread constructing a node: the run (or session, or
+// service) the node belongs to.
+weak_ptr<roxal::ExecutionDomain> creatingDomain()
+{
+    if (roxal::VM::thread)
+        return weak_ptr<roxal::ExecutionDomain>(roxal::VM::thread->domain);
+    return weak_ptr<roxal::ExecutionDomain>();
+}
+
+// Where a Roxal body may run.  In the engine's own context (a Dataflow
+// thread: its actor thread, or the host context tickFor binds), or
+// synchronously NESTED inside the execution of the thread that asked for it
+// -- a lift's first evaluation, an event-driven set() from script code.
+// Anywhere else it is running on a binding somebody else left behind: its
+// frames would interleave with that thread's own, and a suspended body would
+// be finished by that thread's next slice as if it were its own code.
+bool soundEvaluationContext(TimePoint deadline)
+{
+    const roxal::Thread* t = roxal::VM::thread.get();
+    if (!t)
+        return false;
+    if (t->kind == roxal::ThreadKind::Dataflow)
+        return true;
+    return deadline == TimePoint::max() && t->execute_depth > 0;
+}
 
 std::optional<roxal::ValueType> valueTypeForBuiltin(roxal::type::BuiltinType builtin)
 {
@@ -67,6 +94,7 @@ FuncNode::FuncNode(const std::string& name,
                    const std::vector<ptr<Signal>>& outputSignals)
   : m_name(name), m_operatorSignalsCalled(false), m_id(nextGraphId()), closure(closure_), constArgs(constArgs_), signalArgs(signalArgs_), m_overrideOutputSignals(outputSignals)
 {
+    m_ownerDomain = creatingDomain();
     m_outputNames = {DataflowEngine::uniqueFuncName("result")};
     if (roxal::isClosure(closure) && asFunction(asClosure(closure)->function)->funcType.has_value()) {
         auto funcTypePtr = asFunction(asClosure(closure)->function)->funcType.value();
@@ -137,6 +165,7 @@ FuncNode::FuncNode(const std::string& name,
   : m_name(name), m_operatorSignalsCalled(false), m_id(nextGraphId()), closure(Value::nilVal()),
     nativeFunc(nativeFunc_), constArgs(constArgs_), signalArgs(signalArgs_), m_overrideOutputSignals(outputSignals)
 {
+    m_ownerDomain = creatingDomain();
     m_outputNames = outputNames_;
     if (m_outputNames.empty())
         m_outputNames = {DataflowEngine::uniqueFuncName("result")};
@@ -581,6 +610,16 @@ FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline
         // Build args from inputValues (same logic as operator())
         std::vector<Value> args = assembleArgs(inputValues);
 
+        if (!soundEvaluationContext(deadline)) {
+            VM::emitDiagnostic(
+                "FuncNode '" + name() + "': body not evaluated -- called outside "
+                "the engine's execution context ("
+                + std::string(VM::thread ? "on a thread that is not executing it"
+                                         : "no thread bound")
+                + ")", roxal::OutputSeverity::Error, "dataflow");
+            return FuncExecResult::Error;
+        }
+
         DataflowThreadGuard dfGuard;
         auto result = vm.invokeClosure(asClosure(closure), args, deadline);
 
@@ -759,6 +798,13 @@ FuncExecResult FuncNode::resumeExecution(TimePoint deadline)
     }
 
     return FuncExecResult::Completed;
+}
+
+void FuncNode::abandonSuspendedExecution()
+{
+    if (!m_funcYieldState.active || !m_funcYieldState.executionThread)
+        return;
+    m_funcYieldState = FuncYieldState{};
 }
 
 void FuncNode::invokeExecutionCallbacks(TimePoint time, const Values& inputValues, const Values& outputValues)

@@ -358,6 +358,49 @@ private:
     // a mode commitment for the engine instance's lifetime.
     std::atomic<bool> m_hostDriven{false};
 
+    // ---- Host context (tickFor) ----
+    // The execution context host-driven evaluation runs Roxal node bodies
+    // in: a Dataflow-kind Thread that is never act()ed (the host's OS thread
+    // drives it inside tickFor) in a domain of its own.  Never the caller's
+    // binding -- on a host's driver thread that is the program's Thread
+    // between its slices (frames and operands shared with the program) or
+    // nothing once its run is handed over.
+    //
+    // The domain is private so a failed or exit()ing body cannot stop the
+    // services' evaluation (the actor thread's default domain) -- its outcome
+    // is carried to the run that created the node instead (settleHostTick).
+    // The context is created lazily on the first tickFor and discarded
+    // whenever a body in it fails or is abandoned; the next tick starts a
+    // fresh one, so no suspended frames or raised flags ever outlive the
+    // tick that owned them.  Owned by the tick path under m_evalMutex; like
+    // m_yieldState, reset by clear(), which must not race a tick.
+    ptr<roxal::ExecutionDomain> m_hostDomain;
+    ptr<roxal::Thread> m_hostThread;
+    // The node whose evaluation raised an error or exit() on the host
+    // context during the current tick (the one its outcome belongs to).
+    ptr<FuncNode> m_failedFunc;
+
+    // The host context, created if needed (or replaced, if it holds frames
+    // no suspended body accounts for), for a tick called with `caller`
+    // bound: the host's GC-yield requirement is read from the Thread it
+    // drives.
+    ptr<roxal::Thread> hostContextFor(const ptr<roxal::Thread>& caller);
+    // Drop the host context (the next tick creates a fresh one).
+    void discardHostContext();
+    // Give up on the suspended tick: forget the suspended body and discard
+    // the context it is suspended in.  For Overrun, a network change,
+    // clear() -- never for an error, whose outcome settleHostTick must first
+    // carry to its run.
+    void abandonYieldedTick();
+    // After a tick: carry a failure or exit() raised on the host context to
+    // the run that owns the node, then discard the context.
+    void settleHostTick();
+    // The body of tickFor once admitted, locked and bound.
+    TickResult runHostTick(TimeDuration budget);
+    // Record the node an evaluation just returned from if the context it ran
+    // in has raised an error or exit().
+    void noteFailedFunc(const ptr<FuncNode>& func, bool failed);
+
     // State for resuming a yielded tick execution
     struct YieldState {
         bool active { false };

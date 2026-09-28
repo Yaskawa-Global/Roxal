@@ -16,6 +16,7 @@ namespace roxal::type {
 
 namespace roxal {
     class Thread;  // forward declaration
+    class ExecutionDomain;
 }
 
 namespace df {
@@ -214,6 +215,18 @@ protected:
     // The evaluation time of the yielded execution (valid while hasYieldedWork()).
     TimePoint yieldedExecutionTime() const { return m_funcYieldState.executionTime; }
 
+    // The engine gave up on the tick this body was suspended in (an Overrun,
+    // a network change): forget the suspended execution.  Its frames are on
+    // the engine's host context, which the engine discards along with it.  A
+    // future-based yield waits on a worker, not on a VM thread, and is kept.
+    void abandonSuspendedExecution();
+
+    // The execution domain of the thread that created this node -- the run
+    // (or session) it belongs to.  A body the engine evaluates in its own
+    // context on that run's behalf reports its failure there.  Null once
+    // that domain is gone.
+    ptr<roxal::ExecutionDomain> ownerDomain() const { return m_ownerDomain.lock(); }
+
     void invokeExecutionCallbacks(TimePoint time, const Values& inputValues, const Values& outputValues);
 
 private:
@@ -223,6 +236,9 @@ private:
 
     // State for resuming yielded execution
     FuncYieldState m_funcYieldState;
+
+    // Weak: a node must not keep a finished run's domain alive.
+    weak_ptr<roxal::ExecutionDomain> m_ownerDomain;
 
     friend class DataflowEngine;
 

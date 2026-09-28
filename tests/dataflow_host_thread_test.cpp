@@ -187,6 +187,12 @@ struct Scenario {
     bool requireNodeYield;
     // The host must have seen tickFor abandon a suspended tick at least once.
     bool requireOverrun;
+    // A node body fails (or exits) on purpose: the run it belongs to must
+    // end that way, with this in its diagnostic, and the engine must go on
+    // evaluating afterwards.
+    RunState expectedState = RunState::Completed;
+    const char* diagnosticContains = nullptr;
+    int expectedExitCode = 0;
 };
 
 // A Roxal-bodied gate feeding back on itself, then a busy loop of
@@ -256,12 +262,48 @@ const char* kTickAfterRun =
     "b <- logic.not_gate(b[-1])\n"
     "print('started')\n";
 
+// A node whose body raises once (on the clock's third tick): its run fails
+// with the node's error, as the program's own error would fail it, and the
+// engine -- its context discarded with the failure -- keeps evaluating the
+// same node on later ticks.
+const char* kNodeError =
+    "func check(x :int) -> int:\n"
+    "  if x == 3:\n"
+    "    raise RuntimeException('node boom')\n"
+    "  return x\n"
+    "var c = clock(10)\n"
+    "var r = check(c)\n"
+    "c.run()\n"
+    "var k :int = 0\n"
+    "while k < 3000000:\n"
+    "  k = k + 1\n"
+    "print(k)\n";
+
+// The same, with the body calling exit(): the run exits with its code.
+const char* kNodeExit =
+    "import sys\n"
+    "func stop(x :int) -> int:\n"
+    "  if x == 3:\n"
+    "    sys.exit(7)\n"
+    "  return x\n"
+    "var c = clock(10)\n"
+    "var r = stop(c)\n"
+    "c.run()\n"
+    "var k :int = 0\n"
+    "while k < 3000000:\n"
+    "  k = k + 1\n"
+    "print(k)\n";
+
 const Scenario kScenarios[] = {
     { "busy_loop",      kBusyLoop,      "200000\n",       false, false, false },
     { "wait_loop",      kWaitLoop,      "20\n",           false, false, false },
     { "yielding_node",  kYieldingNode,  "300000\ntrue\n", false, true,  false },
     { "overrun_orphan", kOverrunOrphan, "300000\n",       false, true,  true  },
     { "tick_after_run", kTickAfterRun,  "started\n",      true,  false, false },
+    { "node_error",     kNodeError,     "",               true,  false, false,
+      RunState::Failed, "node boom", 0 },
+    { "node_exit",      kNodeExit,      "",               true,  false, false,
+      RunState::Completed, nullptr, 7 },
 };
 
 int runScenario(const Scenario& scenario)
@@ -292,6 +334,7 @@ int runScenario(const Scenario& scenario)
 
     RunState finalState = RunState::Failed;
     std::string diagnostic;
+    int exitCode = -1;
     if (prepared.status == PrepareStatus::Ready) {
         SubmitResult submitted = runtime.submit(std::move(prepared.program));
         expect(submitted.status == SubmitStatus::Accepted, name + ": the program is accepted");
@@ -300,6 +343,7 @@ int runScenario(const Scenario& scenario)
             FinalizeResult finalized = submitted.run.wait();
             finalState = finalized.state;
             diagnostic = submitted.run.diagnostic();
+            exitCode = submitted.run.exitCode();
         }
     }
 
@@ -322,9 +366,17 @@ int runScenario(const Scenario& scenario)
               << ", final state " << int(finalState) << '\n';
     if (!sink.diagnostics().empty())
         std::cout << name << ": diagnostics: " << sink.diagnostics() << '\n';
-    expect(finalState == RunState::Completed,
-           name + ": the run completes (diagnostic: '" + diagnostic
-               + "', stderr: '" + sink.diagnostics() + "')");
+    expect(finalState == scenario.expectedState,
+           name + ": the run ends " + std::string(scenario.expectedState == RunState::Completed
+                                                 ? "Completed" : "Failed")
+               + " (state " + std::to_string(int(finalState)) + ", diagnostic: '"
+               + diagnostic + "', stderr: '" + sink.diagnostics() + "')");
+    if (scenario.diagnosticContains)
+        expect(diagnostic.find(scenario.diagnosticContains) != std::string::npos,
+               name + ": the run's diagnostic names the node's failure ('" + diagnostic + "')");
+    expect(exitCode == scenario.expectedExitCode,
+           name + ": exit code " + std::to_string(exitCode) + ", expected "
+               + std::to_string(scenario.expectedExitCode));
     expect(output == scenario.expectedOutput,
            name + ": output '" + output + "', expected '" + scenario.expectedOutput + "'");
 
@@ -337,8 +389,13 @@ int runScenario(const Scenario& scenario)
                + std::to_string(driver.during(TickResult::Complete)) + " complete, "
                + std::to_string(driver.during(TickResult::Yielded)) + " yielded, "
                + std::to_string(driver.during(TickResult::Overrun)) + " overrun)");
-    expect(driver.during(TickResult::Error) == 0 && driver.after(TickResult::Error) == 0,
-           name + ": no tick reported an error");
+    const bool nodeFails = scenario.diagnosticContains || scenario.expectedExitCode != 0;
+    if (nodeFails)
+        expect(driver.during(TickResult::Error) + driver.after(TickResult::Error) >= 1,
+               name + ": the failing tick reported Error to the host");
+    else
+        expect(driver.during(TickResult::Error) == 0 && driver.after(TickResult::Error) == 0,
+               name + ": no tick reported an error");
     if (scenario.requireNodeYield)
         expect(driver.during(TickResult::Yielded) > 0,
                name + ": the node body suspended across cycles");

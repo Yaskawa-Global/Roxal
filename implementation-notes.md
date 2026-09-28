@@ -2222,6 +2222,39 @@ A host driving the dataflow engine does the same with
 the same distinctions: `Paused` means evaluation admission is closed by a
 debugger stop, `Busy` means the evaluator lock was held and nothing was done.
 
+**Where a host tick runs node bodies.** `tickFor` evaluates Roxal-bodied nodes
+in the engine's own *host context*: a `Dataflow`-kind `Thread` that is never
+`act()`ed, in an execution domain of its own, bound for the tick and unbound on
+return. It never uses the caller's binding. On a driver thread that binding is
+the program's `Thread` between its slices, so a node run there shares the
+program's frame and operand stacks: a body suspended at the budget is finished
+by the program's next slice as if it were program code, and the next tick's
+resume then runs the *program's* frames under the dataflow flag. Once the run
+has been handed over there is no binding at all. The context is created on the
+first tick and discarded whenever a body in it fails or is abandoned, so a tick
+never inherits another's frames or raised flags:
+
+- **Overrun** (a suspended tick outliving its period) and a network change
+  mid-tick abandon the tick *and* the body suspended in it. A body left behind
+  would be completed by the next resume -- whose `execute()` has no frame floor
+  -- and delivered as another body's result.
+- **A failing body** (an uncaught exception, or `exit()`) fails the run that
+  *created* the node -- the domain `FuncNode` records at construction -- via
+  `VM::transferDomainOutcome`: that run's next slice fails with the node's
+  error text, or exits with its code. `tickFor` returns `Error` for the tick
+  and the engine carries on. The context's domain is private so a failure can
+  never stop the services' evaluation, and the default domain is never failed
+  on a node's behalf while a driver is attached.
+
+The debugger's stop coordinator follows the run's domain, so the host context
+is never an epoch member and node bodies do not trap on breakpoints (the
+`DebugGate` still pauses the tick). Anywhere else, a node body may run only
+synchronously and nested inside its thread's own execution -- a lift's first
+evaluation, an event-driven `set()` from script code; `FuncNode` refuses any
+other evaluation with an `Error` diagnostic rather than corrupting the thread
+it found bound. `tests/dataflow_host_thread_test.cpp` drives a program and the
+engine from one OS thread, as FC's loop does.
+
 **The driver is never parked by the debugger, and never delays a collection.**
 A slice observes a stop, acknowledges it, and returns `DebugPaused` rather than
 blocking inside the VM; and with a collection pending it declines the slice
@@ -2238,9 +2271,10 @@ debugger launch and the persistent fragment session are written out in
 Resuming a suspended execution is not a fourth shape, and there is no host
 entry point for it. `invokeClosure(..., deadline)` starts a bounded execution;
 re-entering `execute(deadline)` on the same thread continues one. The dataflow
-engine uses that pair to drive a `FuncNode` whose body yielded, and it is a
-`friend` of `VM` for exactly that reason -- a host never continues someone
-else's half-finished execution.
+engine uses that pair to drive a `FuncNode` whose body yielded -- always in its
+own context, never a program's -- and it and `FuncNode` are `friend`s of `VM`
+for exactly that reason: a host never continues someone else's half-finished
+execution.
 
 `execute()` itself declines when a collection is pending and the calling
 thread is in a GC yield section or drives an `rtYieldOnGC` thread. That check

@@ -15961,6 +15961,36 @@ void VM::requestDomainExit(ExecutionDomain& domain, int code)
 {
     domain.exitCode.store(code, std::memory_order_release);
     domain.interrupts().fetch_or(ExecutionDomain::IntrExit);
+    wakeDomainThreads(domain);
+}
+
+void VM::transferDomainOutcome(ExecutionDomain& from, ExecutionDomain& owner)
+{
+    if (&from == &owner)
+        return;
+    if (&owner == defaultDomain_.get() && embeddedDriverAttached())
+        return;
+    const uint32_t raised = from.interrupts().load();
+    if (raised & ExecutionDomain::IntrRuntimeError) {
+        std::string message;
+        {
+            std::lock_guard<std::mutex> lock(from.errorMutex);
+            message = from.errorMessage;
+        }
+        {
+            std::lock_guard<std::mutex> lock(owner.errorMutex);
+            if (owner.errorMessage.empty())
+                owner.errorMessage = std::move(message);
+        }
+        owner.interrupts().fetch_or(ExecutionDomain::IntrRuntimeError);
+        wakeDomainThreads(owner);
+    }
+    if (raised & ExecutionDomain::IntrExit)
+        requestDomainExit(owner, from.exitCode.load(std::memory_order_acquire));
+}
+
+void VM::wakeDomainThreads(const ExecutionDomain& domain)
+{
     const uint64_t domainId = domain.id();
     threads.apply([domainId](const std::pair<const uint64_t, ptr<Thread>>& entry){
         if (entry.second && entry.second->domain
