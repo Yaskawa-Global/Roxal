@@ -1562,15 +1562,29 @@ TimePoint DataflowEngine::resolveEvaluationTime(const NetworkIsland& island, Tim
     return candidate;
 }
 
+bool DataflowEngine::soundEvaluationContext(TimePoint deadline)
+{
+    // Anywhere else a body's frames would interleave with the bound thread's
+    // own, and a suspended body would be finished by that thread's next
+    // slice as if it were its own code.
+    const roxal::Thread* t = roxal::VM::thread.get();
+    if (!t)
+        return false;
+    if (t->kind == roxal::ThreadKind::Dataflow)
+        return true;
+    return deadline == TimePoint::max() && t->execute_depth > 0;
+}
+
 void DataflowEngine::processEventDrivenSignalUpdate(ptr<Signal> signal, TimePoint timestamp)
 {
-    // Island evaluation executes FuncNode closures, which requires the
-    // calling thread to be a VM thread (VM::thread set up). Producers on
-    // foreign threads -- e.g. the DDS reader-signal thread -- hand the
-    // update off to the engine's run loop, which drains the queue on its
-    // own actor thread. (Evaluating in place there used to corrupt/crash:
-    // invokeClosure on a thread with no VM Thread state.)
-    if (roxal::VM::thread == nullptr) {
+    // Island evaluation executes FuncNode closures, which may run only where
+    // soundEvaluationContext() allows.  Every other producer hands the update
+    // off to the engine's run loop, which drains the queue on its own actor
+    // thread: a foreign thread with no VM Thread at all -- e.g. the DDS
+    // reader-signal thread, where evaluating in place used to corrupt/crash
+    // -- and a host's driver thread between its program's slices, whose bound
+    // Thread is the program's, idle, and not the node's to run on.
+    if (!soundEvaluationContext()) {
         // Wrap before taking the queue lock: ObjSignal construction touches
         // the engine mutex (wrapper registration).
         roxal::Value wrapper = roxal::Value::signalVal(std::move(signal));

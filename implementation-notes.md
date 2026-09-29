@@ -1311,10 +1311,11 @@ Func-lifted transforms over reader signals (calling a `func` with a signal
 argument builds a derived signal, e.g.
 `cam.image = _rgbTensor(cam._image_raw)`) evaluate on the dataflow engine's
 actor thread: `DataflowEngine::processEventDrivenSignalUpdate` queues
-updates arriving on non-VM threads (the reader thread has no VM `Thread`
-state, so FuncNode closures must not execute there) and the engine's run
-loop drains them, coalescing to the newest timestamp per signal.  `set()`
-from script threads still evaluates inline/synchronously.
+updates arriving on threads that cannot evaluate a node body in place (the
+reader thread has no VM `Thread` state, so FuncNode closures must not execute
+there) and the engine's run loop drains them, coalescing to the newest
+timestamp per signal.  `set()` from script code still evaluates
+inline/synchronously.
 
 ### Supported IDL subset / future enhancements
 
@@ -2288,7 +2289,11 @@ is never an epoch member and node bodies do not trap on breakpoints (the
 synchronously and nested inside its thread's own execution -- a lift's first
 evaluation, an event-driven `set()` from script code; `FuncNode` refuses any
 other evaluation with an `Error` diagnostic rather than corrupting the thread
-it found bound.
+it found bound. An event-driven update that arrives anywhere else -- a host
+writing a signal from its driver thread between its program's slices, where
+the program's `Thread` is bound but idle -- is queued to the engine's actor
+thread instead of evaluated in place. One predicate,
+`DataflowEngine::soundEvaluationContext`, decides both.
 
 **A nested execution without a deadline runs to completion.** A lift's first
 evaluation, a `set()` evaluating an island, any callback native code invokes:

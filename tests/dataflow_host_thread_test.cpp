@@ -103,6 +103,11 @@ public:
         : runtime_(runtime), tickBudget_(tickBudget), driveBudget_(driveBudget),
           tickAfterRun_(tickAfterRun) {}
 
+    // Host work done on the driver thread each cycle of the live run, before
+    // the tick -- FC publishes its feedback into signals there.  Set before
+    // start().
+    void setHostWork(std::function<void()> work) { hostWork_ = std::move(work); }
+
     void start()
     {
         thread_ = std::thread([this] {
@@ -113,6 +118,8 @@ public:
                 if (!section)
                     continue;   // collection pending: skip the whole cycle
                 const bool afterRun = runHandedOver_.load(std::memory_order_acquire);
+                if (!afterRun && hostWork_)
+                    hostWork_();
                 if (!afterRun || tickAfterRun_)
                     record(engine->tickFor(tickBudget_), afterRun);
                 const SliceResult slice = runtime_.driveFor(driveBudget_);
@@ -153,6 +160,7 @@ private:
     TimeDuration tickBudget_;
     TimeDuration driveBudget_;
     bool tickAfterRun_;
+    std::function<void()> hostWork_;
     std::thread thread_;
     std::atomic<bool> stop_ { false };
     std::atomic<bool> runHandedOver_ { false };
@@ -203,6 +211,10 @@ struct Scenario {
     bool failsOffHostTick = false;
     // Tick budget override (us); 0 = the default 50us.
     int tickBudgetUs = 0;
+    // The host sets the program's event-driven source 'host_in' to 1..10,
+    // one value per cycle, from the driver thread between the program's
+    // slices.
+    bool hostSetsEventSource = false;
 };
 
 // A Roxal-bodied gate feeding back on itself, then a busy loop of
@@ -394,6 +406,22 @@ const char* kNodeExit =
     "  k = k + 1\n"
     "print(k)\n";
 
+// The host writes an event-driven source the program created, from the
+// driver thread between the program's slices -- as a host publishes its own
+// data into signals.  The program's Thread is still bound there, but it is
+// not executing: the Roxal-bodied node the write triggers must be evaluated
+// somewhere sound, not refused, and not on the program's stacks.
+const char* kHostSetEvent =
+    "func inc(x :int) -> int:\n"
+    "  return x + 1\n"
+    "var e = signal(0, 0, 'host_in')\n"
+    "var r = inc(e)\n"
+    "var n = 0\n"
+    "while r.value < 11 and n < 400:\n"
+    "  wait(ms=5)\n"
+    "  n = n + 1\n"
+    "print(r.value)\n";
+
 const Scenario kScenarios[] = {
     { "busy_loop",      kBusyLoop,      "200000\n",       false, false, false },
     { "wait_loop",      kWaitLoop,      "20\n",           false, false, false },
@@ -413,6 +441,8 @@ const Scenario kScenarios[] = {
     { "lift_collects",  kLiftCollects,  "1000\n1\n",      false, false, false },
     { "node_exit_sliced", kNodeExitSliced, "",            true,  false, false,
       RunState::Completed, nullptr, 7, false, false, 1 },
+    { "host_set_event", kHostSetEvent,  "11\n",           false, false, false,
+      RunState::Completed, nullptr, 0, false, false, 0, true },
 };
 
 int runScenario(const Scenario& scenario)
@@ -440,6 +470,20 @@ int runScenario(const Scenario& scenario)
                   TimeDuration::microSecs(scenario.tickBudgetUs ? scenario.tickBudgetUs : 50),
                   TimeDuration::microSecs(500),
                   scenario.tickAfterRun);
+    ptr<df::Signal> hostIn;
+    int hostSets = 0;
+    if (scenario.hostSetsEventSource)
+        driver.setHostWork([&] {
+            if (hostSets >= 10)
+                return;
+            if (!hostIn) {
+                for (const auto& s : engine->allSignals())
+                    if (s->name() == "host_in") { hostIn = s; break; }
+                if (!hostIn)
+                    return;   // the program has not created it yet
+            }
+            hostIn->set(Value::intVal(++hostSets));
+        });
     driver.start();
 
     std::stringstream stream(scenario.source);
@@ -468,6 +512,7 @@ int runScenario(const Scenario& scenario)
                name + ": the host kept ticking after the run ended");
 
     driver.stop();
+    hostIn.reset();   // before the VM shuts down
 
     const std::string output = sink.text();
     // One line of context for any failure below.
@@ -522,6 +567,10 @@ int runScenario(const Scenario& scenario)
     if (scenario.requireOverrun)
         expect(driver.during(TickResult::Overrun) > 0,
                name + ": tickFor abandoned a suspended tick at least once");
+    if (scenario.hostSetsEventSource)
+        expect(hostSets == 10,
+               name + ": the host set the event source during the run ("
+                   + std::to_string(hostSets) + " of 10 sets)");
     if (scenario.bestEffort) {
         expect(driver.during(TickResult::Overrun) == 0 && driver.after(TickResult::Overrun) == 0,
                name + ": no tick is abandoned under BestEffort ("

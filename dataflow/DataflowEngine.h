@@ -587,13 +587,23 @@ private:
     friend class Signal;
     friend class FuncNode;
 
+    // Whether the calling OS thread's binding may evaluate a Roxal node body
+    // synchronously: in the engine's own context (a Dataflow thread -- its
+    // actor thread, or the host context tickFor binds), or NESTED, with no
+    // deadline, inside the execution of the thread that asked for it (a
+    // lift's first evaluation, an event-driven set() from script code).  Not
+    // on a binding somebody else left behind -- a host's driver thread
+    // between its program's slices -- nor with no Thread bound at all.
+    static bool soundEvaluationContext(TimePoint deadline = TimePoint::max());
+
     void processEventDrivenSignalUpdate(ptr<Signal> signal, TimePoint timestamp);
 
-    // Event-driven updates arriving on non-VM threads (e.g. the DDS
-    // reader-signal thread) cannot evaluate FuncNode closures in place; they
-    // are queued here and drained by the engine's run loop on its own actor
-    // thread. Guarded by m_pendingEventMutex (not m_mutex: producers must
-    // never block on network evaluation).
+    // Event-driven updates arriving where FuncNode closures cannot be
+    // evaluated in place (see soundEvaluationContext: the DDS reader-signal
+    // thread, a host's driver thread between slices) are queued here and
+    // drained by the engine's run loop on its own actor thread. Guarded by
+    // m_pendingEventMutex (not m_mutex: producers must never block on
+    // network evaluation).
     std::mutex m_pendingEventMutex;
     // Drain OWNERSHIP: exactly one drainer may run processPendingEventUpdates
     // at a time -- two engine-loop variants could historically race here and

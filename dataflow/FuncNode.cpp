@@ -29,23 +29,6 @@ weak_ptr<roxal::ExecutionDomain> creatingDomain()
     return weak_ptr<roxal::ExecutionDomain>();
 }
 
-// Where a Roxal body may run.  In the engine's own context (a Dataflow
-// thread: its actor thread, or the host context tickFor binds), or
-// synchronously NESTED inside the execution of the thread that asked for it
-// -- a lift's first evaluation, an event-driven set() from script code.
-// Anywhere else it is running on a binding somebody else left behind: its
-// frames would interleave with that thread's own, and a suspended body would
-// be finished by that thread's next slice as if it were its own code.
-bool soundEvaluationContext(TimePoint deadline)
-{
-    const roxal::Thread* t = roxal::VM::thread.get();
-    if (!t)
-        return false;
-    if (t->kind == roxal::ThreadKind::Dataflow)
-        return true;
-    return deadline == TimePoint::max() && t->execute_depth > 0;
-}
-
 std::optional<roxal::ValueType> valueTypeForBuiltin(roxal::type::BuiltinType builtin)
 {
     using roxal::type::BuiltinType;
@@ -610,7 +593,7 @@ FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline
         // Build args from inputValues (same logic as operator())
         std::vector<Value> args = assembleArgs(inputValues);
 
-        if (!soundEvaluationContext(deadline)) {
+        if (!DataflowEngine::soundEvaluationContext(deadline)) {
             VM::emitDiagnostic(
                 "FuncNode '" + name() + "': body not evaluated -- called outside "
                 "the engine's execution context ("
