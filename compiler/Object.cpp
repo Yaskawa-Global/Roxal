@@ -3251,9 +3251,10 @@ void ObjEventType::write(std::ostream& out, roxal::ptr<SerializationContext> ctx
         writeValue(out, prop.initialValue, ctx);
     }
 
-    uint32_t subCount = subscribers.size();
+    const std::vector<Value> subs = subscribers.get();
+    uint32_t subCount = subs.size();
     out.write(reinterpret_cast<char*>(&subCount), 4);
-    for (const auto& subscriber : subscribers) {
+    for (const auto& subscriber : subs) {
         writeValue(out, subscriber, ctx);
     }
 }
@@ -3308,9 +3309,12 @@ void ObjEventType::trace(ValueVisitor& visitor) const
         visitor.visit(prop.type);
         visitor.visit(prop.initialValue);
     }
-    for (const auto& subscriber : subscribers) {
-        visitor.visit(subscriber);
-    }
+    // Mark phase, world stopped: read in place (a snapshot's copies would
+    // touch refcounts mid-collection).
+    subscribers.unsafeApply([&](const std::vector<Value>& subs) {
+        for (const auto& subscriber : subs)
+            visitor.visit(subscriber);
+    });
 }
 
 void ObjEventType::dropReferences()

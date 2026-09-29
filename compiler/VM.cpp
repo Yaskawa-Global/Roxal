@@ -1236,7 +1236,10 @@ void roxal::scheduleEventHandlers(Value eventWeak, ObjEventType* ev, Value event
     // a single pending event, so we only need to schedule once per thread.
     std::unordered_set<Thread*> scheduledThreads;
 
-    for (auto it = ev->subscribers.begin(); it != ev->subscribers.end(); ) {
+    // Scan a snapshot: handler threads subscribe and unsubscribe while this
+    // (any) thread emits.  Entries found dead are pruned after the scan.
+    bool sawDead = false;
+    for (const Value& sub : ev->subscribers.get()) {
         // Take a STRONG ref before touching the closure. The weak entry can
         // reach refcount zero concurrently (handler thread teardown), and the
         // retire path frees without consulting stacks -- so even reading
@@ -1244,31 +1247,27 @@ void roxal::scheduleEventHandlers(Value eventWeak, ObjEventType* ev, Value event
         // through its destructed weak_ptr's control block: heap corruption,
         // not just a stale read. isAlive() alone is the TOCTOU strongRef()'s
         // CAS closes; the strong ref then pins the closure for this body.
-        Value handlerVal = it->strongRef();
+        Value handlerVal = sub.strongRef();
         if (handlerVal.isNil()) {
-            it = ev->subscribers.erase(it);
+            sawDead = true;
             continue;
         }
         auto closure = asClosure(handlerVal);
         auto handlerThread = closure->handlerThread.lock();
 
         if (!handlerThread) {
-            it = ev->subscribers.erase(it);
+            sawDead = true;
             continue;
         }
 
         // Skip if we've already scheduled an event to this thread
-        if (scheduledThreads.count(handlerThread.get()) > 0) {
-            ++it;
+        if (scheduledThreads.count(handlerThread.get()) > 0)
             continue;
-        }
 
         Value key = eventWeak;
         auto regIt = handlerThread->eventHandlers.find(key);
-        if (regIt == handlerThread->eventHandlers.end()) {
-            ++it;
+        if (regIt == handlerThread->eventHandlers.end())
             continue;
-        }
 
         // Check if any handler on this thread should receive the event
         // (considering matchValue and targetFilter filters)
@@ -1315,8 +1314,13 @@ void roxal::scheduleEventHandlers(Value eventWeak, ObjEventType* ev, Value event
             handlerThread->pendingEventCount.fetch_add(1, std::memory_order_release);
             handlerThread->wake();
         }
+    }
 
-        ++it;
+    if (sawDead) {
+        ev->subscribers.erase_if([](const Value& sub) {
+            Value strong = sub.strongRef();
+            return strong.isNil() || asClosure(strong)->handlerThread.expired();
+        });
     }
 }
 
@@ -10701,11 +10705,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                         thread->eventHandlers.erase(it);
                 }
 
-                for(auto it = ev->subscribers.begin(); it != ev->subscribers.end(); ) {
-                    if (it->isAlive() && asClosure(*it) == asClosure(closureVal))
-                        it = ev->subscribers.erase(it);
-                    else
-                        ++it;
+                {
+                    ObjClosure* target = asClosure(closureVal);
+                    ev->subscribers.erase_if([target](const Value& sub) {
+                        return sub.isAlive() && asClosure(sub) == target;
+                    });
                 }
 
                 break;
@@ -11618,11 +11622,10 @@ bool VM::processPendingEvents()
                 // Prune matching weak entries from the event's subscriber list.
                 Value evStrong = tev.eventType.strongRef();
                 if (!evStrong.isNil() && isEventType(evStrong)) {
-                    auto& subs = asEventType(evStrong)->subscribers;
-                    subs.erase(std::remove_if(subs.begin(), subs.end(),
+                    asEventType(evStrong)->subscribers.erase_if(
                         [&](const Value& sub) {
                             return sub.isNonNil() && firedSet.count(sub.asObj()) > 0;
-                        }), subs.end());
+                        });
                 }
             }
         }
@@ -11737,11 +11740,10 @@ bool VM::invokeNextEventHandler()
                 }
                 Value evStrong = tev.eventType.strongRef();
                 if (!evStrong.isNil() && isEventType(evStrong)) {
-                    auto& subs = asEventType(evStrong)->subscribers;
-                    subs.erase(std::remove_if(subs.begin(), subs.end(),
+                    asEventType(evStrong)->subscribers.erase_if(
                         [&](const Value& sub) {
                             return sub.isNonNil() && sub.asObj() == relayObj;
-                        }), subs.end());
+                        });
                 }
             }
             continue;
@@ -13975,11 +13977,11 @@ Value VM::event_remove_builtin(ArgsView args)
             thread->eventHandlers.erase(it);
     }
 
-    for(auto it = ev->subscribers.begin(); it != ev->subscribers.end(); ) {
-        if (it->isAlive() && asClosure(*it) == asClosure(closureVal))
-            it = ev->subscribers.erase(it);
-        else
-            ++it;
+    {
+        ObjClosure* target = asClosure(closureVal);
+        ev->subscribers.erase_if([target](const Value& sub) {
+            return sub.isAlive() && asClosure(sub) == target;
+        });
     }
 
     return Value::nilVal();

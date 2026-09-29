@@ -100,13 +100,10 @@ Thread::~Thread()
         for (const auto& handler : entry.second) {
             if (!handler.closure.isAlive())
                 continue;
-            for (auto it = ev->subscribers.begin(); it != ev->subscribers.end(); ) {
-                if (!it->isAlive() || asClosure(*it) != asClosure(handler.closure)) {
-                    ++it;
-                    continue;
-                }
-                it = ev->subscribers.erase(it);
-            }
+            ObjClosure* target = asClosure(handler.closure);
+            ev->subscribers.erase_if([target](const Value& sub) {
+                return sub.isAlive() && asClosure(sub) == target;
+            });
         }
     }
 }
@@ -139,12 +136,9 @@ void Thread::pruneEventRegistrations()
         // Clean up subscribers that point at dead closures. We only track
         // weak references here so losing the closure automatically unhooks
         // the handler.
-        auto& subscribers = ev->subscribers;
-        subscribers.erase(std::remove_if(subscribers.begin(), subscribers.end(),
-                                         [](const Value& subscriber) {
-                                             return !subscriber.isAlive();
-                                         }),
-                          subscribers.end());
+        ev->subscribers.erase_if([](const Value& subscriber) {
+            return !subscriber.isAlive();
+        });
 
         auto& handlers = it->second;
         handlers.erase(std::remove_if(handlers.begin(), handlers.end(),
@@ -163,11 +157,10 @@ void Thread::pruneEventRegistrations()
                                               if (dead || fulfilled) {
                                                   if (ev && handler.closure.isNonNil()) {
                                                       Obj* relayObj = handler.closure.asObj();
-                                                      auto& subs = ev->subscribers;
-                                                      subs.erase(std::remove_if(subs.begin(), subs.end(),
+                                                      ev->subscribers.erase_if(
                                                           [&](const Value& sub) {
                                                               return sub.isNonNil() && sub.asObj() == relayObj;
-                                                          }), subs.end());
+                                                          });
                                                   }
                                                   return true;
                                               }
