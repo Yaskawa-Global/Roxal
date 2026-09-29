@@ -5187,8 +5187,8 @@ size_t roxal::tensorDTypeSize(TensorDType dtype)
     }
 }
 
-#ifndef ROXAL_ENABLE_ONNX
-// IEEE-754 binary16 <-> float, for the non-ORT build's Float16 storage.
+// IEEE-754 binary16 <-> float, for Float16 raw storage (non-ORT storage and
+// Ort::Float16_t share the layout).
 static float halfBitsToFloat(uint16_t h)
 {
     uint32_t sign = (h & 0x8000u) << 16;
@@ -5215,6 +5215,14 @@ static float halfBitsToFloat(uint16_t h)
     return f;
 }
 
+// Round-to-nearest-even decision for the bits truncated off a mantissa: round
+// up when they exceed half an ulp, or equal it exactly and the kept lsb is odd
+// (the same rounding as Ort::Float16_t, so both builds quantize identically).
+static bool roundUpNearestEven(uint32_t dropped, uint32_t halfUlp, uint32_t kept)
+{
+    return dropped > halfUlp || (dropped == halfUlp && (kept & 1));
+}
+
 static uint16_t floatToHalfBits(float f)
 {
     uint32_t bits;
@@ -5235,23 +5243,21 @@ static uint16_t floatToHalfBits(float f)
         mant |= 0x800000;
         uint32_t shift = static_cast<uint32_t>(14 - exp);
         uint32_t halfMant = mant >> shift;
-        // Round to nearest-even
-        if ((mant >> (shift - 1)) & 1)
-            halfMant += 1;
+        if (roundUpNearestEven(mant & ((1u << shift) - 1), 1u << (shift - 1), halfMant))
+            halfMant += 1;  // may carry into the smallest normal: still correct
         return static_cast<uint16_t>(sign | halfMant);
     }
-    uint16_t halfMant = static_cast<uint16_t>(mant >> 13);
-    uint16_t half = static_cast<uint16_t>(sign | (static_cast<uint32_t>(exp) << 10) | halfMant);
-    // Round to nearest-even
-    if (mant & 0x1000)
-        half += 1;
+    uint16_t half = static_cast<uint16_t>(sign | (static_cast<uint32_t>(exp) << 10) | (mant >> 13));
+    if (roundUpNearestEven(mant & 0x1FFF, 0x1000, half))
+        half += 1;  // a mantissa carry bumps the exponent (up to Inf): still correct
     return half;
 }
 
-// Read/write one element of the dtype-native raw buffer as a double. memcpy is
-// used to stay alignment-safe. Mirrors the ORT ortElement* helpers.
-static double rawElementAsDouble(const uint8_t* base, TensorDType dtype, int64_t idx)
+// Read/write one element of a dtype-native raw buffer as a double. memcpy is
+// used to stay alignment-safe.
+double roxal::tensorRawElementAsDouble(const void* raw, TensorDType dtype, int64_t idx)
 {
+    auto base = static_cast<const uint8_t*>(raw);
     switch (dtype) {
         case TensorDType::Float16: { uint16_t h; std::memcpy(&h, base + idx*2, 2); return static_cast<double>(halfBitsToFloat(h)); }
         case TensorDType::Float32: { float f;    std::memcpy(&f, base + idx*4, 4); return static_cast<double>(f); }
@@ -5267,8 +5273,9 @@ static double rawElementAsDouble(const uint8_t* base, TensorDType dtype, int64_t
     }
 }
 
-static void rawSetElementFromDouble(uint8_t* base, TensorDType dtype, int64_t idx, double v)
+void roxal::tensorRawSetElementFromDouble(void* raw, TensorDType dtype, int64_t idx, double v)
 {
+    auto base = static_cast<uint8_t*>(raw);
     switch (dtype) {
         case TensorDType::Float16: { uint16_t h = floatToHalfBits(static_cast<float>(v)); std::memcpy(base + idx*2, &h, 2); break; }
         case TensorDType::Float32: { float f = static_cast<float>(v);   std::memcpy(base + idx*4, &f, 4); break; }
@@ -5283,7 +5290,6 @@ static void rawSetElementFromDouble(uint8_t* base, TensorDType dtype, int64_t id
         default: throw std::runtime_error("Unsupported dtype for element write");
     }
 }
-#endif // !ROXAL_ENABLE_ONNX
 
 #ifdef ROXAL_ENABLE_ONNX
 // Forward declarations of helpers (defined below)
@@ -5522,7 +5528,7 @@ double ObjTensor::at(int64_t flatIdx) const
     ensureCpu();
     return ortElementAsDouble(*ort_value_, dtype_, flatIdx);
 #else
-    return rawElementAsDouble(data_->data(), dtype_, flatIdx);
+    return tensorRawElementAsDouble(data_->data(), dtype_, flatIdx);
 #endif
 }
 
@@ -5536,7 +5542,7 @@ void ObjTensor::setAt(int64_t flatIdx, double v)
     ortSetElementFromDouble(*ort_value_, dtype_, flatIdx, v);
 #else
     ensureUnique();
-    rawSetElementFromDouble(data_->data(), dtype_, flatIdx, v);
+    tensorRawSetElementFromDouble(data_->data(), dtype_, flatIdx, v);
 #endif
     control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);
 }
@@ -6124,7 +6130,7 @@ void ObjTensor::read(std::istream& in, roxal::ptr<SerializationContext> ctx)
     for (int64_t i = 0; i < n; ++i) {
         double d;
         in.read(reinterpret_cast<char*>(&d), 8);
-        rawSetElementFromDouble(data_->data(), dtype_, i, d);
+        tensorRawSetElementFromDouble(data_->data(), dtype_, i, d);
     }
 #endif
     control->writeEpoch.store(globalWriteEpoch.fetch_add(1, std::memory_order_relaxed), std::memory_order_release);

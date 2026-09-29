@@ -2298,6 +2298,74 @@ bool roxal::isTruthy(const Value& v)
 
 
 
+namespace {
+
+// Elementwise tensor kernels: dispatch the dtype ONCE (withTensorDType) and run
+// a tight typed loop — one COW/write-epoch via rawDataMut() instead of per
+// element via setAt(). Math stays double-mediated (T → double → op → cast back),
+// bit-identical to the at()/setAt() element semantics; the double-mediated
+// generic path (still one rawDataMut(), never a setAt() loop) is the fallback
+// for Float16/Bool and mixed-dtype operands.
+// Callers must do all validation (shape, zero divisors) BEFORE calling — the
+// result is allocated here and a throw across a live newObj ptr terminates.
+
+template <typename OP>
+Value tensorEwTensorTensor(const ObjTensor* lt, const ObjTensor* rt, OP op)
+{
+    auto result = newTensorObj(lt->shape(), lt->dtype());
+    ObjTensor* out = result.get();
+    const int64_t n = lt->numel();
+    const bool fast = lt->dtype() == rt->dtype() &&
+        withTensorDType(lt->dtype(), [&]<typename T>() {
+            const T* a = static_cast<const T*>(lt->rawData());
+            const T* b = static_cast<const T*>(rt->rawData());
+            T* o = static_cast<T*>(out->rawDataMut());
+            for (int64_t i = 0; i < n; ++i)
+                o[i] = static_cast<T>(op(static_cast<double>(a[i]), static_cast<double>(b[i])));
+        });
+    if (!fast) {
+        const void* a = lt->rawData();
+        const void* b = rt->rawData();
+        void* o = out->rawDataMut();
+        for (int64_t i = 0; i < n; ++i)
+            tensorRawSetElementFromDouble(o, out->dtype(), i,
+                op(tensorRawElementAsDouble(a, lt->dtype(), i),
+                   tensorRawElementAsDouble(b, rt->dtype(), i)));
+    }
+    return Value::objVal(std::move(result));
+}
+
+// Unary map over one tensor (the scalar of a tensor⊕scalar op is baked into
+// `op`, preserving operand order for the non-commutative cases).
+template <typename OP>
+Value tensorEwMap(const ObjTensor* t, OP op)
+{
+    auto result = newTensorObj(t->shape(), t->dtype());
+    ObjTensor* out = result.get();
+    const int64_t n = t->numel();
+    const bool fast = withTensorDType(t->dtype(), [&]<typename T>() {
+        const T* a = static_cast<const T*>(t->rawData());
+        T* o = static_cast<T*>(out->rawDataMut());
+        for (int64_t i = 0; i < n; ++i)
+            o[i] = static_cast<T>(op(static_cast<double>(a[i])));
+    });
+    if (!fast) {
+        const void* a = t->rawData();
+        void* o = out->rawDataMut();
+        for (int64_t i = 0; i < n; ++i)
+            tensorRawSetElementFromDouble(o, out->dtype(), i,
+                op(tensorRawElementAsDouble(a, t->dtype(), i)));
+    }
+    return Value::objVal(std::move(result));
+}
+
+double scalarOf(const Value& v)
+{
+    return v.isInt() ? static_cast<double>(v.asInt()) : v.asReal();
+}
+
+} // namespace
+
 Value roxal::negate(Value v)
 {
     if (v.isInt() || v.isByte()) {
@@ -2320,11 +2388,7 @@ Value roxal::negate(Value v)
         return Value::matrixVal(result);
     }
     else if (isTensor(v)) {
-        const ObjTensor* t = asTensor(v);
-        auto result = newTensorObj(t->shape(), t->dtype());
-        for (int64_t i = 0; i < t->numel(); ++i)
-            result->setAt(i, -t->at(i));
-        return Value::objVal(std::move(result));
+        return tensorEwMap(asTensor(v), [](double a) { return -a; });
     }
     else if (v.isBool())
         return Value::boolVal(!v.asBool());
@@ -2404,63 +2468,6 @@ static Value signalBinaryOp(const std::string& name,
     df::DataflowEngine::instance()->initializeNode(node);
     return Value::signalVal(outputs[0]);
 }
-
-namespace {
-
-// Elementwise tensor kernels: dispatch the dtype ONCE (withTensorDType) and run
-// a tight typed loop — one COW/write-epoch via rawDataMut() instead of per
-// element via setAt(). Math stays double-mediated (T → double → op → cast back),
-// bit-identical to the at()/setAt() generic loops these accelerate; the generic
-// path remains as the fallback for Float16/Bool and mixed-dtype operands.
-// Callers must do all validation (shape, zero divisors) BEFORE calling — the
-// result is allocated here and a throw across a live newObj ptr terminates.
-
-template <typename OP>
-Value tensorEwTensorTensor(const ObjTensor* lt, const ObjTensor* rt, OP op)
-{
-    auto result = newTensorObj(lt->shape(), lt->dtype());
-    ObjTensor* out = result.get();
-    const int64_t n = lt->numel();
-    const bool fast = lt->dtype() == rt->dtype() &&
-        withTensorDType(lt->dtype(), [&]<typename T>() {
-            const T* a = static_cast<const T*>(lt->rawData());
-            const T* b = static_cast<const T*>(rt->rawData());
-            T* o = static_cast<T*>(out->rawDataMut());
-            for (int64_t i = 0; i < n; ++i)
-                o[i] = static_cast<T>(op(static_cast<double>(a[i]), static_cast<double>(b[i])));
-        });
-    if (!fast)
-        for (int64_t i = 0; i < n; ++i)
-            out->setAt(i, op(lt->at(i), rt->at(i)));
-    return Value::objVal(std::move(result));
-}
-
-// Unary map over one tensor (the scalar of a tensor⊕scalar op is baked into
-// `op`, preserving operand order for the non-commutative cases).
-template <typename OP>
-Value tensorEwMap(const ObjTensor* t, OP op)
-{
-    auto result = newTensorObj(t->shape(), t->dtype());
-    ObjTensor* out = result.get();
-    const int64_t n = t->numel();
-    const bool fast = withTensorDType(t->dtype(), [&]<typename T>() {
-        const T* a = static_cast<const T*>(t->rawData());
-        T* o = static_cast<T*>(out->rawDataMut());
-        for (int64_t i = 0; i < n; ++i)
-            o[i] = static_cast<T>(op(static_cast<double>(a[i])));
-    });
-    if (!fast)
-        for (int64_t i = 0; i < n; ++i)
-            out->setAt(i, op(t->at(i)));
-    return Value::objVal(std::move(result));
-}
-
-double scalarOf(const Value& v)
-{
-    return v.isInt() ? static_cast<double>(v.asInt()) : v.asReal();
-}
-
-} // namespace
 
 Value roxal::add(Value l, Value r)
 {
@@ -3158,26 +3165,15 @@ Value roxal::greater(Value l, Value r)
         const ObjTensor* rt = asTensor(r);
         if (lt->shape() != rt->shape())
             throw std::invalid_argument("Tensor comparison requires tensors of same shape");
-        auto result = newTensorObj(lt->shape(), lt->dtype());
-        for (int64_t i = 0; i < lt->numel(); ++i)
-            result->setAt(i, lt->at(i) > rt->at(i) ? 1.0 : 0.0);
-        return Value::objVal(std::move(result));
+        return tensorEwTensorTensor(lt, rt, [](double a, double b) { return a > b ? 1.0 : 0.0; });
     }
     else if (isTensor(l) && r.isNumber()) {
-        const ObjTensor* lt = asTensor(l);
-        double scalar = r.isInt() ? static_cast<double>(r.asInt()) : r.asReal();
-        auto result = newTensorObj(lt->shape(), lt->dtype());
-        for (int64_t i = 0; i < lt->numel(); ++i)
-            result->setAt(i, lt->at(i) > scalar ? 1.0 : 0.0);
-        return Value::objVal(std::move(result));
+        const double s = scalarOf(r);
+        return tensorEwMap(asTensor(l), [s](double a) { return a > s ? 1.0 : 0.0; });
     }
     else if (l.isNumber() && isTensor(r)) {
-        const ObjTensor* rt = asTensor(r);
-        double scalar = l.isInt() ? static_cast<double>(l.asInt()) : l.asReal();
-        auto result = newTensorObj(rt->shape(), rt->dtype());
-        for (int64_t i = 0; i < rt->numel(); ++i)
-            result->setAt(i, scalar > rt->at(i) ? 1.0 : 0.0);
-        return Value::objVal(std::move(result));
+        const double s = scalarOf(l);
+        return tensorEwMap(asTensor(r), [s](double a) { return s > a ? 1.0 : 0.0; });
     }
     else if (l.isObj() && r.isObj()) {
         if (isString(l) && isString(r)) {
@@ -3218,26 +3214,15 @@ Value roxal::less(Value l, Value r)
         const ObjTensor* rt = asTensor(r);
         if (lt->shape() != rt->shape())
             throw std::invalid_argument("Tensor comparison requires tensors of same shape");
-        auto result = newTensorObj(lt->shape(), lt->dtype());
-        for (int64_t i = 0; i < lt->numel(); ++i)
-            result->setAt(i, lt->at(i) < rt->at(i) ? 1.0 : 0.0);
-        return Value::objVal(std::move(result));
+        return tensorEwTensorTensor(lt, rt, [](double a, double b) { return a < b ? 1.0 : 0.0; });
     }
     else if (isTensor(l) && r.isNumber()) {
-        const ObjTensor* lt = asTensor(l);
-        double scalar = r.isInt() ? static_cast<double>(r.asInt()) : r.asReal();
-        auto result = newTensorObj(lt->shape(), lt->dtype());
-        for (int64_t i = 0; i < lt->numel(); ++i)
-            result->setAt(i, lt->at(i) < scalar ? 1.0 : 0.0);
-        return Value::objVal(std::move(result));
+        const double s = scalarOf(r);
+        return tensorEwMap(asTensor(l), [s](double a) { return a < s ? 1.0 : 0.0; });
     }
     else if (l.isNumber() && isTensor(r)) {
-        const ObjTensor* rt = asTensor(r);
-        double scalar = l.isInt() ? static_cast<double>(l.asInt()) : l.asReal();
-        auto result = newTensorObj(rt->shape(), rt->dtype());
-        for (int64_t i = 0; i < rt->numel(); ++i)
-            result->setAt(i, scalar < rt->at(i) ? 1.0 : 0.0);
-        return Value::objVal(std::move(result));
+        const double s = scalarOf(l);
+        return tensorEwMap(asTensor(r), [s](double a) { return s < a ? 1.0 : 0.0; });
     }
     else if (l.isObj() && r.isObj()) {
         if (isString(l) && isString(r)) {
@@ -3277,26 +3262,15 @@ Value roxal::greaterEqual(Value l, Value r)
         const ObjTensor* rt = asTensor(r);
         if (lt->shape() != rt->shape())
             throw std::invalid_argument("Tensor comparison requires tensors of same shape");
-        auto result = newTensorObj(lt->shape(), lt->dtype());
-        for (int64_t i = 0; i < lt->numel(); ++i)
-            result->setAt(i, lt->at(i) >= rt->at(i) ? 1.0 : 0.0);
-        return Value::objVal(std::move(result));
+        return tensorEwTensorTensor(lt, rt, [](double a, double b) { return a >= b ? 1.0 : 0.0; });
     }
     else if (isTensor(l) && r.isNumber()) {
-        const ObjTensor* lt = asTensor(l);
-        double scalar = r.isInt() ? static_cast<double>(r.asInt()) : r.asReal();
-        auto result = newTensorObj(lt->shape(), lt->dtype());
-        for (int64_t i = 0; i < lt->numel(); ++i)
-            result->setAt(i, lt->at(i) >= scalar ? 1.0 : 0.0);
-        return Value::objVal(std::move(result));
+        const double s = scalarOf(r);
+        return tensorEwMap(asTensor(l), [s](double a) { return a >= s ? 1.0 : 0.0; });
     }
     else if (l.isNumber() && isTensor(r)) {
-        const ObjTensor* rt = asTensor(r);
-        double scalar = l.isInt() ? static_cast<double>(l.asInt()) : l.asReal();
-        auto result = newTensorObj(rt->shape(), rt->dtype());
-        for (int64_t i = 0; i < rt->numel(); ++i)
-            result->setAt(i, scalar >= rt->at(i) ? 1.0 : 0.0);
-        return Value::objVal(std::move(result));
+        const double s = scalarOf(l);
+        return tensorEwMap(asTensor(r), [s](double a) { return s >= a ? 1.0 : 0.0; });
     }
     else if (l.isObj() && r.isObj()) {
         if (isString(l) && isString(r)) {
@@ -3331,26 +3305,15 @@ Value roxal::lessEqual(Value l, Value r)
         const ObjTensor* rt = asTensor(r);
         if (lt->shape() != rt->shape())
             throw std::invalid_argument("Tensor comparison requires tensors of same shape");
-        auto result = newTensorObj(lt->shape(), lt->dtype());
-        for (int64_t i = 0; i < lt->numel(); ++i)
-            result->setAt(i, lt->at(i) <= rt->at(i) ? 1.0 : 0.0);
-        return Value::objVal(std::move(result));
+        return tensorEwTensorTensor(lt, rt, [](double a, double b) { return a <= b ? 1.0 : 0.0; });
     }
     else if (isTensor(l) && r.isNumber()) {
-        const ObjTensor* lt = asTensor(l);
-        double scalar = r.isInt() ? static_cast<double>(r.asInt()) : r.asReal();
-        auto result = newTensorObj(lt->shape(), lt->dtype());
-        for (int64_t i = 0; i < lt->numel(); ++i)
-            result->setAt(i, lt->at(i) <= scalar ? 1.0 : 0.0);
-        return Value::objVal(std::move(result));
+        const double s = scalarOf(r);
+        return tensorEwMap(asTensor(l), [s](double a) { return a <= s ? 1.0 : 0.0; });
     }
     else if (l.isNumber() && isTensor(r)) {
-        const ObjTensor* rt = asTensor(r);
-        double scalar = l.isInt() ? static_cast<double>(l.asInt()) : l.asReal();
-        auto result = newTensorObj(rt->shape(), rt->dtype());
-        for (int64_t i = 0; i < rt->numel(); ++i)
-            result->setAt(i, scalar <= rt->at(i) ? 1.0 : 0.0);
-        return Value::objVal(std::move(result));
+        const double s = scalarOf(l);
+        return tensorEwMap(asTensor(r), [s](double a) { return s <= a ? 1.0 : 0.0; });
     }
     else if (l.isObj() && r.isObj()) {
         if (isString(l) && isString(r)) {

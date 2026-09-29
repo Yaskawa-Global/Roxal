@@ -1340,6 +1340,15 @@ unique_ptr<ObjTensor, UnreleasedObj> newTensorObj(const std::vector<int64_t>& sh
                                                    std::vector<uint8_t>&& bytes);
 /// Byte size of one element of the given dtype (available in both builds).
 size_t tensorDTypeSize(TensorDType dtype);
+
+/// Read/write element `idx` of a dtype-native buffer (as returned by
+/// ObjTensor::rawData()/rawDataMut(), in either build) as a double.  For bulk
+/// loops: take the raw pointer once and use these, rather than per-element
+/// ObjTensor::at()/setAt(), which pay the COW/MVCC/write-epoch bookkeeping of
+/// a mutation on every call.
+double tensorRawElementAsDouble(const void* base, TensorDType dtype, int64_t idx);
+void tensorRawSetElementFromDouble(void* base, TensorDType dtype, int64_t idx, double v);
+
 #ifdef ROXAL_ENABLE_ONNX
 /// Create a tensor that takes ownership of an Ort::Value (zero-copy).
 unique_ptr<ObjTensor, UnreleasedObj> newTensorObj(Ort::Value&& ortValue);

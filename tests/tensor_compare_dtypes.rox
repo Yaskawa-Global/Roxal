@@ -1,0 +1,47 @@
+# Tensor comparisons keep the left operand's dtype (the tensor's, for
+# scalar-op-tensor) and negation keeps the operand's dtype.  Covers the typed
+# same-dtype path and the double-mediated fallback (float16, bool, mixed dtypes).
+
+var u = tensor(shape=[3], dtype="uint8", data=[1, 5, 9])
+var ug = u > 4
+print(ug.dtype())                       # uint8
+print(""+ug[0]+" "+ug[1]+" "+ug[2])     # 0 1 1
+
+# scalar >= tensor, scalar <= tensor
+var i = tensor(shape=[3], dtype="int32", data=[-2, 0, 3])
+var sge = 0 >= i
+print(sge.dtype())                      # int32
+print(""+sge[0]+" "+sge[1]+" "+sge[2])  # 1 1 0
+var sle = 0 <= i
+print(""+sle[0]+" "+sle[1]+" "+sle[2])  # 0 1 1
+
+# mixed dtypes: result has the left operand's dtype
+var f = tensor(shape=[3], dtype="float32", data=[-1.5, 0.0, 3.0])
+var mix = i < f
+print(mix.dtype())                      # int32
+print(""+mix[0]+" "+mix[1]+" "+mix[2])  # 1 0 0
+var mix2 = f <= i
+print(mix2.dtype())                     # float32
+print(""+mix2[0]+" "+mix2[1]+" "+mix2[2])  # 0 1 1
+
+# float16
+var h = tensor(shape=[3], dtype="float16", data=[0.5, -2.0, 1.0])
+var hg = h >= 1.0
+print(hg.dtype())                       # float16
+print(""+hg[0]+" "+hg[1]+" "+hg[2])     # 0 0 1
+var hh = h < h
+print(""+hh[0]+" "+hh[1]+" "+hh[2])     # 0 0 0
+
+# bool
+var b = tensor(shape=[3], dtype="bool", data=[1, 0, 1])
+var bg = b > 0
+print(bg.dtype())                       # bool
+print(""+bg[0]+" "+bg[1]+" "+bg[2])     # 1 0 1
+
+# negation
+var ineg = -i
+print(ineg.dtype())                     # int32
+print(""+ineg[0]+" "+ineg[1]+" "+ineg[2])  # 2 0 -3
+var hneg = -h
+print(hneg.dtype())                     # float16
+print(""+hneg[0]+" "+hneg[1]+" "+hneg[2])  # -0.5 2 -1

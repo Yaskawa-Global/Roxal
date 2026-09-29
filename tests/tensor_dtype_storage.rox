@@ -30,3 +30,17 @@ print(""+(f64[0] == 1.1))      # true
 var h = tensor(shape=[2], dtype="float16", data=[1.5, -0.25])
 print(""+len(h.to_bytes()))    # 4
 print(""+h[0]+" "+h[1])        # 1.5 -0.25
+
+# float16 rounds to nearest, ties to even (the same as ONNX Runtime's Float16_t),
+# so both builds quantize identically.
+var t16 = tensor(shape=[5], dtype="float16",
+                 data=[1.00048828125,          # 1 + 2^-11: tie, even neighbour 1
+                       1.00146484375,          # 1 + 3*2^-11: tie, even neighbour 1 + 2^-9
+                       1.000489234924316,      # just above the 1 + 2^-11 tie
+                       2.98023223876953125e-8, # 2^-25: subnormal tie, even neighbour 0
+                       8.94069671630859375e-8])# 3*2^-25: subnormal tie, even neighbour 2^-23
+print(""+(t16[0] == 1.0))                     # true
+print(""+(t16[1] == 1.001953125))             # true
+print(""+(t16[2] == 1.0009765625))            # true
+print(""+(t16[3] == 0.0))                     # true
+print(""+(t16[4] == 1.1920928955078125e-7))   # true

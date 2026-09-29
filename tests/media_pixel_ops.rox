@@ -1,0 +1,48 @@
+import media
+import math.*
+
+# 2x2 RGB test image; pixel (y, x) channel c holds 10 * (1 + 3 * (2 * y + x) + c)
+var src = tensor([2, 2, 3], [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120], dtype='uint8')
+var img = media.Image(source = src)
+
+func near(a, b) -> bool:
+  return abs(a - b) < 1e-6
+
+# to_tensor: HWC uint8 -> NCHW float32 scaled to [0, 1]
+var t = img.to_tensor()
+print(t.shape())                      // [1, 3, 2, 2]
+print(near(t[0, 0, 0, 1], 40 / 255.0))   // y=0 x=1 c=0
+print(near(t[0, 2, 1, 0], 90 / 255.0))   // y=1 x=0 c=2
+print(near(t[0, 1, 1, 1], 110 / 255.0))  // y=1 x=1 c=1
+
+# to_tensor with per-channel mean/std
+var tn = img.to_tensor(mean=[0.5, 0.5, 0.5], std=[0.25, 0.25, 0.25])
+print(near(tn[0, 1, 1, 1], (110 / 255.0 - 0.5) / 0.25))
+
+# to_tensor from an already-float image: no second /255
+var f = clone(img)
+f.to_float()
+var tf = f.to_tensor()
+print(near(tf[0, 0, 0, 0], 10 / 255.0))
+
+# normalize (float image, in place)
+f.normalize([0.0, 0.0, 0.0], [0.5, 0.5, 0.5])
+print(near(f.data[0, 1, 0], (40 / 255.0) / 0.5))
+
+# pad to 3x3: original at top-left, zeros elsewhere
+var p = clone(img)
+p.pad(3, 3)
+print(p.data.shape())                 // [3, 3, 3]
+print(p.data[1, 1, 2])                // 120
+print(p.data[2, 2, 0])                // 0
+print(p.data[0, 2, 1])                // 0
+
+# contrast 2.0 around the mean (65): clamp(65 + 2 * (v - 65), 0, 255)
+var c = clone(img)
+c.contrast(2.0)
+print(c.data[0, 0, 0])                // 10 -> -45 -> 0
+print(c.data[1, 0, 0])                // 70 -> 75
+print(c.data[1, 1, 2])                // 120 -> 175
+
+# the source tensor is untouched by all of the above
+print(src[1, 1, 2])                   // 120

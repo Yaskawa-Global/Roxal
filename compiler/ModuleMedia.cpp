@@ -24,14 +24,6 @@ static std::string toLower(const std::string& s)
     return r;
 }
 
-// Returns true when rawData()/rawDataMut() yields a properly-typed buffer
-// (i.e. uint8 bytes for UInt8 dtype). When false, the backing store is
-// std::vector<double> and we must use at()/setAt() instead.
-static bool hasTypedStorage(const ObjTensor* t)
-{
-    return t->isOrtBacked();
-}
-
 ObjTensor* ModuleMedia::getImageTensor(ArgsView args, const char* methodName)
 {
     if (args.size() < 1 || !isObjectInstance(args[0]))
@@ -43,34 +35,38 @@ ObjTensor* ModuleMedia::getImageTensor(ArgsView args, const char* methodName)
     return asTensor(dataVal);
 }
 
-// Copy an H*W*C uint8 buffer into a tensor.  Uses bulk memcpy when ORT-backed,
-// otherwise falls back to setAt() which stores values as doubles.
+// Copy an H*W*C uint8 buffer into / out of a uint8 tensor.
 static void copyBytesToTensor(ObjTensor* dst, const uint8_t* src, int64_t count)
 {
-    if (hasTypedStorage(dst)) {
-        std::memcpy(dst->rawDataMut(), src, count);
-    } else {
-        for (int64_t i = 0; i < count; ++i)
-            dst->setAt(i, static_cast<double>(src[i]));
-    }
+    std::memcpy(dst->rawDataMut(), src, count);
 }
 
-// Copy tensor data into an H*W*C uint8 buffer.
 static void copyTensorToBytes(const ObjTensor* src, uint8_t* dst, int64_t count)
 {
-    if (hasTypedStorage(src)) {
-        std::memcpy(dst, src->rawData(), count);
-    } else {
-        for (int64_t i = 0; i < count; ++i)
-            dst[i] = static_cast<uint8_t>(std::clamp(std::round(src->at(i)), 0.0, 255.0));
-    }
+    std::memcpy(dst, src->rawData(), count);
 }
 
-// Read a single uint8 element from a tensor (regardless of storage type)
-static inline uint8_t tensorGetU8(const ObjTensor* t, const uint8_t* typed, int64_t i)
-{
-    if (typed) return typed[i];
-    return static_cast<uint8_t>(std::clamp(std::round(t->at(i)), 0.0, 255.0));
+namespace {
+
+// Element views over a tensor's dtype-native storage, taken once per builtin so
+// pixel loops are plain loads and stores.  Pixel loops must not use per-element
+// ObjTensor::at()/setAt(): every setAt() is a full mutation (a global write-epoch
+// bump and, while any frozen snapshot is alive, an MVCC version save that copies
+// the whole buffer whenever a new snapshot has been taken since the last save).
+struct PixelsIn {
+    explicit PixelsIn(const ObjTensor* t) : base(t->rawData()), dtype(t->dtype()) {}
+    double operator[](int64_t i) const { return tensorRawElementAsDouble(base, dtype, i); }
+    const void* base;
+    TensorDType dtype;
+};
+
+struct PixelsOut {
+    explicit PixelsOut(ObjTensor* t) : base(t->rawDataMut()), dtype(t->dtype()) {}
+    void set(int64_t i, double v) const { tensorRawSetElementFromDouble(base, dtype, i, v); }
+    void* base;
+    TensorDType dtype;
+};
+
 }
 
 // ============================================================
@@ -518,6 +514,7 @@ Value ModuleMedia::image_channels_builtin(ArgsView args)
 Value ModuleMedia::image_resize_builtin(ArgsView args)
 {
     ObjTensor* src = getImageTensor(args, "resize");
+    PixelsIn in(src);
     if (args.size() < 3)
         throw std::invalid_argument("Image.resize expects width and height");
 
@@ -533,10 +530,7 @@ Value ModuleMedia::image_resize_builtin(ArgsView args)
 
     std::vector<int64_t> dstShape = {dstH, dstW, ch};
     auto dst = newTensorObj(dstShape, dtype);
-
-    // Typed fast path for UInt8 with ORT storage
-    const uint8_t* srcTyped = (dtype == TensorDType::UInt8 && hasTypedStorage(src))
-        ? static_cast<const uint8_t*>(src->rawData()) : nullptr;
+    PixelsOut out(dst.get());
 
     for (int y = 0; y < dstH; ++y) {
         double srcY = (dstH > 1) ? y * (srcH - 1.0) / (dstH - 1.0) : 0.0;
@@ -556,23 +550,17 @@ Value ModuleMedia::image_resize_builtin(ArgsView args)
                 int i10 = (y1 * srcW + x0) * ch + c;
                 int i11 = (y1 * srcW + x1) * ch + c;
 
-                double v00, v01, v10, v11;
-                if (srcTyped) {
-                    v00 = srcTyped[i00]; v01 = srcTyped[i01];
-                    v10 = srcTyped[i10]; v11 = srcTyped[i11];
-                } else {
-                    v00 = src->at(i00); v01 = src->at(i01);
-                    v10 = src->at(i10); v11 = src->at(i11);
-                }
+                double v00 = in[i00], v01 = in[i01];
+                double v10 = in[i10], v11 = in[i11];
 
                 double val = (1 - fy) * ((1 - fx) * v00 + fx * v01) +
                              fy * ((1 - fx) * v10 + fx * v11);
 
                 int di = (y * dstW + x) * ch + c;
                 if (dtype == TensorDType::UInt8) {
-                    dst->setAt(di, std::clamp(std::round(val), 0.0, 255.0));
+                    out.set(di, std::clamp(std::round(val), 0.0, 255.0));
                 } else {
-                    dst->setAt(di, val);
+                    out.set(di, val);
                 }
             }
         }
@@ -589,6 +577,7 @@ Value ModuleMedia::image_resize_builtin(ArgsView args)
 Value ModuleMedia::image_crop_builtin(ArgsView args)
 {
     ObjTensor* src = getImageTensor(args, "crop");
+    PixelsIn in(src);
     if (args.size() < 5)
         throw std::invalid_argument("Image.crop expects x, y, width, height");
 
@@ -608,12 +597,13 @@ Value ModuleMedia::image_crop_builtin(ArgsView args)
     TensorDType dtype = src->dtype();
     std::vector<int64_t> dstShape = {cropH, cw, channels};
     auto dst = newTensorObj(dstShape, dtype);
+    PixelsOut out(dst.get());
 
     for (int y = 0; y < cropH; ++y)
         for (int x = 0; x < cw; ++x)
             for (int c = 0; c < channels; ++c)
-                dst->setAt((y * cw + x) * channels + c,
-                           src->at(((cy + y) * srcW + (cx + x)) * channels + c));
+                out.set((y * cw + x) * channels + c,
+                        in[((cy + y) * srcW + (cx + x)) * channels + c]);
 
     setImageData(args, Value::objVal(std::move(dst)));
     return Value::nilVal();
@@ -626,6 +616,7 @@ Value ModuleMedia::image_crop_builtin(ArgsView args)
 Value ModuleMedia::image_pad_builtin(ArgsView args)
 {
     ObjTensor* src = getImageTensor(args, "pad");
+    PixelsIn in(src);
     if (args.size() < 3)
         throw std::invalid_argument("Image.pad expects width, height");
 
@@ -642,13 +633,14 @@ Value ModuleMedia::image_pad_builtin(ArgsView args)
     TensorDType dtype = src->dtype();
     std::vector<int64_t> dstShape = {padH, padW, channels};
     auto dst = newTensorObj(dstShape, dtype); // zero-filled by default
+    PixelsOut out(dst.get());
 
     // Copy original image pixels into top-left corner
     for (int y = 0; y < srcH; ++y)
         for (int x = 0; x < srcW; ++x)
             for (int c = 0; c < channels; ++c)
-                dst->setAt((y * padW + x) * channels + c,
-                           src->at((y * srcW + x) * channels + c));
+                out.set((y * padW + x) * channels + c,
+                        in[(y * srcW + x) * channels + c]);
 
     setImageData(args, Value::objVal(std::move(dst)));
     return Value::nilVal();
@@ -661,17 +653,20 @@ Value ModuleMedia::image_pad_builtin(ArgsView args)
 Value ModuleMedia::image_flip_horizontal_builtin(ArgsView args)
 {
     ObjTensor* src = getImageTensor(args, "flip_horizontal");
+    PixelsIn in(src);
     int h = static_cast<int>(src->shape()[0]);
     int w = static_cast<int>(src->shape()[1]);
     int ch = static_cast<int>(src->shape()[2]);
 
     auto dst = newTensorObj(src->shape(), src->dtype());
 
+    PixelsOut out(dst.get());
+
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x)
             for (int c = 0; c < ch; ++c)
-                dst->setAt((y * w + (w - 1 - x)) * ch + c,
-                           src->at((y * w + x) * ch + c));
+                out.set((y * w + (w - 1 - x)) * ch + c,
+                        in[(y * w + x) * ch + c]);
 
     setImageData(args, Value::objVal(std::move(dst)));
     return Value::nilVal();
@@ -684,17 +679,20 @@ Value ModuleMedia::image_flip_horizontal_builtin(ArgsView args)
 Value ModuleMedia::image_flip_vertical_builtin(ArgsView args)
 {
     ObjTensor* src = getImageTensor(args, "flip_vertical");
+    PixelsIn in(src);
     int h = static_cast<int>(src->shape()[0]);
     int w = static_cast<int>(src->shape()[1]);
     int ch = static_cast<int>(src->shape()[2]);
 
     auto dst = newTensorObj(src->shape(), src->dtype());
 
+    PixelsOut out(dst.get());
+
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x)
             for (int c = 0; c < ch; ++c)
-                dst->setAt(((h - 1 - y) * w + x) * ch + c,
-                           src->at((y * w + x) * ch + c));
+                out.set(((h - 1 - y) * w + x) * ch + c,
+                        in[(y * w + x) * ch + c]);
 
     setImageData(args, Value::objVal(std::move(dst)));
     return Value::nilVal();
@@ -707,6 +705,7 @@ Value ModuleMedia::image_flip_vertical_builtin(ArgsView args)
 Value ModuleMedia::image_rotate90_builtin(ArgsView args)
 {
     ObjTensor* src = getImageTensor(args, "rotate90");
+    PixelsIn in(src);
     int h = static_cast<int>(src->shape()[0]);
     int w = static_cast<int>(src->shape()[1]);
     int ch = static_cast<int>(src->shape()[2]);
@@ -714,12 +713,13 @@ Value ModuleMedia::image_rotate90_builtin(ArgsView args)
     // Output: [W, H, C]
     std::vector<int64_t> dstShape = {w, h, ch};
     auto dst = newTensorObj(dstShape, src->dtype());
+    PixelsOut out(dst.get());
 
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x)
             for (int c = 0; c < ch; ++c)
-                dst->setAt((x * h + (h - 1 - y)) * ch + c,
-                           src->at((y * w + x) * ch + c));
+                out.set((x * h + (h - 1 - y)) * ch + c,
+                        in[(y * w + x) * ch + c]);
 
     setImageData(args, Value::objVal(std::move(dst)));
     return Value::nilVal();
@@ -732,17 +732,20 @@ Value ModuleMedia::image_rotate90_builtin(ArgsView args)
 Value ModuleMedia::image_rotate180_builtin(ArgsView args)
 {
     ObjTensor* src = getImageTensor(args, "rotate180");
+    PixelsIn in(src);
     int h = static_cast<int>(src->shape()[0]);
     int w = static_cast<int>(src->shape()[1]);
     int ch = static_cast<int>(src->shape()[2]);
 
     auto dst = newTensorObj(src->shape(), src->dtype());
 
+    PixelsOut out(dst.get());
+
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x)
             for (int c = 0; c < ch; ++c)
-                dst->setAt(((h - 1 - y) * w + (w - 1 - x)) * ch + c,
-                           src->at((y * w + x) * ch + c));
+                out.set(((h - 1 - y) * w + (w - 1 - x)) * ch + c,
+                        in[(y * w + x) * ch + c]);
 
     setImageData(args, Value::objVal(std::move(dst)));
     return Value::nilVal();
@@ -755,6 +758,7 @@ Value ModuleMedia::image_rotate180_builtin(ArgsView args)
 Value ModuleMedia::image_rotate270_builtin(ArgsView args)
 {
     ObjTensor* src = getImageTensor(args, "rotate270");
+    PixelsIn in(src);
     int h = static_cast<int>(src->shape()[0]);
     int w = static_cast<int>(src->shape()[1]);
     int ch = static_cast<int>(src->shape()[2]);
@@ -762,12 +766,13 @@ Value ModuleMedia::image_rotate270_builtin(ArgsView args)
     // Output: [W, H, C]
     std::vector<int64_t> dstShape = {w, h, ch};
     auto dst = newTensorObj(dstShape, src->dtype());
+    PixelsOut out(dst.get());
 
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x)
             for (int c = 0; c < ch; ++c)
-                dst->setAt(((w - 1 - x) * h + y) * ch + c,
-                           src->at((y * w + x) * ch + c));
+                out.set(((w - 1 - x) * h + y) * ch + c,
+                        in[(y * w + x) * ch + c]);
 
     setImageData(args, Value::objVal(std::move(dst)));
     return Value::nilVal();
@@ -780,6 +785,7 @@ Value ModuleMedia::image_rotate270_builtin(ArgsView args)
 Value ModuleMedia::image_grayscale_builtin(ArgsView args)
 {
     ObjTensor* src = getImageTensor(args, "grayscale");
+    PixelsIn in(src);
     int h = static_cast<int>(src->shape()[0]);
     int w = static_cast<int>(src->shape()[1]);
     int ch = static_cast<int>(src->shape()[2]);
@@ -790,15 +796,16 @@ Value ModuleMedia::image_grayscale_builtin(ArgsView args)
 
     std::vector<int64_t> dstShape = {h, w, 1};
     auto dst = newTensorObj(dstShape, src->dtype());
+    PixelsOut out(dst.get());
 
     for (int i = 0; i < h * w; ++i) {
-        double r = src->at(i * ch + 0);
-        double g = src->at(i * ch + 1);
-        double b = src->at(i * ch + 2);
+        double r = in[i * ch + 0];
+        double g = in[i * ch + 1];
+        double b = in[i * ch + 2];
         double gray = 0.299 * r + 0.587 * g + 0.114 * b;
         if (src->dtype() == TensorDType::UInt8)
             gray = std::clamp(std::round(gray), 0.0, 255.0);
-        dst->setAt(i, gray);
+        out.set(i, gray);
     }
 
     setImageData(args, Value::objVal(std::move(dst)));
@@ -812,19 +819,21 @@ Value ModuleMedia::image_grayscale_builtin(ArgsView args)
 Value ModuleMedia::image_brightness_builtin(ArgsView args)
 {
     ObjTensor* src = getImageTensor(args, "brightness");
+    PixelsIn in(src);
     if (args.size() < 2)
         throw std::invalid_argument("Image.brightness expects factor");
     double factor = toType(ValueType::Real, args[1], false).asReal();
 
     int64_t total = src->numel();
     auto dst = newTensorObj(src->shape(), src->dtype());
+    PixelsOut out(dst.get());
 
     double maxVal = (src->dtype() == TensorDType::UInt8) ? 255.0 : 1.0;
     for (int64_t i = 0; i < total; ++i) {
-        double val = std::clamp(src->at(i) * factor, 0.0, maxVal);
+        double val = std::clamp(in[i] * factor, 0.0, maxVal);
         if (src->dtype() == TensorDType::UInt8)
             val = std::round(val);
-        dst->setAt(i, val);
+        out.set(i, val);
     }
 
     setImageData(args, Value::objVal(std::move(dst)));
@@ -838,6 +847,7 @@ Value ModuleMedia::image_brightness_builtin(ArgsView args)
 Value ModuleMedia::image_contrast_builtin(ArgsView args)
 {
     ObjTensor* src = getImageTensor(args, "contrast");
+    PixelsIn in(src);
     if (args.size() < 2)
         throw std::invalid_argument("Image.contrast expects factor");
     double factor = toType(ValueType::Real, args[1], false).asReal();
@@ -847,17 +857,18 @@ Value ModuleMedia::image_contrast_builtin(ArgsView args)
     // Compute mean intensity
     double sum = 0;
     for (int64_t i = 0; i < total; ++i)
-        sum += src->at(i);
+        sum += in[i];
     double mean = sum / total;
 
     double maxVal = (src->dtype() == TensorDType::UInt8) ? 255.0 : 1.0;
     auto dst = newTensorObj(src->shape(), src->dtype());
+    PixelsOut out(dst.get());
 
     for (int64_t i = 0; i < total; ++i) {
-        double val = std::clamp(mean + factor * (src->at(i) - mean), 0.0, maxVal);
+        double val = std::clamp(mean + factor * (in[i] - mean), 0.0, maxVal);
         if (src->dtype() == TensorDType::UInt8)
             val = std::round(val);
-        dst->setAt(i, val);
+        out.set(i, val);
     }
 
     setImageData(args, Value::objVal(std::move(dst)));
@@ -871,6 +882,7 @@ Value ModuleMedia::image_contrast_builtin(ArgsView args)
 Value ModuleMedia::image_saturation_builtin(ArgsView args)
 {
     ObjTensor* src = getImageTensor(args, "saturation");
+    PixelsIn in(src);
     if (args.size() < 2)
         throw std::invalid_argument("Image.saturation expects factor");
     double factor = toType(ValueType::Real, args[1], false).asReal();
@@ -884,11 +896,12 @@ Value ModuleMedia::image_saturation_builtin(ArgsView args)
 
     double maxVal = (src->dtype() == TensorDType::UInt8) ? 255.0 : 1.0;
     auto dst = newTensorObj(src->shape(), src->dtype());
+    PixelsOut out(dst.get());
 
     for (int i = 0; i < h * w; ++i) {
-        double r = src->at(i * ch + 0);
-        double g = src->at(i * ch + 1);
-        double b = src->at(i * ch + 2);
+        double r = in[i * ch + 0];
+        double g = in[i * ch + 1];
+        double b = in[i * ch + 2];
         double gray = 0.299 * r + 0.587 * g + 0.114 * b;
 
         auto adjust = [&](double v) -> double {
@@ -896,12 +909,12 @@ Value ModuleMedia::image_saturation_builtin(ArgsView args)
             return (src->dtype() == TensorDType::UInt8) ? std::round(val) : val;
         };
 
-        dst->setAt(i * ch + 0, adjust(r));
-        dst->setAt(i * ch + 1, adjust(g));
-        dst->setAt(i * ch + 2, adjust(b));
+        out.set(i * ch + 0, adjust(r));
+        out.set(i * ch + 1, adjust(g));
+        out.set(i * ch + 2, adjust(b));
         // Copy alpha if present
         if (ch == 4)
-            dst->setAt(i * ch + 3, src->at(i * ch + 3));
+            out.set(i * ch + 3, in[i * ch + 3]);
     }
 
     setImageData(args, Value::objVal(std::move(dst)));
@@ -915,14 +928,16 @@ Value ModuleMedia::image_saturation_builtin(ArgsView args)
 Value ModuleMedia::image_to_float_builtin(ArgsView args)
 {
     ObjTensor* src = getImageTensor(args, "to_float");
+    PixelsIn in(src);
     if (src->dtype() != TensorDType::UInt8)
         throw std::invalid_argument("Image.to_float: tensor must be uint8");
 
     int64_t total = src->numel();
     auto dst = newTensorObj(src->shape(), TensorDType::Float32);
+    PixelsOut out(dst.get());
 
     for (int64_t i = 0; i < total; ++i)
-        dst->setAt(i, src->at(i) / 255.0);
+        out.set(i, in[i] / 255.0);
 
     setImageData(args, Value::objVal(std::move(dst)));
     return Value::nilVal();
@@ -935,15 +950,17 @@ Value ModuleMedia::image_to_float_builtin(ArgsView args)
 Value ModuleMedia::image_to_uint8_builtin(ArgsView args)
 {
     ObjTensor* src = getImageTensor(args, "to_uint8");
+    PixelsIn in(src);
     if (src->dtype() != TensorDType::Float32 && src->dtype() != TensorDType::Float64)
         throw std::invalid_argument("Image.to_uint8: tensor must be float32 or float64");
 
     int64_t total = src->numel();
     auto dst = newTensorObj(src->shape(), TensorDType::UInt8);
+    PixelsOut out(dst.get());
 
     for (int64_t i = 0; i < total; ++i) {
-        double val = src->at(i) * 255.0;
-        dst->setAt(i, std::clamp(std::round(val), 0.0, 255.0));
+        double val = in[i] * 255.0;
+        out.set(i, std::clamp(std::round(val), 0.0, 255.0));
     }
 
     setImageData(args, Value::objVal(std::move(dst)));
@@ -973,6 +990,7 @@ static std::vector<double> extractDoubleList(Value v, int n, const char* name)
 Value ModuleMedia::image_normalize_builtin(ArgsView args)
 {
     ObjTensor* src = getImageTensor(args, "normalize");
+    PixelsIn in(src);
     if (src->dtype() != TensorDType::Float32 && src->dtype() != TensorDType::Float64)
         throw std::invalid_argument("Image.normalize: image must be float (call to_float() first)");
     if (args.size() < 3)
@@ -987,13 +1005,15 @@ Value ModuleMedia::image_normalize_builtin(ArgsView args)
 
     auto dst = newTensorObj(src->shape(), src->dtype());
 
+    PixelsOut out(dst.get());
+
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             int base = (y * w + x) * ch;
             for (int c = 0; c < ch; ++c) {
-                double val = (src->at(base + c) - mean[static_cast<size_t>(c)])
+                double val = (in[base + c] - mean[static_cast<size_t>(c)])
                            / std[static_cast<size_t>(c)];
-                dst->setAt(base + c, val);
+                out.set(base + c, val);
             }
         }
     }
@@ -1010,6 +1030,7 @@ Value ModuleMedia::image_normalize_builtin(ArgsView args)
 Value ModuleMedia::image_to_tensor_builtin(ArgsView args)
 {
     ObjTensor* src = getImageTensor(args, "to_tensor");
+    PixelsIn in(src);
 
     int h  = static_cast<int>(src->shape()[0]);
     int w  = static_cast<int>(src->shape()[1]);
@@ -1029,29 +1050,22 @@ Value ModuleMedia::image_to_tensor_builtin(ArgsView args)
 
     std::vector<int64_t> dstShape = {1, ch, h, w};
     auto dst = newTensorObj(dstShape, TensorDType::Float32);
-
-    // Fast path: ORT-backed uint8 source
-    const uint8_t* srcTyped = (isUint8 && hasTypedStorage(src))
-        ? static_cast<const uint8_t*>(src->rawData()) : nullptr;
+    PixelsOut out(dst.get());
 
     // HWC → NCHW with /255 normalization for uint8
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             int srcBase = (y * w + x) * ch;
             for (int c = 0; c < ch; ++c) {
-                double val;
-                if (srcTyped)
-                    val = srcTyped[srcBase + c] / 255.0;
-                else if (isUint8)
-                    val = src->at(srcBase + c) / 255.0;
-                else
-                    val = src->at(srcBase + c);  // already float
+                double val = in[srcBase + c];
+                if (isUint8)
+                    val /= 255.0;  // else already float
 
                 if (hasNorm)
                     val = (val - mean[static_cast<size_t>(c)]) / stddev[static_cast<size_t>(c)];
 
                 int dstIdx = ((c * h) + y) * w + x;  // NCHW with N=0
-                dst->setAt(dstIdx, val);
+                out.set(dstIdx, val);
             }
         }
     }

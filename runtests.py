@@ -277,7 +277,7 @@ tests = [
     'matrix1', 'matrix2', 'matrix_literal1', 'matrix_literal_newline', 'vector_matrix_negative', 'unary_vector_matrix',
     'matrix_index', 'matrix_methods', 'matrix_assign', 'matrix_equal', 'matrix_math',
     'vector_quantity_test', 'orient_test', 'orient_conv_test',
-    'tensor_basic', 'tensor_math', 'tensor_compare', 'tensor_convert', 'math_min_max_sum',
+    'tensor_basic', 'tensor_math', 'tensor_compare', 'tensor_compare_dtypes', 'tensor_convert', 'math_min_max_sum',
     'tensor_convert_err', 'matrix_tensor_err', 'vector_tensor_err',
     'tensor_slice', 'tensor_slice_assign', 'tensor_slice_assign_err', 'tensor_slice_assign_type_err',
     'tensor_inplace', 'tensor_inplace_divzero_err', 'tensor_blit',
@@ -431,6 +431,7 @@ ffi_tests = [
 nn_tests = ['nn_mnist', 'nn_signal', 'nn_chain', 'nn_signal_chain', 'nn_dynamic', 'nn_multi_io', 'nn_multi_output_lift', 'nn_event_async_lift', 'nn_async', 'nn_tokenizer']
 nn_lfs_tests = ['nn_dfine', 'nn_exit_inflight']  # require LFS model files (only run with --all)
 media_tests = ['media_read_write', 'media_manipulate', 'media_convert',
+               'media_pixel_ops',
                # audio: run with ROXAL_AUDIO_BACKEND=null (no hardware needed)
                'media_audio_basic', 'media_audio_play', 'media_audio_record',
                'media_audio_err_none', 'media_audio_err_rate',
