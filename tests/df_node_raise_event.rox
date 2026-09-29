@@ -1,0 +1,16 @@
+# A lifted function that raises, evaluated by a script-side set() of its
+# event-driven source: the exception fails the program (and nothing the
+# engine recorded about the failing node may outlive the VM -- the engine
+# is destroyed at process exit, after the VM has freed the node's closure).
+const frame = signal(0, 0)         # event-driven source
+
+func check(n: int) -> int:
+  if n == 2:
+    raise RuntimeException('node boom')
+  return n * 10
+
+const out = check(frame)
+frame.set(1)
+print(out.value)
+frame.set(2)
+print('not reached')

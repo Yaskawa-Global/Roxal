@@ -3,6 +3,8 @@
 #include "compiler/VM.h"
 #include "compiler/Object.h"
 #include "compiler/SimpleMarkSweepGC.h"
+#include "compiler/ExecutionDomain.h"
+#include "compiler/Thread.h"
 #include "compiler/RuntimeConfig.h"
 #include "core/common.h"
 
@@ -400,8 +402,9 @@ void DataflowEngine::clear()
     m_tickPeriod = TimeDuration::zero();
     m_runStart = TimePoint::zero();
     m_tickNumber = 0;
-    // Reset yield state to avoid stale references to cleared funcs
-    m_yieldState = YieldState{};
+    // Reset yield state to avoid stale references to cleared funcs, and
+    // drop the host context a suspended body may still occupy.
+    abandonYieldedTick();
 }
 
 void DataflowEngine::stop()
@@ -619,21 +622,44 @@ struct DebugGateWorkScope {
 // Held across the ENTIRE mutation path -- including network rebuilds and
 // island setup, not just the island evaluation -- so a stop that raced the
 // admission check either sees the count or the entrant sees closed.
+// The dataflowEvalDepth marker goes on the Thread that will evaluate: the
+// bound one by default, or -- for tickFor, which binds its host context only
+// after admission -- the one passed to mark() later.  The marked Thread is
+// held strongly: the tick may discard its context before this scope ends.
 struct DebugGateTryScope {
     df::DataflowEngine::DebugGate& g;
     bool entered;
-    explicit DebugGateTryScope(df::DataflowEngine::DebugGate& gate)
+    ptr<roxal::Thread> marked;
+    explicit DebugGateTryScope(df::DataflowEngine::DebugGate& gate, bool markBound = true)
         : g(gate), entered(gate.tryEnter()) {
-        if (entered && roxal::VM::thread)
-            roxal::VM::thread->dataflowEvalDepth++;
+        if (entered && markBound)
+            mark(roxal::VM::thread);
+    }
+    void mark(const ptr<roxal::Thread>& t) {
+        if (entered && t && !marked) {
+            marked = t;
+            marked->dataflowEvalDepth++;
+        }
     }
     ~DebugGateTryScope() {
         if (entered) {
-            if (roxal::VM::thread)
-                roxal::VM::thread->dataflowEvalDepth--;
+            if (marked)
+                marked->dataflowEvalDepth--;
             g.leaveCounted();
         }
     }
+};
+
+// Bind `t` as this OS thread's VM::thread for a scope, restoring whatever
+// was bound before on every exit.
+struct ThreadRebind {
+    ptr<roxal::Thread> saved;
+    explicit ThreadRebind(ptr<roxal::Thread> t) : saved(roxal::VM::thread) {
+        roxal::VM::thread = std::move(t);
+    }
+    ~ThreadRebind() { roxal::VM::thread = std::move(saved); }
+    ThreadRebind(const ThreadRebind&) = delete;
+    ThreadRebind& operator=(const ThreadRebind&) = delete;
 };
 } // namespace
 
@@ -1055,8 +1081,9 @@ DataflowEngine::TickResult DataflowEngine::tickFor(TimeDuration budget)
     // Debugger admission: increment-then-recheck, held across the whole
     // host tick (rebuild, resume path, island loop).  A host-driven tick
     // observes a stop as a first-class status -- Paused, not Busy or
-    // Complete -- and resumes doing work after release.
-    DebugGateTryScope debugAdmission(debugGate);
+    // Complete -- and resumes doing work after release.  Its evaluation
+    // marker goes on the host context once that is bound, below.
+    DebugGateTryScope debugAdmission(debugGate, /*markBound*/ false);
     if (!debugAdmission.entered)
         return TickResult::Paused;
 
@@ -1080,12 +1107,58 @@ DataflowEngine::TickResult DataflowEngine::tickFor(TimeDuration budget)
     if (!evalLock.owns_lock())
         return TickResult::Busy;
 
+    // Node bodies run in the engine's host context, never on the caller's
+    // binding: on a host's driver thread that is the program's own Thread
+    // between its slices, whose frames and operands a body would share (and
+    // whose next slice would finish a suspended one as program code) -- or
+    // no Thread at all once the run has been handed over.  Bound under
+    // m_evalMutex, so one evaluator at a time owns the context.
+    // A suspended tick whose network changed cannot resume: its island
+    // layout, node positions and (the rebuild restarts the schedule) tick
+    // grid are gone.  That is neither an error nor lateness, under either
+    // scheme -- the tick restarts on the new network, as a fresh tick.
+    // Decided BEFORE binding: abandoning discards the context the body is
+    // suspended in, and the restarted tick must run in a fresh one, not on
+    // top of the abandoned frames.  (Building the network before starting it
+    // avoids the lost work.)
+    if (m_yieldState.active && yieldedTickStale())
+        abandonYieldedTick();
+
+    ThreadRebind onHostContext(hostContextFor(roxal::VM::thread));
+    if (roxal::VM::thread->stack.empty())
+        roxal::VM::instance().resetStack();   // a fresh context: give it its value stack
+    debugAdmission.mark(roxal::VM::thread);
+
+    const TickResult result = runHostTick(budget);
+    if (settleHostTick())
+        return TickResult::Error;
+    return result;
+}
+
+
+DataflowEngine::TickResult DataflowEngine::runHostTick(TimeDuration budget)
+{
     auto deadline = TimePoint::currentTime() + budget;
 
     // If we have yielded work, check for overrun then resume
     if (m_yieldState.active) {
         // Check if we've overrun the tick period
         auto elapsed = TimePoint::currentTime() - m_yieldState.tickTime;
+        if (m_tickPeriod > TimeDuration::zero() && elapsed >= m_tickPeriod
+            && m_executionScheme == ExecutionScheme::BestEffort) {
+            // A host that is not real-time (a UI or simulation loop) wants
+            // the work done, late or not -- the same contract tick() keeps
+            // under this scheme, which warns and carries on.  Report the
+            // lateness once per tick against the node still running in it,
+            // and resume.
+            if (!m_yieldState.lateReported) {
+                m_yieldState.lateReported = true;
+                if (m_yieldState.funcWasExecuting && m_yieldState.yieldedFunc)
+                    recordNodeOverrun(m_yieldState.yieldedFunc->name(),
+                                      elapsed, elapsed - m_tickPeriod);
+            }
+            return resumeTickEvaluation(deadline);
+        }
         if (m_tickPeriod > TimeDuration::zero() && elapsed >= m_tickPeriod) {
             // Tick has exceeded its period - overrun error.  If a specific
             // func was mid-execution across slices when the period expired,
@@ -1096,7 +1169,10 @@ DataflowEngine::TickResult DataflowEngine::tickFor(TimeDuration budget)
                 recordNodeOverrun(m_yieldState.yieldedFunc->name(),
                                   elapsed, elapsed - m_tickPeriod);
             }
-            m_yieldState.active = false;
+            // The tick is abandoned, and with it any body suspended in it:
+            // left in place it would be finished later by whoever next ran
+            // that context, and deliver its result as another body's.
+            abandonYieldedTick();
             return TickResult::Overrun;
         }
         return resumeTickEvaluation(deadline);
@@ -1140,9 +1216,11 @@ DataflowEngine::TickResult DataflowEngine::tickFor(TimeDuration budget)
 
     // Evaluate islands with deadline support
     std::vector<NetworkIsland> islandsCopy;
+    uint64_t networkGeneration = 0;
     {
         std::lock_guard<std::recursive_mutex> lock(m_mutex);
         islandsCopy = m_networkIslands;
+        networkGeneration = m_networkGeneration.load(std::memory_order_acquire);
     }
 
     for (size_t i = 0; i < islandsCopy.size(); ++i) {
@@ -1166,6 +1244,8 @@ DataflowEngine::TickResult DataflowEngine::tickFor(TimeDuration budget)
             m_yieldState.active = true;
             m_yieldState.islandIndex = i;
             m_yieldState.tickTime = m_tickStart;
+            m_yieldState.lateReported = false;
+            m_yieldState.networkGeneration = networkGeneration;
             return result;
         }
 
@@ -1179,20 +1259,79 @@ DataflowEngine::TickResult DataflowEngine::tickFor(TimeDuration budget)
 }
 
 
+ptr<roxal::Thread> DataflowEngine::hostContextFor(const ptr<roxal::Thread>& caller)
+{
+    // Only a body suspended in the current tick may have frames in the
+    // context.  Anything else left there (a body that threw out of the
+    // engine, say) would be run by the next resume -- whose execute() has no
+    // frame floor -- as if it were that body's own: start clean instead.
+    // (A re-entrant tick -- the evaluator lock is recursive -- is called
+    // FROM the context and must keep it.)
+    if (m_hostThread && caller != m_hostThread && !m_hostThread->frames.empty()
+        && !(m_yieldState.active && m_yieldState.funcWasExecuting))
+        discardHostContext();
+    if (!m_hostThread) {
+        m_hostDomain = make_ptr<roxal::ExecutionDomain>();
+        m_hostThread = roxal::Thread::create(m_hostDomain, roxal::ThreadKind::Dataflow);
+    }
+    // The host states its RT requirement on the Thread it drives (a GC
+    // yield section, the other half, is per OS thread and applies as is).
+    m_hostThread->rtYieldOnGC = caller && caller->rtYieldOnGC;
+    return m_hostThread;
+}
+
+bool DataflowEngine::yieldedTickStale() const
+{
+    return m_networkModified.load()
+        || m_networkGeneration.load(std::memory_order_acquire)
+               != m_yieldState.networkGeneration;
+}
+
+void DataflowEngine::discardHostContext()
+{
+    // A tick still bound to it keeps the Thread alive until its binding ends.
+    m_hostThread.reset();
+    m_hostDomain.reset();
+}
+
+void DataflowEngine::abandonYieldedTick()
+{
+    if (m_yieldState.yieldedFunc)
+        m_yieldState.yieldedFunc->abandonSuspendedExecution();
+    m_yieldState = YieldState{};
+    discardHostContext();
+}
+
+bool DataflowEngine::settleHostTick()
+{
+    if (!m_hostDomain)
+        return false;   // already discarded with an abandoned tick
+    const uint32_t raised = m_hostDomain->interrupts().load()
+        & (roxal::ExecutionDomain::IntrRuntimeError | roxal::ExecutionDomain::IntrExit);
+    if (!raised)
+        return false;
+    abandonYieldedTick();
+    return true;
+}
+
+
 DataflowEngine::TickResult DataflowEngine::resumeTickEvaluation(TimePoint deadline)
 {
     if (!m_yieldState.active)
         return TickResult::Error;
 
-    if (m_networkModified) {
-        // Network changed - cannot safely resume
-        m_yieldState.active = false;
-        return TickResult::Error;
-    }
-
     std::vector<NetworkIsland> islandsCopy;
     {
         std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        // Checked under the snapshot's lock: a rebuild racing in after
+        // tickFor's own check (tickPeriod() from another thread, say) must
+        // not hand this tick an island layout it was not suspended in.  The
+        // tick is dropped and the next call starts afresh in a fresh context
+        // -- never in this call, whose bound context is the one discarded.
+        if (yieldedTickStale()) {
+            abandonYieldedTick();
+            return TickResult::Yielded;
+        }
         islandsCopy = m_networkIslands;
     }
 
@@ -2460,6 +2599,7 @@ void DataflowEngine::buildNetworkCacheData()
     m_tickNumber = 0;
     m_runStart = TimePoint::zero();
 
+    m_networkGeneration.fetch_add(1, std::memory_order_acq_rel);
     m_networkModified = false;
 
     // Rebuilds happen on the ticking thread too (tickFor's fresh-tick path):

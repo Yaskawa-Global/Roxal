@@ -1448,8 +1448,11 @@ struct ObjEventType : public Obj {
     // not serialized.
     size_t inheritedPayloadCount { 0 };
 
-    // list of subscribed handler closures (weak references)
-    std::vector<Value> subscribers;
+    // list of subscribed handler closures (weak references).  Shared across
+    // threads: an emitter (any thread) scans it while handler threads
+    // subscribe and unsubscribe, so every access goes through the lock --
+    // scan a get() snapshot, prune with erase_if.
+    atomic_vector<Value> subscribers;
 
     std::vector<PayloadPropertyView> orderedPayloadProperties() const;
     std::optional<PayloadPropertyView> findPayloadPropertyByHash15(uint16_t hash15,

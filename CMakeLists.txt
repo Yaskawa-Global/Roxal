@@ -842,6 +842,19 @@ if(NOT EMSCRIPTEN)
     add_executable(roxal_module_reload_test tests/module_reload_test.cpp)
     target_link_libraries(roxal_module_reload_test PRIVATE roxalcore)
     add_test(NAME RoxalModuleReload COMMAND roxal_module_reload_test)
+
+    # A host driving the dataflow engine (tickFor) and a program (driveFor)
+    # from one OS thread.  One process per scenario: the engine is a process
+    # singleton, so scenarios sharing one would evaluate each other's nodes.
+    add_executable(roxal_dataflow_host_thread_test tests/dataflow_host_thread_test.cpp)
+    target_link_libraries(roxal_dataflow_host_thread_test PRIVATE roxalcore)
+    foreach(scenario busy_loop wait_loop yielding_node overrun_orphan tick_after_run
+                     node_error node_exit best_effort_late
+                     background_node_error network_change_mid_tick
+                     lift_collects node_exit_sliced)
+        add_test(NAME RoxalDataflowHostThread_${scenario}
+                 COMMAND roxal_dataflow_host_thread_test ${scenario})
+    endforeach()
 endif()
 
 # Compile definitions come from roxal_abi (linked PUBLIC above) — the single shared

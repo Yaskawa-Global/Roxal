@@ -111,6 +111,10 @@ public:
     // thread it left suspended.  Part of the runtime, not an embedding: a
     // host never continues someone else's half-finished execution.
     friend class df::FuncNode;
+    // Evaluates host-driven (tickFor) node bodies in its own execution
+    // context on behalf of the runs that created them, and carries a body's
+    // failure or exit() back to that run (transferDomainOutcome).
+    friend class df::DataflowEngine;
     friend class SimpleMarkSweepGC;
 #ifdef ROXAL_ENABLE_GRPC
     friend class ModuleGrpc;
@@ -848,6 +852,17 @@ protected:
     /// same path with its own thread's domain.
     void requestDomainExit(ExecutionDomain& domain, int code);
 
+    /// Carry a runtime error or exit() raised in `from` into `owner`, as if it
+    /// had been raised there: the error text and flag (its first failure
+    /// wins), or the exit code and flag, and a wake for the owner's threads.
+    /// The dataflow engine uses it for a node body it evaluated in its own
+    /// context on behalf of the run that created the node, so the node's
+    /// failure fails that run exactly as it does standalone.  Never fails the
+    /// default domain while a driver is attached: that domain then belongs to
+    /// the services (the engine's actor thread among them), and a raised
+    /// error there would stop every evaluation in it until restart.
+    void transferDomainOutcome(ExecutionDomain& from, ExecutionDomain& owner);
+
     /// Advance one claimed run by at most `budget`, on the calling (driver)
     /// thread.  Binds the run's Roxal thread on first entry, runs module
     /// start hooks, then drives the launch's preludes and body incrementally
@@ -1342,6 +1357,15 @@ public:
 #endif
 
 private:
+    // Wake every registered thread of `domain` so it observes a flag just
+    // raised on it (exit, a carried-over error).
+    void wakeDomainThreads(const ExecutionDomain& domain);
+
+    // An exception reached the entry frame of a native-invoked execution
+    // uncaught: report it and fail the executing domain like runtimeError(),
+    // but leave the invoker's frames and stack below that frame untouched.
+    void reportUncaughtInInvocation(const std::string& message);
+
     // Serializes reclamation-role handoffs (dedicated collector thread,
     // inline-electing thread's tail, shutdown path).  Contention is ~zero.
     std::mutex freeObjectsMutex_;

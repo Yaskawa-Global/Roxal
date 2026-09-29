@@ -1,0 +1,15 @@
+# A lifted function on a clocked signal raises on the engine's own thread.
+# The uncaught exception fails the program -- the node belongs to it --
+# rather than being swallowed (it once unwound past the node's entry frame
+# into the engine's never-ending run() call and was taken for that call's
+# exception) while the node kept running.
+func check(x: int) -> int:
+  if x == 3:
+    raise RuntimeException('node boom')
+  return x
+
+var c = clock(100)
+var r = check(c)
+c.run()
+wait(ms=3000)
+print('not reached')

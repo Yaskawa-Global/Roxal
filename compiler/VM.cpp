@@ -1236,7 +1236,10 @@ void roxal::scheduleEventHandlers(Value eventWeak, ObjEventType* ev, Value event
     // a single pending event, so we only need to schedule once per thread.
     std::unordered_set<Thread*> scheduledThreads;
 
-    for (auto it = ev->subscribers.begin(); it != ev->subscribers.end(); ) {
+    // Scan a snapshot: handler threads subscribe and unsubscribe while this
+    // (any) thread emits.  Entries found dead are pruned after the scan.
+    bool sawDead = false;
+    for (const Value& sub : ev->subscribers.get()) {
         // Take a STRONG ref before touching the closure. The weak entry can
         // reach refcount zero concurrently (handler thread teardown), and the
         // retire path frees without consulting stacks -- so even reading
@@ -1244,31 +1247,27 @@ void roxal::scheduleEventHandlers(Value eventWeak, ObjEventType* ev, Value event
         // through its destructed weak_ptr's control block: heap corruption,
         // not just a stale read. isAlive() alone is the TOCTOU strongRef()'s
         // CAS closes; the strong ref then pins the closure for this body.
-        Value handlerVal = it->strongRef();
+        Value handlerVal = sub.strongRef();
         if (handlerVal.isNil()) {
-            it = ev->subscribers.erase(it);
+            sawDead = true;
             continue;
         }
         auto closure = asClosure(handlerVal);
         auto handlerThread = closure->handlerThread.lock();
 
         if (!handlerThread) {
-            it = ev->subscribers.erase(it);
+            sawDead = true;
             continue;
         }
 
         // Skip if we've already scheduled an event to this thread
-        if (scheduledThreads.count(handlerThread.get()) > 0) {
-            ++it;
+        if (scheduledThreads.count(handlerThread.get()) > 0)
             continue;
-        }
 
         Value key = eventWeak;
         auto regIt = handlerThread->eventHandlers.find(key);
-        if (regIt == handlerThread->eventHandlers.end()) {
-            ++it;
+        if (regIt == handlerThread->eventHandlers.end())
             continue;
-        }
 
         // Check if any handler on this thread should receive the event
         // (considering matchValue and targetFilter filters)
@@ -1315,8 +1314,13 @@ void roxal::scheduleEventHandlers(Value eventWeak, ObjEventType* ev, Value event
             handlerThread->pendingEventCount.fetch_add(1, std::memory_order_release);
             handlerThread->wake();
         }
+    }
 
-        ++it;
+    if (sawDead) {
+        ev->subscribers.erase_if([](const Value& sub) {
+            Value strong = sub.strongRef();
+            return strong.isNil() || asClosure(strong)->handlerThread.expired();
+        });
     }
 }
 
@@ -6942,6 +6946,30 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
     }
     Thread::DebugExecScope debugExecScope(*thread);
 
+    // Must this execution run to completion?  One that has a deadline returns
+    // to a caller that resumes it, and the outermost one on its thread is
+    // re-entered by its driver -- both may yield or pause.  A NESTED one with
+    // no deadline was invoked from native code (a lift's first evaluation, a
+    // signal's set() evaluating an island, any callback) whose invoker
+    // expects it to finish and cannot resume it: yielding or pausing would
+    // strand its frames on the invoker's stack, to be run later as the
+    // invoker's own code.  It completes like a native call does -- a long one
+    // makes the host's slice overrun, reported on return.  Where an RT
+    // caller would yield for a collection, it instead continues inside a GC
+    // yield section (no collection can start while the section is held) and
+    // otherwise parks at the safepoint like any non-RT execution; it leaves
+    // debugger stops to the enclosing execution's next boundary.
+    const bool mustComplete = deadline == TimePoint::max() && thread->execute_depth > 0;
+    auto rtYieldForGC = [&]() {
+        return !mustComplete
+            && (SimpleMarkSweepGC::inGCYieldSectionOnThisThread() || thread->rtYieldOnGC);
+    };
+    auto mayPark = [&]() {
+        return !(mustComplete && SimpleMarkSweepGC::inGCYieldSectionOnThisThread());
+    };
+    const bool debugStopsDeferred = mustComplete
+        && (SimpleMarkSweepGC::inGCYieldSectionOnThisThread() || thread->rtYieldOnGC);
+
     SimpleMarkSweepGC& valueGC = SimpleMarkSweepGC::instance();
     // A re-entrant execute() on the SAME physical thread — e.g. a native pump (an event
     // loop, processPendingEvents) invoking a Roxal callback, or _invoke_method calling a
@@ -6960,7 +6988,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
     // can land between this check and onThreadEnter); hard-RT hosts must
     // wrap the whole slice in a GCYieldScope, whose section count blocks a
     // collection from starting at all while the slice runs.
-    if ((SimpleMarkSweepGC::inGCYieldSectionOnThisThread() || thread->rtYieldOnGC) &&
+    if (rtYieldForGC() &&
         (valueGC.isCollectionRequested() || valueGC.isCollectionInProgress())) {
         return std::make_pair(ExecutionStatus::Yielded, Value::nilVal());
     }
@@ -6997,14 +7025,23 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
         // executionGuard dtor runs onThreadExit so the barrier doesn't count
         // us, and this Thread's frames stay rooted via the threads registry.
         // Resumption is the normal Yielded path.
-        if (SimpleMarkSweepGC::inGCYieldSectionOnThisThread() || thread->rtYieldOnGC) {
+        if (rtYieldForGC()) {
             return std::make_pair(ExecutionStatus::Yielded, Value::nilVal());
         }
-        valueGC.safepoint(*thread);
+        if (mayPark())
+            valueGC.safepoint(*thread);
     }
 
-    // Track execution depth for nested calls
+    // Track execution depth for nested calls.  Every exit from here on --
+    // return, yield, pause, and each of the error returns -- restores it: a
+    // thread that survives an error (the engine's actor thread after a
+    // node's uncaught exception) must not keep a phantom nesting level,
+    // which would change its later frame-floor and GC-registration decisions.
     thread->execute_depth++;
+    struct ExecuteDepthScope {
+        Thread* t;
+        ~ExecuteDepthScope() { if (t->execute_depth > 0) t->execute_depth--; }
+    } executeDepthScope { thread.get() };
     size_t frame_depth_on_entry =
         (baseFrameDepth == SIZE_MAX) ? thread->frames.size() : baseFrameDepth;
 
@@ -7297,11 +7334,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
             // work first.  RT/deadline execution acknowledges and returns
             // Paused (bounded atomic work only); everything else parks.
             if (debugStopRequested() && thread->dataflowEvalDepth == 0
+                && !debugStopsDeferred
                 && !thread->debugExcluded.load(std::memory_order_relaxed)) [[unlikely]] {
                 if (hasDeadline || SimpleMarkSweepGC::inGCYieldSectionOnThisThread()
                     || thread->rtYieldOnGC) {
                     stopCoordinator().ackNoPark(*thread);
-                    if (thread->execute_depth > 0) thread->execute_depth--;
                     return std::make_pair(ExecutionStatus::Paused, Value::nilVal());
                 }
                 stopCoordinator().ackAndPark(*thread);
@@ -7314,6 +7351,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
             // a trap behaves exactly like the cooperative stop point above.
             if ((word->load() & ExecutionDomain::IntrDebugSlowPath) != 0
                 && thread->dataflowEvalDepth == 0
+                && !debugStopsDeferred
                 && !thread->debugExcluded.load(std::memory_order_relaxed)
                 && !thread->frames.empty()) [[unlikely]] {
                 const bool rtSlice = hasDeadline
@@ -7324,7 +7362,6 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                 if (debugStatementBoundary(*thread, frame, /*canNotify=*/!rtSlice)) {
                     if (rtSlice) {
                         stopCoordinator().ackNoPark(*thread);
-                        if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(ExecutionStatus::Paused, Value::nilVal());
                     }
                     stopCoordinator().ackAndPark(*thread);
@@ -9954,7 +9991,6 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                     if (thread->execute_depth > 1 && thread->frames.size() < frame_depth_on_entry) {
                         Value returnVal = pop();
 
-                        if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(ExecutionStatus::OK,returnVal);
                     }
 
@@ -9962,7 +9998,6 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                     if (thread->execute_depth == 1 && thread->frames.empty()) {
                         Value returnVal = pop();
 
-                        if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(ExecutionStatus::OK,returnVal);
                     }
 
@@ -9984,13 +10019,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                     // For nested execute() calls, only terminate when we return BELOW the entry depth
                     // Use < (not <=) to avoid early return when a called function returns
                     if (thread->execute_depth > 1 && thread->frames.size() < frame_depth_on_entry) {
-                        if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(ExecutionStatus::OK,result);
                     }
 
                     // For top-level execute(), use original termination logic
                     if (thread->execute_depth == 1 && thread->frames.empty()) {
-                        if (thread->execute_depth > 0) thread->execute_depth--;
                         return std::make_pair(ExecutionStatus::OK,result);
                     }
 
@@ -10672,11 +10705,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                         thread->eventHandlers.erase(it);
                 }
 
-                for(auto it = ev->subscribers.begin(); it != ev->subscribers.end(); ) {
-                    if (it->isAlive() && asClosure(*it) == asClosure(closureVal))
-                        it = ev->subscribers.erase(it);
-                    else
-                        ++it;
+                {
+                    ObjClosure* target = asClosure(closureVal);
+                    ev->subscribers.erase_if([target](const Value& sub) {
+                        return sub.isAlive() && asClosure(sub) == target;
+                    });
                 }
 
                 break;
@@ -11248,7 +11281,6 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
 
         // Deadline check - after every instruction
         if (hasDeadline && TimePoint::currentTime() >= deadline) {
-            if (thread->execute_depth > 0) thread->execute_depth--;
             return yieldReturn;
         }
 
@@ -11272,11 +11304,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
             // RT yield-out (see the entry-poll comment above): never park a
             // yield-section / rtYieldOnGC thread -- yield to the host like a
             // deadline expiry.  The frame state stays resumable and rooted.
-            if (SimpleMarkSweepGC::inGCYieldSectionOnThisThread() || thread->rtYieldOnGC) {
-                if (thread->execute_depth > 0) thread->execute_depth--;
+            if (rtYieldForGC()) {
                 return yieldReturn;
             }
-            valueGC.safepoint(*thread);
+            if (mayPark())
+                valueGC.safepoint(*thread);
         }
 
         // are we supposed to be sleeping?  If so, block until the sleep time is over
@@ -11290,7 +11322,6 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
             else {
                 // If deadline-limited, yield instead of blocking
                 if (hasDeadline) {
-                    if (thread->execute_depth > 0) thread->execute_depth--;
                     return yieldReturn;
                 }
 
@@ -11316,7 +11347,6 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
             } else {
                 // If deadline-limited, yield instead of blocking
                 if (hasDeadline) {
-                    if (thread->execute_depth > 0) thread->execute_depth--;
                     return yieldReturn;
                 }
                 // Keep a host UI loop (main thread) pumped while awaiting a future;
@@ -11384,7 +11414,6 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                 thread->awaitedFuture = Value::nilVal();
             } else {
                 if (hasDeadline) {
-                    if (thread->execute_depth > 0) thread->execute_depth--;
                     return yieldReturn;
                 }
                 // Keep a host UI loop (main thread) pumped while awaiting a future;
@@ -11422,7 +11451,6 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
 
     } // for
 
-    if (thread->execute_depth > 0) thread->execute_depth--;
     return std::make_pair(ExecutionStatus::OK, Value::nilVal());
 
 }
@@ -11594,11 +11622,10 @@ bool VM::processPendingEvents()
                 // Prune matching weak entries from the event's subscriber list.
                 Value evStrong = tev.eventType.strongRef();
                 if (!evStrong.isNil() && isEventType(evStrong)) {
-                    auto& subs = asEventType(evStrong)->subscribers;
-                    subs.erase(std::remove_if(subs.begin(), subs.end(),
+                    asEventType(evStrong)->subscribers.erase_if(
                         [&](const Value& sub) {
                             return sub.isNonNil() && firedSet.count(sub.asObj()) > 0;
-                        }), subs.end());
+                        });
                 }
             }
         }
@@ -11713,11 +11740,10 @@ bool VM::invokeNextEventHandler()
                 }
                 Value evStrong = tev.eventType.strongRef();
                 if (!evStrong.isNil() && isEventType(evStrong)) {
-                    auto& subs = asEventType(evStrong)->subscribers;
-                    subs.erase(std::remove_if(subs.begin(), subs.end(),
+                    asEventType(evStrong)->subscribers.erase_if(
                         [&](const Value& sub) {
                             return sub.isNonNil() && sub.asObj() == relayObj;
-                        }), subs.end());
+                        });
                 }
             }
             continue;
@@ -12728,9 +12754,13 @@ bool VM::unwindToExceptionHandler(Value& exc)
             thread && thread->isActorThread() && thread->currentActorCall.isNonNil();
         if (!willForward && thread && !thread->frames.empty()
             && stopCoordinator().stopOnFatal()) {
+            // Only frames of THIS execution can catch it: the scan stops at
+            // the frame a native entered (see the boundary in the loop below).
             bool anyHandler = false;
-            for (const auto& f : thread->frames)
-                if (!f.exceptionHandlers.empty()) { anyHandler = true; break; }
+            for (auto it = thread->frames.rbegin(); it != thread->frames.rend(); ++it) {
+                if (!it->exceptionHandlers.empty()) { anyHandler = true; break; }
+                if (it->unwindOnReturn) break;
+            }
             if (!anyHandler) {
                 auto frame = thread->frames.end() - 1;
                 Chunk* ch = asFunction(asClosure(frame->closure)->function)->chunk.get();
@@ -12773,8 +12803,52 @@ bool VM::unwindToExceptionHandler(Value& exc)
             push(exc);
             return true;
         }
+        // The frame a native entered (invokeClosure / invokeMethod) is the
+        // bottom of THIS execution.  Beneath it lie the invoker's frames, and
+        // between the two runs native code -- the engine's evaluation loop, a
+        // signal's set() -- that an unwind cannot pass through: continuing
+        // would discard frames whose native callers are still on the C stack,
+        // or resume a handler in them from inside this nested execute().  (On
+        // the dataflow engine's actor thread nothing beneath is a caller at
+        // all: its native run() loop is the actor call, and the exception
+        // used to be taken for that call's, stashed for an awaiter that never
+        // comes, and its stack reset under the running loop.)  Uncaught here
+        // is uncaught by the invocation: report it and fail its domain, as an
+        // uncaught exception fails a program, and leave the invoker's frames
+        // for the invoker -- whose invokeClosure returns RuntimeError.
+        if (cf.unwindOnReturn) {
+            unwindFrame();
+            reportUncaughtInInvocation("Uncaught exception: "
+                                       + objExceptionToString(asException(exc)));
+            return false;
+        }
         unwindFrame();
     }
+}
+
+void VM::reportUncaughtInInvocation(const std::string& message)
+{
+    // runtimeError() without its resetStack(): the thread's remaining frames
+    // and stack belong to the invoker and stay intact.
+    {
+        ExecutionDomain& d = *domainForThisThread();
+        std::lock_guard<std::mutex> lock(d.errorMutex);
+        d.errorMessage = message;
+    }
+    setRuntimeErrorFlag();
+    threads.apply([](const std::pair<const uint64_t, ptr<Thread>>& entry){
+        if (entry.second)
+            entry.second->wake();
+    });
+    OutputEventView event;
+    event.kind = OutputKind::Diagnostic;
+    event.severity = OutputSeverity::Error;
+    event.channel = "stderr";
+    event.category = "runtime";
+    const std::string text = "error: " + message;
+    event.text = text;
+    event.flush = true;
+    emitOutput(event, OutputDelivery::LocalAndCallRoute);
 }
 
 void VM::raiseException(Value exc)
@@ -13903,11 +13977,11 @@ Value VM::event_remove_builtin(ArgsView args)
             thread->eventHandlers.erase(it);
     }
 
-    for(auto it = ev->subscribers.begin(); it != ev->subscribers.end(); ) {
-        if (it->isAlive() && asClosure(*it) == asClosure(closureVal))
-            it = ev->subscribers.erase(it);
-        else
-            ++it;
+    {
+        ObjClosure* target = asClosure(closureVal);
+        ev->subscribers.erase_if([target](const Value& sub) {
+            return sub.isAlive() && asClosure(sub) == target;
+        });
     }
 
     return Value::nilVal();
@@ -15961,6 +16035,36 @@ void VM::requestDomainExit(ExecutionDomain& domain, int code)
 {
     domain.exitCode.store(code, std::memory_order_release);
     domain.interrupts().fetch_or(ExecutionDomain::IntrExit);
+    wakeDomainThreads(domain);
+}
+
+void VM::transferDomainOutcome(ExecutionDomain& from, ExecutionDomain& owner)
+{
+    if (&from == &owner)
+        return;
+    if (&owner == defaultDomain_.get() && embeddedDriverAttached())
+        return;
+    const uint32_t raised = from.interrupts().load();
+    if (raised & ExecutionDomain::IntrRuntimeError) {
+        std::string message;
+        {
+            std::lock_guard<std::mutex> lock(from.errorMutex);
+            message = from.errorMessage;
+        }
+        {
+            std::lock_guard<std::mutex> lock(owner.errorMutex);
+            if (owner.errorMessage.empty())
+                owner.errorMessage = std::move(message);
+        }
+        owner.interrupts().fetch_or(ExecutionDomain::IntrRuntimeError);
+        wakeDomainThreads(owner);
+    }
+    if (raised & ExecutionDomain::IntrExit)
+        requestDomainExit(owner, from.exitCode.load(std::memory_order_acquire));
+}
+
+void VM::wakeDomainThreads(const ExecutionDomain& domain)
+{
     const uint64_t domainId = domain.id();
     threads.apply([domainId](const std::pair<const uint64_t, ptr<Thread>>& entry){
         if (entry.second && entry.second->domain

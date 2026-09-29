@@ -5,6 +5,7 @@
 
 #include <set>
 #include <memory>
+#include <atomic>
 #include <mutex>
 #include <condition_variable>
 
@@ -28,7 +29,10 @@ public:
     enum class TickResult {
         Complete,      // All funcs evaluated for this tick
         Yielded,       // Time budget exhausted mid-evaluation, more work pending
-        Overrun,       // Tick exceeded its period - error condition
+        Overrun,       // Tick exceeded its period (Strict scheme): the
+                       // suspended tick was abandoned.  Under BestEffort a
+                       // late tick is reported (consumeNodeOverruns) and
+                       // resumed instead, never abandoned
         Error,         // Runtime error during execution
         Busy,          // Evaluator lock held (event-island evaluation in
                        // flight on the engine thread); nothing was done --
@@ -134,7 +138,9 @@ public:
     // Time-limited tick execution for RT control loop integration.
     // Handles both starting new ticks and resuming yielded ones.
     // Returns: Complete when tick finished, Yielded if budget exhausted,
-    //          Overrun if tick exceeded its period, Error on failure.
+    //          Overrun if tick exceeded its period (Strict scheme only --
+    //          under BestEffort a late tick is reported and resumed, as
+    //          tick() warns and carries on), Error on failure.
     TickResult tickFor(TimeDuration budget);
 
     // Check if there's pending work from a yielded tick
@@ -295,7 +301,8 @@ private:
 
     DataflowEngine();
 
-    ExecutionScheme m_executionScheme;
+    // Set by the host (possibly from another thread), read by both drivers.
+    std::atomic<ExecutionScheme> m_executionScheme;
 
 public:
     // Diagnostics only: try-lock each engine mutex from the caller's thread
@@ -342,6 +349,15 @@ private:
     void invokeTickCallbacks();
 
     std::atomic<bool> m_networkModified;
+    // Bumped by every rebuild (under m_mutex).  A rebuild clears
+    // m_networkModified -- and happens on paths other than the tick (a lift's
+    // initializeNode, an event update, tickPeriod()) -- so a suspended tick
+    // cannot rely on the flag to learn that its island layout, node
+    // positions and tick grid are gone; it compares generations instead.
+    std::atomic<uint64_t> m_networkGeneration { 0 };
+    // True if the suspended tick can no longer be resumed: the network
+    // changed since it started (or a change is pending).
+    bool yieldedTickStale() const;
     std::atomic<bool> m_shouldStop{false};
     // True while run() is looping on the engine actor thread.  An exit/
     // interrupt stops that loop; the embedding re-queues run() for the next
@@ -358,6 +374,46 @@ private:
     // a mode commitment for the engine instance's lifetime.
     std::atomic<bool> m_hostDriven{false};
 
+    // ---- Host context (tickFor) ----
+    // The execution context host-driven evaluation runs Roxal node bodies
+    // in: a Dataflow-kind Thread that is never act()ed (the host's OS thread
+    // drives it inside tickFor) in a domain of its own.  Never the caller's
+    // binding -- on a host's driver thread that is the program's Thread
+    // between its slices (frames and operands shared with the program) or
+    // nothing once its run is handed over.
+    //
+    // The domain is private so a failed or exit()ing body cannot stop the
+    // services' evaluation (the actor thread's default domain) -- its outcome
+    // is carried to the run that created the node instead
+    // (FuncNode::carryOutcomeToOwner).
+    // The context is created lazily on the first tickFor and discarded
+    // whenever a body in it fails or is abandoned; the next tick starts a
+    // fresh one, so no suspended frames or raised flags ever outlive the
+    // tick that owned them.  Owned by the tick path under m_evalMutex; like
+    // m_yieldState, reset by clear(), which must not race a tick.
+    ptr<roxal::ExecutionDomain> m_hostDomain;
+    ptr<roxal::Thread> m_hostThread;
+
+    // The host context, created if needed (or replaced, if it holds frames
+    // no suspended body accounts for), for a tick called with `caller`
+    // bound: the host's GC-yield requirement is read from the Thread it
+    // drives.
+    ptr<roxal::Thread> hostContextFor(const ptr<roxal::Thread>& caller);
+    // Drop the host context (the next tick creates a fresh one).
+    void discardHostContext();
+    // Give up on the suspended tick: forget the suspended body and discard
+    // the context it is suspended in.  For Overrun, a network change,
+    // clear() -- never for an error, whose outcome settleHostTick must first
+    // carry to its run.
+    void abandonYieldedTick();
+    // After a tick: a body that failed or called exit() in the host context
+    // left its flag raised there (FuncNode has carried the outcome to its
+    // owner) -- discard the context so the next tick runs clean.  True if it
+    // did: the tick reports Error, even if its slice ended in a yield.
+    bool settleHostTick();
+    // The body of tickFor once admitted, locked and bound.
+    TickResult runHostTick(TimeDuration budget);
+
     // State for resuming a yielded tick execution
     struct YieldState {
         bool active { false };
@@ -367,6 +423,11 @@ private:
         TimePoint tickTime;
         bool funcWasExecuting { false };
         ptr<FuncNode> yieldedFunc;
+        // BestEffort: this tick's lateness has been reported (once per tick).
+        bool lateReported { false };
+        // The network generation the tick started on (see
+        // m_networkGeneration): resumable only on that same network.
+        uint64_t networkGeneration { 0 };
     };
     YieldState m_yieldState;
 

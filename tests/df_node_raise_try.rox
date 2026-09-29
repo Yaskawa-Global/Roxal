@@ -1,0 +1,20 @@
+# A node's exception is its run's failure, not an exception thrown by the
+# set() that happened to trigger its evaluation: a try around that set()
+# does not catch it, and the program fails.  (Unwinding into the caller's
+# handler through the engine's native frames used to crash the VM.)
+const frame = signal(0, 0)         # event-driven source
+
+func check(n: int) -> int:
+  if n == 2:
+    raise RuntimeException('node boom')
+  return n * 10
+
+const out = check(frame)
+frame.set(1)
+print(out.value)
+try:
+  frame.set(2)
+  print('not reached')
+except e:
+  print('not caught here')
+print('not reached either')
