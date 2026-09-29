@@ -408,8 +408,9 @@ private:
     void abandonYieldedTick();
     // After a tick: a body that failed or called exit() in the host context
     // left its flag raised there (FuncNode has carried the outcome to its
-    // owner) -- discard the context so the next tick runs clean.
-    void settleHostTick();
+    // owner) -- discard the context so the next tick runs clean.  True if it
+    // did: the tick reports Error, even if its slice ended in a yield.
+    bool settleHostTick();
     // The body of tickFor once admitted, locked and bound.
     TickResult runHostTick(TimeDuration budget);
 

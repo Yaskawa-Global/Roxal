@@ -1130,7 +1130,8 @@ DataflowEngine::TickResult DataflowEngine::tickFor(TimeDuration budget)
     debugAdmission.mark(roxal::VM::thread);
 
     const TickResult result = runHostTick(budget);
-    settleHostTick();
+    if (settleHostTick())
+        return TickResult::Error;
     return result;
 }
 
@@ -1301,14 +1302,16 @@ void DataflowEngine::abandonYieldedTick()
     discardHostContext();
 }
 
-void DataflowEngine::settleHostTick()
+bool DataflowEngine::settleHostTick()
 {
     if (!m_hostDomain)
-        return;   // already discarded with an abandoned tick
+        return false;   // already discarded with an abandoned tick
     const uint32_t raised = m_hostDomain->interrupts().load()
         & (roxal::ExecutionDomain::IntrRuntimeError | roxal::ExecutionDomain::IntrExit);
-    if (raised)
-        abandonYieldedTick();
+    if (!raised)
+        return false;
+    abandonYieldedTick();
+    return true;
 }
 
 

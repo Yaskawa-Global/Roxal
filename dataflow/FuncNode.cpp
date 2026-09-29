@@ -624,6 +624,10 @@ FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline
             DataflowThreadGuard dfGuard;
             return vm.invokeClosure(asClosure(closure), args, deadline);
         }();
+        // Whatever the result: a body can exit() and still come back
+        // Yielded (the deadline check follows the call), and its context may
+        // be discarded before it is ever resumed.
+        carryOutcomeToOwner();
 
         if (roxal::isSuspended(result.first)) {
             // VM yielded (deadline) or was debugger-paused -- identical state
@@ -638,7 +642,6 @@ FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline
         }
 
         if (result.first != ExecutionStatus::OK) {
-            carryOutcomeToOwner();
             return FuncExecResult::Error;
         }
 
@@ -763,6 +766,7 @@ FuncExecResult FuncNode::resumeExecution(TimePoint deadline)
         : std::make_pair(ExecutionStatus::OK, Value::nilVal());
     if (vm.hasRuntimeError())
         result = ExecutionStatus::RuntimeError;
+    carryOutcomeToOwner();   // whatever the result -- see conditionallyExecute
 
     if (roxal::isSuspended(result)) {
         // Still not complete (deadline yield or debugger pause) -- keep the
@@ -778,7 +782,6 @@ FuncExecResult FuncNode::resumeExecution(TimePoint deadline)
     Values inputValues = m_funcYieldState.inputValues;
 
     if (result != ExecutionStatus::OK) {
-        carryOutcomeToOwner();   // still on the thread the body ran on
         VM::thread = savedThread;
         return FuncExecResult::Error;
     }

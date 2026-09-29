@@ -2288,7 +2288,24 @@ is never an epoch member and node bodies do not trap on breakpoints (the
 synchronously and nested inside its thread's own execution -- a lift's first
 evaluation, an event-driven `set()` from script code; `FuncNode` refuses any
 other evaluation with an `Error` diagnostic rather than corrupting the thread
-it found bound. `tests/dataflow_host_thread_test.cpp` drives a program and the
+it found bound.
+
+**A nested execution without a deadline runs to completion.** A lift's first
+evaluation, a `set()` evaluating an island, any callback native code invokes:
+their invoker expects them to finish and cannot resume them, so yielding or
+pausing would strand their frames on the invoker's stack, later run as the
+invoker's own code. Under an RT host that is exactly what happened: the
+driver's slice holds a GC yield section, and inside one a requested collection
+made `execute()` yield even with no deadline. `execute()` now treats such an
+execution (`mustComplete`: no deadline, nested in its thread's own execution)
+like a native call: inside a yield section it keeps running (no collection can
+start while the section is held), otherwise it parks at the safepoint as
+non-RT code does, and a debugger stop is taken at the enclosing execution's
+next boundary. A long one overruns the host's slice and is reported on return,
+as a long native builtin is -- long-running work belongs in an actor, off the
+RT script. A body's failure or `exit()` is carried to its owner whatever its
+result: a body that exits and is then cut off by the deadline check still
+exits its run, and `tickFor` reports that tick as `Error`. `tests/dataflow_host_thread_test.cpp` drives a program and the
 engine from one OS thread, as FC's loop does.
 
 **The driver is never parked by the debugger, and never delays a collection.**

@@ -6942,6 +6942,30 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
     }
     Thread::DebugExecScope debugExecScope(*thread);
 
+    // Must this execution run to completion?  One that has a deadline returns
+    // to a caller that resumes it, and the outermost one on its thread is
+    // re-entered by its driver -- both may yield or pause.  A NESTED one with
+    // no deadline was invoked from native code (a lift's first evaluation, a
+    // signal's set() evaluating an island, any callback) whose invoker
+    // expects it to finish and cannot resume it: yielding or pausing would
+    // strand its frames on the invoker's stack, to be run later as the
+    // invoker's own code.  It completes like a native call does -- a long one
+    // makes the host's slice overrun, reported on return.  Where an RT
+    // caller would yield for a collection, it instead continues inside a GC
+    // yield section (no collection can start while the section is held) and
+    // otherwise parks at the safepoint like any non-RT execution; it leaves
+    // debugger stops to the enclosing execution's next boundary.
+    const bool mustComplete = deadline == TimePoint::max() && thread->execute_depth > 0;
+    auto rtYieldForGC = [&]() {
+        return !mustComplete
+            && (SimpleMarkSweepGC::inGCYieldSectionOnThisThread() || thread->rtYieldOnGC);
+    };
+    auto mayPark = [&]() {
+        return !(mustComplete && SimpleMarkSweepGC::inGCYieldSectionOnThisThread());
+    };
+    const bool debugStopsDeferred = mustComplete
+        && (SimpleMarkSweepGC::inGCYieldSectionOnThisThread() || thread->rtYieldOnGC);
+
     SimpleMarkSweepGC& valueGC = SimpleMarkSweepGC::instance();
     // A re-entrant execute() on the SAME physical thread — e.g. a native pump (an event
     // loop, processPendingEvents) invoking a Roxal callback, or _invoke_method calling a
@@ -6960,7 +6984,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
     // can land between this check and onThreadEnter); hard-RT hosts must
     // wrap the whole slice in a GCYieldScope, whose section count blocks a
     // collection from starting at all while the slice runs.
-    if ((SimpleMarkSweepGC::inGCYieldSectionOnThisThread() || thread->rtYieldOnGC) &&
+    if (rtYieldForGC() &&
         (valueGC.isCollectionRequested() || valueGC.isCollectionInProgress())) {
         return std::make_pair(ExecutionStatus::Yielded, Value::nilVal());
     }
@@ -6997,10 +7021,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
         // executionGuard dtor runs onThreadExit so the barrier doesn't count
         // us, and this Thread's frames stay rooted via the threads registry.
         // Resumption is the normal Yielded path.
-        if (SimpleMarkSweepGC::inGCYieldSectionOnThisThread() || thread->rtYieldOnGC) {
+        if (rtYieldForGC()) {
             return std::make_pair(ExecutionStatus::Yielded, Value::nilVal());
         }
-        valueGC.safepoint(*thread);
+        if (mayPark())
+            valueGC.safepoint(*thread);
     }
 
     // Track execution depth for nested calls.  Every exit from here on --
@@ -7305,6 +7330,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
             // work first.  RT/deadline execution acknowledges and returns
             // Paused (bounded atomic work only); everything else parks.
             if (debugStopRequested() && thread->dataflowEvalDepth == 0
+                && !debugStopsDeferred
                 && !thread->debugExcluded.load(std::memory_order_relaxed)) [[unlikely]] {
                 if (hasDeadline || SimpleMarkSweepGC::inGCYieldSectionOnThisThread()
                     || thread->rtYieldOnGC) {
@@ -7321,6 +7347,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
             // a trap behaves exactly like the cooperative stop point above.
             if ((word->load() & ExecutionDomain::IntrDebugSlowPath) != 0
                 && thread->dataflowEvalDepth == 0
+                && !debugStopsDeferred
                 && !thread->debugExcluded.load(std::memory_order_relaxed)
                 && !thread->frames.empty()) [[unlikely]] {
                 const bool rtSlice = hasDeadline
@@ -11273,10 +11300,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
             // RT yield-out (see the entry-poll comment above): never park a
             // yield-section / rtYieldOnGC thread -- yield to the host like a
             // deadline expiry.  The frame state stays resumable and rooted.
-            if (SimpleMarkSweepGC::inGCYieldSectionOnThisThread() || thread->rtYieldOnGC) {
+            if (rtYieldForGC()) {
                 return yieldReturn;
             }
-            valueGC.safepoint(*thread);
+            if (mayPark())
+                valueGC.safepoint(*thread);
         }
 
         // are we supposed to be sleeping?  If so, block until the sleep time is over

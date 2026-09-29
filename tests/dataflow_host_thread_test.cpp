@@ -530,10 +530,16 @@ int runScenario(const Scenario& scenario)
         expect(!engine->consumeNodeOverruns().empty(),
                name + ": the late ticks were reported to the host");
     }
+    // The engine keeps evaluating after the run ended (after its failure,
+    // for the failing scenarios): ticks that complete, or with a budget too
+    // small for a whole tick, make progress and yield -- anything but Error.
     if (scenario.tickAfterRun)
-        expect(driver.after(TickResult::Complete) >= 20,
-               name + ": ticks after the run completed ("
-                   + std::to_string(driver.after(TickResult::Complete)) + ")");
+        expect(driver.after(TickResult::Complete) + driver.after(TickResult::Yielded) >= 20
+                   && driver.after(TickResult::Error) == 0,
+               name + ": ticks after the run kept evaluating ("
+                   + std::to_string(driver.after(TickResult::Complete)) + " complete, "
+                   + std::to_string(driver.after(TickResult::Yielded)) + " yielded, "
+                   + std::to_string(driver.after(TickResult::Error)) + " error)");
 
     // At most the one body the engine's yield state still tracks may remain
     // suspended; an abandoned one left beneath it would be finished by the
