@@ -1,0 +1,42 @@
+# GC: version chains two levels below a live object.  Z has a chain and is
+# reachable only through Y's saved version; Y has a chain and is reachable only
+# through h's saved version.  Marking must reach a fixed point: h -> h's
+# snapshot -> Y -> Y's snapshot -> Z -> Z's snapshot.  A one-shot chain pass
+# after the root drain covers at most the first level.
+
+type F object:
+  var n :int = 0
+  var g = nil
+
+type H object:
+  var f = nil
+
+func churn(k :int) -> int:
+  var acc :int = 0
+  var i :int = 0
+  while i < 100:
+    var t = [k, i, k + i]
+    acc = acc + len(t)
+    i = i + 1
+  return acc
+
+func step(h :H, bg :list, k :int) -> int:
+  const keep = bg
+  var y = h.f              # Y and Z: made by the previous step
+  var z = y.g
+  z.n = z.n + 1            # Z saves a version
+  y.g = F()                # Y saves a version whose properties still hold Z
+  y.n = y.n + 1
+  h.f = F(g = F())         # h saves a version whose properties still hold Y
+  y = nil
+  z = nil                  # only the chain of saved versions reaches Y and Z
+  return churn(k)
+
+var h = H(f = F(g = F()))
+var bg = [F()]
+var k :int = 0
+var total :int = 0
+while k < 600:
+  total = total + step(h, bg, k)
+  k = k + 1
+print("done " + string(total))

@@ -1,0 +1,41 @@
+# Concurrent snapshot creation on several threads (actor calls freeze shared
+# lists) while each thread also builds fresh objects, freezes them and mutates
+# them.  Every const must keep its pre-mutation state.
+# Regression: latestSnapshotCreationEpoch was published with a plain store, so a
+# thread's late store could move it backwards; a mutation then skipped the
+# version save its thread's snapshot needed, and the const read an older
+# version (for a list literal, the empty list from before construction).
+# Timing-dependent in what it catches, but prints bad=0 on correct code.
+
+type Sink actor:
+  proc take(x):
+    var y = x
+
+type Worker actor:
+  func run(id :int, sink :Sink, rounds :int) -> int:
+    var bad = 0
+    var shared = [[id]]
+    var alias = shared
+    for r in range(..<rounds):
+      sink.take(shared)            # another frozen snapshot, from this thread
+      var l = [[r]]
+      const c = l
+      l[0].append(r + 1)
+      if c[0] != [r]:
+        bad = bad + 1
+      var d = {"k": [r]}
+      const cd = d
+      d["k"].append(0)
+      if cd["k"] != [r]:
+        bad = bad + 1
+    return bad
+
+var sink = Sink()
+var workers = [Worker(), Worker(), Worker(), Worker()]
+var results = []
+for i in range(..<4):
+  results.append(workers[i].run(i, sink, 3000))
+var total = 0
+for i in range(..<4):
+  total = total + results[i]
+print("bad=" + total)

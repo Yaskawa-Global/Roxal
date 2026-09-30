@@ -137,6 +137,7 @@ tests = [
     'nil_to_ref_types', 'nil_to_value_type_err', 'nil_to_range_err', 'nil_to_typed_prop_err', 'range_content_eq',
     'arith', 'factorial', 'defaultvalues', 'construct_defaults', 'typeof_test', 'invoke_method',
     'change_notifier', 'gc_nested_invoke', 'gc_construct_stress', 'gc_coordination_stress', 'gc_selftest', 'gc_scanner_selftest',
+    'gc_mvcc_version_chain_object', 'gc_mvcc_version_chain_list', 'gc_mvcc_version_chain_dict', 'gc_mvcc_version_chain_deep', 'gc_mvcc_version_chain_defaults',
     'dict', 'dict2', 'dict_keyerror', 'dict_dot', 'dict_dot_keyerror', 'dict_self_reference', 'list', 'list2', 'list_negative_index', 'list_self_reference', 'copyinto_list', 'copyinto_list_unicode', 'copyinto_sublist', 'copyinto_signal',
     'list_add_test', 'list_concat_shallow', 'list_methods', 'list_sort', 'list_sort_algorithm_err', 'list_sort_comparator_err', 'list_sort_incomparable_err', 'list_sort_const_err', 'list_add_nonlist_err', 'list_remove_notfound_err', 'list_pop_empty_err', 'list_dict_equal', 'test_filter_map_reduce', 'list_method_exception', 'test_paren_continuation',
     'list_packed_repr', 'list_packed_semantics', 'list_packed_transitions', 'list_packed_reserve', 'list_packed_const', 'list_packed_serialize', 'range', 'range2', 'enum1', 'enum2', 'enum3', 'upvalue_leak',
@@ -294,7 +295,7 @@ tests = [
     'const_list', 'const_dict', 'const_nested', 'const_snapshots', 'const_alias', 'const_identity',
     'const_deep_chain', 'const_cycle', 'const_diamond', 'const_multi_snapshot', 'const_func', 'const_escape_err',
     'const_type_qualifier', 'const_tensor_freeze', 'const_mutable_type', 'const_builtin_method_err', 'const_linked_method_err', 'const_mvcc',
-    'const_method_dispatch', 'const_interior_alias',
+    'const_method_dispatch', 'const_interior_alias', 'const_fresh_child', 'const_snapshot_concurrent',
     'event_const', 'event_const_err', 'event_const_transitive_err',
     'const_signal_err', 'const_signal_type_err',
     'df_capture_mutable_err',
@@ -1165,6 +1166,11 @@ try:
             # degenerate 1KB threshold: GC requested from the first allocations,
             # including during VM construction (see the .rox header comment)
             cmd = [cmd[0], '--gc-threshold', '1', *cmd[1:]]
+        if test.startswith('gc_mvcc_version_chain_'):
+            # collections must run while frozen snapshots are alive (see the
+            # .rox header comments); the field shape needs a larger threshold
+            threshold = '2000' if test == 'gc_mvcc_version_chain_defaults' else '256'
+            cmd = [cmd[0], '--gc-threshold', threshold, *cmd[1:]]
         if test.startswith('grpc_'):
             proto_path = os.path.join('..', 'compiler', 'grpc', 'protos')
             cmd = [cmd[0], '-p', proto_path, *cmd[1:]]

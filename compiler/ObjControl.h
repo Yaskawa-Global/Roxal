@@ -34,6 +34,18 @@ inline std::atomic<uint64_t> globalWriteEpoch{1};
 inline std::atomic<uint64_t> activeSnapshotCount{0};
 inline std::atomic<uint64_t> latestSnapshotCreationEpoch{0};
 
+// Publish a new snapshot's epoch as a running maximum.  A plain store could move
+// latestSnapshotCreationEpoch backwards when two threads create snapshots at once
+// (A loads 10, B loads and stores 11, A stores 10), after which a mutation could
+// skip the version save that B's snapshot needs.
+inline void publishSnapshotEpoch(uint64_t epoch)
+{
+    uint64_t cur = latestSnapshotCreationEpoch.load(std::memory_order_relaxed);
+    while (cur < epoch && !latestSnapshotCreationEpoch.compare_exchange_weak(
+               cur, epoch, std::memory_order_release, std::memory_order_relaxed))
+        ;
+}
+
 // Tracks active snapshot epochs to compute minActiveSnapshotEpoch for version chain trimming.
 // A multiset allows multiple snapshots at the same epoch; min() is O(1) via begin().
 struct SnapshotEpochTracker {
@@ -129,7 +141,11 @@ struct ObjControl {
     std::atomic<uint64_t> writeEpoch{0};            // epoch of last mutation
     SnapshotToken* snapshotToken{nullptr};           // non-null for frozen clones: the snapshot this clone belongs to
     std::atomic<ObjVersion*> versionChain{nullptr};  // linked list of older versions (newest first)
-    uint64_t lastSaveEpoch{0};                       // for version save deduplication
+    // For version save deduplication.  A new object starts at the epoch of the
+    // most recent snapshot: no snapshot that exists yet can reach it, and any
+    // later snapshot gets a strictly greater epoch (createFrozenSnapshot takes it
+    // with fetch_add), so the object's first mutation after that still saves.
+    uint64_t lastSaveEpoch{latestSnapshotCreationEpoch.load(std::memory_order_acquire)};
 
     // --- COW spinlock for cross-thread shallowClone safety ---
     // Protects the COW ptr<> members (elts_, data_, properties_) during concurrent

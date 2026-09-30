@@ -281,6 +281,25 @@ void visitThreadRoots(Thread& thread, ValueVisitor& visitor)
     }
 }
 
+// MVCC: an object's saved versions are strong edges (Obj::saveVersion incRefs
+// each snapshot) that Obj::trace() deliberately does not report -- trace()
+// describes the object's visible graph, which isIsolatedGraph() and the other
+// graph walkers in Object.cpp depend on.  Every collector pass that reasons
+// about what a live object keeps alive (marking, mark verification) combines
+// trace() with this walk, and nowhere else.  World stopped: the chain is
+// stable and only the collector role trims or clears it.
+template <class F>
+void forEachVersionSnapshot(const Obj* obj, F&& fn)
+{
+    ObjControl* control = obj->control;
+    if (!control)
+        return;
+    for (ObjVersion* ver = control->versionChain.load(std::memory_order_acquire); ver; ver = ver->prev) {
+        if (ver->snapshot)
+            fn(ver->snapshot);
+    }
+}
+
 } // namespace
 
 namespace roxal {
@@ -1792,8 +1811,10 @@ SimpleMarkSweepGC::CollectionResult SimpleMarkSweepGC::performCollection(std::un
             if (value.isWeak()) {
                 return;
             }
+            markObj(value.asObj());
+        }
 
-            Obj* obj = value.asObj();
+        void markObj(Obj* obj) {
             if (!obj) {
                 return;
             }
@@ -1826,6 +1847,14 @@ SimpleMarkSweepGC::CollectionResult SimpleMarkSweepGC::performCollection(std::un
                         current->control->tracedEpoch.store(epoch, std::memory_order_relaxed);
 #endif
                     current->trace(*this);
+                    // The version snapshots are marked in the same closure as
+                    // the traced edges: what a snapshot references may own a
+                    // version chain of its own, at any depth.  A separate
+                    // "mark the chains of everything marked so far" pass misses
+                    // the chains of objects first reached through a snapshot,
+                    // and the sweep freed their versions while they were live
+                    // (gc_mvcc_version_chain_* tests).
+                    forEachVersionSnapshot(current, [&](Obj* snapshot) { markObj(snapshot); });
                 }
             }
         }
@@ -1835,36 +1864,6 @@ SimpleMarkSweepGC::CollectionResult SimpleMarkSweepGC::performCollection(std::un
     } marker(epoch);
 
     visitRoots(marker);
-    marker.drain();
-
-    // MVCC: mark version chain snapshots.
-    // Version chain entries hold raw Obj* snapshots that aren't reachable via
-    // normal Value tracing.  We must mark them so the sweep doesn't collect
-    // objects that an active snapshot may still need for version resolution.
-    // (Lambda: runs again after conservative scan-marking, which can newly
-    // mark objects whose version chains then need the same coverage.)
-    auto markVersionChainSnapshots = [&]() {
-        forEachControlLocked([&](ObjControl* control) {
-            if (!control->obj)
-                return;
-            if (control->markEpoch.load(std::memory_order_relaxed) != epoch)
-                return;
-            ObjVersion* ver = control->versionChain.load(std::memory_order_relaxed);
-            while (ver) {
-                if (ver->snapshot && ver->snapshot->control) {
-                    ObjControl* snapCtrl = ver->snapshot->control;
-                    if (!snapCtrl->collecting.load(std::memory_order_relaxed) &&
-                        snapCtrl->markEpoch.load(std::memory_order_relaxed) != epoch) {
-                        snapCtrl->markEpoch.store(epoch, std::memory_order_relaxed);
-                        // Trace the snapshot's children too (they may hold refs)
-                        marker.worklist.push_back(ver->snapshot);
-                    }
-                }
-                ver = ver->prev;
-            }
-        });
-    };
-    markVersionChainSnapshots();
     marker.drain();
 
     // MVCC: trim version chains on live objects.
@@ -1890,19 +1889,14 @@ SimpleMarkSweepGC::CollectionResult SimpleMarkSweepGC::performCollection(std::un
     if (shadowScanEnabled()) {
         shadowScanParkedStacks(epoch);
         // A1: conservative marking -- objects referenced only from a parked
-        // C++ stack become live.  Their reachable children and version
-        // chains get the same coverage as precise roots.
+        // C++ stack become live.  drain() gives their reachable children and
+        // version chains the same coverage as precise roots.
         if (conservativeMarkingEnabled() && !lastScanOnly_.empty()) {
             for (ObjControl* control : lastScanOnly_) {
                 if (!control || !control->obj)
                     continue;
-                if (control->collecting.load(std::memory_order_relaxed))
-                    continue;
-                control->markEpoch.store(epoch, std::memory_order_relaxed);
-                marker.worklist.push_back(control->obj);
+                marker.markObj(control->obj);
             }
-            marker.drain();
-            markVersionChainSnapshots();
             marker.drain();
         }
     }
@@ -1935,7 +1929,10 @@ SimpleMarkSweepGC::CollectionResult SimpleMarkSweepGC::performCollection(std::un
             void visit(const Value& value) override {
                 if (!value.isObj() || value.isWeak())
                     return;
-                Obj* child = value.asObj();
+                check(value.asObj());
+            }
+
+            void check(Obj* child) {
                 if (!child)
                     return;
                 ObjControl* c = child->control;
@@ -1973,6 +1970,9 @@ SimpleMarkSweepGC::CollectionResult SimpleMarkSweepGC::performCollection(std::un
                 return;   // this one is garbage; its edges are not our problem
             verifier.parent = obj;
             obj->trace(verifier);
+            // Version snapshots are strong edges too (an unmarked one is
+            // the version-chain MARK-MISS the drain closure now covers).
+            forEachVersionSnapshot(obj, [&](Obj* snapshot) { verifier.check(snapshot); });
         });
 
         const std::uint64_t bad = verifier.unmarked + verifier.dying;

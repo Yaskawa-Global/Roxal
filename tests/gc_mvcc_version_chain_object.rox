@@ -1,0 +1,40 @@
+# GC: version snapshots are strong edges, marked in the same closure as traced
+# edges.  Y has a version chain and is reachable only through h's saved version
+# (h.f was replaced after Y was mutated).  A one-shot "mark the chains of every
+# marked object" pass reaches Y through h's snapshot but never scans Y's own
+# chain, so the sweep freed Y's version while Y was live; Y's later death then
+# decRef'd freed memory (heap use-after-free on the collector thread).
+# runtests.py runs this with a small --gc-threshold so collections happen inside
+# churn() while `keep` holds a snapshot (trim keeps the chains).
+
+type F object:
+  var n :int = 0
+
+type H object:
+  var f = nil
+
+func churn(k :int) -> int:
+  var acc :int = 0
+  var i :int = 0
+  while i < 100:
+    var t = [k, i, k + i]
+    acc = acc + len(t)
+    i = i + 1
+  return acc
+
+func step(h :H, bg :list, k :int) -> int:
+  const keep = bg          # a real snapshot (bg holds an object): chains are kept
+  var y = h.f              # Y: made by the previous step, before this snapshot
+  y.n = y.n + 1            # Y mutated under the snapshot: Y saves a version
+  h.f = F()                # h saves a version whose properties still hold Y
+  y = nil                  # now only h's saved version reaches Y
+  return churn(k)          # collections run while `keep` is alive
+
+var h = H(f = F())
+var bg = [F()]
+var k :int = 0
+var total :int = 0
+while k < 600:
+  total = total + step(h, bg, k)
+  k = k + 1
+print("done " + string(total))

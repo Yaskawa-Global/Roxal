@@ -1,0 +1,31 @@
+# GC: same as gc_mvcc_version_chain_object, but the saved version that is the
+# only path to Y belongs to a list (ObjList versions), not an object.
+
+type F object:
+  var n :int = 0
+
+func churn(k :int) -> int:
+  var acc :int = 0
+  var i :int = 0
+  while i < 100:
+    var t = [k, i, k + i]
+    acc = acc + len(t)
+    i = i + 1
+  return acc
+
+func step(h :list, bg :list, k :int) -> int:
+  const keep = bg
+  var y = h[0]             # Y: made by the previous step, before this snapshot
+  y.n = y.n + 1            # Y saves a version
+  h[0] = F()               # h (a list) saves a version whose elements still hold Y
+  y = nil                  # only h's saved version reaches Y
+  return churn(k)
+
+var h = [F()]
+var bg = [F()]
+var k :int = 0
+var total :int = 0
+while k < 600:
+  total = total + step(h, bg, k)
+  k = k + 1
+print("done " + string(total))

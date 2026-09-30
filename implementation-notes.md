@@ -2733,7 +2733,9 @@ invert the lock order against `trace()`.
 ### Root coverage for native frames (why wasm differs)
 
 Precise marking sees Values in traced storage: VM stacks, frames, module
-vars, traced object members. It does NOT see a Value whose only reference is
+vars, traced object members, plus the one strong edge that is not a Value --
+an object's MVCC version snapshots (see "Version Chains and the Collector"
+under Constness and MVCC). It does NOT see a Value whose only reference is
 a **C++ local**. Natively that is harmless -- parked threads' stacks are
 scanned conservatively -- but **wasm locals live in SSA registers outside
 linear memory and no scanner can reach them**, so on wasm such a Value is
@@ -3304,9 +3306,9 @@ MVCC resolves this by **versioning mutations** rather than eagerly copying the g
 
 Three global atomics coordinate versioning:
 
-- **`globalWriteEpoch`** (starts at 1): bumped on each mutation to any object while snapshots are active. Each bump via `fetch_add(1)` returns a unique epoch value assigned to the mutated object.
+- **`globalWriteEpoch`** (starts at 1): bumped on each mutation to any object while snapshots are active, and by each snapshot creation. Each bump via `fetch_add(1)` returns a unique epoch value, assigned to the mutated object or taken as the snapshot's epoch, so a snapshot's epoch never equals any mutation's `writeEpoch` or any other snapshot's epoch. (With no snapshot alive, mutations skip the MVCC path entirely and the epoch stands still.)
 - **`activeSnapshotCount`**: when 0, mutations skip the version-save path entirely (one well-predicted branch per mutation — zero overhead in the common case).
-- **`latestSnapshotCreationEpoch`**: used for version-save deduplication — if an object has already saved a version since the last snapshot was created, redundant saves are skipped.
+- **`latestSnapshotCreationEpoch`**: used for version-save deduplication — if an object has already saved a version since the last snapshot was created, redundant saves are skipped. Updated as a running maximum (`publishSnapshotEpoch`, a CAS loop): with a plain store, two threads creating snapshots at once could move it backwards, and a mutation would then skip a save the newer snapshot needs.
 
 These are declared in `ObjControl.h` as `inline` globals.
 
@@ -3317,7 +3319,7 @@ Each `Obj` has an `ObjControl` block (used for ref counting and GC). The MVCC ex
 - **`writeEpoch`** (atomic uint64): the epoch at which this object was last mutated. Starts at 0 for newly created objects.
 - **`snapshotToken`** (pointer): non-null only for frozen clones — points to the `SnapshotToken` for the snapshot this clone belongs to.
 - **`versionChain`** (atomic pointer): linked list of `ObjVersion` nodes, newest first. Each node holds: `epoch` (the object's writeEpoch *before* the mutation — i.e. when it entered this state), `snapshot` (a shallow clone capturing the pre-mutation state), and `prev` (link to older version).
-- **`lastSaveEpoch`**: for deduplication — compared against `latestSnapshotCreationEpoch`.
+- **`lastSaveEpoch`**: for deduplication — compared against `latestSnapshotCreationEpoch`. A new object starts at the current `latestSnapshotCreationEpoch`, not 0: no existing snapshot can reach an object created after it, so its first mutation saves a version only once a newer snapshot exists (which, taking its epoch by `fetch_add`, is strictly greater). Starting at the *global write epoch* instead would be unsafe: creating objects and building literals don't advance it, so a snapshot could capture a new object with an equal epoch and its first mutation would skip the needed save (`const_fresh_child` test).
 
 ### SnapshotToken: Per-Snapshot Identity
 
@@ -3334,7 +3336,7 @@ Called by the `MakeConst` opcode, and internally by event emission and `var x: c
 1. **Passthrough**: if already const, return as-is (no re-snapshot).
 2. **Primitives**: return directly (value types are inherently immutable).
 3. **Sole-owner fast path**: if `control->strong <= 1`, no other live reference exists — just set the const bit, no clone needed. This makes `move()` → actor truly zero-copy.
-4. **Otherwise**: shallow-clone the root object (copies property slots; children remain shared refs to live objects). Allocate a `SnapshotToken` with `epoch = globalWriteEpoch`. Attach the token to the clone. Increment `activeSnapshotCount`.
+4. **Otherwise**: shallow-clone the root object (copies property slots; children remain shared refs to live objects). Allocate a `SnapshotToken` with `epoch = globalWriteEpoch.fetch_add(1)` and publish it with `publishSnapshotEpoch`. Attach the token to the clone. Increment `activeSnapshotCount`.
 
 Cost: O(#direct-properties-of-root), NOT O(reachable-graph).
 
@@ -3350,6 +3352,14 @@ Every mutation method on `Obj` subtypes (`ObjList::setElement`, `ObjDict::store`
 3. Apply the mutation in place.
 4. Bump the object's epoch: `control->writeEpoch = globalWriteEpoch.fetch_add(1)`. Done *after* mutation so readers see the new epoch only after the new state is fully written.
 
+### Version Chains and the Collector
+
+An `ObjVersion` **owns a strong ref** to its snapshot (`saveVersion` incRefs it; `cleanupMVCC`/`trimVersionChain` decRef it), but `Obj::trace()` deliberately does not report that edge: `trace()` describes the object's *visible* graph, which `isIsolatedGraph()` and the other graph walkers in `Object.cpp` rely on. The collector therefore treats the chain as a second edge set, in `SimpleMarkSweepGC.cpp`:
+
+- **Marking** (`MarkWorklist::drain`): after `trace()`, every snapshot on the object's chain is marked into the same worklist (`forEachVersionSnapshot`). This is part of the transitive closure, not a separate pass: a snapshot's own properties reach live objects that may carry chains of their own, at any depth (Y mutated under a snapshot, then replaced in its holder `h`, is reachable only through `h`'s saved version, and Y's saved version only through Y). A one-shot "mark the chains of everything marked so far" pass after the root drain covered one level and left deeper chains unmarked; the sweep freed those versions while their owner was live, and the owner's later `cleanupMVCC` decRef'd freed memory (`gc_mvcc_version_chain_*` tests).
+- **Trimming** runs after marking, on marked objects only: `trimVersionChain(minEpoch)` keeps the newest version with `epoch < minEpoch` (the floor for the oldest live snapshot, `snapshotEpochTracker.minEpoch()`) and everything newer, and discards the whole chain when no snapshot is alive. Trimming releases refs, so a trimmed snapshot that was marked this cycle dies through the refcount path.
+- **Verification** (`ROXAL_FC_VERIFY`) checks chain edges as well as traced edges, so an unmarked version shows up as a `MARK-MISS` naming its owner at the collection that caused it, rather than as a later use-after-free.
+
 ### `resolveConstChild()`: Lazy Materialization on Const Reads
 
 When `GetProp` (or index access) reads a reference-type child through a const receiver, it calls `resolveConstChild()`. This is the core of lazy snapshot materialization:
@@ -3362,21 +3372,21 @@ When `GetProp` (or index access) reads a reference-type child through a const re
 4. Shallow-clone the source → frozen clone. Attach the same `SnapshotToken` (incrementing its refcount). Register the weak ref in `cloneMap`.
 5. **Cache** the frozen clone back into the parent's property slot (or list element, or dict entry) so subsequent reads are O(1).
 
-The strict `<` comparison is important: `writeEpoch == snapshotEpoch` means a mutation consumed the same global epoch value as the snapshot (via `fetch_add`), so it may have occurred after the snapshot and must be resolved via the version chain.
+Because snapshots take their epoch with `fetch_add`, no mutation's `writeEpoch` can equal a snapshot's epoch: `writeEpoch < snapshotEpoch` means the mutation was ordered before the snapshot, and `>` means after.
 
 ### Walkthrough: Interior Mutation Isolation
 
 ```roxal
 var o = Outer(Mid(Leaf(1)))
 var m = o.m                   // mutable alias to Mid
-const c: Outer = o            // snapshot at epoch E=5
+const c: Outer = o            // snapshot at epoch E=5 (global epoch is now 6)
 m.l.i = 2                    // mutate Leaf.i
 print(c.m.l.i)               // → 1 (isolated)
 ```
 
 - **Snapshot**: shallow-clone Outer → `Outer'` (epoch=5). `Outer'.m` still points to live `Mid`.
-- **Mutation**: `Leaf.i = 2` triggers `saveVersion()` on Leaf (saves version with epoch=0, the birth epoch). Sets `Leaf.writeEpoch = 5`.
-- **Const read** `c.m.l.i`: `Outer'` (frozen) → resolve `Mid` (writeEpoch=0 < 5, not mutated, clone current) → resolve `Leaf` (writeEpoch=5 ≥ 5, walk version chain, find epoch=0 version with `i=1`, clone that) → read `i` → returns 1.
+- **Mutation**: `Leaf.i = 2` triggers `saveVersion()` on Leaf (saves version with epoch=0, the birth epoch). Sets `Leaf.writeEpoch = 6`.
+- **Const read** `c.m.l.i`: `Outer'` (frozen) → resolve `Mid` (writeEpoch=0 < 5, not mutated, clone current) → resolve `Leaf` (writeEpoch=6 ≥ 5, walk version chain, find epoch=0 version with `i=1`, clone that) → read `i` → returns 1.
 
 ### Copy-on-Write (COW) for Containers
 

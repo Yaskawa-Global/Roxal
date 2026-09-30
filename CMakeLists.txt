@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.12)
+cmake_minimum_required(VERSION 3.13)  # add_link_options / target_link_options
 
 project(roxal VERSION 0.8.44 LANGUAGES CXX C)
 set(ROXAL_PRERELEASE "pre" CACHE STRING "SemVer prerelease label (e.g. alpha.1, rc.1)")
@@ -26,12 +26,19 @@ endif()
 # help the bare interpreter loop (GCC won't inline the small Value helpers
 # into the very large VM::execute regardless).
 option(ROXAL_ENABLE_LTO "Link-time optimization for optimized (non-Debug) builds" ON)
+set(ROXAL_LTO_JOBS 2 CACHE STRING
+    "Parallel LTO link jobs (GCC -flto=N). CMake's default is 'auto': one job per core, which makes the machine unusable during the link")
 if(ROXAL_ENABLE_LTO AND NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
     include(CheckIPOSupported)
     check_ipo_supported(RESULT ROXAL_IPO_OK OUTPUT ROXAL_IPO_MSG)
     if(ROXAL_IPO_OK)
         set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
-        message(STATUS "LTO enabled for ${CMAKE_BUILD_TYPE} build")
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+            # CMake's IPO flags are `-flto=auto`; GCC takes the last -flto= on
+            # the link line, so this caps the LTRANS parallelism.
+            add_link_options(-flto=${ROXAL_LTO_JOBS})
+        endif()
+        message(STATUS "LTO enabled for ${CMAKE_BUILD_TYPE} build (-flto=${ROXAL_LTO_JOBS})")
     else()
         message(WARNING "LTO requested but unsupported by the toolchain: ${ROXAL_IPO_MSG}")
     endif()

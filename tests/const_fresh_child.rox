@@ -1,0 +1,77 @@
+# Const snapshots of graphs whose children were created just before the snapshot.
+# Creating objects and building literals does not advance the global write epoch,
+# so these check that a child created right before `const` still keeps its
+# pre-mutation state for the snapshot when it is first mutated afterwards.
+# (Everything runs in functions so no module-variable writes intervene.)
+
+type Leaf object:
+  var i :int
+
+type Box object:
+  var l :Leaf
+
+type Holder object:
+  var t :tensor = tensor(shape=[2], dtype="int32")
+
+func list_child():
+  var l = [[1, 2]]
+  const c = l
+  l[0].append(3)
+  print(c[0])             # [1, 2]
+  print(l[0])             # [1, 2, 3]
+
+func dict_child():
+  var d = {"k": [1]}
+  const c = d
+  d["k"].append(2)
+  print(c["k"])           # [1]
+  print(d["k"])           # [1, 2]
+
+func object_child():
+  var b = Box(Leaf(1))
+  const c = b
+  b.l.i = 2
+  print(c.l.i)            # 1
+  print(b.l.i)            # 2
+
+func tensor_child():
+  var h = Holder(tensor(shape=[2], dtype="int32", data=[1, 2]))
+  const c = h
+  h.t[0] = 9
+  print(c.t[0])           # 1
+  print(h.t[0])           # 9
+
+func nested_child():
+  var l = [[[1]]]
+  const c = l
+  l[0][0].append(2)
+  print(c[0][0])          # [1]
+  print(l[0][0])          # [1, 2]
+
+func aliased_child():
+  var inner = [1]
+  var l = [inner, inner]
+  const c = l
+  inner.append(2)
+  print(c[0])             # [1]
+  print(c[1])             # [1]
+  print(c[0] is c[1])     # true
+  print(inner)            # [1, 2]
+
+func two_snapshots():
+  var l = [[1]]
+  const c1 = l
+  l[0].append(2)
+  const c2 = l
+  l[0].append(3)
+  print(c1[0])            # [1]
+  print(c2[0])            # [1, 2]
+  print(l[0])             # [1, 2, 3]
+
+list_child()
+dict_child()
+object_child()
+tensor_child()
+nested_child()
+aliased_child()
+two_snapshots()

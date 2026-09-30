@@ -1,0 +1,39 @@
+# GC: the shape found in the field.  Constructing P clones its object-valued
+# defaults while in-flight actor calls hold frozen snapshots of earlier
+# arguments; the clones' first mutations (property fills) save versions, and
+# replaced clones stay reachable only through another clone's saved version.
+# Those versions must survive the sweep for as long as their owner does.
+
+type F object:
+  var name :string = "f"
+  var scale :real = 1.0
+
+type Q object:
+  var pos :vector = [0.0 0.0 0.0]
+  var f :F = F()
+
+type P object:
+  var q :Q = Q()
+  var via :Q = Q()
+  var d :dict = {}
+  var l :list = []
+  var v :real = 0.5
+
+type Sink actor:
+  private var n :int = 0
+  func take(p :P) -> int:
+    n = n + 1
+    var s :real = p.v + p.q.pos[0]
+    return n
+
+var sink = Sink()
+var k :int = 0
+var last = nil
+while k < 4000:
+  var p = P(v = real(k))
+  last = sink.take(p)
+  if k rem 64 == 0:
+    wait(for=last)
+  k = k + 1
+wait(for=last)
+print("done " + string(k))

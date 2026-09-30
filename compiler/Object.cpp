@@ -1240,8 +1240,12 @@ Value roxal::createFrozenSnapshot(const Value& v)
         return v.constRef();
     }
 
-    // Allocate SnapshotToken
-    uint64_t epoch = globalWriteEpoch.load(std::memory_order_acquire);
+    // Allocate SnapshotToken.  The epoch is taken with fetch_add, not a load, so
+    // every snapshot's epoch is unique and strictly greater than that of any
+    // earlier snapshot or mutation: an object created since the latest snapshot
+    // (lastSaveEpoch, ObjControl) can then never share an epoch with a snapshot
+    // that captures it, and no mutation's writeEpoch can equal a snapshot epoch.
+    uint64_t epoch = globalWriteEpoch.fetch_add(1, std::memory_order_acq_rel);
     auto* token = new SnapshotToken(epoch);
 
     // Configure the frozen clone before transferring ownership
@@ -1254,7 +1258,7 @@ Value roxal::createFrozenSnapshot(const Value& v)
     // Update global snapshot tracking
     // latestSnapshotCreationEpoch must be updated BEFORE activeSnapshotCount
     // (see proposal: memory ordering for version save deduplication)
-    latestSnapshotCreationEpoch.store(epoch, std::memory_order_release);
+    publishSnapshotEpoch(epoch);
     snapshotEpochTracker.add(epoch);
     activeSnapshotCount.fetch_add(1, std::memory_order_release);
 
@@ -1288,9 +1292,11 @@ static Obj* findVersionForEpoch(Obj* obj, uint64_t snapshotEpoch)
         ver = ver->prev;
     }
 
-    // Invariant: a version must exist — the oldest version's epoch is the object's
-    // writeEpoch at its first-ever mutation (0 for newly created objects), which is
-    // ≤ any valid snapshot epoch ≥ 1.
+    // Invariant: a version must exist.  This object is reachable from the snapshot
+    // and was mutated at or after its epoch, so the first such mutation saw the
+    // snapshot's epoch in latestSnapshotCreationEpoch (> its lastSaveEpoch) and
+    // saved the state as of the snapshot.  An object created after the snapshot
+    // (which may skip that save) is unreachable from it.
     debug_assert_msg(best != nullptr, "MVCC: no version found for epoch");
     return best ? best->snapshot : nullptr;
 }
@@ -1349,7 +1355,8 @@ Value roxal::resolveConstChild(const Value& child, SnapshotToken* token, Value* 
             // The version chain now has the pre-mutation state we need.
             childObj->control->unlockCow();
             versionObj = findVersionForEpoch(childObj, epoch);
-            debug_assert_msg(versionObj != nullptr, "MVCC: no version found after race in resolveConstChild");
+            if (!versionObj)  // broken invariant (findVersionForEpoch): fail loudly, never deref null
+                throw std::logic_error("internal error: MVCC found no version of a const child for its snapshot");
             snap = versionObj->shallowClone();
         }
     }
