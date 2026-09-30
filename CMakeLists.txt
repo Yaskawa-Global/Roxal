@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.13)  # add_link_options / target_link_options
 
-project(roxal VERSION 0.8.44 LANGUAGES CXX C)
+project(roxal VERSION 0.8.45 LANGUAGES CXX C)
 set(ROXAL_PRERELEASE "pre" CACHE STRING "SemVer prerelease label (e.g. alpha.1, rc.1)")
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
