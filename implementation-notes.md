@@ -3404,7 +3404,7 @@ The representation is **invisible to language semantics**: every accessor (`getE
 
 **ObjDict**: storage is `ptr<DictData> data_` where `DictData` bundles the `std::map` of entries and the `std::vector` of insertion-ordered keys. Same COW pattern. The per-object mutex (previously needed for thread safety) was removed — COW + atomic shared_ptr handles concurrent access.
 
-**ObjectInstance**: property storage is `ptr<PropertyMap> properties_` where `PropertyMap = std::unordered_map<int32_t, MonitoredValue>`. Same COW pattern.
+**ObjectInstance**: property storage is `ptr<PropertyMap> properties_` where `PropertyMap = std::unordered_map<int32_t, MonitoredValue>`. Same COW pattern. `shallowClone()`, `clone()` and deserialization build their instance with `ObjectInstance::newBare()` — type set, property map adopted or empty, **no defaults evaluated** — because the ordinary constructor clones every property default (recursively through nested object types) and each of those paths overwrites all of them anyway. Going through the constructor made a version save of an object with object-valued defaults O(default graph) instead of O(1) (~6× on a snapshot-and-mutate loop), and `clone()` additionally paid the MVCC bracket per slot on an object nothing else could see. `clone()` and deserialization build fresh slots, whose `signal` is nil; `shallowClone()` shares the existing map, signal/notifier handles included — a snapshot is only read, never assigned through, so it never fires them.
 
 All three have `ensureUnique()` methods called by every mutation path and by `cacheElement`/`cacheValue`/non-const `findProperty` (since frozen clones share the ptr and const-read caching writes back through these accessors).
 

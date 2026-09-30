@@ -3823,14 +3823,14 @@ Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
 #endif
             ObjObjectType* t = asObjectType(typeVal);
             debug_assert_msg(!t->isActor, "Expected object type for deserialization");
-            Value objVal = Value::objectInstanceVal(typeVal);
+            // Bare instance: every property comes from the stream (no defaults evaluated)
+            Value objVal = Value::objVal(ObjectInstance::newBare(typeVal));
             ObjectInstance* obj = asObjectInstance(objVal);
             if (useCtx) {
                 ctx->idToObj[id] = obj;
                 ctx->retained.push_back(objVal);
             }
             uint32_t count; in.read(reinterpret_cast<char*>(&count),4);
-            obj->clearProperties();
             for(uint32_t i=0;i<count;i++) {
                 int32_t h; in.read(reinterpret_cast<char*>(&h),4);
                 Value v = readValue(in, ctx);

@@ -2437,6 +2437,18 @@ struct ObjectInstance : public Obj
     ObjectInstance(const Value& objectType);
     virtual ~ObjectInstance();
 
+    // Bare instance: the type is set and `properties` adopted as-is; no
+    // property default is evaluated or cloned.  For the paths that fill the
+    // map themselves -- clone(), shallowClone(), deserialization.  The full
+    // constructor would clone every default (recursively, through nested
+    // object types) only for the result to be overwritten, and a version save
+    // (shallowClone) has to stay O(1).  A null `properties` means a fresh
+    // empty map.
+    struct BareTag {};
+    ObjectInstance(const Value& objectType, ptr<PropertyMap> properties, BareTag);
+    static unique_ptr<ObjectInstance, UnreleasedObj> newBare(const Value& objectType,
+                                                             ptr<PropertyMap> properties = nullptr);
+
     Value instanceType;
 
     // Property access by hash

@@ -7316,6 +7316,27 @@ ObjectInstance::ObjectInstance(const Value& objectType)
     }
 }
 
+ObjectInstance::ObjectInstance(const Value& objectType, ptr<PropertyMap> properties, BareTag)
+    : properties_(std::move(properties))
+{
+    type = ObjType::Instance;
+    debug_assert_msg(isObjectType(objectType),
+                     "ObjectInstance created with object type");
+    instanceType = objectType.strongRef();
+}
+
+unique_ptr<ObjectInstance, UnreleasedObj> ObjectInstance::newBare(const Value& objectType,
+                                                                  ptr<PropertyMap> properties)
+{
+    if (!properties)
+        properties = newPropertyMap();
+    #ifdef DEBUG_BUILD
+    return newObj<ObjectInstance>(__func__, __FILE__, __LINE__, objectType, std::move(properties), BareTag{});
+    #else
+    return newObj<ObjectInstance>(objectType, std::move(properties), BareTag{});
+    #endif
+}
+
 ObjectInstance::~ObjectInstance() {}
 
 Value ObjectInstance::getProperty(const ustring& name) const
@@ -7533,27 +7554,26 @@ unique_ptr<Obj, UnreleasedObj> ObjectInstance::clone(roxal::ptr<CloneContext> ct
         }
     }
 
-    // Create new clone
-    auto newobj = newObjectInstance(instanceType);
+    // Create new clone (bare: every property is filled below)
+    auto newobj = newBare(instanceType);
 
     // Register BEFORE recursing (critical for cycle handling)
     if (ctx) {
         ctx->originalToClone[this] = newobj.get();
     }
 
-    // Clone properties with context
-    for (const auto& index_value : *properties_) {
-        const auto index { index_value.first };
-        const auto& slot { index_value.second };
+    // Clone properties with context.  newobj is private until returned, so
+    // its map is filled directly: no snapshot can reach it and the MVCC
+    // bracket per slot (propertySlot) would be pure overhead.  Signals are
+    // intentionally NOT copied -- a fresh slot's signal is nil.
+    PropertyMap& target = *newobj->properties_;
+    for (const auto& [index, slot] : *properties_) {
         const Value& value { slot.value };
-
-        auto& targetSlot = newobj->propertySlot(index);
-        targetSlot.clearSignal();
 
         if (isActorInstance(value))
             throw std::runtime_error("clone of type actor unsupported");
 
-        targetSlot.value = value.clone(ctx);
+        target[index].value = value.clone(ctx);
     }
 
     return newobj;
@@ -7561,14 +7581,13 @@ unique_ptr<Obj, UnreleasedObj> ObjectInstance::clone(roxal::ptr<CloneContext> ct
 
 unique_ptr<Obj, UnreleasedObj> ObjectInstance::shallowClone() const
 {
-    auto newobj = newObjectInstance(instanceType);
     // COW: share the properties pointer (O(1) refcount bump).
     // Mutations on either side will trigger ensureUnique() to copy-on-write.
-    // Signals are intentionally NOT copied — they are per-instance change
-    // notification handles tied to the dataflow engine and would be meaningless
-    // on a clone (same convention as deep clone(), which calls clearSignal()).
-    newobj->properties_ = properties_;
-    return newobj;
+    // The shared map carries the slots' signal/notifier handles along with the
+    // values; a snapshot is only ever read (version resolution), never
+    // assigned through, so it never fires them.  Deep clone() and
+    // deserialization, which build fresh slots, get nil signals instead.
+    return newBare(instanceType, properties_);
 }
 
 
