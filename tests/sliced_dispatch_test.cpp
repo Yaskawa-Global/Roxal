@@ -163,7 +163,37 @@ const char* kEmitOrder =
     "emit E()\n"
     "print('done')\n";
 
+// Events arriving continuously from another thread while the body runs
+// continuation callbacks: an event that lands just as a callback returns must
+// not start its handler over the callback's result, or the map takes the
+// event argument as that result.
+const char* kContinuationEvents =
+    "type E event\n"
+    "type W actor:\n"
+    "  proc spam():\n"
+    "    var n = 0\n"
+    "    while n < 2000:\n"
+    "      emit E()\n"
+    "      wait(us=50)\n"
+    "      n = n + 1\n"
+    "var seen = 0\n"
+    "when E occurs as e:\n"
+    "  seen = seen + 1\n"
+    "var w = W()\n"
+    "w.spam()\n"
+    "var n = 0\n"
+    "var wrong = 0\n"
+    "while n < 1500:\n"
+    "  var xs = [1, 2].map(func(x):\n"
+    "    return x * 2\n"
+    "  )\n"
+    "  if xs[0] != 2 or xs[1] != 4:\n"
+    "    wrong = wrong + 1\n"
+    "  n = n + 1\n"
+    "print('wrong=' + string(wrong))\n";
+
 const Program kPrograms[] = {
+    { "continuation_events", kContinuationEvents, "wrong=0\n" },
     { "emit_order",    kEmitOrder,     "hello\ndone\n" },
     { "continuations", kContinuations, "80000\n" },
     { "blocked_events", kBlockedEvents, "until cut short: true\nanyof winner: 1\n" },

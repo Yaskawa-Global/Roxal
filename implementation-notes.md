@@ -1981,7 +1981,12 @@ a signal change) its dispatch turn at entry: with a slice short enough to
 yield after every instruction, the epilogue never ran and the handler never
 started. (That the epilogue's work can be skipped at all is the underlying
 issue; a single exit at the end of the epilogue would remove these entry-side
-repairs.)
+repairs.) Both places take the continuation hand-off BEFORE event dispatch: a
+dispatch that starts a handler pushes its closure and argument over a returned
+callback's result, which the continuation would then take as that result. The
+two "returned" flags are never set together, so the order matters only for a
+fresh event arriving as a callback returns (`tests/continuation_events.rox`;
+it hit synchronous runs too, just rarely).
 
 **A blocked sliced execution dispatches events before it yields.** Where the
 unbounded execution blocks -- asleep in `wait()`, or awaiting a future -- a

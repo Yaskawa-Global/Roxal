@@ -7181,8 +7181,12 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
     // every event a sliced program got while blocked.  So dispatch first, as
     // the woken blocking path would.  Returns false on a dispatch error.
     auto dispatchEventsBeforeBlockedYield = [&]() -> bool {
+        // (Never over an unfinished continuation hand-off: that must be taken
+        // first, by the epilogue or the next slice's entry -- see the
+        // epilogue's ordering note.)
         if (thread->pendingEventCount.load(std::memory_order_acquire) != 0
-            && !thread->eventDispatch.active && !isExitRequested())
+            && !thread->eventDispatch.active && !thread->continuationCallbackReturned
+            && !isExitRequested())
             return processEventDispatch();
         return true;
     };
@@ -7261,16 +7265,17 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
     //    turn here.  Skipped, a slice short enough to yield after every
     //    instruction never dispatched it at all.  Only a deadline-limited
     //    execution can have skipped that turn, so only it takes it here.
-    // Same conditions and order as the epilogue.
+    // Same conditions and order as the epilogue (continuation first -- see
+    // there).
     if (!isExitRequested()
         && (thread->eventHandlerJustReturned || thread->continuationCallbackReturned
             || (hasDeadline
                 && thread->pendingEventCount.load(std::memory_order_acquire) != 0))) [[unlikely]] {
+        if (thread->continuationCallbackReturned && !processContinuationDispatch())
+            return errorReturn;
         if ((thread->eventHandlerJustReturned
              || thread->pendingEventCount.load(std::memory_order_acquire) != 0)
             && !processEventDispatch())
-            return errorReturn;
-        if (thread->continuationCallbackReturned && !processContinuationDispatch())
             return errorReturn;
         if (!thread->frames.empty())
             frame = thread->frames.end()-1;
@@ -11493,15 +11498,25 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
         // checked at identical frequency, so event latency is unchanged.
         // (dispatch.active alone is deliberately not a trigger: with no handler
         // return and no pending events, the call is a pure no-op then too.)
+        //
+        // Continuation first: a callback's Return leaves its result on top of
+        // the stack for processContinuationDispatch, and an event dispatch
+        // that STARTS a handler pushes the handler's closure and argument over
+        // it -- the continuation would then take the event argument as the
+        // callback's result (and its cleanup would remove the handler's
+        // slots).  The two "returned" flags are never set together (each
+        // comes from one Return, consumed here before the next instruction),
+        // so the order matters only for a fresh event arriving as a callback
+        // returns.
+        if (thread->continuationCallbackReturned) {
+            if (!processContinuationDispatch())
+                return errorReturn;
+        }
+
         if (isExitRequested() ||
             thread->eventHandlerJustReturned ||
             thread->pendingEventCount.load(std::memory_order_acquire) != 0) {
             if (!processEventDispatch())
-                return errorReturn;
-        }
-
-        if (thread->continuationCallbackReturned) {
-            if (!processContinuationDispatch())
                 return errorReturn;
         }
 

@@ -1,0 +1,28 @@
+// Events arriving continuously from an actor while the body runs list.map
+// callbacks: an event that lands in the instruction where a callback returns
+// must not start its handler over the callback's result (the continuation
+// would take the event argument as that result).  Timing-dependent by nature;
+// it fails frequently when the ordering is wrong, never when it is right.
+type E event
+type W actor:
+  proc spam():
+    var n = 0
+    while n < 3000:
+      emit E()
+      wait(us=50)
+      n = n + 1
+var seen = 0
+when E occurs as e:
+  seen = seen + 1
+var w = W()
+w.spam()
+var n = 0
+var wrong = 0
+while n < 3000:
+  var xs = [1, 2].map(func(x):
+    return x * 2
+  )
+  if xs[0] != 2 or xs[1] != 4:
+    wrong = wrong + 1
+  n = n + 1
+print('wrong=' + string(wrong))

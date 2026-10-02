@@ -225,7 +225,7 @@ tests = [
     'annot_gap_blank_err', 'annot_gap_comment_err', 'repl_annot_err',
     'actor1', 'actor2', 'actor3', 'actor4', 'actor5', 'actor6', 'actor7', 'actor8', 'actor9',
     'actor_init', 'actor_stack', 'actor_future', 'future_ready', 'future_builtin_resolve', 'future_typed_param_resolve', 'wait_duration', 'wait_duration_dim_err', 'wait_duration_mixed_err',
-    'allof_futures', 'anyof_futures', 'anyof_event', 'anyof_signal',
+    'allof_futures', 'anyof_futures', 'anyof_event', 'anyof_signal', 'continuation_events',
     'allof_empty', 'anyof_empty', 'allof_list_arg', 'nested_combinators',
     'anyof_cleanup', 'anyof_exception',
     'actor_method_order',
