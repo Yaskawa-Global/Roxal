@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -155,8 +156,42 @@ void visitCallFrameRoots(const CallFrame& frame, ValueVisitor& visitor)
     visitStrongValues(visitor, frame.tailArgValues);
 }
 
+const char* threadKindName(ThreadKind kind)
+{
+    switch (kind) {
+        case ThreadKind::Main:     return "Main";
+        case ThreadKind::Init:     return "Init";
+        case ThreadKind::Repl:     return "Repl";
+        case ThreadKind::Actor:    return "Actor";
+        case ThreadKind::Dataflow: return "Dataflow";
+    }
+    return "?";
+}
+
 void visitThreadRoots(Thread& thread, ValueVisitor& visitor)
 {
+    // A stackTop outside its buffer means the thread's stack accounting is
+    // already broken (an unbalanced pop or push somewhere).  The walk below
+    // would then run past the buffer marking garbage, and skipping it would
+    // sweep the thread's live roots -- so stop here, naming the thread,
+    // instead of corrupting the heap further and faulting somewhere
+    // unrelated later.  (pop()'s own underflow check is debug-only; this
+    // costs two compares per thread per collection.)
+    if (thread.stackTop < thread.stack.begin() || thread.stackTop > thread.stack.end()) [[unlikely]] {
+        // fprintf + fflush, not std::cerr: see assert_msg_impl (wasm pthreads).
+        std::fprintf(stderr,
+                     "fatal: GC root scan found a thread (kind %s, id %llu, %zu frames) whose "
+                     "value-stack top is %td slots from its %zu-slot buffer's start -- "
+                     "outside the buffer; its stack accounting is corrupt\n",
+                     threadKindName(thread.kind),
+                     static_cast<unsigned long long>(thread.id()),
+                     thread.frames.size(),
+                     thread.stackTop - thread.stack.begin(),
+                     thread.stack.size());
+        std::fflush(stderr);
+        std::abort();
+    }
+
     for (auto it = thread.stack.begin(); it != thread.stackTop; ++it) {
         visitStrongValue(visitor, *it);
     }
