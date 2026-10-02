@@ -1,0 +1,20 @@
+// A constructor from a dict that assigns through a property setter, called
+// from inside a function: the setter frames return to the calling function's
+// frame, not to the top level, and the constructed instance must be the
+// call's result there too.
+type Obj object:
+
+  var i :int
+  var s :string :
+    get: return _s
+    set: _s = value
+
+func make(s :string):
+  var o = Obj({'i':1, 's':s})
+  return dict(o)
+
+func twice():
+  return [make('a'), make('b')]
+
+print(make('hello'))
+print(twice())

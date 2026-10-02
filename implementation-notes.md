@@ -1977,6 +1977,16 @@ also completed early and popped it), and the stack drifted down a slot per
 occurrence until it popped below its buffer -- heap corruption in any host
 that slices a program whose handlers fire often (`tests/sliced_dispatch_test.cpp`).
 
+**Constructor setter cleanup is keyed to the calling frame's depth.** A
+constructor from a dict that assigns through property setters queues the
+setter frames and finishes (pops their result, pushes the instance) when the
+frame stack is back at the depth of the frame that made the call --
+`Thread::pendingConstructorFrameDepth`, recorded when the setters are queued.
+It used to compare against `execute()`'s own entry depth, which is right only
+for a call made at that depth: a constructor called inside a function, or a
+slice resuming while the setters were on the stack, never cleaned up and the
+call evaluated to `nil`.
+
 ### Blocking Operations
 
 Operations that can block the thread:

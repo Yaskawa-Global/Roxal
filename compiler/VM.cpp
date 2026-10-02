@@ -4331,6 +4331,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                 Value savedInstance = pop();
                                 thread->pendingConstructorInstance = savedInstance;
                                 thread->pendingSetterCount = static_cast<int>(setterFrames.size());
+                                thread->pendingConstructorFrameDepth = thread->frames.size();
 
                                 CallFrames::iterator parentFrame = thread->frames.size() > 0 ? thread->frames.end() - 1 : thread->frames.end();
 
@@ -4563,6 +4564,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                 Value savedInstance = pop(); // Remove instance from stack
                                 thread->pendingConstructorInstance = savedInstance;
                                 thread->pendingSetterCount = static_cast<int>(setterFrames.size());
+                                thread->pendingConstructorFrameDepth = thread->frames.size();
 
                                 // Setter frames should return to the current frame (the one with OpCode::Call)
                                 CallFrames::iterator parentFrame = thread->frames.size() > 0 ? thread->frames.end() - 1 : thread->frames.end();
@@ -7279,7 +7281,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
             // returning setter's popCount loop sweeps everything between its slots
             // pointer and stackTop, which folds in the prior setter's leftover nil.
             // So we pop exactly one regardless of how many setters ran.
-            if (thread->pendingSetterCount > 0 && thread->frames.size() == frame_depth_on_entry) {
+            if (thread->pendingSetterCount > 0
+                && thread->frames.size() == thread->pendingConstructorFrameDepth) {
                 pop();
                 push(thread->pendingConstructorInstance);
                 thread->pendingSetterCount = 0;
