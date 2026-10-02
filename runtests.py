@@ -55,6 +55,14 @@ parser.add_argument('--recompile', action='store_true', help='Delete cached .roc
 parser.add_argument('--build', action='store_true', help='Invoke cmake --build before running the tests')
 parser.add_argument('--test', '-t', type=str, metavar='PATTERN', help='Only run tests matching PATTERN (shell-style wildcards: * ? [seq])')
 parser.add_argument('--no-ctest', action='store_true', help='Skip the C++ test programs (ctest_*); ctest itself runs them')
+parser.add_argument('--drive-us', type=int, metavar='N',
+                    help='Run each script as an embedding host would: sliced by driveFor() with an '
+                         'N-microsecond budget from a driver loop (roxal --drive-us). A small N puts a '
+                         'slice boundary after nearly every instruction. Skips tests that do not run a '
+                         'script (repl_, typededucer_, check_, ctest_) and drive_excluded_tests')
+parser.add_argument('--drive-tick-us', type=int, metavar='N',
+                    help='With --drive-us: the driver also tickFor()s the dataflow engine with an '
+                         'N-microsecond budget each cycle, as a real-time host does')
 args = parser.parse_args()
 
 
@@ -550,7 +558,7 @@ def discover_ctest_executables(build_dir: str) -> dict:
 # it down -- which a _runtests() suite, running inside a roxal invocation,
 # cannot do.  Discovered from CTest so a new add_test target runs here without
 # being listed twice.
-ctest_executables = {} if args.no_ctest else discover_ctest_executables(
+ctest_executables = {} if (args.no_ctest or args.drive_us) else discover_ctest_executables(
     os.path.join(os.path.dirname(os.path.abspath(__file__)),
                  os.environ.get('ROXAL_BUILD_DIR', 'build')))
 tests += sorted(ctest_executables)
@@ -591,6 +599,52 @@ if args.all:
     tests += doom_tests
     tests += opencv_tests   # also require modules/opencv/libcvxshim.so (gated below)
     tests += realsense_tests  # also require librsshim.so + a camera (gated below)
+
+# Tests that cannot run under --drive-us, each with the reason.  Only tests
+# whose behaviour legitimately depends on running synchronously belong here --
+# a test that fails because a sliced run misbehaves is a bug to fix, not to
+# list.
+drive_excluded_tests = {
+    # C++ self-test suites (sys._runtests) that compile and run nested
+    # synchronous programs from inside the script -- refused, by design, while
+    # an embedded driver owns execution.
+    'rt_execution': 'nested synchronous programs (_runtests)',
+    'debug_stop': 'nested synchronous programs (_runtests)',
+    # GC self-tests that need collections to run while the script's own thread
+    # is executing; a driven slice holds an RT GC yield section, which blocks
+    # collections from starting.
+    'gc_selftest': 'collections inside the calling slice (_runtests)',
+    'gc_scanner_selftest': 'parked-stack scan of the calling thread (_runtests)',
+    # Relies on gc() as a deterministic collect-and-reclaim fence; inside an RT
+    # yield section gc() degrades to request-and-return (implementation-notes,
+    # "Triggering collections").
+    'event_actor_ref4': 'gc() as a collection fence',
+}
+
+# Additionally excluded when the driver also ticks the dataflow engine
+# (--drive-tick-us): these count clock changes inside a fixed wall-clock
+# window, and a host pacing tickFor() places the first tick at a different
+# phase than the engine's own schedule does, so the count can differ by one.
+# A real difference between host-driven and standalone scheduling -- not a
+# slicing bug -- left for a separate decision.
+drive_tick_excluded_tests = {
+    'signal_history': 'clock ticks counted in a wall-clock window',
+    'signal_func_exec': 'clock ticks counted in a wall-clock window',
+    'signal_when_stmt': 'clock ticks counted in a wall-clock window',
+    'signal_when_threads': 'clock ticks counted in a wall-clock window',
+    'when_expression': 'clock ticks counted in a wall-clock window',
+    'signal_on_changed_test': 'clock ticks counted in a wall-clock window',
+}
+
+if args.drive_tick_us and not args.drive_us:
+    raise SystemExit('--drive-tick-us requires --drive-us')
+if args.drive_us:
+    if args.drive_us <= 0:
+        raise SystemExit('--drive-us must be positive')
+    tests = [t for t in tests
+             if not t.startswith(('repl_', 'typededucer_', 'check_', 'ctest_'))
+             and t not in drive_excluded_tests
+             and not (args.drive_tick_us and t in drive_tick_excluded_tests)]
 
 # Filter tests by pattern if --test is specified
 if args.test:
@@ -1189,6 +1243,11 @@ try:
             cmd = [cmd[0], '--nocache', *cmd[1:]]
         if args.nogc and '--nogc' not in cmd:
             cmd = [cmd[0], '--nogc', *cmd[1:]]
+        if args.drive_us and cmd[0] == roxal:
+            drive = ['--drive-us', str(args.drive_us)]
+            if args.drive_tick_us:
+                drive += ['--drive-tick-us', str(args.drive_tick_us)]
+            cmd = [cmd[0], *drive, *cmd[1:]]
 
         opt_expected = (" [expected]" if test in failing_tests else '')
 

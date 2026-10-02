@@ -35,6 +35,7 @@ Some tests also use the --ast option to compare the AST dump with the .out file.
 A test of the host embedding API (constructing the VM, driving runs, shutting down) belongs there, as its own executable, not in a `_runtests()` suite.
 `runtests.py` also runs the C++ test programs registered with CMake `add_test` (listed as `ctest_<name>`, e.g. `-t 'ctest_*'`).
 A test of the host embedding API (constructing the VM, driving runs, shutting down) belongs there, as its own executable, not in a `_runtests()` suite.
+`runtests.py --drive-us N` runs every script test the way an embedding host does -- sliced by `driveFor()` (add `--drive-tick-us M` to also `tickFor()` the dataflow engine); `--drive-us 2` puts a slice boundary after nearly every instruction (see implementation-notes.md, "execute() with Deadline").
 
 To see the compiled bytecodes, use the --dis option (with --recompile).
 

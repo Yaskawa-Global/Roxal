@@ -35,6 +35,11 @@
 #include "Object.h"
 #include "Introspection.h"
 #include "RuntimeConfig.h"
+#include "EmbeddedRuntime.h"
+#include "../dataflow/DataflowEngine.h"
+#include <atomic>
+#include <chrono>
+#include <thread>
 #ifdef ROXAL_COMPUTE_SERVER
 #include "ComputeServer.h"
 #include "ComputeProtocol.h"
@@ -566,13 +571,17 @@ static int repl()
 }
 
 
-static ExecutionStatus runFile(const std::string& path,
-                               const std::vector<std::string>& modulePaths,
-                               bool outputBytecodeDisassembly=false)
+// Open a script file -- as given, else under each module path -- and set the
+// VM up to run it: the script's own folder and the module paths on the search
+// path.  Shared by the synchronous and the driven runner.
+static VM& prepareScriptRun(const std::string& path,
+                            const std::vector<std::string>& modulePaths,
+                            bool outputBytecodeDisassembly,
+                            std::ifstream& sourcestream,
+                            std::filesystem::path& filePath)
 {
-
-    std::filesystem::path filePath(path);
-    std::ifstream sourcestream(filePath); // assumed UTF-8
+    filePath = std::filesystem::path(path);
+    sourcestream.open(filePath); // assumed UTF-8
     if (!sourcestream.is_open()) {
         for(const auto& modPath : modulePaths) {
             std::filesystem::path candidate = std::filesystem::path(modPath) / filePath;
@@ -586,9 +595,6 @@ static ExecutionStatus runFile(const std::string& path,
 
     if (!sourcestream.is_open())
         throw std::runtime_error("file not found: " + path);
-
-    std::filesystem::path fileAndPath(filePath);
-    std::string name { fileAndPath.stem().filename().string() };
 
     // construct a relative directory path containing the file, from the current working directory
     std::filesystem::path absolutePath = std::filesystem::absolute(filePath);
@@ -605,17 +611,130 @@ static ExecutionStatus runFile(const std::string& path,
 
     std::signal(SIGINT, sigint_handler);
 
+    vm->setDisassemblyOutput(outputBytecodeDisassembly);
+    // Add the folder containing the script to the search paths
+    vm->appendModulePaths({relativePath.string()});
+    vm->appendModulePaths(modulePaths);
+    return *vm;
+}
+
+static ExecutionStatus runFile(const std::string& path,
+                               const std::vector<std::string>& modulePaths,
+                               bool outputBytecodeDisassembly=false)
+{
+    std::ifstream sourcestream;
+    std::filesystem::path filePath;
+    VM& vm = prepareScriptRun(path, modulePaths, outputBytecodeDisassembly,
+                              sourcestream, filePath);
     try {
-        vm->setDisassemblyOutput(outputBytecodeDisassembly);
-        // Add the folder containing the script to the search paths
-        vm->appendModulePaths({relativePath.string()});
-        vm->appendModulePaths(modulePaths);
         roxal::ProgramOptions options;
         options.sourceName = filePath.string();
-        return vm->executeProgramSync(sourcestream, std::move(options));
+        return vm.executeProgramSync(sourcestream, std::move(options));
     } catch (std::exception& e) {
         throw std::runtime_error("Error running file '" + filePath.string() + "': " + e.what());
     }
+}
+
+// `--drive-us N` (testing): run a script the way an embedding host with a
+// periodic loop does, instead of in one unbounded execution.  A driver thread
+// slices the program with driveFor(N us) -- and, with --drive-tick-us, ticks
+// the dataflow engine with tickFor() first, as a real-time host does -- each
+// cycle inside a GC yield section, while this thread prepares, submits and
+// finalizes.  Every resume path a sliced program crosses (a yield after any
+// instruction) is exercised, which one unbounded execute() never does; a
+// small N puts a slice boundary after nearly every instruction.
+//
+// Output and diagnostics take the same route as a synchronous run.  Returns
+// the process exit code: the program's exit() code if it set one, else 0 for
+// a completed run and 1 for a failed one (including a compile error).
+struct DriveOptions {
+    long long driveUs { 0 };   // 0: run synchronously (the default)
+    long long tickUs { 0 };    // 0: the driver does not tick the engine
+};
+
+static int runFileDriven(const std::string& path,
+                         const std::vector<std::string>& modulePaths,
+                         bool outputBytecodeDisassembly,
+                         const DriveOptions& drive)
+{
+    std::ifstream sourcestream;
+    std::filesystem::path filePath;
+    VM& vm = prepareScriptRun(path, modulePaths, outputBytecodeDisassembly,
+                              sourcestream, filePath);
+
+    AttachDriverResult attached = vm.attachEmbeddedRuntime();
+    if (attached.status != AttachStatus::Attached || !attached.runtime)
+        throw std::runtime_error("--drive-us: cannot attach an embedded runtime");
+    EmbeddedRuntime& runtime = *attached.runtime;
+
+    decltype(df::DataflowEngine::instance()) engine {};
+    if (drive.tickUs > 0)
+        engine = df::DataflowEngine::instance();
+
+    std::atomic<bool> stop { false };
+    std::thread driver([&] {
+        const TimeDuration driveBudget = TimeDuration::microSecs(drive.driveUs);
+        const TimeDuration tickBudget = TimeDuration::microSecs(drive.tickUs);
+        // tickFor() does not pace itself: like a control loop, start a new
+        // tick only once per engine period (skipping periods missed while
+        // behind), and resume a yielded one on the next cycle.  The first
+        // tick comes one period after a clocked network appears, as on the
+        // engine's own schedule.
+        TimePoint nextTickAt = TimePoint::zero();
+        while (!stop.load(std::memory_order_acquire)) {
+            SliceState state = SliceState::Idle;
+            {
+                SimpleMarkSweepGC::GCYieldScope section{};
+                if (section) {
+                    if (engine) {
+                        const TimePoint now = TimePoint::currentTime();
+                        const TimeDuration period = engine->tickPeriod();
+                        if (engine->hasYieldedWork())
+                            engine->tickFor(tickBudget);
+                        else if (period > TimeDuration::zero() && nextTickAt == TimePoint::zero())
+                            nextTickAt = now + period;
+                        else if (period > TimeDuration::zero() && now >= nextTickAt) {
+                            engine->tickFor(tickBudget);
+                            do {
+                                nextTickAt = nextTickAt + period;
+                            } while (nextTickAt <= now);
+                        }
+                    }
+                    state = runtime.driveFor(driveBudget).state;
+                }
+            }
+            if (state == SliceState::ShuttingDown)
+                break;
+            // Spin only while there is work; a blocked or idle run (a wait(),
+            // a skipped cycle) gets a host-like pause instead of a busy loop.
+            if (state != SliceState::Yielded)
+                std::this_thread::sleep_for(std::chrono::microseconds(50));
+        }
+    });
+    struct JoinDriver {
+        std::atomic<bool>& stop;
+        std::thread& thread;
+        ~JoinDriver() {
+            stop.store(true, std::memory_order_release);
+            if (thread.joinable())
+                thread.join();
+        }
+    } joinDriver { stop, driver };
+
+    roxal::ProgramOptions options;
+    options.sourceName = filePath.string();
+    PrepareProgramResult prepared = vm.prepareProgram(sourcestream, std::move(options));
+    if (prepared.status != PrepareStatus::Ready)
+        return 1;   // the compile error was reported through the output router
+
+    SubmitResult submitted = runtime.submit(std::move(prepared.program));
+    if (submitted.status != SubmitStatus::Accepted)
+        throw std::runtime_error("--drive-us: the runtime refused the program");
+
+    const FinalizeResult finalized = submitted.run.wait();
+    if (const int code = submitted.run.exitCode(); code != 0)
+        return code;
+    return finalized.state == RunState::Completed ? 0 : 1;
 }
 
 // Compile a script and all its transitive imports without executing.
@@ -864,6 +983,7 @@ int main(int argc, const char* argv[])
                 arg == "--input-file" || arg == "--module-paths" ||
                 arg == "--astgraph" || arg == "--gc-threshold" ||
                 arg == "--stack-size" || arg == "--max-call-frames" || arg == "--dataflow-scheme"
+                || arg == "--drive-us" || arg == "--drive-tick-us"
 #ifdef ROXAL_COMPUTE_SERVER
                 || arg == "--port"
 #endif
@@ -911,6 +1031,12 @@ int main(int argc, const char* argv[])
         ("nogc", "disable garbage collection")
         ("dataflow-scheme", po::value<std::string>()->default_value("strict"),
          "dataflow engine policy on a tick overrun: strict (stop the engine) or best-effort (warn and continue)")
+        ("drive-us", po::value<long long>(),
+         "testing: run the script as an embedding host would -- sliced by driveFor() "
+         "with this budget (microseconds) from a driver loop -- instead of synchronously")
+        ("drive-tick-us", po::value<long long>(),
+         "testing, with --drive-us: also tickFor() the dataflow engine with this budget "
+         "(microseconds) each cycle, as a real-time host does")
         ("stack-size", po::value<size_t>()->default_value(VM::DefaultMaxStack), stackOptionHelp.c_str())
         ("max-call-frames", po::value<size_t>()->default_value(VM::DefaultMaxCallFrames), frameOptionHelp.c_str())
         #ifdef ROXAL_COMPUTE_SERVER
@@ -1245,6 +1371,19 @@ int main(int argc, const char* argv[])
                 DapStdioAdapter adapter(filename, vmap.count("dap-wait") > 0,
                                         modulePaths);
                 return adapter.run();
+            }
+            else if (vmap.count("drive-us")) {
+                DriveOptions drive;
+                drive.driveUs = vmap["drive-us"].as<long long>();
+                if (vmap.count("drive-tick-us"))
+                    drive.tickUs = vmap["drive-tick-us"].as<long long>();
+                if (drive.driveUs <= 0 || drive.tickUs < 0) {
+                    std::cerr << "Error: --drive-us must be positive and --drive-tick-us non-negative" << std::endl;
+                    return 1;
+                }
+                VM::instance().setCacheMode(cacheMode);
+                VM::instance().setScriptArguments(scriptArgs);
+                return runFileDriven(filename, modulePaths, vmap.count("dis") > 0, drive);
             }
             else {
                 bool outputBytecodeDisassembly = (vmap.count("dis") > 0);

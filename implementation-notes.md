@@ -1988,6 +1988,18 @@ deadline check, so looping on an event that is not yet due would overrun the
 slice. Without it a sliced program got none of its events until its wait ended:
 `until` ran its full time and an `anyof()` event arm lost to the slower future.
 
+**Running the suite sliced.** `roxal --drive-us N file.rox` runs a script the
+way an embedding host does -- prepared and submitted from the main thread,
+sliced by `driveFor(N us)` from a driver thread inside a GC yield section, and
+finalized off the driver -- instead of in one `executeProgramSync()`.
+`--drive-tick-us M` makes the driver also `tickFor(M us)` the dataflow engine
+once per engine period, as a real-time host does. `runtests.py --drive-us N
+[--drive-tick-us M]` runs every script test that way, minus
+`drive_excluded_tests` (tests that legitimately need a synchronous run, each
+with its reason) and, with ticking, `drive_tick_excluded_tests`. A small N
+(1-5) puts a slice boundary after nearly every instruction; this is how the
+two rules above, and the constructor-setter depth below, were found.
+
 **Constructor setter cleanup is keyed to the calling frame's depth.** A
 constructor from a dict that assigns through property setters queues the
 setter frames and finishes (pops their result, pushes the instance) when the
