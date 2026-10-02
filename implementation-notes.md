@@ -1977,6 +1977,17 @@ also completed early and popped it), and the stack drifted down a slot per
 occurrence until it popped below its buffer -- heap corruption in any host
 that slices a program whose handlers fire often (`tests/sliced_dispatch_test.cpp`).
 
+**A blocked sliced execution dispatches events before it yields.** Where the
+unbounded execution blocks -- asleep in `wait()`, or awaiting a future -- a
+deadline-limited one yields instead. The blocking path, once woken, falls
+through to the epilogue's `processEventDispatch()`, which starts a due handler,
+a `wait ... until` interrupt or an `anyof()` relay; so the yielding path does
+that dispatch first (`dispatchEventsBeforeBlockedYield`). Asleep, it continues
+only if a dispatch actually began -- this path skips the per-instruction
+deadline check, so looping on an event that is not yet due would overrun the
+slice. Without it a sliced program got none of its events until its wait ended:
+`until` ran its full time and an `anyof()` event arm lost to the slower future.
+
 **Constructor setter cleanup is keyed to the calling frame's depth.** A
 constructor from a dict that assigns through property setters queues the
 setter frames and finishes (pops their result, pushes the instance) when the

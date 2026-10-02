@@ -128,8 +128,33 @@ const char* kEvents =
     "print(string(n) + ' ' + string(acc) + ' ' + string(seen) + ' ' + string(total) + ' '"
     " + string(second) + ' ' + string(mapped))\n";
 
+// Events that arrive while the program is blocked: a `wait ... until` that
+// another thread's event must cut short, and an anyof() whose event arm must
+// beat a slow future.  A sliced run yields where the unbounded one blocks; it
+// must still dispatch them then, or the until runs its full time and the
+// slow future wins.
+const char* kBlockedEvents =
+    "type Sig event\n"
+    "type W actor:\n"
+    "  func slow(n :int) -> int:\n"
+    "    wait(ms=1500)\n"
+    "    return n\n"
+    "  proc emit_after(ms :int):\n"
+    "    wait(ms=ms)\n"
+    "    emit Sig()\n"
+    "var w = W()\n"
+    "var t0 = Time.steady_now()\n"
+    "w.emit_after(20)\n"
+    "wait(s=3) until Sig\n"
+    "var waited = Time.steady_now().since(t0).total_micros()\n"
+    "print('until cut short: ' + string(waited < 1000000))\n"
+    "w.emit_after(20)\n"
+    "var got = wait(for=anyof(w.slow(99), Sig))\n"
+    "print('anyof winner: ' + string(got.index))\n";
+
 const Program kPrograms[] = {
     { "continuations", kContinuations, "80000\n" },
+    { "blocked_events", kBlockedEvents, "until cut short: true\nanyof winner: 1\n" },
     { "events",        kEvents,        "40 780 40 820 40 3240\n" },
 };
 

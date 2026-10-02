@@ -7171,6 +7171,20 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
     // handles it exactly as before.  Adding new inter-instruction work to the
     // loop requires adding its trigger here.  Atomic loads use the same
     // memory orderings as the sites they mirror.
+    // A deadline-limited (sliced) execution that is blocked -- asleep in
+    // wait(), or awaiting a future -- yields where the unbounded one would
+    // block.  The blocking path, once woken, falls through to the epilogue's
+    // processEventDispatch(), which starts a due handler, a `wait ... until`
+    // interrupt, or an anyof() relay; yielding straight away instead starved
+    // every event a sliced program got while blocked.  So dispatch first, as
+    // the woken blocking path would.  Returns false on a dispatch error.
+    auto dispatchEventsBeforeBlockedYield = [&]() -> bool {
+        if (thread->pendingEventCount.load(std::memory_order_acquire) != 0
+            && !thread->eventDispatch.active && !isExitRequested())
+            return processEventDispatch();
+        return true;
+    };
+
     auto interInstrWorkPending = [&]() -> unsigned {
         return (unsigned)word->load()                                  // interrupt word: RuntimeError (loop top) | Exit (suspension guard + event dispatch) | debug bits
              | (unsigned)valueGC.isCollectionRequested()               // epilogue: GC safepoint
@@ -11343,20 +11357,29 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                 thread->threadSleep = false;
             }
             else {
-                // If deadline-limited, yield instead of blocking
+                // If deadline-limited, yield instead of blocking -- once a due
+                // event has had its chance to start (a handler or an `until`
+                // interrupt clears threadSleep).  Continue only when one did:
+                // this path skips the per-instruction deadline check, so
+                // looping on an event that is not yet due would overrun the
+                // slice.
                 if (hasDeadline) {
-                    return yieldReturn;
+                    if (!dispatchEventsBeforeBlockedYield())
+                        return errorReturn;
+                    if (thread->threadSleep)
+                        return yieldReturn;
                 }
+                else {
+                    auto sleepTarget = thread->threadSleepUntil.load();
 
-                auto sleepTarget = thread->threadSleepUntil.load();
-
-                auto waitTime = sleepTarget - now;
-                if (waitTime.microSecs() > 0) {
-                    // When a host UI loop is installed (main thread), block on it so
-                    // host events wake us immediately; else the plain sleep condvar.
-                    hostOrCondVarWait(thread.get(), waitTime);
+                    auto waitTime = sleepTarget - now;
+                    if (waitTime.microSecs() > 0) {
+                        // When a host UI loop is installed (main thread), block on it so
+                        // host events wake us immediately; else the plain sleep condvar.
+                        hostOrCondVarWait(thread.get(), waitTime);
+                    }
+                    // Note: threadSleep stays true if we haven't reached original sleep target
                 }
-                // Note: threadSleep stays true if we haven't reached original sleep target
             }
         }
 
@@ -11368,8 +11391,12 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
             if (fut->future.wait_for(std::chrono::microseconds(0)) == std::future_status::ready) {
                 thread->awaitedFuture = Value::nilVal();
             } else {
-                // If deadline-limited, yield instead of blocking
+                // If deadline-limited, yield instead of blocking -- after the
+                // dispatch the woken blocking path would do (an anyof() relay
+                // resolves the awaited future that way).
                 if (hasDeadline) {
+                    if (!dispatchEventsBeforeBlockedYield())
+                        return errorReturn;
                     return yieldReturn;
                 }
                 // Keep a host UI loop (main thread) pumped while awaiting a future;
@@ -11437,6 +11464,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                 thread->awaitedFuture = Value::nilVal();
             } else {
                 if (hasDeadline) {
+                    if (!dispatchEventsBeforeBlockedYield())   // see above
+                        return errorReturn;
                     return yieldReturn;
                 }
                 // Keep a host UI loop (main thread) pumped while awaiting a future;
