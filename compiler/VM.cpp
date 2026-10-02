@@ -7228,6 +7228,26 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
     });
 #endif // ROXAL_THREADED_DISPATCH
 
+    // Finish the hand-off a previous slice left pending.  An event handler's
+    // or a continuation callback's Return leaves its result on the stack for
+    // the instruction epilogue below (processEventDispatch /
+    // processContinuationDispatch), but a deadline or RT GC yield can come
+    // between that Return and the epilogue.  The resumed frame must not run
+    // another instruction first: it would execute with the stray result on
+    // its stack -- and, for a handler that interrupted a wait(), with the
+    // wait's sleep state not yet restored, so the wait completes early and
+    // pops it, and the epilogue then pops one slot too many.  Repeated, the
+    // stack drifts down until it pops below its buffer.
+    if ((thread->eventHandlerJustReturned || thread->continuationCallbackReturned)
+        && !isExitRequested()) [[unlikely]] {
+        if (thread->eventHandlerJustReturned && !processEventDispatch())
+            return errorReturn;
+        if (thread->continuationCallbackReturned && !processContinuationDispatch())
+            return errorReturn;
+        if (!thread->frames.empty())
+            frame = thread->frames.end()-1;
+    }
+
     //
     //  main dispatch loop
 

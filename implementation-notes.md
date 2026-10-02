@@ -1963,6 +1963,20 @@ The dispatch loop checks `TimePoint::currentTime()` against the deadline.
 When reached, `execute()` returns `ExecutionStatus::Yielded` with all state
 preserved. The caller can resume by calling `execute()` again.
 
+**A yield can split an instruction from its epilogue.** The deadline check and
+the RT GC yield run after an instruction but before the epilogue that finishes
+two hand-offs: an event handler's `Return` leaves its result on the stack for
+`processEventDispatch()` (which discards it, restores the sleep state of the
+`wait()` the handler interrupted, and dispatches the next handler), and a
+continuation callback's `Return` leaves its result for
+`processContinuationDispatch()`. So `execute()` finishes any hand-off flagged
+by `eventHandlerJustReturned` / `continuationCallbackReturned` at entry, before
+the resumed frame runs an instruction. Without that, the frame ran with the
+stray result on its stack (for a handler that interrupted `wait()`, the wait
+also completed early and popped it), and the stack drifted down a slot per
+occurrence until it popped below its buffer -- heap corruption in any host
+that slices a program whose handlers fire often (`tests/sliced_dispatch_test.cpp`).
+
 ### Blocking Operations
 
 Operations that can block the thread:

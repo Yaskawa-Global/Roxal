@@ -862,6 +862,12 @@ if(NOT EMSCRIPTEN)
         add_test(NAME RoxalDataflowHostThread_${scenario}
                  COMMAND roxal_dataflow_host_thread_test ${scenario})
     endforeach()
+
+    # A program driven in microsecond slices, so deadlines land right after
+    # event-handler and continuation-callback returns.
+    add_executable(roxal_sliced_dispatch_test tests/sliced_dispatch_test.cpp)
+    target_link_libraries(roxal_sliced_dispatch_test PRIVATE roxalcore)
+    add_test(NAME RoxalSlicedDispatch COMMAND roxal_sliced_dispatch_test)
 endif()
 
 # Compile definitions come from roxal_abi (linked PUBLIC above) — the single shared
