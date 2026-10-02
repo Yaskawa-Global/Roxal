@@ -7246,19 +7246,29 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
     });
 #endif // ROXAL_THREADED_DISPATCH
 
-    // Finish the hand-off a previous slice left pending.  An event handler's
-    // or a continuation callback's Return leaves its result on the stack for
-    // the instruction epilogue below (processEventDispatch /
-    // processContinuationDispatch), but a deadline or RT GC yield can come
-    // between that Return and the epilogue.  The resumed frame must not run
-    // another instruction first: it would execute with the stray result on
-    // its stack -- and, for a handler that interrupted a wait(), with the
-    // wait's sleep state not yet restored, so the wait completes early and
-    // pops it, and the epilogue then pops one slot too many.  Repeated, the
-    // stack drifts down until it pops below its buffer.
-    if ((thread->eventHandlerJustReturned || thread->continuationCallbackReturned)
-        && !isExitRequested()) [[unlikely]] {
-        if (thread->eventHandlerJustReturned && !processEventDispatch())
+    // Do the between-instructions dispatch a previous slice's yield skipped.
+    // The deadline check and the RT GC yield come after an instruction but
+    // BEFORE the epilogue below, so a sliced run can yield with that work
+    // still to do; the resumed frame must not run another instruction first.
+    //  - An event handler's or a continuation callback's Return leaves its
+    //    result on the stack for processEventDispatch /
+    //    processContinuationDispatch.  Resumed without them, the frame ran
+    //    with the stray result on its stack (and, for a handler that
+    //    interrupted a wait(), with the wait's sleep state not restored, so
+    //    the wait completed early and popped it); the stack drifted down a
+    //    slot per occurrence until it popped below its buffer.
+    //  - An event queued since (an `emit`, a signal change) gets its dispatch
+    //    turn here.  Skipped, a slice short enough to yield after every
+    //    instruction never dispatched it at all.  Only a deadline-limited
+    //    execution can have skipped that turn, so only it takes it here.
+    // Same conditions and order as the epilogue.
+    if (!isExitRequested()
+        && (thread->eventHandlerJustReturned || thread->continuationCallbackReturned
+            || (hasDeadline
+                && thread->pendingEventCount.load(std::memory_order_acquire) != 0))) [[unlikely]] {
+        if ((thread->eventHandlerJustReturned
+             || thread->pendingEventCount.load(std::memory_order_acquire) != 0)
+            && !processEventDispatch())
             return errorReturn;
         if (thread->continuationCallbackReturned && !processContinuationDispatch())
             return errorReturn;

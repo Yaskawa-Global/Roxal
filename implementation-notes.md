@@ -1976,6 +1976,12 @@ stray result on its stack (for a handler that interrupted `wait()`, the wait
 also completed early and popped it), and the stack drifted down a slot per
 occurrence until it popped below its buffer -- heap corruption in any host
 that slices a program whose handlers fire often (`tests/sliced_dispatch_test.cpp`).
+A deadline-limited execution likewise gives an event queued since (an `emit`,
+a signal change) its dispatch turn at entry: with a slice short enough to
+yield after every instruction, the epilogue never ran and the handler never
+started. (That the epilogue's work can be skipped at all is the underlying
+issue; a single exit at the end of the epilogue would remove these entry-side
+repairs.)
 
 **A blocked sliced execution dispatches events before it yields.** Where the
 unbounded execution blocks -- asleep in `wait()`, or awaiting a future -- a

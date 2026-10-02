@@ -137,7 +137,7 @@ const char* kBlockedEvents =
     "type Sig event\n"
     "type W actor:\n"
     "  func slow(n :int) -> int:\n"
-    "    wait(ms=1500)\n"
+    "    wait(ms=300)\n"
     "    return n\n"
     "  proc emit_after(ms :int):\n"
     "    wait(ms=ms)\n"
@@ -152,7 +152,19 @@ const char* kBlockedEvents =
     "var got = wait(for=anyof(w.slow(99), Sig))\n"
     "print('anyof winner: ' + string(got.index))\n";
 
+// An event emitted by the body itself: its handler runs before the next
+// statement, as in the synchronous run -- even when every instruction ends a
+// slice, so the epilogue that would dispatch it never runs in the slice that
+// emitted it.
+const char* kEmitOrder =
+    "type E event\n"
+    "when E occurs:\n"
+    "  print('hello')\n"
+    "emit E()\n"
+    "print('done')\n";
+
 const Program kPrograms[] = {
+    { "emit_order",    kEmitOrder,     "hello\ndone\n" },
     { "continuations", kContinuations, "80000\n" },
     { "blocked_events", kBlockedEvents, "until cut short: true\nanyof winner: 1\n" },
     { "events",        kEvents,        "40 780 40 820 40 3240\n" },
