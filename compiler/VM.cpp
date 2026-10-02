@@ -4297,6 +4297,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                     setterFrame.startIp = setterFrame.ip = asFunction(asClosure(setterClosure)->function)->chunk->code.begin();
                                     setterFrame.strict = asFunction(asClosure(setterClosure)->function)->strict;
                                     setterFrame.callerStrict = !thread->frames.empty() && thread->frames.back().strict;
+                                    setterFrame.isConstructorSetter = true;
 
                                     setterFrames.push_back(DictSetterCall{setterClosure, kv.second, setterFrame});
                                     continue;
@@ -4546,6 +4547,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                     setterFrame.startIp = setterFrame.ip = asFunction(asClosure(setterClosure)->function)->chunk->code.begin();
                                     setterFrame.strict = asFunction(asClosure(setterClosure)->function)->strict;
                                     setterFrame.callerStrict = !thread->frames.empty() && thread->frames.back().strict;
+                                    setterFrame.isConstructorSetter = true;
 
                                     // Save closure, value, and frame for later
                                     setterFrames.push_back(SetterCall{setterClosure, assignment.value, setterFrame});
@@ -12715,6 +12717,15 @@ void VM::unwindFrame()
         thread->eventDispatch.active = false;
         thread->eventHandlerJustReturned = false;
     }
+    // A constructor's setter frame unwound by an exception: the construction
+    // will not complete, so cancel its pending cleanup -- otherwise, once
+    // the frame stack is back at the constructing frame's depth (where a
+    // handler may have caught the exception), the cleanup would pop the
+    // caught exception and push the half-built instance in its place.
+    if (f.isConstructorSetter && thread->pendingSetterCount > 0) {
+        thread->pendingSetterCount = 0;
+        thread->pendingConstructorInstance = Value::nilVal();
+    }
     // If a continuation callback frame is being unwound, clear the continuation state
     // and clean up the original method call's stack area (receiver + args)
     if (f.isContinuationCallback && thread->hasContinuation()) {
@@ -12938,6 +12949,8 @@ void VM::resetStack()
 
     thread->frames.clear();
     thread->frames.reserve(callFrameLimit);
+    thread->pendingSetterCount = 0;   // no frame left for a pending constructor
+    thread->pendingConstructorInstance = Value::nilVal();
     thread->frameStart = false;
     thread->openUpvalues.clear();
 }

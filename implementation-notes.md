@@ -2008,7 +2008,10 @@ frame stack is back at the depth of the frame that made the call --
 It used to compare against `execute()`'s own entry depth, which is right only
 for a call made at that depth: a constructor called inside a function, or a
 slice resuming while the setters were on the stack, never cleaned up and the
-call evaluated to `nil`.
+call evaluated to `nil`. A setter frame unwound by an exception
+(`CallFrame::isConstructorSetter`) cancels the pending cleanup: the
+construction is abandoned, and a handler at the constructing frame's depth
+must see the exception, not the half-built instance in its place.
 
 ### Blocking Operations
 

@@ -51,6 +51,7 @@ struct CallFrame {
 
     bool isEventHandler { false }; // true for event handler frames (pushed by processEventDispatch)
     bool isContinuationCallback { false }; // true for native continuation callback frames (e.g., filter/map/reduce, native default params)
+    bool isConstructorSetter { false }; // a property setter queued by a dict constructor (see Thread::pendingSetterCount)
     bool initsModule { false }; // a module body run by OpCode::ImportModule: its return marks the module initialized
 
     // opReturn() unwinds a returning frame's slots (callee slot 0, arguments,
