@@ -853,7 +853,11 @@ void Thread::act(Value actorInstance)
                 }
             }
 
+            // Reset stackTop with the clear: the thread stays registered (and
+            // root-scanned) until it is destroyed, and a stale top would have
+            // the collector mark the destroyed Values' leftover bits.
             stack.clear();
+            stackTop = stack.begin();
 
             state = State::Completed;
             actorInstanceRaw.store(nullptr, std::memory_order_release);
@@ -890,6 +894,7 @@ void Thread::act(Value actorInstance)
 
             result = ExecutionStatus::RuntimeError;
             stack.clear();
+            stackTop = stack.begin();   // see the normal completion path above
             state = State::Completed;
             actorInstanceRaw.store(nullptr, std::memory_order_release);
         }
