@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.13)  # add_link_options / target_link_options
 
-project(roxal VERSION 0.8.45 LANGUAGES CXX C)
+project(roxal VERSION 0.8.46 LANGUAGES CXX C)
 set(ROXAL_PRERELEASE "pre" CACHE STRING "SemVer prerelease label (e.g. alpha.1, rc.1)")
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -862,6 +862,12 @@ if(NOT EMSCRIPTEN)
         add_test(NAME RoxalDataflowHostThread_${scenario}
                  COMMAND roxal_dataflow_host_thread_test ${scenario})
     endforeach()
+
+    # A program driven in microsecond slices, so deadlines land right after
+    # event-handler and continuation-callback returns.
+    add_executable(roxal_sliced_dispatch_test tests/sliced_dispatch_test.cpp)
+    target_link_libraries(roxal_sliced_dispatch_test PRIVATE roxalcore)
+    add_test(NAME RoxalSlicedDispatch COMMAND roxal_sliced_dispatch_test)
 endif()
 
 # Compile definitions come from roxal_abi (linked PUBLIC above) — the single shared

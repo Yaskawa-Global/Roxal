@@ -1,0 +1,26 @@
+// A constructor from a dict whose property setter raises, caught by the
+// constructor's caller: the construction is abandoned, the handler sees the
+// exception (not the half-built instance), and nothing of it is left pending
+// for the next construction.
+type Obj object:
+  var s :string :
+    get: return _s
+    set:
+      raise RuntimeException('setter failed')
+
+type Good object:
+  var s :string :
+    get: return _s
+    set: _s = value
+
+proc make():
+  try:
+    var o = Obj({'s':'hello'})
+    print('not reached')
+  except e :RuntimeException:
+    print(e)
+  var g = Good({'s':'after'})
+  print(dict(g))
+
+make()
+print('done')

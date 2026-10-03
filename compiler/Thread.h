@@ -621,9 +621,14 @@ public:
     // after consumption.
     Value pendingUncaughtException { Value::nilVal() };
 
-    // Constructor setter support: track pending setter cleanup
+    // Constructor setter support: track pending setter cleanup.  The cleanup
+    // runs once the setter frames have all returned, i.e. when the frame
+    // stack is back at the depth of the frame that made the constructor call
+    // -- recorded here, since neither the execute() call nor the slice that
+    // finishes the setters need be the one that queued them.
     Value pendingConstructorInstance { Value::nilVal() };
     int pendingSetterCount { 0 };
+    size_t pendingConstructorFrameDepth { 0 };
 
     // Pending conversion operator support (for OpCode::Add string concatenation etc.)
     // Uses a stack to support nested conversions (e.g. Outer.operator->string uses Inner in concat)

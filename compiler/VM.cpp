@@ -4297,6 +4297,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                     setterFrame.startIp = setterFrame.ip = asFunction(asClosure(setterClosure)->function)->chunk->code.begin();
                                     setterFrame.strict = asFunction(asClosure(setterClosure)->function)->strict;
                                     setterFrame.callerStrict = !thread->frames.empty() && thread->frames.back().strict;
+                                    setterFrame.isConstructorSetter = true;
 
                                     setterFrames.push_back(DictSetterCall{setterClosure, kv.second, setterFrame});
                                     continue;
@@ -4331,6 +4332,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                 Value savedInstance = pop();
                                 thread->pendingConstructorInstance = savedInstance;
                                 thread->pendingSetterCount = static_cast<int>(setterFrames.size());
+                                thread->pendingConstructorFrameDepth = thread->frames.size();
 
                                 CallFrames::iterator parentFrame = thread->frames.size() > 0 ? thread->frames.end() - 1 : thread->frames.end();
 
@@ -4545,6 +4547,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                     setterFrame.startIp = setterFrame.ip = asFunction(asClosure(setterClosure)->function)->chunk->code.begin();
                                     setterFrame.strict = asFunction(asClosure(setterClosure)->function)->strict;
                                     setterFrame.callerStrict = !thread->frames.empty() && thread->frames.back().strict;
+                                    setterFrame.isConstructorSetter = true;
 
                                     // Save closure, value, and frame for later
                                     setterFrames.push_back(SetterCall{setterClosure, assignment.value, setterFrame});
@@ -4563,6 +4566,7 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
                                 Value savedInstance = pop(); // Remove instance from stack
                                 thread->pendingConstructorInstance = savedInstance;
                                 thread->pendingSetterCount = static_cast<int>(setterFrames.size());
+                                thread->pendingConstructorFrameDepth = thread->frames.size();
 
                                 // Setter frames should return to the current frame (the one with OpCode::Call)
                                 CallFrames::iterator parentFrame = thread->frames.size() > 0 ? thread->frames.end() - 1 : thread->frames.end();
@@ -7169,6 +7173,24 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
     // handles it exactly as before.  Adding new inter-instruction work to the
     // loop requires adding its trigger here.  Atomic loads use the same
     // memory orderings as the sites they mirror.
+    // A deadline-limited (sliced) execution that is blocked -- asleep in
+    // wait(), or awaiting a future -- yields where the unbounded one would
+    // block.  The blocking path, once woken, falls through to the epilogue's
+    // processEventDispatch(), which starts a due handler, a `wait ... until`
+    // interrupt, or an anyof() relay; yielding straight away instead starved
+    // every event a sliced program got while blocked.  So dispatch first, as
+    // the woken blocking path would.  Returns false on a dispatch error.
+    auto dispatchEventsBeforeBlockedYield = [&]() -> bool {
+        // (Never over an unfinished continuation hand-off: that must be taken
+        // first, by the epilogue or the next slice's entry -- see the
+        // epilogue's ordering note.)
+        if (thread->pendingEventCount.load(std::memory_order_acquire) != 0
+            && !thread->eventDispatch.active && !thread->continuationCallbackReturned
+            && !isExitRequested())
+            return processEventDispatch();
+        return true;
+    };
+
     auto interInstrWorkPending = [&]() -> unsigned {
         return (unsigned)word->load()                                  // interrupt word: RuntimeError (loop top) | Exit (suspension guard + event dispatch) | debug bits
              | (unsigned)valueGC.isCollectionRequested()               // epilogue: GC safepoint
@@ -7228,6 +7250,37 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
     });
 #endif // ROXAL_THREADED_DISPATCH
 
+    // Do the between-instructions dispatch a previous slice's yield skipped.
+    // The deadline check and the RT GC yield come after an instruction but
+    // BEFORE the epilogue below, so a sliced run can yield with that work
+    // still to do; the resumed frame must not run another instruction first.
+    //  - An event handler's or a continuation callback's Return leaves its
+    //    result on the stack for processEventDispatch /
+    //    processContinuationDispatch.  Resumed without them, the frame ran
+    //    with the stray result on its stack (and, for a handler that
+    //    interrupted a wait(), with the wait's sleep state not restored, so
+    //    the wait completed early and popped it); the stack drifted down a
+    //    slot per occurrence until it popped below its buffer.
+    //  - An event queued since (an `emit`, a signal change) gets its dispatch
+    //    turn here.  Skipped, a slice short enough to yield after every
+    //    instruction never dispatched it at all.  Only a deadline-limited
+    //    execution can have skipped that turn, so only it takes it here.
+    // Same conditions and order as the epilogue (continuation first -- see
+    // there).
+    if (!isExitRequested()
+        && (thread->eventHandlerJustReturned || thread->continuationCallbackReturned
+            || (hasDeadline
+                && thread->pendingEventCount.load(std::memory_order_acquire) != 0))) [[unlikely]] {
+        if (thread->continuationCallbackReturned && !processContinuationDispatch())
+            return errorReturn;
+        if ((thread->eventHandlerJustReturned
+             || thread->pendingEventCount.load(std::memory_order_acquire) != 0)
+            && !processEventDispatch())
+            return errorReturn;
+        if (!thread->frames.empty())
+            frame = thread->frames.end()-1;
+    }
+
     //
     //  main dispatch loop
 
@@ -7259,7 +7312,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
             // returning setter's popCount loop sweeps everything between its slots
             // pointer and stackTop, which folds in the prior setter's leftover nil.
             // So we pop exactly one regardless of how many setters ran.
-            if (thread->pendingSetterCount > 0 && thread->frames.size() == frame_depth_on_entry) {
+            if (thread->pendingSetterCount > 0
+                && thread->frames.size() == thread->pendingConstructorFrameDepth) {
                 pop();
                 push(thread->pendingConstructorInstance);
                 thread->pendingSetterCount = 0;
@@ -11320,20 +11374,29 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                 thread->threadSleep = false;
             }
             else {
-                // If deadline-limited, yield instead of blocking
+                // If deadline-limited, yield instead of blocking -- once a due
+                // event has had its chance to start (a handler or an `until`
+                // interrupt clears threadSleep).  Continue only when one did:
+                // this path skips the per-instruction deadline check, so
+                // looping on an event that is not yet due would overrun the
+                // slice.
                 if (hasDeadline) {
-                    return yieldReturn;
+                    if (!dispatchEventsBeforeBlockedYield())
+                        return errorReturn;
+                    if (thread->threadSleep)
+                        return yieldReturn;
                 }
+                else {
+                    auto sleepTarget = thread->threadSleepUntil.load();
 
-                auto sleepTarget = thread->threadSleepUntil.load();
-
-                auto waitTime = sleepTarget - now;
-                if (waitTime.microSecs() > 0) {
-                    // When a host UI loop is installed (main thread), block on it so
-                    // host events wake us immediately; else the plain sleep condvar.
-                    hostOrCondVarWait(thread.get(), waitTime);
+                    auto waitTime = sleepTarget - now;
+                    if (waitTime.microSecs() > 0) {
+                        // When a host UI loop is installed (main thread), block on it so
+                        // host events wake us immediately; else the plain sleep condvar.
+                        hostOrCondVarWait(thread.get(), waitTime);
+                    }
+                    // Note: threadSleep stays true if we haven't reached original sleep target
                 }
-                // Note: threadSleep stays true if we haven't reached original sleep target
             }
         }
 
@@ -11345,8 +11408,12 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
             if (fut->future.wait_for(std::chrono::microseconds(0)) == std::future_status::ready) {
                 thread->awaitedFuture = Value::nilVal();
             } else {
-                // If deadline-limited, yield instead of blocking
+                // If deadline-limited, yield instead of blocking -- after the
+                // dispatch the woken blocking path would do (an anyof() relay
+                // resolves the awaited future that way).
                 if (hasDeadline) {
+                    if (!dispatchEventsBeforeBlockedYield())
+                        return errorReturn;
                     return yieldReturn;
                 }
                 // Keep a host UI loop (main thread) pumped while awaiting a future;
@@ -11414,6 +11481,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                 thread->awaitedFuture = Value::nilVal();
             } else {
                 if (hasDeadline) {
+                    if (!dispatchEventsBeforeBlockedYield())   // see above
+                        return errorReturn;
                     return yieldReturn;
                 }
                 // Keep a host UI loop (main thread) pumped while awaiting a future;
@@ -11429,15 +11498,25 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
         // checked at identical frequency, so event latency is unchanged.
         // (dispatch.active alone is deliberately not a trigger: with no handler
         // return and no pending events, the call is a pure no-op then too.)
+        //
+        // Continuation first: a callback's Return leaves its result on top of
+        // the stack for processContinuationDispatch, and an event dispatch
+        // that STARTS a handler pushes the handler's closure and argument over
+        // it -- the continuation would then take the event argument as the
+        // callback's result (and its cleanup would remove the handler's
+        // slots).  The two "returned" flags are never set together (each
+        // comes from one Return, consumed here before the next instruction),
+        // so the order matters only for a fresh event arriving as a callback
+        // returns.
+        if (thread->continuationCallbackReturned) {
+            if (!processContinuationDispatch())
+                return errorReturn;
+        }
+
         if (isExitRequested() ||
             thread->eventHandlerJustReturned ||
             thread->pendingEventCount.load(std::memory_order_acquire) != 0) {
             if (!processEventDispatch())
-                return errorReturn;
-        }
-
-        if (thread->continuationCallbackReturned) {
-            if (!processContinuationDispatch())
                 return errorReturn;
         }
 
@@ -12663,6 +12742,15 @@ void VM::unwindFrame()
         thread->eventDispatch.active = false;
         thread->eventHandlerJustReturned = false;
     }
+    // A constructor's setter frame unwound by an exception: the construction
+    // will not complete, so cancel its pending cleanup -- otherwise, once
+    // the frame stack is back at the constructing frame's depth (where a
+    // handler may have caught the exception), the cleanup would pop the
+    // caught exception and push the half-built instance in its place.
+    if (f.isConstructorSetter && thread->pendingSetterCount > 0) {
+        thread->pendingSetterCount = 0;
+        thread->pendingConstructorInstance = Value::nilVal();
+    }
     // If a continuation callback frame is being unwound, clear the continuation state
     // and clean up the original method call's stack area (receiver + args)
     if (f.isContinuationCallback && thread->hasContinuation()) {
@@ -12886,6 +12974,8 @@ void VM::resetStack()
 
     thread->frames.clear();
     thread->frames.reserve(callFrameLimit);
+    thread->pendingSetterCount = 0;   // no frame left for a pending constructor
+    thread->pendingConstructorInstance = Value::nilVal();
     thread->frameStart = false;
     thread->openUpvalues.clear();
 }

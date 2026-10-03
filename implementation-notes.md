@@ -1963,6 +1963,67 @@ The dispatch loop checks `TimePoint::currentTime()` against the deadline.
 When reached, `execute()` returns `ExecutionStatus::Yielded` with all state
 preserved. The caller can resume by calling `execute()` again.
 
+**A yield can split an instruction from its epilogue.** The deadline check and
+the RT GC yield run after an instruction but before the epilogue that finishes
+two hand-offs: an event handler's `Return` leaves its result on the stack for
+`processEventDispatch()` (which discards it, restores the sleep state of the
+`wait()` the handler interrupted, and dispatches the next handler), and a
+continuation callback's `Return` leaves its result for
+`processContinuationDispatch()`. So `execute()` finishes any hand-off flagged
+by `eventHandlerJustReturned` / `continuationCallbackReturned` at entry, before
+the resumed frame runs an instruction. Without that, the frame ran with the
+stray result on its stack (for a handler that interrupted `wait()`, the wait
+also completed early and popped it), and the stack drifted down a slot per
+occurrence until it popped below its buffer -- heap corruption in any host
+that slices a program whose handlers fire often (`tests/sliced_dispatch_test.cpp`).
+A deadline-limited execution likewise gives an event queued since (an `emit`,
+a signal change) its dispatch turn at entry: with a slice short enough to
+yield after every instruction, the epilogue never ran and the handler never
+started. (That the epilogue's work can be skipped at all is the underlying
+issue; a single exit at the end of the epilogue would remove these entry-side
+repairs.) Both places take the continuation hand-off BEFORE event dispatch: a
+dispatch that starts a handler pushes its closure and argument over a returned
+callback's result, which the continuation would then take as that result. The
+two "returned" flags are never set together, so the order matters only for a
+fresh event arriving as a callback returns (`tests/continuation_events.rox`;
+it hit synchronous runs too, just rarely).
+
+**A blocked sliced execution dispatches events before it yields.** Where the
+unbounded execution blocks -- asleep in `wait()`, or awaiting a future -- a
+deadline-limited one yields instead. The blocking path, once woken, falls
+through to the epilogue's `processEventDispatch()`, which starts a due handler,
+a `wait ... until` interrupt or an `anyof()` relay; so the yielding path does
+that dispatch first (`dispatchEventsBeforeBlockedYield`). Asleep, it continues
+only if a dispatch actually began -- this path skips the per-instruction
+deadline check, so looping on an event that is not yet due would overrun the
+slice. Without it a sliced program got none of its events until its wait ended:
+`until` ran its full time and an `anyof()` event arm lost to the slower future.
+
+**Running the suite sliced.** `roxal --drive-us N file.rox` runs a script the
+way an embedding host does -- prepared and submitted from the main thread,
+sliced by `driveFor(N us)` from a driver thread inside a GC yield section, and
+finalized off the driver -- instead of in one `executeProgramSync()`.
+`--drive-tick-us M` makes the driver also `tickFor(M us)` the dataflow engine
+once per engine period, as a real-time host does. `runtests.py --drive-us N
+[--drive-tick-us M]` runs every script test that way, minus
+`drive_excluded_tests` (tests that legitimately need a synchronous run, each
+with its reason) and, with ticking, `drive_tick_excluded_tests`. A small N
+(1-5) puts a slice boundary after nearly every instruction; this is how the
+two rules above, and the constructor-setter depth below, were found.
+
+**Constructor setter cleanup is keyed to the calling frame's depth.** A
+constructor from a dict that assigns through property setters queues the
+setter frames and finishes (pops their result, pushes the instance) when the
+frame stack is back at the depth of the frame that made the call --
+`Thread::pendingConstructorFrameDepth`, recorded when the setters are queued.
+It used to compare against `execute()`'s own entry depth, which is right only
+for a call made at that depth: a constructor called inside a function, or a
+slice resuming while the setters were on the stack, never cleaned up and the
+call evaluated to `nil`. A setter frame unwound by an exception
+(`CallFrame::isConstructorSetter`) cancels the pending cleanup: the
+construction is abandoned, and a handler at the constructing frame's depth
+must see the exception, not the half-built instance in its place.
+
 ### Blocking Operations
 
 Operations that can block the thread:
