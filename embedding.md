@@ -96,6 +96,25 @@ fragment registered are still serviced. It fires no script start/complete hooks
 and is not joined: it is a continuation of its session, and its actors may
 outlive it deliberately.
 
+**Ending a line.** `session.interrupt(code = 130)` ends the line in flight and
+nothing else: the session's bindings, and the actors, handlers and threads the
+line already started, carry on. With a driver it is `requestExit()` on the
+line's run, which *completes* (not fails) with `code` as
+`RunHandle::exitCode()`; without one it is async-signal-safe, so a CLI's SIGINT
+handler may call it. Either way the session's thread is unwound (frames
+dropped, waits abandoned, closures over the line's locals closed, a debugger
+stop over the line released) and the next line can follow at once. `exit()`
+typed in a driven line ends that line the same way, with its code; raised by
+one of the session's actors it ends the line in flight, if any. (On the
+synchronous path `exit()` keeps its process semantics.)
+
+**Completion.** `session.complete(buffer, cursor)` lists names for a console:
+session bindings and builtins, members of modules, instances, types and enums,
+and builtin methods of lists, strings and the like, through dotted chains that
+resolve without running code. It takes no session lock, so it answers while a
+line runs. Each result carries the byte range it replaces — the partial name,
+not the line.
+
 ## 3. Embedded driver
 
 Your host owns a periodic loop and cannot afford unbounded work in it.

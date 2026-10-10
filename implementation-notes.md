@@ -2482,6 +2482,29 @@ continuation of its session, not a script launch, and its actors may outlive it
 on purpose. Its default completion policy is `TopLevelReturned` for the same
 reason, where a fresh program's is `ExecutionDomainQuiescent`.
 
+**A line ends; the session does not.** Ending a line must never raise the
+session domain's `IntrExit`: that would quit every session actor and stay set
+for every later line (the line would then resume its predecessor's frames
+forever and hold the runtime slot). So:
+
+- A host's exit request on a fragment run (`ReplSession::interrupt()` ->
+  `requestExit`) is applied by the driver *without executing*: the code goes on
+  `RunRecord::lineExitCode` and the run is handed over (`ExecutionEnded`).
+- `exit()` raised in a session's domain (`requestDomainExit`, domain flagged
+  `replSession`) raises `IntrLineAbort` -- honoured at the exit guard only by
+  the `ThreadKind::Repl` thread -- and only while `lineRunning`; with no line
+  running it is dropped. The driver's classification (and the sync path) takes
+  the bit and the code with `takeLineEnd()`; activation clears a stale bit.
+- The finalizer (non-RT, covered) then `unwindSessionLine()`s the session's
+  thread for any line that did not return (interrupted, exited, failed):
+  releases a stop over the session (`endExecution`), clears every suspension
+  and in-progress dispatch, and `resetStack()` -- which now closes the upvalues
+  still open over the stack before clearing it, so a closure over an abandoned
+  frame's local keeps its value. A fragment never resumes frames as a prelude.
+- The synchronous interrupt is async-signal-safe: atomics on the domain via
+  `ReplSessionState::signalDomain`. A Repl thread's blocking waits are capped at
+  50 ms so it notices a bit raised by a signal handler (which cannot notify).
+
 ### Migration from the superseded API
 
 These entry points were removed once their ambiguity had a replacement. The

@@ -102,10 +102,17 @@ void DebugWorker::run()
             // forever.  20ms while the slow path is armed (trap-completion
             // latency), 500ms idle backstop (the worker exists only while a
             // debugger is engaged; two wakeups a second is noise).
-            const bool fastPoll =
-                coordinator_.slowPathArmed() || coordinator_.hasAsyncPending();
+            // A pending host pause is advanced by polling (2ms: acks from RT
+            // threads never notify), and while the host holds at all the
+            // worker stays at the armed cadence -- an execution starting
+            // under the hold publishes its pause from the RT driver, which
+            // cannot wake us.
+            const bool pausePending = coordinator_.hostPausePending();
+            const bool fastPoll = coordinator_.slowPathArmed()
+                                  || coordinator_.hasAsyncPending()
+                                  || coordinator_.hasStopOwners();
             cv_.wait_for(lk,
-                         std::chrono::milliseconds(fastPoll ? 20 : 500),
+                         std::chrono::milliseconds(pausePending ? 2 : fastPoll ? 20 : 500),
                          ready);
             if (shutdown_)
                 return;
@@ -113,6 +120,7 @@ void DebugWorker::run()
             commands.swap(commands_);
         }
         coordinator_.completeAsyncStop();
+        coordinator_.advancePendingStop();
         for (auto& fn : commands) {
             try { fn(); } catch (...) { /* a command must not kill the worker */ }
         }

@@ -852,6 +852,11 @@ static int linenoiseEdit(int stdin_fd, int stdout_fd, char *buf, size_t buflen, 
             }
             return (int)l.len;
         case CTRL_C:     /* ctrl-c */
+            /* Drop the in-progress history entry, as ENTER and CTRL_D do:
+             * a caller that carries on after Ctrl-C would otherwise collect
+             * an empty entry per press. */
+            history_len--;
+            free(history[history_len]);
             errno = EAGAIN;
             return -1;
         case BACKSPACE:   /* backspace */

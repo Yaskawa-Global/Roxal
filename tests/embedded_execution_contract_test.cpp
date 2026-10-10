@@ -232,9 +232,9 @@ int main()
                        "print(phase_a_repl)\n") == ExecutionStatus::OK,
            "second persistent fragment sees prior declarations");
     const std::string fragmentOutput = sink.take();
-    // Interactive mode echoes the assignment result and the print call's nil
-    // result in addition to print()'s own record.
-    expect(fragmentOutput == "42\n42\nnil\n",
+    // Interactive mode echoes the assignment result in addition to print()'s
+    // own record; the print call's nil result is not echoed.
+    expect(fragmentOutput == "42\n42\n",
            "persistent fragment state and interactive echo are observable");
     expect(hooks->starts.size() == startsBeforeFragments &&
                hooks->completes.size() == completesBeforeFragments,
@@ -913,9 +913,9 @@ int main()
             expect(session.evaluateFragmentSync(b) == ExecutionStatus::OK,
                    "a later fragment sees what an earlier one declared");
         }
-        // print() emits its line; interactive mode then echoes the call's own
-        // nil result.
-        expect(sink.take() == "7\nnil\n",
+        // print() emits its line; interactive mode echoes nothing more (the
+        // call's result is nil).
+        expect(sink.take() == "7\n",
                "fragment state persists across fragments");
 
         expect(session.module().isNonNil(),
@@ -1239,7 +1239,7 @@ int main()
                            "var phase_j_keeper = PhaseJKeeper()\n"
                            "print(int(phase_j_keeper.alive()))\n") == ExecutionStatus::OK,
                "a session actor is created by a fragment");
-        expect(sink.take() == "42\nnil\n", "the session actor answers before the run");
+        expect(sink.take() == "42\n", "the session actor answers before the run");
 
         AttachDriverResult attached = vm.attachEmbeddedRuntime();
         expect(attached.status == AttachStatus::Attached, "runtime attaches for the domain tests");
@@ -1312,7 +1312,7 @@ int main()
         // 1 (continued): the session actor is still alive and answering.
         expect(runFragment(vm, "print(int(phase_j_keeper.alive()))\n") == ExecutionStatus::OK,
                "the session actor is reachable after program runs were finalized");
-        expect(sink.take() == "42\nnil\n",
+        expect(sink.take() == "42\n",
                "the session actor survived every run's finalization");
         (void)gc;
     }

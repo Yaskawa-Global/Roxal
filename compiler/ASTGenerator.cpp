@@ -85,6 +85,17 @@ LinePos ASTGenerator::remapFragmentPos(const LinePos& p) const
 // real token so a block statement's interval ends at its actual content.
 // NEWLINE tokens (whose text may swallow the following line's indentation)
 // keep their start position: such nodes effectively end at the newline itself.
+// Code points in text[from, to): the token's text is UTF-8, while ANTLR's
+// columns (getCharPositionInLine) count code points.
+static size_t codePointsIn(const std::string& text, size_t from, size_t to)
+{
+    size_t n = 0;
+    for (size_t i = from; i < to; ++i)
+        if ((static_cast<unsigned char>(text[i]) & 0xC0) != 0x80)
+            ++n;
+    return n;
+}
+
 LinePos ASTGenerator::tokenEndPos(antlr4::Token* tok) const
 {
     if (tokenStream && tok->getStopIndex() < tok->getStartIndex()) {
@@ -112,13 +123,15 @@ LinePos ASTGenerator::tokenEndPos(antlr4::Token* tok) const
     if (len == 0 || text.front() == '\n' || text.front() == '\r')
         return { line, col };
 
+    // Columns count code points, not bytes (a non-ASCII string literal or
+    // docstring would otherwise end past its last character).
     auto lastNewline = text.rfind('\n', len - 1);
     if (lastNewline == std::string::npos)
-        return { line, col + len - 1 };
+        return { line, col + codePointsIn(text, 0, len) - 1 };
 
     // multi-line token (e.g. a docstring): end is on a later line
     size_t newlines = std::count(text.begin(), text.begin() + len, '\n');
-    return { line + newlines, len - lastNewline - 2 };
+    return { line + newlines, codePointsIn(text, lastNewline + 1, len) - 1 };
 }
 
 void ASTGenerator::setSourceInfo(ptr<AST> ast, antlr4::ParserRuleContext* context)

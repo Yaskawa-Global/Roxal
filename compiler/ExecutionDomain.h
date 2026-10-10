@@ -29,6 +29,13 @@ public:
         IntrExit          = 1u << 1,  // exit() requested
         IntrDebugStop     = 1u << 2,  // reserved: debugger stop request
         IntrDebugSlowPath = 1u << 3,  // reserved: debugger forces full-loop dispatch
+        // End the REPL line in flight: exit() raised in a session's domain,
+        // or a synchronous host interrupt.  Honoured ONLY by the session's
+        // ThreadKind::Repl thread -- the session's actors and handlers run
+        // straight through it, because a session outlives any one line.
+        // Taken (cleared) when the line ends; one raised between lines is
+        // dropped when the next line starts.
+        IntrLineAbort     = 1u << 4,
     };
 
     // A standalone domain owns its interrupt word.
@@ -87,6 +94,15 @@ public:
     std::atomic<int> exitCode { 0 };
     std::mutex errorMutex;
     std::string errorMessage;
+
+    // A REPL session's domain: exit() raised in it ends the line in flight
+    // (IntrLineAbort), never the session (IntrExit).  Set once, by the
+    // session, before the domain has a thread -- never changes after.
+    bool replSession { false };
+    // ...and whether one of its lines is executing.  An exit() raised in the
+    // session while none is (from one of its actors, say) belongs to no line
+    // and is dropped.  Lock-free: a signal handler reads it.
+    std::atomic<bool> lineRunning { false };
 
 private:
     std::atomic<uint32_t>* word_;

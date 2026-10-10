@@ -2,8 +2,10 @@
 
 #include <cassert>
 
+#include "ReplSession.h"
 #include "SimpleMarkSweepGC.h"
 #include "VM.h"
+#include "debug/StopCoordinator.h"
 
 namespace roxal {
 
@@ -98,6 +100,10 @@ SubmitResult EmbeddedRuntime::submit(PreparedProgram&& program)
     record->prepared = std::move(program.record_);
 
     result.run = RunHandle(record->control);
+    // A session's line in flight is the run ReplSession::interrupt() ends.
+    // Recorded under the runtime lock, before the driver can claim it.
+    if (ReplSessionState* session = record->prepared->session)
+        session->noteFragmentRun(result.run);
     pending_ = std::move(record);
     result.status = SubmitStatus::Accepted;
     return result;
@@ -253,15 +259,23 @@ ExitRequestStatus EmbeddedRuntime::requestExit(const RunHandle& run, int code)
     if (code == RunRecord::kNoExitRequest)
         code = RunRecord::kNoExitRequest + 1;    // the sentinel is not a code
     bool pending = false;
+    bool active = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (active_ && active_->id == run.id()) {
             // Only the code is left here; the driver owns the run's thread and
             // domain and applies the request at the start of its next slice.
             active_->exitRequest.store(code, std::memory_order_release);
-            return ExitRequestStatus::Requested;
+            active = true;
+        } else {
+            pending = pending_ && pending_->id == run.id();
         }
-        pending = pending_ && pending_->id == run.id();
+    }
+    if (active) {
+        // Exit beats pause: a stopped run would otherwise never reach the
+        // exit (its threads stay parked, its driven slices return Paused).
+        vm_.stopCoordinator().releaseForExit();
+        return ExitRequestStatus::Requested;
     }
     if (pending) {
         // Never claimed: there is no execution to end, so withdraw it.  Outside
@@ -272,9 +286,16 @@ ExitRequestStatus EmbeddedRuntime::requestExit(const RunHandle& run, int code)
         case CancelStatus::AlreadyTerminal: return ExitRequestStatus::AlreadyTerminal;
         case CancelStatus::Unknown:         return ExitRequestStatus::Unknown;
         }
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (active_ && active_->id == run.id()) {
-            active_->exitRequest.store(code, std::memory_order_release);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (active_ && active_->id == run.id()) {
+                active_->exitRequest.store(code, std::memory_order_release);
+                active = true;
+            }
+        }
+        if (active) {
+            // Just claimed -- possibly starting paused under a host hold.
+            vm_.stopCoordinator().releaseForExit();
             return ExitRequestStatus::Requested;
         }
     }
@@ -471,6 +492,17 @@ FinalizeResult RunHandle::finalize()
         return result;
     }
     return runtime->finalizeRun(control_);
+}
+
+ExitRequestStatus RunHandle::requestExit(int code)
+{
+    if (!control_)
+        return ExitRequestStatus::Unknown;
+    // The lease, as finalize() takes it.
+    std::shared_ptr<EmbeddedRuntime> runtime = control_->runtime_.lock();
+    if (!runtime)
+        return ExitRequestStatus::Unknown;
+    return runtime->requestExit(*this, code);
 }
 
 FinalizeResult RunHandle::wait()

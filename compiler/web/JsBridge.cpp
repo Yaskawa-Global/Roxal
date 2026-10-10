@@ -11,6 +11,7 @@
 #include "Object.h"
 #include "VM.h"
 #include "dataflow/Signal.h"   // signal properties cross as their current value
+#include "debug/StopCoordinator.h"
 
 #include <condition_variable>
 #include <cstdlib>
@@ -539,7 +540,9 @@ void releaseCallback(uint32_t id)
 
 void drainInbound()
 {
-    const bool stopActive = VM::instance().debugStopRequested();
+    // No VM thread here: ask the coordinator, which knows a stop in the
+    // run's domain as well as the default one.
+    const bool stopActive = VM::instance().stopCoordinator().stopFormingOrActive();
     if (!stopActive && !g_deferredInbound.empty()) {
         // Stop released: put the held-back work at the FRONT, in order.
         std::lock_guard<std::mutex> lock(g_pendingMutex);

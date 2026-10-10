@@ -21,12 +21,16 @@
 // still mutating is the failure this ordering exists to prevent.
 
 #include <atomic>
+#include <cstddef>
 #include <istream>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include "GCRoots.h"
+#include "EmbeddedRuntime.h"
 #include "ExecutionDomain.h"
 #include "PreparedProgram.h"
 #include "Thread.h"
@@ -90,13 +94,52 @@ public:
     std::unique_ptr<RoxalCompiler> compiler;
     ptr<Thread> thread;
     // The session's execution domain, created with its thread and kept
-    // across every fragment: a fragment's actors, errors and exits belong
-    // to the session, not to whichever program run happens to be next.
+    // across every fragment: a fragment's actors and errors belong to the
+    // session, not to whichever program run happens to be next.  An exit()
+    // raised in it ends the line in flight, never the session.
     ptr<ExecutionDomain> domain;
+    // The same domain as a plain pointer, for the synchronous interrupt --
+    // which a signal handler may call, and which therefore must not touch
+    // the ptr<> above.  Published once, when the domain is created.
+    std::atomic<ExecutionDomain*> signalDomain { nullptr };
     // Serializes producers.  The root tracer must never acquire it.
     std::mutex producerMutex;
     // True from the moment a fragment is prepared until it has finished.
     std::atomic<bool> fragmentInFlight { false };
+
+    // Create the session's domain if it has none yet.  Caller: whoever is
+    // about to give the session its thread.
+    void ensureDomain();
+
+    // The driven line in flight (the last one submitted), so interrupt() can
+    // end it.  Value-free.  Its own small lock: never the producer mutex,
+    // which a preparing producer holds for a whole compile.
+    void noteFragmentRun(const RunHandle& run);
+    void forgetFragmentRun(RunId id);
+    RunHandle fragmentRun() const;
+
+private:
+    mutable std::mutex runMutex_;
+    RunHandle fragmentRun_;
+};
+
+// One completion offered for a REPL buffer (ReplSession::complete).
+struct CompletionCandidate {
+    std::string text;     // what replaces [replaceStart, replaceEnd)
+    // "variable", "function", "type", "module", "method", "property",
+    // "enum" (an enumeration label) or "keyword".
+    std::string kind;
+    std::string detail;   // a signature or type, for display; may be empty
+};
+
+struct CompletionResult {
+    // The byte range of the buffer a candidate replaces: the partial name
+    // before the cursor.  An adapter that can only replace a whole line
+    // (linenoise) keeps buffer[0, replaceStart), puts the candidate there
+    // and appends buffer[replaceEnd, end).
+    size_t replaceStart { 0 };
+    size_t replaceEnd { 0 };
+    std::vector<CompletionCandidate> candidates;   // sorted, unique by text
 };
 
 // Handle to one session.  Copyable and cheap; the state is owned by the VM.
@@ -113,9 +156,45 @@ public:
                                           FragmentOptions options = {});
 
     // Compile and run a fragment on the calling thread.  The convenience for
-    // a VM with no embedded driver -- a CLI REPL, a test.
+    // a VM with no embedded driver -- a CLI REPL, a test.  A line ended by
+    // interrupt() returns OK.  exit() typed in a line keeps its process
+    // semantics on this path (the VM exits; a CLI quits).
     ExecutionStatus evaluateFragmentSync(std::istream& source,
                                          FragmentOptions options = {});
+
+    // End the line in flight early -- the session itself, its bindings, and
+    // whatever the line already spawned (actors, `when` handlers, threads)
+    // all carry on; an interrupt just ends the body where it got to.  The
+    // session's thread is put back to idle (frames dropped, waits abandoned,
+    // closures over the line's locals closed), and a debugger stop over the
+    // line is released.  The next line may follow at once.
+    //
+    // With an embedded driver: EmbeddedRuntime::requestExit() on the
+    // session's submitted line -- Requested, Cancelled if not yet claimed,
+    // AlreadyTerminal if no line is in flight.  The run COMPLETES (it is not
+    // a failure) with `code` as RunHandle::exitCode().
+    //
+    // Without one (evaluateFragmentSync): raises the line's abort bit and
+    // returns -- atomics only, so a SIGINT handler may call it.  The line
+    // ends at its next instruction, or within 50 ms if it is blocked in a
+    // wait.  AlreadyTerminal if no line is executing; a native call that
+    // never returns is not interrupted.
+    //
+    // Unknown on an invalid session.
+    ExitRequestStatus interrupt(int code = 130);
+
+    // Completions for `buffer` at byte offset `cursor` (npos: its end).
+    // Session bindings, builtins and keywords; members of modules, object
+    // and actor instances and types, enumeration labels, and builtin
+    // methods of lists, strings and the other builtin types -- through a
+    // dotted chain where each step resolves without running code (through
+    // module variables and DECLARED member types, never an instance's own
+    // storage).  Read-only: it runs no Roxal code and takes no session lock,
+    // so it answers while a line runs.  Nothing inside a string or comment.
+    // Any non-driver thread; empty when the session is invalid.
+    CompletionResult complete(std::string_view buffer,
+                              size_t cursor = std::string_view::npos,
+                              size_t maxCandidates = 200) const;
 
     // The session's persistent module, once it has one.
     Value module() const;

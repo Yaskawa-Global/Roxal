@@ -204,8 +204,8 @@ Value ModuleDebug::debug_builtin(const std::string& op, ArgsView args)
         return outV;
     }
     if (op == "pause") {
-        if (coord.isStopped())
-            return Value::boolVal(true);
+        if (coord.joinStop(StopOwner::Debugger))
+            return Value::boolVal(true);   // already stopped: now ours too
         auto out = coord.requestStop(DebugStopReason::Pause,
                                      TimeDuration::milliSecs(3000));
         if (!out.stopped && !coord.isStopped())
@@ -229,11 +229,11 @@ Value ModuleDebug::debug_builtin(const std::string& op, ArgsView args)
         });
         if (!target)
             return Value::boolVal(false);
-        coord.stepAndResume(*target,
+        // Refused (false) while the host holds the stop.
+        return Value::boolVal(coord.stepAndResume(*target,
             mode == "in" ? Thread::DebugStepMode::In
           : mode == "out" ? Thread::DebugStepMode::Out
-                          : Thread::DebugStepMode::Next);
-        return Value::boolVal(true);
+                          : Thread::DebugStepMode::Next));
     }
     if (op == "state") {
         Value dV { Value::objVal(newDictObj()) };

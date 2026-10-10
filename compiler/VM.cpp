@@ -1730,8 +1730,7 @@ void VM::shutdown()
     // complete.
     if (stopCoordinator_) {
         stopCoordinator_->notifySessionEnd();
-        if (stopCoordinator_->isStopped())
-            stopCoordinator_->resume(/*releaseHold=*/false);
+        stopCoordinator_->resumeForShutdown();   // whoever owns the stop
         // Disarm every breakpoint (and release the slow-path demand) while
         // the coordinator is still alive; this also drops the manager's
         // chunk leases, so a later VM in the same process cannot see stale
@@ -2397,8 +2396,7 @@ SliceResult VM::driveRunSlice(RunRecord& run, TimeDuration budget)
             // serviced by whichever thread runs this one.  A fresh thread per
             // fragment would strand them.
             if (!session->thread) {
-                if (!session->domain)
-                    session->domain = make_ptr<ExecutionDomain>();
+                session->ensureDomain();
                 session->thread = Thread::create(session->domain, ThreadKind::Repl);
                 threads.store(session->thread->id(), session->thread);
                 replThread = session->thread;
@@ -2408,6 +2406,13 @@ SliceResult VM::driveRunSlice(RunRecord& run, TimeDuration budget)
             // The claim is the execution's from here: finalizeRunRecord
             // releases it, and the record's destructor must no longer.
             run.prepared->fragmentClaimHeld = false;
+            // A line abort that raced the previous line's end belonged to no
+            // line: it must not end this one.  Then this line is the one an
+            // exit() in the session ends.  Atomics only (RT-safe); the
+            // finalizer clears lineRunning.
+            session->domain->interrupts().fetch_and(
+                ~uint32_t(ExecutionDomain::IntrLineAbort));
+            session->domain->lineRunning.store(true, std::memory_order_release);
         } else {
             // A fresh program gets its own domain: its actors inherit it, its
             // error and exit flags are its own, and finalization joins only
@@ -2442,9 +2447,23 @@ SliceResult VM::driveRunSlice(RunRecord& run, TimeDuration budget)
     // never touches either, it only leaves the code in the record.  Ordering
     // the wake before the phase dispatch below is what lets a thread blocked
     // in a wait fall out of it in this same slice.
+    //
+    // A FRAGMENT is ended right here instead, without executing anything:
+    // its domain is the session's, and raising the domain's exit would end
+    // the session's actors with the line (and leave the flag set for every
+    // later line).  The line's code is recorded on the run; its frames stay
+    // where they are until the finalizer -- off the driver -- unwinds them.
+    // Its thread is not blocked in anything: a driven thread only ever
+    // waits by yielding.
     if (const int code = run.exitRequest.exchange(RunRecord::kNoExitRequest,
                                                   std::memory_order_acq_rel);
         code != RunRecord::kNoExitRequest) {
+        if (run.prepared->session) {
+            run.lineExitCode = code;
+            run.phase = RunPhase::Finished;
+            slice.state = SliceState::ExecutionEnded;
+            return slice;
+        }
         requestDomainExit(*thread->domain, code);
     }
 
@@ -2461,8 +2480,10 @@ SliceResult VM::driveRunSlice(RunRecord& run, TimeDuration budget)
 
     // ---- Preludes, one bounded step at a time ----------------------------
     if (run.phase == RunPhase::Preludes) {
-        if (!thread->frames.empty()) {
-            // A prelude yielded mid-way on an earlier slice; resume it.
+        if (!run.prepared->session && !thread->frames.empty()) {
+            // A prelude yielded mid-way on an earlier slice; resume it.  Never
+            // for a fragment: it has no preludes, and frames on its session's
+            // thread would be an earlier line's, which must not run again.
             result = execute(deadline);
         } else if (run.nextPrelude < values.preludes.size()) {
             const PreludeCall& prelude = values.preludes[run.nextPrelude];
@@ -2520,12 +2541,27 @@ SliceResult VM::driveRunSlice(RunRecord& run, TimeDuration budget)
     }
 
     // ---- Classify -------------------------------------------------------
-    // An exit() surfaces through the call path as a failed call, exactly as
-    // on the synchronous path, which corrects it the same way after
-    // execute() returns: the program EXITED, it did not fail.  Its threads
-    // were woken with the flag and will end; the body is treated as
+    // A fragment ended by exit() (typed in it, or raised elsewhere in its
+    // session) returned from execute() at the exit guard with its frames
+    // still on the session's thread.  The line is over; the session is not.
+    // Take the code and clear the bits now -- bit-targeted, RT-safe -- so no
+    // later line or session actor ever sees them; the finalizer unwinds the
+    // frames.  A runtime error that landed first still fails the line.
+    if (run.prepared->session) {
+        if (const int code = takeLineEnd(*thread->domain); code != kNoLineEnd
+            && result.first != ExecutionStatus::RuntimeError) {
+            run.lineExitCode = code;
+            run.phase = RunPhase::Finished;
+            slice.state = SliceState::ExecutionEnded;
+            return slice;
+        }
+    }
+    // A program's exit() surfaces through the call path as a failed call,
+    // exactly as on the synchronous path, which corrects it the same way
+    // after execute() returns: the program EXITED, it did not fail.  Its
+    // threads were woken with the flag and will end; the body is treated as
     // returned and the run is handed over like any other.
-    if (isExitRequested())
+    else if (isExitRequested())
         result.first = ExecutionStatus::OK;
 
     switch (result.first) {
@@ -2641,11 +2677,35 @@ bool VM::finalizeRunRecord(RunRecord& run, bool failed)
         run.control->result_ = rendered;
     }
 
+    // A line that did not return -- interrupted, exit() typed in it, or
+    // failed -- leaves the session's thread mid-statement.  The line is over
+    // and the session lives on, so put its thread back to idle here, on the
+    // finalizer (non-RT, covered, the driver done with the run): what the
+    // line spawned survives, the line's own frames do not.
+    if (fragment && run.thread) {
+        // No line runs from here: an exit() raised in the session now ends
+        // nothing.  One that raced in first is taken with the unwind (the
+        // driver's own take may not have seen it).
+        run.thread->domain->lineRunning.store(false, std::memory_order_release);
+        takeLineEnd(*run.thread->domain);
+        if (failed || run.lineExitCode.has_value())
+            unwindSessionLine(*run.thread);
+    }
+
     // The exit code, if the program exited: read off its domain before the
-    // domain goes with its last thread.
-    if (run.control && run.thread && run.thread->domain)
+    // domain goes with its last thread.  A fragment reports its OWN code --
+    // the session's domain is shared by every line, and its value is reset
+    // so no later line can report it.
+    if (fragment) {
+        if (run.control)
+            run.control->exitCode_.store(run.lineExitCode.value_or(0),
+                                         std::memory_order_release);
+        if (run.thread && run.thread->domain)
+            run.thread->domain->exitCode.store(0, std::memory_order_release);
+    } else if (run.control && run.thread && run.thread->domain) {
         run.control->exitCode_.store(run.thread->domain->exitCode.load(std::memory_order_acquire),
                                      std::memory_order_release);
+    }
 
     // Retire the launch's module.  Every compiled module is pinned in
     // ObjModuleType::allModules so weak closure links can find it; for a
@@ -2676,11 +2736,82 @@ bool VM::finalizeRunRecord(RunRecord& run, bool failed)
         values.preludes.clear();
         values.terminalValue = Value::nilVal();
     }
-    if (run.prepared && run.prepared->session)
+    if (run.prepared && run.prepared->session) {
+        run.prepared->session->forgetFragmentRun(run.id);
         run.prepared->session->fragmentInFlight.store(false, std::memory_order_release);
+    }
     run.thread.reset();
     thread.reset();
     return failed;
+}
+
+int VM::takeLineEnd(ExecutionDomain& domain)
+{
+    constexpr uint32_t kLineEnd = ExecutionDomain::IntrLineAbort | ExecutionDomain::IntrExit;
+    // Plain load first: this runs after every driven slice of a line, and the
+    // common answer is "no".
+    if ((domain.interrupts().load(std::memory_order_acquire) & kLineEnd) == 0)
+        return kNoLineEnd;
+    const uint32_t raised = domain.interrupts().fetch_and(~kLineEnd) & kLineEnd;
+    if (raised == 0)
+        return kNoLineEnd;
+    // The code was stored before the bit was raised (requestDomainExit,
+    // ReplSession::interrupt), so it is visible once the bit is.
+    return domain.exitCode.exchange(0, std::memory_order_acq_rel);
+}
+
+void VM::unwindSessionLine(Thread& t)
+{
+    // Non-RT, under the caller's mutator cover, with the session's thread not
+    // executing (the driver handed the line over, or the synchronous
+    // evaluation returned) -- and bound as this thread's VM::thread, which
+    // resetStack() works on.
+    assert(thread.get() == &t);
+
+    // A stop over the session goes first.  Its members' frames are what a
+    // debugger inspects, a member parked in it must be let go, and a line
+    // paused at a breakpoint could otherwise never be interrupted.  The
+    // execution's exit path: it releases the park, not the host's hold (a
+    // hold still in force makes the next line start paused).
+    if (stopCoordinator_) {
+        if (stopCoordinator_->stopFormingOrActive())
+            stopCoordinator_->endExecution();
+        stopCoordinator_->cancelStepIfArmed(t);
+    }
+    t.debugSuppressChunk = nullptr;
+    t.debugSuppressStmt = 0xffffffffu;
+    t.debugSuppressActivation = 0;
+
+    // Whatever the line was suspended in, it is not any more.
+    t.threadSleep.store(false);
+    t.awaitedFuture = Value::nilVal();
+    t.pendingWaitFor = Value::nilVal();
+    t.waitSuspension.clear();
+    // Native continuations, deferred native/closure calls and conversions
+    // all refer to frames that are about to go.
+    t.nativeContinuationStack.clear();
+    t.continuationCallbackReturned = false;
+    t.nativeDefaultParamStack.clear();
+    t.nativeParamConversionStack.clear();
+    t.closureParamConversionStack.clear();
+    t.pendingConversions.clear();
+    t.conversionInProgress.clear();
+    t.stmtActionStack.clear();
+    // An event handler the line was running is abandoned with it; events
+    // still queued stay queued for the next line (or the idle servicing).
+    t.eventDispatch = Thread::EventDispatchState{};
+    t.eventHandlerJustReturned = false;
+    t.pendingUncaughtException = Value::nilVal();
+    t.currentBoundCall = Value::nilVal();
+    t.exceptionJumpPending.store(false, std::memory_order_relaxed);
+    t.lastNativeCallRaised = false;
+#ifdef ROXAL_COMPUTE_SERVER
+    t.remoteComputeCallState.clear();
+#endif
+    // Frames and stack last.  resetStack() closes the upvalues still open
+    // over the stack first, so a closure the line left behind keeps the
+    // value it captured rather than reading a recycled slot.
+    resetStack();
 }
 
 ExecutionStatus VM::activatePrepared(PreparedProgram program)
@@ -2809,6 +2940,14 @@ void VM::debugStopHostPump()
 
 void VM::hostOrCondVarWait(Thread* thread, TimeDuration maxWait)
 {
+    // A REPL line blocked here (only the synchronous path ever blocks; a
+    // driven one yields) must notice an interrupt that came from a signal
+    // handler, which can raise the line's abort bit but not notify this
+    // condvar.  So it never sleeps longer than this between looks.
+    static constexpr int64_t kReplWaitSliceUs = 50000;   // 50 ms
+    if (thread && thread->kind == ThreadKind::Repl
+        && maxWait.microSecs() > kReplWaitSliceUs)
+        maxWait = TimeDuration::microSecs(kReplWaitSliceUs);
     // Only the main thread may drive a host UI loop; actor threads (and any build
     // without a host loop installed) fall back to the plain sleep condvar.
     if (hostEventLoop_ && onMainThread()) {
@@ -2869,8 +3008,7 @@ ExecutionStatus VM::evaluateFragmentOnThisThread(ReplSessionState& session,
     // the thread running this one.  Its domain likewise: a fragment's errors
     // and exits are the session's, not the next program run's.
     if (!session.thread) {
-        if (!session.domain)
-            session.domain = make_ptr<ExecutionDomain>();
+        session.ensureDomain();
         session.thread = Thread::create(session.domain, ThreadKind::Repl);
         replThread = session.thread;
     }
@@ -2878,19 +3016,37 @@ ExecutionStatus VM::evaluateFragmentOnThisThread(ReplSessionState& session,
     // Cleared AFTER binding the thread: the flag is the session domain's,
     // and clearing before would have cleared the caller's domain instead.
     clearRuntimeErrorFlag();
+    // A line abort that landed while no line ran belonged to no line.
+    session.domain->interrupts().fetch_and(~uint32_t(ExecutionDomain::IntrLineAbort));
     if (stopCoordinator_)
         stopCoordinator_->beginExecution();
     markMainThread();
     resetStack();
 
     const Value closureValue = fragment.record()->roots.get().closure;
+    // From here an interrupt() or exit() reaches this line (and only while
+    // it runs: one that loses the race with its end is dropped by the next).
+    session.domain->lineRunning.store(true, std::memory_order_release);
     auto resultPair = invokeClosure(asClosure(closureValue), {});
+    session.domain->lineRunning.store(false, std::memory_order_release);
 
     ExecutionStatus result = resultPair.first;
     if (hasRuntimeError())
         result = ExecutionStatus::RuntimeError;
+
+    // A line ended early -- interrupted, or (on this path, a process exit)
+    // exit() typed in it -- returned from the exit guard with its frames
+    // still on the session's thread.  Take the bits so the next line does
+    // not die on its first instruction, and put the thread back to idle.
+    // A failed line is unwound the same way: runtimeError() reset its stack
+    // but not what it was suspended in.
+    const bool ended = takeLineEnd(*session.domain) != kNoLineEnd;
+    if (ended || result == ExecutionStatus::RuntimeError)
+        unwindSessionLine(*thread);
+    if (ended && result != ExecutionStatus::RuntimeError)
+        result = ExecutionStatus::OK;
     if (result == ExecutionStatus::OK)
-        session.roots.get().lastResult = resultPair.second;
+        session.roots.get().lastResult = ended ? Value::nilVal() : resultPair.second;
 
     // Released while covered, before the fragment handle goes away.
     fragment.reset();
@@ -7370,7 +7526,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
         // missed-trigger maintenance surface.  The rare cases are disambiguated
         // in priority order inside.
         if ((unsigned)(word->load()
-                       & (ExecutionDomain::IntrExit | ExecutionDomain::IntrDebugStop
+                       & (ExecutionDomain::IntrExit | ExecutionDomain::IntrLineAbort
+                          | ExecutionDomain::IntrDebugStop
                           | ExecutionDomain::IntrDebugSlowPath))
             | (unsigned)thread->threadSleep.load()
             | (unsigned)thread->awaitedFuture.isNonNil()
@@ -7378,6 +7535,13 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
             | (unsigned)thread->waitSuspension.active) [[unlikely]] {
 
             if (isExitRequested())
+                return std::make_pair(ExecutionStatus::OK,Value::nilVal());
+            // The REPL line in flight is to end (exit() raised in its
+            // session, or a host interrupt).  Only the line's own thread
+            // returns: the session's actors run straight through.  Its
+            // frames stay put; whoever ends the line unwinds them.
+            if ((word->load() & ExecutionDomain::IntrLineAbort) != 0
+                && thread->kind == ThreadKind::Repl)
                 return std::make_pair(ExecutionStatus::OK,Value::nilVal());
 
             // Debugger cooperative stop point.  Sleepers and awaiters
@@ -7387,7 +7551,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
             // gate-counted dataflow section finishes its bounded node
             // work first.  RT/deadline execution acknowledges and returns
             // Paused (bounded atomic work only); everything else parks.
-            if (debugStopRequested() && thread->dataflowEvalDepth == 0
+            if ((word->load() & ExecutionDomain::IntrDebugStop) != 0
+                && thread->dataflowEvalDepth == 0
                 && !debugStopsDeferred
                 && !thread->debugExcluded.load(std::memory_order_relaxed)) [[unlikely]] {
                 if (hasDeadline || SimpleMarkSweepGC::inGCYieldSectionOnThisThread()
@@ -12968,6 +13133,15 @@ void VM::raiseZeroDivisionError(const char* msg)
 void VM::resetStack()
 {
     if (!thread) return;
+    // Close every upvalue still open over this stack BEFORE it is cleared: a
+    // closure that captured a local of a frame being discarded here (a line
+    // that was interrupted or failed, its handlers stored in the session)
+    // must keep the captured value, exactly as if the frame had returned --
+    // dropping the list unclosed would leave it reading whatever later
+    // occupies the slot.  Bounded, allocation-free; a no-op when nothing is
+    // open, which is every call on a stack that was already empty.
+    if (!thread->openUpvalues.empty() && !thread->stack.empty())
+        closeUpvalues(thread->stack.data());
     thread->stack.clear();
     thread->stack.resize(stackLimit);
     thread->stackTop = thread->stack.begin();
@@ -13658,9 +13832,10 @@ void VM::defineBuiltinMethod(ValueType type, const std::string& name, NativeFn f
                              uint32_t noMutateArgs)
 {
     auto us = toUnicodeString(name);
-    builtinMethods[type][us.hashCode()] = BuiltinMethodInfo(fn, isProc, funcType,
-                                                            std::move(defaults), declFunction,
-                                                            0, noMutateSelf, noMutateArgs);
+    BuiltinMethodInfo& info = builtinMethods[type][us.hashCode()];
+    info = BuiltinMethodInfo(fn, isProc, funcType, std::move(defaults), declFunction,
+                             0, noMutateSelf, noMutateArgs);
+    info.name = name;
 }
 
 void VM::defineBuiltinProperties()
@@ -13699,7 +13874,9 @@ void VM::defineBuiltinProperties()
 void VM::defineBuiltinProperty(ValueType type, const std::string& name, NativePropertyGetter getter, NativePropertySetter setter)
 {
     auto us = toUnicodeString(name);
-    builtinProperties[type][us.hashCode()] = BuiltinPropertyInfo(getter, setter);
+    BuiltinPropertyInfo& info = builtinProperties[type][us.hashCode()];
+    info = BuiltinPropertyInfo(getter, setter);
+    info.name = name;
 }
 
 Value VM::signal_value_getter(Value& receiver)
@@ -16123,8 +16300,20 @@ df::DataflowEngine* VM::dataflowEngineForDebug()
 
 void VM::requestDomainExit(ExecutionDomain& domain, int code)
 {
+    // A REPL session outlives any one line.  exit() raised anywhere in it --
+    // typed in a line, from one of its actors, carried in from a node it
+    // created -- ends the line in flight, never the session: only the
+    // session's Repl thread honours IntrLineAbort, and the line's end takes
+    // it back off.  Raising IntrExit here would end every actor the session
+    // has, and stay raised for every later line.  With no line running there
+    // is nothing to end, and a bit left raised would end the next line.
+    if (domain.replSession && !domain.lineRunning.load(std::memory_order_acquire))
+        return;
+    // The code first: whoever sees the bit reads it.
     domain.exitCode.store(code, std::memory_order_release);
-    domain.interrupts().fetch_or(ExecutionDomain::IntrExit);
+    domain.interrupts().fetch_or(domain.replSession
+                                     ? uint32_t(ExecutionDomain::IntrLineAbort)
+                                     : uint32_t(ExecutionDomain::IntrExit));
     wakeDomainThreads(domain);
 }
 

@@ -28,15 +28,26 @@ StopCoordinator::~StopCoordinator()
 void StopCoordinator::beginExecution()
 {
     acceptingStops_.store(true, std::memory_order_release);
+    // A host hold placed before this execution started: it begins paused.
+    // Atomics only (this can run on the RT driver); the worker opens the
+    // hold and collects the acknowledgements (advancePendingStop).
+    if ((owners_.load(std::memory_order_acquire) & ownerBit(StopOwner::Host)) != 0
+        && beginStop(DebugStopReason::Host))
+        hostPending_.store(true, std::memory_order_release);
 }
 
 void StopCoordinator::endExecution()
 {
+    std::lock_guard<std::recursive_mutex> control(controlMutex_);
     // Order matters: close the gate first, so nothing that the release
     // lets run can open a new stop; then release.
     acceptingStops_.store(false, std::memory_order_release);
+    // The debugger's interest ends with the execution; the host's does not
+    // (while it holds, the next execution starts paused).
+    owners_.fetch_and(uint8_t(~ownerBit(StopOwner::Debugger)), std::memory_order_acq_rel);
+    hostPending_.store(false, std::memory_order_release);
     if (stopped_.load(std::memory_order_acquire)) {
-        resume(/*releaseHold=*/false);
+        resumeNow(/*releaseHold=*/false);
         return;
     }
     // A stop still FORMING -- its controller gave up, or its worker never
@@ -165,52 +176,87 @@ void StopCoordinator::openHoldAndWake(uint64_t epoch, DebugStopReason reason,
 StopCoordinator::StopOutcome StopCoordinator::requestStop(DebugStopReason reason,
                                                           TimeDuration timeout)
 {
-    if (!beginStop(reason))
+    // A blocking request is the debugger's (whatever its reason label); the
+    // host pauses through requestHostPause.
+    if (!beginStop(reason)) {
+        if (forming_.load(std::memory_order_acquire)
+            && hostPending_.load(std::memory_order_acquire)) {
+            // A pending host pause: join it, and help it along -- this may be
+            // the worker that would otherwise advance it.  If it does not
+            // complete in our budget it stays pending as the host's.
+            owners_.fetch_or(ownerBit(StopOwner::Debugger), std::memory_order_acq_rel);
+            const TimePoint deadline = TimePoint::currentTime() + timeout;
+            for (;;) {
+                advancePendingStop();
+                if (stopped_.load(std::memory_order_acquire))
+                    return { true, {} };
+                if (!forming_.load(std::memory_order_acquire)
+                    || TimePoint::currentTime() >= deadline)
+                    break;
+                SimpleMarkSweepGC::GCSafeBlockScope blockScope;
+                std::unique_lock<std::mutex> lk(domain_->stopMutex);
+                domain_->ackCv.wait_for(lk, std::chrono::milliseconds(1));
+            }
+            owners_.fetch_and(uint8_t(~ownerBit(StopOwner::Debugger)),
+                              std::memory_order_acq_rel);
+            std::string waiting;
+            {
+                std::lock_guard<std::mutex> lk(infoMutex_);
+                waiting = waitingFor_;
+            }
+            return { false, waiting.empty() ? std::string("stop timed out")
+                                            : "stop timed out waiting for " + waiting };
+        }
         return { false, "a stop is already forming or active" };
+    }
+    owners_.fetch_or(ownerBit(StopOwner::Debugger), std::memory_order_acq_rel);
     const uint64_t epoch = currentEpoch();
     {
         // Before quiescence: the commit-time onDebugStopped hook may read
-        // stoppedInfo() (see completeAsyncStop).
+        // stoppedInfo() (see completeAsyncStop).  The reported thread is
+        // chosen at commit (tryCommitPass).
         std::lock_guard<std::mutex> lk(infoMutex_);
         StopInfo info;
         info.reason = reason;
-        info.threadId = VM::thread ? VM::thread->id() : 0;
         stopInfo_ = info;
     }
     openHoldAndWake(epoch, reason, VM::thread ? VM::thread->id() : 0);
-    // (awaitQuiescence cancels preempted steps before publishing the stop.)
-    auto out = awaitQuiescence(epoch, timeout);
-    if (out.stopped) {
-        // Report a deterministic FROZEN member, never the controller --
-        // which for a web pause is the Debug service actor, not something
-        // the user can inspect.  Prefer the smallest-id member WITH frames
-        // (the engine actor idles frameless and makes a useless selection);
-        // frames of quiesced members are safe to size.
-        uint64_t chosen = 0;
-        uint64_t chosenAny = 0;
-        {
-            std::lock_guard<std::mutex> lk(leaseMutex_);
-            for (const auto& t : epochLeases_) {
-                if (!t)
-                    continue;
-                if (chosenAny == 0 || t->id() < chosenAny)
-                    chosenAny = t->id();
-                if (!t->frames.empty() && (chosen == 0 || t->id() < chosen))
-                    chosen = t->id();
-            }
-        }
-        if (chosen == 0)
-            chosen = chosenAny;
-        std::lock_guard<std::mutex> lk(infoMutex_);
-        if (stopInfo_)
-            stopInfo_->threadId = chosen;
-    }
-    return out;
+    // (tryCommitPass cancels preempted steps before publishing the stop.)
+    return awaitQuiescence(epoch, timeout);
 }
 
 StopCoordinator::StopOutcome StopCoordinator::awaitQuiescence(uint64_t epoch,
                                                               TimeDuration timeout)
 {
+    // Collect acknowledgements until the epoch commits -- or the timeout
+    // expires, when the stop is rolled back (or left pending as the host's).
+    const TimePoint deadline = TimePoint::currentTime() + timeout;
+    std::string laggard;
+    for (;;) {
+        if (tryCommitPass(epoch, laggard))
+            return { true, {} };
+        if (!forming_.load(std::memory_order_acquire))
+            return { false, "the stop was withdrawn" };
+        if (TimePoint::currentTime() >= deadline)
+            return giveUp(epoch, laggard.empty()
+                                     ? std::string("stop timed out")
+                                     : "stop timed out waiting for " + laggard,
+                          StopOwner::Debugger);
+        // Timed ack wait: non-RT ackers notify ackCv; RT ackers only store
+        // atomics, which this poll interval observes.
+        SimpleMarkSweepGC::GCSafeBlockScope blockScope;
+        std::unique_lock<std::mutex> lk(domain_->stopMutex);
+        domain_->ackCv.wait_for(lk, std::chrono::milliseconds(1));
+    }
+}
+
+bool StopCoordinator::tryCommitPass(uint64_t epoch, std::string& laggard)
+{
+    std::lock_guard<std::recursive_mutex> control(controlMutex_);
+    laggard.clear();
+    if (!forming_.load(std::memory_order_acquire) || currentEpoch() != epoch)
+        return false;   // withdrawn (cancelled, rolled back) under us
+
     // The controller thread itself (debug worker, or an in-VM test
     // controller inside a native call) is not a member of the epoch: it is
     // the one driving it and must not run debuggee code while stopped.
@@ -224,77 +270,85 @@ StopCoordinator::StopOutcome StopCoordinator::awaitQuiescence(uint64_t epoch,
     };
     df::DataflowEngine* eng = vm_.dataflowEngineForDebug();
 
-    // Collect acknowledgements, externally acknowledging idle threads,
-    // until the membership snapshot is stable and fully acknowledged and
-    // the dataflow gate is quiesced -- or the timeout expires.
-    const TimePoint deadline = TimePoint::currentTime() + timeout;
-    std::string laggard;
-    for (;;) {
-        laggard.clear();
-        bool allAcked = true;
-        auto leases = ThreadManager::instance().snapshotLeases(domain_->id());
-        for (auto& t : leases) {
+    // Acknowledge idle threads externally; the epoch commits once the
+    // membership snapshot is stable and fully acknowledged and the dataflow
+    // gate is quiesced.
+    bool allAcked = true;
+    auto leases = ThreadManager::instance().snapshotLeases(domain_->id());
+    for (auto& t : leases) {
+        if (isController(t.get()))
+            continue;
+        if (t->debugAckEpoch.load(std::memory_order_acquire) >= epoch)
+            continue;
+        // Idle thread: acknowledge it externally.  The CAS proves nobody
+        // is inside execute(); the entry gate keeps it out until release.
+        auto expect = Thread::DebugOwnership::Idle;
+        if (t->debugOwnership.compare_exchange_strong(
+                expect, Thread::DebugOwnership::StoppedExternal,
+                std::memory_order_acq_rel)) {
+            t->debugAckEpoch.store(epoch, std::memory_order_release);
+            continue;
+        }
+        allAcked = false;
+        laggard = describeThread(t);
+    }
+    const bool gateQuiet = !eng || eng->debugGate.quiesced();
+    if (allAcked && !gateQuiet && laggard.empty())
+        laggard = "dataflow evaluator still active";
+    if (!allAcked || !gateQuiet)
+        return false;
+    // Membership revalidation: threads registered while forming are
+    // pre-acknowledged by the registration gate, so one more stable scan
+    // under the same predicate confirms the set is closed.
+    auto again = ThreadManager::instance().snapshotLeases(domain_->id());
+    for (auto& t : again) {
+        if (isController(t.get()))
+            continue;
+        if (t->debugAckEpoch.load(std::memory_order_acquire) < epoch) {
+            laggard = describeThread(t);
+            return false;
+        }
+    }
+    {
+        // Commit: retain the revalidated membership as strong leases for
+        // the whole stopped interval -- no member Thread can be destroyed
+        // while stopped.  Merge (not replace): the registration gate may
+        // already have appended late-registered threads.  MEMBERS ONLY:
+        // controllers and debug-excluded service threads keep RUNNING
+        // through the stop -- leasing them would hand the inspector
+        // actively-changing frames as if frozen.
+        std::lock_guard<std::mutex> lk(leaseMutex_);
+        for (auto& t : again) {
             if (isController(t.get()))
                 continue;
-            if (t->debugAckEpoch.load(std::memory_order_acquire) >= epoch)
-                continue;
-            // Idle thread: acknowledge it externally.  The CAS proves nobody
-            // is inside execute(); the entry gate keeps it out until release.
-            auto expect = Thread::DebugOwnership::Idle;
-            if (t->debugOwnership.compare_exchange_strong(
-                    expect, Thread::DebugOwnership::StoppedExternal,
-                    std::memory_order_acq_rel)) {
-                t->debugAckEpoch.store(epoch, std::memory_order_release);
-                continue;
-            }
-            allAcked = false;
-            laggard = describeThread(t);
+            epochLeases_.push_back(std::move(t));
         }
-        const bool gateQuiet = !eng || eng->debugGate.quiesced();
-        if (allAcked && !gateQuiet && laggard.empty())
-            laggard = "dataflow evaluator still active";
-        if (allAcked && gateQuiet) {
-            // Membership revalidation: threads registered while forming are
-            // pre-acknowledged by the registration gate, so one more stable
-            // scan under the same predicate confirms the set is closed.
-            bool stable = true;
-            auto again = ThreadManager::instance().snapshotLeases(domain_->id());
-            for (auto& t : again) {
-                if (isController(t.get()))
+    }
+    {
+        // A pause (debugger or host) reports a deterministic FROZEN member,
+        // never the controller -- which for a web pause is the Debug service
+        // actor, not something the user can inspect.  Prefer the
+        // smallest-id member WITH frames (the engine actor idles frameless
+        // and makes a useless selection); frames of quiesced members are
+        // safe to size.  Before the stopped notice, which reads it.
+        uint64_t chosen = 0;
+        uint64_t chosenAny = 0;
+        {
+            std::lock_guard<std::mutex> lk(leaseMutex_);
+            for (const auto& t : epochLeases_) {
+                if (!t)
                     continue;
-                if (t->debugAckEpoch.load(std::memory_order_acquire) < epoch) {
-                    stable = false;
-                    laggard = describeThread(t);
-                    break;
-                }
-            }
-            if (stable) {
-                // Commit: retain the revalidated membership as strong
-                // leases for the whole stopped interval -- no member Thread
-                // can be destroyed while stopped.  Merge (not replace): the
-                // registration gate may already have appended late-registered
-                // threads.  MEMBERS ONLY: controllers and debug-excluded
-                // service threads keep RUNNING through the stop -- leasing
-                // them would hand the inspector actively-changing frames as
-                // if frozen.
-                std::lock_guard<std::mutex> lk(leaseMutex_);
-                for (auto& t : again) {
-                    if (isController(t.get()))
-                        continue;
-                    epochLeases_.push_back(std::move(t));
-                }
-                break;
+                if (chosenAny == 0 || t->id() < chosenAny)
+                    chosenAny = t->id();
+                if (!t->frames.empty() && (chosen == 0 || t->id() < chosen))
+                    chosen = t->id();
             }
         }
-        if (TimePoint::currentTime() >= deadline)
-            return rollback(epoch, laggard.empty()
-                                       ? std::string("stop timed out")
-                                       : "stop timed out waiting for " + laggard);
-        // Timed ack wait: non-RT ackers notify ackCv; RT ackers only store
-        // atomics, which this poll interval observes.
-        SimpleMarkSweepGC::GCSafeBlockScope blockScope;
-        std::unique_lock<std::mutex> lk(domain_->stopMutex);
-        domain_->ackCv.wait_for(lk, std::chrono::milliseconds(1));
+        std::lock_guard<std::mutex> lk(infoMutex_);
+        waitingFor_.clear();
+        if (stopInfo_ && (stopInfo_->reason == DebugStopReason::Pause
+                          || stopInfo_->reason == DebugStopReason::Host))
+            stopInfo_->threadId = chosen != 0 ? chosen : chosenAny;
     }
 
     // Cancel steps preempted by this stop BEFORE publishing stopped_: every
@@ -304,15 +358,40 @@ StopCoordinator::StopOutcome StopCoordinator::awaitQuiescence(uint64_t epoch,
     cancelArmedStepsInEpoch();
     stopped_.store(true, std::memory_order_release);
     forming_.store(false, std::memory_order_release);
+    hostPending_.store(false, std::memory_order_release);
     if (DebugHostControl* hc = hostControl_.load(std::memory_order_acquire))
         hc->onDebugStopped({ sessionId_,
                              holdGeneration_.load(std::memory_order_acquire),
                              epoch });
-    return { true, {} };
+    return true;
+}
+
+StopCoordinator::StopOutcome StopCoordinator::giveUp(uint64_t epoch, const std::string& why,
+                                                     StopOwner owner)
+{
+    std::lock_guard<std::recursive_mutex> control(controlMutex_);
+    if (!forming_.load(std::memory_order_acquire) || currentEpoch() != epoch)
+        return { false, why };
+    owners_.fetch_and(uint8_t(~ownerBit(owner)), std::memory_order_acq_rel);
+    if ((owners_.load(std::memory_order_acquire) & ownerBit(StopOwner::Host)) != 0) {
+        // The host joined while it formed: a host pause never fails, so the
+        // stop stays pending as the host's and the worker carries it on.
+        {
+            std::lock_guard<std::mutex> lk(infoMutex_);
+            const std::string prefix = "stop timed out waiting for ";
+            waitingFor_ = why.rfind(prefix, 0) == 0 ? why.substr(prefix.size()) : std::string();
+        }
+        hostPending_.store(true, std::memory_order_release);
+        if (DebugWorker* w = workerRaw_.load(std::memory_order_acquire))
+            w->notifyRecheck();
+        return { false, why };
+    }
+    return rollback(epoch, why);
 }
 
 StopCoordinator::StopOutcome StopCoordinator::rollback(uint64_t epoch, const std::string& why)
 {
+    std::lock_guard<std::recursive_mutex> control(controlMutex_);
     // All-or-nothing: acknowledged participants are released, no stopped
     // event is emitted, and the host motion hold is NOT silently released
     // -- the host is told the stop failed and applies its own fail-safe
@@ -323,11 +402,162 @@ StopCoordinator::StopOutcome StopCoordinator::rollback(uint64_t epoch, const std
                                 holdGeneration_.load(std::memory_order_acquire),
                                 epoch, why });
     forming_.store(false, std::memory_order_release);
+    hostPending_.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lk(infoMutex_);
+        waitingFor_.clear();
+    }
     // Failed-stop backoff for the async path: a wedged thread must not
     // produce a breakpoint retrap storm.
     lastStopFailureUs_.store(TimePoint::currentTime().microSecs(),
                              std::memory_order_relaxed);
     return { false, why };
+}
+
+void StopCoordinator::cancelPending()
+{
+    std::lock_guard<std::recursive_mutex> control(controlMutex_);
+    if (!forming_.load(std::memory_order_acquire))
+        return;
+    // Nobody wants it any more: release what parked, close the hold it
+    // opened, report nothing as failed (it did not fail; it was withdrawn).
+    releaseAll();
+    forming_.store(false, std::memory_order_release);
+    hostPending_.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lk(infoMutex_);
+        stopInfo_.reset();
+        waitingFor_.clear();
+    }
+    if (holdActive_.exchange(false, std::memory_order_acq_rel)) {
+        if (DebugHostControl* hc = hostControl_.load(std::memory_order_acquire))
+            hc->onDebugContinueRequested(
+                { sessionId_, holdGeneration_.load(std::memory_order_acquire) });
+    }
+}
+
+StopCoordinator::HostPauseState StopCoordinator::requestHostPause()
+{
+    ensureWorker();
+    std::lock_guard<std::recursive_mutex> control(controlMutex_);
+    owners_.fetch_or(ownerBit(StopOwner::Host), std::memory_order_acq_rel);
+    if (stopped_.load(std::memory_order_acquire))
+        return HostPauseState::Stopped;
+    if (forming_.load(std::memory_order_acquire))
+        return HostPauseState::Pending;   // joined: if that stop gives up, it stays ours (giveUp)
+    if (!beginStop(DebugStopReason::Host))
+        return HostPauseState::Idle;      // no execution: the next one starts paused
+    const uint64_t epoch = currentEpoch();
+    {
+        std::lock_guard<std::mutex> lk(infoMutex_);
+        StopInfo info;
+        info.reason = DebugStopReason::Host;
+        stopInfo_ = info;
+        waitingFor_.clear();
+    }
+    pendingWokenEpoch_.store(epoch, std::memory_order_release);
+    hostPending_.store(true, std::memory_order_release);
+    openHoldAndWake(epoch, DebugStopReason::Host, 0);
+    if (DebugWorker* w = workerRaw_.load(std::memory_order_acquire))
+        w->notifyRecheck();
+    return HostPauseState::Pending;
+}
+
+void StopCoordinator::releaseHostPause()
+{
+    const uint8_t host = ownerBit(StopOwner::Host);
+    const uint8_t before = owners_.fetch_and(uint8_t(~host), std::memory_order_acq_rel);
+    if ((before & host) == 0 || (before & uint8_t(~host)) != 0)
+        return;   // not held by the host, or the debugger still holds it
+    // Physical release on the worker: it serializes with the debugger's
+    // inspection, which reads the stopped threads.
+    postToWorker([this] {
+        std::lock_guard<std::recursive_mutex> control(controlMutex_);
+        if (owners_.load(std::memory_order_acquire) != 0)
+            return;   // taken again meanwhile
+        if (stopped_.load(std::memory_order_acquire))
+            resumeNow(/*releaseHold=*/true);
+        else if (hostPending_.load(std::memory_order_acquire))
+            cancelPending();
+    });
+}
+
+void StopCoordinator::releaseForExit()
+{
+    // No new stop in this execution: it is ending.  The next one re-opens
+    // the gate (beginExecution) -- and starts paused if the host still holds.
+    acceptingStops_.store(false, std::memory_order_release);
+    owners_.fetch_and(uint8_t(~ownerBit(StopOwner::Debugger)), std::memory_order_acq_rel);
+    postToWorker([this] {
+        std::lock_guard<std::recursive_mutex> control(controlMutex_);
+        // releaseHold=false: an exit must never be what restarts motion; the
+        // hold stays the host's to drop (as at session end).
+        if (stopped_.load(std::memory_order_acquire))
+            resumeNow(/*releaseHold=*/false);
+        else if (hostPending_.load(std::memory_order_acquire))
+            cancelPending();
+    });
+}
+
+void StopCoordinator::resumeForShutdown()
+{
+    std::lock_guard<std::recursive_mutex> control(controlMutex_);
+    owners_.store(0, std::memory_order_release);
+    hostPending_.store(false, std::memory_order_release);
+    if (stopped_.load(std::memory_order_acquire))
+        resumeNow(/*releaseHold=*/false);
+    else if (forming_.load(std::memory_order_acquire))
+        rollback(currentEpoch(), "VM shutting down");
+}
+
+StopCoordinator::PauseStatus StopCoordinator::pauseStatus()
+{
+    PauseStatus s;
+    const uint8_t o = owners_.load(std::memory_order_acquire);
+    s.host = (o & ownerBit(StopOwner::Host)) != 0;
+    s.debugger = (o & ownerBit(StopOwner::Debugger)) != 0;
+    s.stopped = stopped_.load(std::memory_order_acquire);
+    s.pending = !s.stopped && forming_.load(std::memory_order_acquire)
+                && hostPending_.load(std::memory_order_acquire);
+    std::lock_guard<std::mutex> lk(infoMutex_);
+    if (s.pending)
+        s.waitingFor = waitingFor_;
+    return s;
+}
+
+void StopCoordinator::advancePendingStop()
+{
+    if (!hostPending_.load(std::memory_order_acquire))
+        return;
+    std::lock_guard<std::recursive_mutex> control(controlMutex_);
+    if (!hostPending_.load(std::memory_order_acquire))
+        return;
+    if (!forming_.load(std::memory_order_acquire)) {
+        hostPending_.store(false, std::memory_order_release);
+        return;
+    }
+    if (owners_.load(std::memory_order_acquire) == 0) {
+        cancelPending();   // released before it committed
+        return;
+    }
+    const uint64_t epoch = currentEpoch();
+    if (pendingWokenEpoch_.load(std::memory_order_acquire) != epoch) {
+        // Started on the driver (beginExecution under a host hold), which
+        // could do atomics only: open the hold and wake everything here.
+        {
+            std::lock_guard<std::mutex> lk(infoMutex_);
+            StopInfo info;
+            info.reason = DebugStopReason::Host;
+            stopInfo_ = info;
+        }
+        pendingWokenEpoch_.store(epoch, std::memory_order_release);
+        openHoldAndWake(epoch, DebugStopReason::Host, 0);
+    }
+    std::string laggard;
+    if (!tryCommitPass(epoch, laggard)) {
+        std::lock_guard<std::mutex> lk(infoMutex_);
+        waitingFor_ = laggard;
+    }
 }
 
 void StopCoordinator::releaseAll()
@@ -358,6 +588,25 @@ void StopCoordinator::releaseAll()
 
 void StopCoordinator::resume(bool releaseHold)
 {
+    std::lock_guard<std::recursive_mutex> control(controlMutex_);
+    owners_.fetch_and(uint8_t(~ownerBit(StopOwner::Debugger)), std::memory_order_acq_rel);
+    if ((owners_.load(std::memory_order_acquire) & ownerBit(StopOwner::Host)) != 0)
+        return;   // the host still holds it: the domain stays stopped
+    resumeNow(releaseHold);
+}
+
+bool StopCoordinator::joinStop(StopOwner owner)
+{
+    std::lock_guard<std::recursive_mutex> control(controlMutex_);
+    if (!stopped_.load(std::memory_order_acquire))
+        return false;
+    owners_.fetch_or(ownerBit(owner), std::memory_order_acq_rel);
+    return true;
+}
+
+void StopCoordinator::resumeNow(bool releaseHold)
+{
+    std::lock_guard<std::recursive_mutex> control(controlMutex_);
     if (!stopped_.exchange(false))
         return;
     {
@@ -447,6 +696,7 @@ bool StopCoordinator::tryBeginAsyncStop(DebugStopReason reason, uint64_t threadI
         return false;   // failed-stop backoff window
     if (!beginStop(reason))
         return false;
+    owners_.fetch_or(ownerBit(StopOwner::Debugger), std::memory_order_acq_rel);
     if (!description.empty()) {
         // Winner-only staging, strictly before the asyncPending_ publication
         // the worker consumes it behind.
@@ -518,11 +768,14 @@ std::optional<StopCoordinator::StopInfo> StopCoordinator::stoppedInfo()
     return stopInfo_;
 }
 
-void StopCoordinator::stepAndResume(Thread& t, Thread::DebugStepMode mode)
+bool StopCoordinator::stepAndResume(Thread& t, Thread::DebugStepMode mode)
 {
+    std::lock_guard<std::recursive_mutex> control(controlMutex_);
     if (!stopped_.load(std::memory_order_acquire)
         || mode == Thread::DebugStepMode::None || t.frames.empty())
-        return;
+        return false;
+    if ((owners_.load(std::memory_order_acquire) & ownerBit(StopOwner::Host)) != 0)
+        return false;   // held by the host: no step may run until it releases
     // The target is parked/externally-stopped: its frames are safe to read.
     cancelStepIfArmed(t);   // re-arming replaces (and rebalances the demand)
     auto& fr = t.frames.back();
@@ -547,6 +800,7 @@ void StopCoordinator::stepAndResume(Thread& t, Thread::DebugStepMode mode)
     }
     addSlowPathDemand();   // released when the step fires or is cancelled
     resume(/*releaseHold=*/false);   // stepping never releases the motion hold
+    return true;
 }
 
 void StopCoordinator::cancelStepIfArmed(Thread& t)

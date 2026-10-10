@@ -7,6 +7,62 @@
 
 namespace roxal {
 
+void ReplSessionState::ensureDomain()
+{
+    if (domain)
+        return;
+    ptr<ExecutionDomain> created = make_ptr<ExecutionDomain>();
+    // Before any thread joins it: exit() raised in it must end a line,
+    // never the session.
+    created->replSession = true;
+    domain = created;
+    signalDomain.store(created.get(), std::memory_order_release);
+}
+
+void ReplSessionState::noteFragmentRun(const RunHandle& run)
+{
+    std::lock_guard<std::mutex> lock(runMutex_);
+    fragmentRun_ = run;
+}
+
+void ReplSessionState::forgetFragmentRun(RunId id)
+{
+    std::lock_guard<std::mutex> lock(runMutex_);
+    if (fragmentRun_.id() == id)
+        fragmentRun_ = RunHandle();
+}
+
+RunHandle ReplSessionState::fragmentRun() const
+{
+    std::lock_guard<std::mutex> lock(runMutex_);
+    return fragmentRun_;
+}
+
+ExitRequestStatus ReplSession::interrupt(int code)
+{
+    if (vm_ == nullptr || state_ == nullptr || vm_->isShutdown())
+        return ExitRequestStatus::Unknown;
+
+    // Driven: the line is a run, and ending a run is the runtime's.  The
+    // handle is copied out first -- requestExit takes the runtime's lock,
+    // which submit() holds while it records the handle here.
+    if (vm_->embeddedDriverAttached()) {
+        RunHandle run = state_->fragmentRun();
+        if (!run.valid())
+            return ExitRequestStatus::AlreadyTerminal;
+        return run.requestExit(code);
+    }
+
+    // Synchronous: async-signal-safe from here on -- lock-free atomics only.
+    // The code goes first; the line's end takes it once it sees the bit.
+    ExecutionDomain* domain = state_->signalDomain.load(std::memory_order_acquire);
+    if (domain == nullptr || !domain->lineRunning.load(std::memory_order_acquire))
+        return ExitRequestStatus::AlreadyTerminal;
+    domain->exitCode.store(code, std::memory_order_release);
+    domain->interrupts().fetch_or(ExecutionDomain::IntrLineAbort);
+    return ExitRequestStatus::Requested;
+}
+
 Value ReplSession::module() const
 {
     if (!valid())

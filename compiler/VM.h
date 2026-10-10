@@ -10,6 +10,7 @@
 #include <array>
 #include <filesystem>
 #include <functional>
+#include <limits>
 
 #include "core/atomic.h"
 #include "core/Output.h"
@@ -706,9 +707,15 @@ public:
     // ---- Debugger stop machinery ----
     // Coordinator for the default domain (constructed eagerly with the VM).
     StopCoordinator& stopCoordinator() { return *stopCoordinator_; }
-    // Fast cooperative-stop-point test: one bit in the interrupt word.
+    // Fast cooperative-stop-point test: one bit in the CURRENT thread's
+    // domain word.  A stop sets the bit on the domain it is bound to (a
+    // program run's own, a REPL session's), so reading the default domain's
+    // word here would leave every thread of such a run -- an actor inside a
+    // method, a sleeper -- deaf to it.  Host threads (no VM thread) read the
+    // default domain's; a host that must know about a stop in ANY domain
+    // asks the coordinator (StopCoordinator::stopFormingOrActive).
     inline bool debugStopRequested() const {
-        return (interrupts_.load() & ExecutionDomain::IntrDebugStop) != 0;
+        return (currentInterrupts().load() & ExecutionDomain::IntrDebugStop) != 0;
     }
     // Non-RT acknowledge-and-park for Roxal-owned native loops (the dataflow
     // engine's run() drain, actor queue idle).  No-op when no stop is
@@ -849,8 +856,26 @@ protected:
     /// the driver's next slice sees the flag, the body returns, and the run is
     /// handed over with the code on its handle.  Reached by a host through
     /// EmbeddedRuntime::requestExit(); exit() in a driven program takes the
-    /// same path with its own thread's domain.
+    /// same path with its own thread's domain.  A REPL session's domain is
+    /// never ended: the line in flight is (IntrLineAbort), and with no line
+    /// running nothing is.
     void requestDomainExit(ExecutionDomain& domain, int code);
+
+    /// Take a REPL line's end off its session's domain: clear IntrLineAbort
+    /// and IntrExit and exchange the domain's exit code for 0.  Returns that
+    /// code, or kNoLineEnd when neither bit was raised.  Atomics only, so the
+    /// driver may call it.
+    static constexpr int kNoLineEnd = std::numeric_limits<int>::min();
+    static int takeLineEnd(ExecutionDomain& domain);
+
+    /// Put a REPL session's thread back to idle after a line that did not
+    /// return (interrupted, exited or failed): release a stop over the
+    /// session, close the upvalues still open over the line's stack, drop
+    /// its frames and every suspension and in-progress dispatch it was in.
+    /// What the line spawned -- actors, handlers, threads -- is untouched.
+    /// Non-RT; the caller holds mutator cover and has `t` bound as
+    /// VM::thread.
+    void unwindSessionLine(Thread& t);
 
     /// Carry a runtime error or exit() raised in `from` into `owner`, as if it
     /// had been raised there: the error text and flag (its first failure
@@ -1115,6 +1140,9 @@ public:
         uint32_t resolveArgMask {0}; // bit N set → resolve arg N before call
         bool noMutateSelf {false};   // method doesn't mutate receiver state
         uint32_t noMutateArgs {0};   // bitmask: bit N set → arg N not mutated
+        // The method's name: the map is keyed by its hash, which a listing
+        // (REPL completion) cannot turn back into text.
+        std::string name;
 
         BuiltinMethodInfo() : isProc(false), declFunction(Value::nilVal()) {}
         BuiltinMethodInfo(NativeFn fn, bool proc = false,
@@ -1201,6 +1229,7 @@ public:
         NativePropertyGetter getter;
         NativePropertySetter setter;  // nullptr for read-only properties
         bool readOnly;
+        std::string name;             // see BuiltinMethodInfo::name
 
         BuiltinPropertyInfo() : getter(nullptr), setter(nullptr), readOnly(true) {}
         BuiltinPropertyInfo(NativePropertyGetter get, NativePropertySetter set = nullptr)

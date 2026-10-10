@@ -18,3 +18,8 @@ print("{d1.initializer.start_col}-{d1.initializer.end_col}")
 var t2 = inspect.parse('if a:\n  b = 1\n')
 var ifs = t2.decls_or_stmts[0]
 print("{ifs.start_line}-{ifs.end_line}")
+
+// columns count characters, not UTF-8 bytes: 'café' spans cols 8..13
+var t3 = inspect.parse("var s = 'café'\n")
+var s3 = t3.decls_or_stmts[0].initializer
+print("{s3.start_col}-{s3.end_col}")

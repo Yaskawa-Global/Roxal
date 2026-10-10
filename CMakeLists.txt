@@ -494,6 +494,7 @@ set(COMPILER_SOURCES
     compiler/EmbeddedRuntime.cpp
     compiler/PreparedProgram.cpp
     compiler/ReplSession.cpp
+    compiler/ReplCompletion.cpp
     compiler/linenoise.c
 )
 
@@ -843,6 +844,16 @@ if(NOT EMSCRIPTEN)
     add_executable(roxal_embedded_host_harness tests/embedded_host_harness.cpp)
     target_link_libraries(roxal_embedded_host_harness PRIVATE roxalcore)
     add_test(NAME RoxalEmbeddedHost COMMAND roxal_embedded_host_harness)
+
+    # A REPL session hosted as a console: lines interrupted (host interrupt,
+    # exit() typed in a line, a long wait, a debugger stop) while the session
+    # carries on, and completion.  One process per mode -- a driver, once
+    # attached, owns the VM's execution.
+    add_executable(roxal_repl_session_harness tests/repl_session_harness.cpp)
+    target_link_libraries(roxal_repl_session_harness PRIVATE roxalcore)
+    foreach(mode driven sync)
+        add_test(NAME RoxalReplSession_${mode} COMMAND roxal_repl_session_harness ${mode})
+    endforeach()
 
     # A host reloading edited user modules between runs (forgetUserModules);
     # its own process, so the registry holds only its modules.

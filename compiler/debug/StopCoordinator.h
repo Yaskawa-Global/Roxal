@@ -33,11 +33,25 @@ class VM;
 // everything back (acknowledged members released, no stop event) and names
 // the thread that did not reach a safe point.
 //
-// Threading: requestStop()/resume() are called by ONE controlling thread at
-// a time (the debug worker / test controller) -- non-RT.  The cooperative
-// stop points are called by every debuggee thread; their fast path is one
-// interrupt-word bit test, and the RT variant performs only bounded atomic
-// work (store + return), never a lock, wait, allocation, or host callback.
+// Owners.  A stop is wanted by the debugger (pause, breakpoint, step,
+// exception) or by the embedding host (a controller hold), or both, and stays
+// in force while any owner holds it: the debugger's continue releases only
+// the debugger's part, the host's release only the host's, and the domain
+// resumes when neither is left.  A host pause never fails: it stays PENDING
+// while a thread is inside a native call (or otherwise slow to reach a stop
+// point) -- threads park as they arrive -- until the last one does, or the
+// host releases it.  Exit beats both (releaseForExit).
+//
+// Threading: requestStop()/resume()/stepAndResume() are called by ONE
+// controlling thread at a time (the debug worker / test controller) --
+// non-RT.  requestHostPause()/releaseHostPause()/releaseForExit() may be
+// called from any non-RT thread; physical release runs on the worker.  The
+// cooperative stop points are called by every debuggee thread; their fast
+// path is one interrupt-word bit test, and the RT variant performs only
+// bounded atomic work (store + return), never a lock, wait, allocation, or
+// host callback.
+enum class StopOwner : uint8_t { Debugger = 1, Host = 2 };
+
 class StopCoordinator {
 public:
     StopCoordinator(VM& vm, const ptr<ExecutionDomain>& domain);
@@ -64,15 +78,66 @@ public:
 
     // Form a stop epoch and wait (bounded) for full quiescence.
     // On success the domain is Stopped and a DebugStopNotice was delivered.
-    // On failure everything is rolled back and DebugStopFailure delivered.
+    // On failure everything is rolled back and DebugStopFailure delivered --
+    // unless the host has joined the forming stop meanwhile, which then stays
+    // pending as the host's.  Owned by the debugger, or by the host for
+    // DebugStopReason::Host.  A pending host pause is joined (and helped
+    // along) rather than refused.
     StopOutcome requestStop(DebugStopReason reason, TimeDuration timeout);
 
-    // Release a completed stop.  releaseHold=true is a normal continue
-    // (exactly one DebugContinueNotice); releaseHold=false is the step
+    // The debugger's continue.  Releases the Debugger owner; the domain
+    // resumes only if the host holds no part of the stop (check isStopped()
+    // afterwards).  releaseHold=true is a normal continue (exactly one
+    // DebugContinueNotice when it resumes); releaseHold=false is the step
     // resume shape -- the hold generation stays held.
     void resume(bool releaseHold = true);
 
+    // Take a share of a stop already in force (a debugger pause while the
+    // host holds one).  False when nothing is stopped.  Controlling thread.
+    bool joinStop(StopOwner owner);
+
+    // ---- Host pause (an embedding host's hold) ----
+    enum class HostPauseState : uint8_t {
+        Idle,       // no execution: the next one starts paused
+        Pending,    // forming: waiting for threads to reach a stop point
+        Stopped,    // committed
+    };
+    // Add the Host owner and start a stop if none is forming or active.
+    // Non-blocking; any non-RT thread.
+    HostPauseState requestHostPause();
+    // Drop the Host owner.  When no owner remains, a committed stop resumes
+    // and a pending one is cancelled (on the worker).  Any non-RT thread.
+    void releaseHostPause();
+    // Exit beats pause: the current execution is ending, so release any stop
+    // whoever owns it and accept no new one in this execution.  The Host
+    // owner is kept for the next execution.  Any non-RT thread.
+    void releaseForExit();
+    // VM shutdown: drop every owner and release whatever is stopped or
+    // forming, synchronously (the worker is about to be joined).
+    void resumeForShutdown();
+
+    struct PauseStatus {
+        bool host { false };        // the Host owner is held
+        bool debugger { false };    // the Debugger owner is held
+        bool stopped { false };     // committed
+        bool pending { false };     // a host pause still forming
+        std::string waitingFor;     // the thread a pending pause waits for
+    };
+    PauseStatus pauseStatus();
+
+    // Worker: one quiescence pass over a pending host pause, committing it
+    // when every thread has acknowledged.  Cheap when nothing is pending.
+    void advancePendingStop();
+    bool hostPausePending() const { return hostPending_.load(std::memory_order_acquire); }
+    bool hasStopOwners() const { return owners_.load(std::memory_order_acquire) != 0; }
+
     bool isStopped() const { return stopped_.load(std::memory_order_acquire); }
+    // A stop is forming or in force, in whatever domain this coordinator is
+    // bound to.  For host threads, which have no domain word of their own.
+    bool stopFormingOrActive() const {
+        return forming_.load(std::memory_order_acquire)
+            || stopped_.load(std::memory_order_acquire);
+    }
     uint64_t currentEpoch() const;
     uint64_t holdGeneration() const {
         return holdGeneration_.load(std::memory_order_acquire);
@@ -153,8 +218,10 @@ public:
 
     // Arm a step on a STOPPED thread and resume WITHOUT releasing the hold
     // generation.  The next statement boundary satisfying the mode
-    // publishes a Step stop through the async path.
-    void stepAndResume(Thread& t, Thread::DebugStepMode mode);
+    // publishes a Step stop through the async path.  Refused (false) when
+    // nothing is stopped or the host holds the stop: a step means "run one
+    // step now", which a host hold forbids.
+    bool stepAndResume(Thread& t, Thread::DebugStepMode mode);
 
     // Slow-path demand accounting: while nonzero, IntrDebugSlowPath routes
     // dispatch through the full loop's statement-boundary check.  Counted
@@ -221,8 +288,20 @@ private:
     void cancelArmedStepsInEpoch();
     void openHoldAndWake(uint64_t epoch, DebugStopReason reason, uint64_t threadId);
     StopOutcome awaitQuiescence(uint64_t epoch, TimeDuration timeout);
+    // One acknowledgement pass; commits (true) when the epoch is complete,
+    // else names the laggard.  Under controlMutex_.
+    bool tryCommitPass(uint64_t epoch, std::string& laggard);
+    // A bounded stop ran out of time: roll it back -- or, when the host owns
+    // part of it, leave it pending as the host's (a host pause never fails).
+    StopOutcome giveUp(uint64_t epoch, const std::string& why, StopOwner owner);
     StopOutcome rollback(uint64_t epoch, const std::string& why);
+    // Physically release a committed stop (whoever owns it).
+    void resumeNow(bool releaseHold);
+    // Withdraw a pending stop nobody owns any more: parked threads released,
+    // the hold opened for it closed again, no failure reported.
+    void cancelPending();
     void releaseAll();
+    uint8_t ownerBit(StopOwner o) const { return uint8_t(o); }
 
     VM& vm_;
     ptr<ExecutionDomain> domain_;
@@ -231,6 +310,20 @@ private:
 
     std::atomic<bool> stopped_ { false };
     std::atomic<bool> forming_ { false };
+    // Who wants the current (or next) stop: StopOwner bits.  The Host bit
+    // outlives an execution (the next one starts paused); the Debugger bit
+    // does not.
+    std::atomic<uint8_t> owners_ { 0 };
+    // A host pause is forming and the worker advances it.
+    std::atomic<bool> hostPending_ { false };
+    // The epoch whose hold a pending host pause has opened (a pause begun
+    // on the RT driver opens it later, on the worker).
+    std::atomic<uint64_t> pendingWokenEpoch_ { 0 };
+    // Serializes commit / rollback / cancel / resume across the controlling
+    // threads (worker, host threads, an in-VM test controller, the
+    // finalizer's endExecution).  Recursive: host hooks fire under it.
+    std::recursive_mutex controlMutex_;
+    std::string waitingFor_;   // a pending pause's laggard (infoMutex_)
     // Execution-lifetime gate.  Cleared at end of execution BEFORE the parks
     // are released, so a thread let go to finish its last statements cannot
     // trap on a still-armed breakpoint and form a new stop under the join;

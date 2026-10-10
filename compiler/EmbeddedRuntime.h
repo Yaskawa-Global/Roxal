@@ -157,6 +157,13 @@ private:
     std::weak_ptr<EmbeddedRuntime> runtime_;
 };
 
+enum class ExitRequestStatus {
+    Requested,           // the driver will end the run on its next slice
+    Cancelled,           // not yet claimed: withdrawn instead, never runs
+    AlreadyTerminal,     // handed over or finalized; nothing to end
+    Unknown,             // not a run this runtime knows
+};
+
 // Copyable observation of one run.  Holds no Value and no raw Obj*.
 class RunHandle {
 public:
@@ -183,6 +190,12 @@ public:
     // Block until the run has been handed over, then finalize it.
     FinalizeResult wait();
 
+    // Ask this run to end, as EmbeddedRuntime::requestExit(*this, code) --
+    // through the handle's lease on its runtime, so the caller needs no
+    // runtime pointer.  Unknown once the runtime is gone.  Thread-safe; any
+    // non-driver thread.
+    ExitRequestStatus requestExit(int code);
+
 private:
     friend class EmbeddedRuntime;
     explicit RunHandle(std::shared_ptr<RunControl> control)
@@ -207,13 +220,6 @@ enum class CancelStatus {
     AlreadyRunning,      // the driver claimed it first
     AlreadyTerminal,
     Unknown,
-};
-
-enum class ExitRequestStatus {
-    Requested,           // the driver will end the run on its next slice
-    Cancelled,           // not yet claimed: withdrawn instead, never runs
-    AlreadyTerminal,     // handed over or finalized; nothing to end
-    Unknown,             // not a run this runtime knows
 };
 
 enum class AttachStatus {
@@ -293,6 +299,13 @@ struct RunRecord {
     // slice.  kNoExitRequest means none.
     static constexpr int kNoExitRequest = std::numeric_limits<int>::min();
     std::atomic<int> exitRequest { kNoExitRequest };
+
+    // A FRAGMENT's own exit code, when the line ended early: a host's exit
+    // request, or exit() raised in its session.  The line ends; the session
+    // -- its domain, its actors -- does not, so the code lives here rather
+    // than on the shared domain.  Set by the driver, read by the finalizer
+    // after the handover.
+    std::optional<int> lineExitCode;
 };
 
 class EmbeddedRuntime : public std::enable_shared_from_this<EmbeddedRuntime> {
@@ -337,6 +350,13 @@ public:
     // (RunHandle::exitCode()).  Nothing is stopped by force and nothing is
     // joined here.  A run the driver has not claimed yet is cancelled
     // instead (as cancelBeforeStart).  Thread-safe; any non-driver thread.
+    //
+    // A REPL fragment (a session line) ends ALONE: the driver's next slice
+    // hands it over without executing, with `code` on its handle, and its
+    // finalizer unwinds the session's thread.  The session's domain is never
+    // flagged, so its actors, handlers and later lines are untouched; a
+    // debugger stop over the line is released.  ReplSession::interrupt() is
+    // this for the session's line in flight.
     ExitRequestStatus requestExit(const RunHandle& run, int code);
 
     bool hasPendingRun() const;

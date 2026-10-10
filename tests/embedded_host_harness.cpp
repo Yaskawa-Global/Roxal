@@ -605,6 +605,203 @@ int main()
         }
     }
 
+    // 28. A stop reaches EVERY thread of a run, not just the driven one: an
+    //     actor sleeping inside one of its methods acknowledges from its own
+    //     domain's word (the run's), so the stop forms -- and the actor stays
+    //     put until release.
+    {
+        StopCoordinator& coord = vm.stopCoordinator();
+        const int endedBefore = driver.ended();
+        PrepareProgramResult actorRun = prepareOffDriver(
+            vm,
+            "type Ticker actor:\n"
+            "  private var n :int = 0\n"
+            "  proc spin():\n"
+            "    while true:\n"
+            "      wait(us=2000)\n"
+            "      n = n + 1\n"
+            "  func count() -> int:\n"
+            "    return n\n"
+            "var t = Ticker()\n"
+            "t.spin()\n"
+            "while true:\n"
+            "  wait(us=1000)\n",
+            "harness_actor_stop");
+        expect(actorRun.status == PrepareStatus::Ready, "the actor program prepared");
+        SubmitResult run = runtime.submit(std::move(actorRun.program));
+        expect(run.status == SubmitStatus::Accepted, "the actor program is accepted");
+        expect(waitUntil([&] { return run.run.state() == RunState::Running; }),
+               "the actor program runs");
+        // Let the actor get into its method before stopping.
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+        bool stopped = false;
+        std::string failure;
+        std::thread controller([&] {
+            auto outcome = coord.requestStop(DebugStopReason::Host,
+                                             TimeDuration::milliSecs(5000));
+            stopped = outcome.stopped && coord.isStopped();
+            failure = outcome.failure;
+            if (stopped)
+                coord.resume();
+        });
+        controller.join();
+        expect(stopped, "a stop forms while the run's actor sleeps inside a method ["
+                        + failure + "]");
+
+        expect(runtime.requestExit(run.run, 0) == ExitRequestStatus::Requested,
+               "the actor program accepts a host exit");
+        expect(waitUntil([&] { return driver.ended() > endedBefore; }),
+               "the actor program ends after the host exit");
+        run.run.wait();
+        sink.take();
+    }
+
+    // 29. A host pause.  It never fails: with an actor inside a native call it
+    //     stays pending (naming the actor) and completes when the call
+    //     returns; released before that, it is withdrawn.  It shares the stop
+    //     with the debugger -- each releases only its own part, and a step is
+    //     refused while the host holds.  Exit beats it, and an execution
+    //     started while the host holds begins paused.
+    {
+        StopCoordinator& coord = vm.stopCoordinator();
+        auto hostPaused = [&] {
+            auto s = coord.pauseStatus();
+            return s.stopped && s.host;
+        };
+
+        // (a) Pending while an actor blocks in a native; commits after.
+        int endedBefore = driver.ended();
+        PrepareProgramResult blockRun = prepareOffDriver(
+            vm,
+            "type Blocker actor:\n"
+            "  proc go():\n"
+            "    while true:\n"
+            "      _test_block(1500)\n"
+            "var b = Blocker()\n"
+            "b.go()\n"
+            "while true:\n"
+            "  wait(us=1000)\n",
+            "harness_host_pause");
+        expect(blockRun.status == PrepareStatus::Ready, "the blocking program prepared");
+        SubmitResult run = runtime.submit(std::move(blockRun.program));
+        expect(run.status == SubmitStatus::Accepted, "the blocking program is accepted");
+        expect(waitUntil([&] { return run.run.state() == RunState::Running; }),
+               "the blocking program runs");
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));   // into the native
+
+        auto first = coord.requestHostPause();
+        expect(first == StopCoordinator::HostPauseState::Pending,
+               "a host pause over an actor inside a native call is pending");
+        // The worker's first pass names what it waits for.
+        std::string waiting;
+        waitUntil([&] {
+            auto s = coord.pauseStatus();
+            waiting = s.waitingFor;
+            return !waiting.empty() || s.stopped;
+        }, 10);
+        expect(waiting.find("actor thread") != std::string::npos,
+               "a pending host pause names the actor it waits for [" + waiting + "]");
+        expect(waitUntil(hostPaused, 10),
+               "the pending host pause completes once the native returns");
+
+        // Released while stopped: the run carries on.
+        coord.releaseHostPause();
+        expect(waitUntil([&] { return !coord.isStopped(); }, 10),
+               "releasing the host pause resumes the run");
+
+        // Released while still pending: withdrawn, never stopped.
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));   // into the native again
+        auto second = coord.requestHostPause();
+        coord.releaseHostPause();
+        expect(waitUntil([&] {
+                   auto s = coord.pauseStatus();
+                   return !s.pending && !s.stopped && !s.host;
+               }, 10),
+               "a host pause released while pending is withdrawn");
+        (void)second;
+
+        // Exit beats the pause.
+        coord.requestHostPause();
+        expect(waitUntil(hostPaused, 10), "the host pause holds the run again");
+        expect(runtime.requestExit(run.run, 0) == ExitRequestStatus::Requested,
+               "a held run accepts a host exit");
+        expect(waitUntil([&] { return driver.ended() > endedBefore; }),
+               "a held run ends on exit");
+        run.run.wait();
+
+        // Still held: the next execution starts paused, and runs on release.
+        expect(coord.pauseStatus().host, "the host's hold outlives the execution");
+        endedBefore = driver.ended();
+        PrepareProgramResult nextRun = prepareOffDriver(
+            vm, "print('started')\n", "harness_starts_paused");
+        SubmitResult next = runtime.submit(std::move(nextRun.program));
+        expect(next.status == SubmitStatus::Accepted, "the next program is accepted");
+        expect(waitUntil(hostPaused, 10), "an execution under a host hold starts paused");
+        expect(sink.take().empty(), "nothing ran before the release");
+        coord.releaseHostPause();
+        expect(waitUntil([&] { return driver.ended() > endedBefore; }),
+               "the paused start runs once released");
+        next.run.wait();
+        expect(sink.take() == "started\n", "the released program ran");
+
+        // (b) Two owners.
+        endedBefore = driver.ended();
+        PrepareProgramResult busyRun = prepareOffDriver(
+            vm,
+            "var n = 0\n"
+            "while true:\n"
+            "  n = n + 1\n",
+            "harness_two_owners");
+        SubmitResult busy = runtime.submit(std::move(busyRun.program));
+        expect(waitUntil([&] { return busy.run.state() == RunState::Running; }),
+               "the two-owner program runs");
+        bool debuggerFirst = false, heldAfterContinue = false, stepRefused = false;
+        bool resumedOnRelease = false, heldAfterRelease = false, resumedOnContinue = false;
+        std::thread controller([&] {
+            // Debugger stops first, then the host joins.
+            debuggerFirst = coord.requestStop(DebugStopReason::Pause,
+                                              TimeDuration::milliSecs(5000)).stopped;
+            if (!debuggerFirst)
+                return;
+            coord.requestHostPause();
+            coord.resume();
+            heldAfterContinue = coord.isStopped();
+            if (auto info = coord.stoppedInfo()) {
+                for (auto& t : ThreadManager::instance().snapshotThreads())
+                    if (t->id() == info->threadId) {
+                        stepRefused = !coord.stepAndResume(*t, Thread::DebugStepMode::Next);
+                        break;
+                    }
+            }
+            coord.releaseHostPause();
+            resumedOnRelease = waitUntil([&] { return !coord.isStopped(); }, 10);
+
+            // Host first, then the debugger joins.
+            coord.requestHostPause();
+            if (!waitUntil(hostPaused, 10))
+                return;
+            coord.joinStop(StopOwner::Debugger);
+            coord.releaseHostPause();
+            heldAfterRelease = coord.isStopped();
+            coord.resume();
+            resumedOnContinue = waitUntil([&] { return !coord.isStopped(); }, 10);
+        });
+        controller.join();
+        expect(debuggerFirst, "the debugger stops the two-owner program");
+        expect(heldAfterContinue, "a debugger continue leaves a host-held stop stopped");
+        expect(stepRefused, "a step is refused while the host holds the stop");
+        expect(resumedOnRelease, "the host's release resumes once the debugger is gone");
+        expect(heldAfterRelease, "the host's release leaves a debugger-held stop stopped");
+        expect(resumedOnContinue, "the debugger's continue resumes once the host is gone");
+        expect(runtime.requestExit(busy.run, 0) == ExitRequestStatus::Requested,
+               "the two-owner program accepts a host exit");
+        expect(waitUntil([&] { return driver.ended() > endedBefore; }),
+               "the two-owner program ends");
+        busy.run.wait();
+        sink.take();
+    }
+
     // 27. A host ends a claimed run from a non-driver thread: the body does
     //     not reach its end, the run completes (not fails) with the host's
     //     code on the handle, and a run not yet claimed is cancelled instead.

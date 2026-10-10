@@ -115,6 +115,7 @@ private:
     int32_t dapThreadId(uint64_t threadId);
     uint64_t roxalThreadId(int32_t dapId);
     void requestTerminate();
+    void sendHeldStopped();
 
     VM& vm_;
     StopCoordinator& coord_;

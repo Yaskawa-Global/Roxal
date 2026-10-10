@@ -2958,9 +2958,17 @@ std::any RoxalCompiler::visit(ptr<ast::ExpressionStatement> ast)
     }
 
     // In REPL mode at module scope with no nested local scope, automatically
-    // print the value of expression statements
+    // print the value of expression statements -- unless it is nil, so a call
+    // made for its effect (a proc such as print) echoes nothing after its own
+    // output, as Python skips None.  `is` neither lifts a signal (a signal is
+    // echoed) nor samples it; it waits for a future as print would.
     if (replModeFlag && inModuleScope() && asFuncScope(funcScope())->scopeDepth == 0) {
         // stack currently: <expr_value>
+        emitByte(OpCode::Dup);                        // [value, value]
+        emitByte(OpCode::ConstNil);
+        emitByte(OpCode::Is);                         // [value, value is nil]
+        auto jumpOverEcho = emitJump(OpCode::JumpIfTrue);
+        emitByte(OpCode::Pop, "repl echo cond");      // [value]
         namedModuleVariable(toUnicodeString("print")); // push print function
         emitByte(OpCode::Swap);                       // [print_fn, value]
         CallSpec cs{1};
@@ -2973,6 +2981,11 @@ std::any RoxalCompiler::visit(ptr<ast::ExpressionStatement> ast)
             for(auto b : bytes) emitByte(b);
         }
         emitByte(OpCode::Pop); // discard print return
+        auto jumpOverNil = emitJump(OpCode::Jump);
+        patchJump(jumpOverEcho);
+        emitByte(OpCode::Pop, "repl echo cond");      // [value]
+        emitByte(OpCode::Pop, "repl echo nil");       // []
+        patchJump(jumpOverNil);
     } else {
         // Expression-statement disposition. Assignments leave their RHS on
         // the stack as an incidental "expression value" so they can also be

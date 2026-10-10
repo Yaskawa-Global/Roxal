@@ -142,6 +142,8 @@ void DapSession::dispatchRequest(const Json& req)
     }
     if (cmd == "continue") {
         sendResponse(req, reqContinue());
+        if (coord_.isStopped())
+            sendHeldStopped();   // the host's hold keeps it stopped
         return;
     }
     if (cmd == "next" || cmd == "stepIn" || cmd == "stepOut") {
@@ -469,8 +471,8 @@ Json DapSession::reqVariables(const Json& args)
 
 Json DapSession::reqPause(bool& ok, std::string& err)
 {
-    if (coord_.isStopped())
-        return Json();   // already stopped: benign
+    if (coord_.joinStop(StopOwner::Debugger))
+        return Json();   // already stopped (the host's hold, say): now ours too
     auto out = coord_.requestStop(DebugStopReason::Pause,
                                   TimeDuration::milliSecs(3000));
     if (!out.stopped && !coord_.isStopped()) {
@@ -508,8 +510,28 @@ Json DapSession::reqStep(const Json& args, Thread::DebugStepMode mode,
         err = "unknown thread";
         return Json();
     }
-    coord_.stepAndResume(*target, mode);
+    if (!coord_.stepAndResume(*target, mode)) {
+        ok = false;
+        err = coord_.pauseStatus().host ? "held by the controller: release it to step"
+                                        : "cannot step";
+    }
     return Json();
+}
+
+void DapSession::sendHeldStopped()
+{
+    // The debugger's part of the stop is gone but the host still holds it:
+    // tell the client it is (still) stopped, after the continue response.
+    auto info = coord_.stoppedInfo();
+    uint64_t tid = info ? info->threadId : 0;
+    if (tid == 0)
+        tid = mainThreadId_.load();
+    sendEvent("stopped", Json::object {
+        { "reason", "pause" },
+        { "description", "Held by the controller" },
+        { "threadId", dapThreadId(tid) },
+        { "allThreadsStopped", true },
+    });
 }
 
 void DapSession::requestTerminate()
@@ -518,12 +540,10 @@ void DapSession::requestTerminate()
         terminate_();
     else
         vm_.requestExit(0);
-    if (coord_.isStopped()) {
-        // Wake the parked threads so they observe the exit interrupt.  The
-        // hold generation is NOT released (fail-safe); the session-end
-        // notice follows from VM shutdown.
-        coord_.resume(/*releaseHold=*/false);
-    }
+    // Wake the parked threads so they observe the exit interrupt, whoever
+    // owns the stop.  The hold generation is NOT released (fail-safe); the
+    // session-end notice follows from VM shutdown.
+    coord_.releaseForExit();
 }
 
 // ---- DebugHostControl -------------------------------------------------------
@@ -565,6 +585,8 @@ void DapSession::onDebugStopped(const DebugStopNotice&) noexcept
         };
         if (reason == "exception" && info && !info->description.empty())
             body["text"] = info->description;
+        if (info && info->reason == DebugStopReason::Host)
+            body["description"] = "Held by the controller";
         sendEvent("stopped", Json(std::move(body)));
     } catch (...) {}
 }
