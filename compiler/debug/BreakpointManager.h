@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -40,6 +41,20 @@ public:
     // stored requests rebind to the new generation.
     void onSourceRegistered(const std::string& sourceKey);
 
+    // Told after a registration rebound a stored request set (a module
+    // compiled or imported after its breakpoints were set): the request key
+    // and the new binding, so a client can turn "unverified" into verified.
+    // Not called for setBreakpoints, whose caller has the result.  Called on
+    // the registering thread, outside the manager's lock; keep it short.  One
+    // listener (the debug session); null clears, waiting out a call in flight.
+    using RebindListener =
+        std::function<void(const std::string& requestKey, const std::vector<Bound>&)>;
+    void setRebindListener(RebindListener listener);
+
+    // The key setBreakpoints files a request under: the canonical path of an
+    // existing file, else the name verbatim.
+    static std::string requestKey(const std::string& source);
+
     void clearAllBreakpoints();
 
 private:
@@ -51,6 +66,8 @@ private:
     void updateSlowPathDemand();
 
     std::mutex mutex_;
+    std::mutex listenerMutex_;    // held while the listener runs (and to clear it)
+    RebindListener rebindListener_;
     std::unordered_map<std::string, std::vector<int>> requests_;   // key -> lines
     // Chunks armed per source (so a full-set replace clears stale words; a
     // chunk belongs to exactly one source).  STRONG refs: index

@@ -1,0 +1,10 @@
+import sys
+type Blocker actor:
+  proc go():
+    _test_block(4000)
+    print("blocker done", flush=true)
+var b = Blocker()
+b.go()
+wait(ms=500)
+var hit = 1
+print("past the breakpoint line", flush=true)

@@ -802,6 +802,150 @@ int main()
         sink.take();
     }
 
+    // 30. A debugger pause is pending like a host pause: with an actor inside
+    //     a native call it answers at once, names the actor, and lands when
+    //     the call returns; a continue while it is still pending withdraws it;
+    //     exit beats it.  (Breakpoint and step stops take the same path: DAP
+    //     transcript test pending_stop_over_native_call.)
+    {
+        StopCoordinator& coord = vm.stopCoordinator();
+        const int endedBefore = driver.ended();
+        PrepareProgramResult blockRun = prepareOffDriver(
+            vm,
+            "type Blocker actor:\n"
+            "  proc go():\n"
+            "    while true:\n"
+            "      _test_block(1500)\n"
+            "var b = Blocker()\n"
+            "b.go()\n"
+            "while true:\n"
+            "  wait(us=1000)\n",
+            "harness_debugger_pending");
+        expect(blockRun.status == PrepareStatus::Ready, "the debugger-pending program prepared");
+        SubmitResult run = runtime.submit(std::move(blockRun.program));
+        expect(waitUntil([&] { return run.run.state() == RunState::Running; }),
+               "the debugger-pending program runs");
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));   // into the native
+
+        bool pendingFirst = false, namedActor = false, committed = false, resumed = false;
+        bool withdrawn = false, exitBeat = false;
+        std::string waiting;
+        std::thread controller([&] {
+            const auto t0 = std::chrono::steady_clock::now();
+            pendingFirst = coord.requestDebuggerPause() == StopCoordinator::PauseState::Pending
+                && std::chrono::steady_clock::now() - t0 < std::chrono::milliseconds(100);
+            waitUntil([&] {
+                auto s = coord.pauseStatus();
+                waiting = s.waitingFor;
+                return (!waiting.empty() && s.pending && s.debugger) || s.stopped;
+            }, 10);
+            namedActor = waiting.find("actor thread") != std::string::npos;
+            committed = waitUntil([&] {
+                auto s = coord.pauseStatus();
+                return s.stopped && s.debugger && !s.host;
+            }, 10);
+            coord.resume();
+            resumed = waitUntil([&] { return !coord.isStopped(); }, 10);
+
+            // Withdrawn by a continue while still pending.
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));   // into the native again
+            coord.requestDebuggerPause();
+            coord.resume();
+            withdrawn = waitUntil([&] {
+                auto s = coord.pauseStatus();
+                return !s.pending && !s.stopped && !s.debugger;
+            }, 10);
+
+            // Exit beats a pending debugger pause.
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            coord.requestDebuggerPause();
+            exitBeat = runtime.requestExit(run.run, 0) == ExitRequestStatus::Requested;
+        });
+        controller.join();
+        expect(pendingFirst, "a debugger pause over an actor in a native call answers at once, pending");
+        expect(namedActor, "a pending debugger pause names the actor it waits for [" + waiting + "]");
+        expect(committed, "the pending debugger pause lands once the native returns");
+        expect(resumed, "continue resumes the debugger's stop");
+        expect(withdrawn, "a continue while the pause is pending withdraws it");
+        expect(exitBeat, "a run with a pending debugger pause accepts a host exit");
+        expect(waitUntil([&] { return driver.ended() > endedBefore; }),
+               "a run with a pending debugger pause ends on exit");
+        run.run.wait();
+        expect(!coord.pauseStatus().pending && !coord.isStopped(),
+               "nothing is pending or stopped after the exit");
+        sink.take();
+    }
+
+    // 31. Stop on error under a driver: a runtime error on the driven thread
+    //     (an RT slice, which cannot park) is held back for the debugger --
+    //     an Exception stop with the failing frames intact, the run paused,
+    //     not failed -- and the error's teardown runs once the stop is
+    //     released: the run fails with it.  An uncaught raise likewise, at
+    //     the raise site.  Exit while held back ends the run instead.
+    {
+        StopCoordinator& coord = vm.stopCoordinator();
+        coord.ensureWorker();
+        coord.setStopOnFatal(true);
+        auto heldBack = [&](const char* src, const char* name, const char* fn,
+                            bool exitInstead) {
+            const int endedBefore = driver.ended(), failedBefore = driver.failed();
+            PrepareProgramResult p = prepareOffDriver(vm, src, name);
+            expect(p.status == PrepareStatus::Ready, std::string(name) + " prepared");
+            SubmitResult run = runtime.submit(std::move(p.program));
+            const bool stopped = waitUntil([&] {
+                auto i = coord.stoppedInfo();
+                return i && i->reason == DebugStopReason::Exception;
+            }, 10);
+            bool framesKept = false;
+            std::string desc;
+            if (stopped) {
+                const auto info = coord.stoppedInfo();
+                desc = info->description;
+                coord.forEachEpochThread([&](const ptr<Thread>& t) {
+                    if (t->id() == info->threadId && !t->frames.empty()) {
+                        const auto* f = asFunction(asClosure(t->frames.back().closure)->function);
+                        framesKept = toUTF8StdString(f->name) == fn;
+                    }
+                });
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(150));
+            const bool stillPaused = driver.ended() == endedBefore
+                                  && run.run.state() == RunState::DebugPaused;
+            if (exitInstead)
+                expect(runtime.requestExit(run.run, 0) == ExitRequestStatus::Requested,
+                       std::string(name) + ": a held-back run accepts an exit");
+            std::thread controller([&] { if (!exitInstead) coord.resume(); });
+            controller.join();
+            const bool ended = waitUntil([&] { return driver.ended() > endedBefore || driver.failed() > failedBefore; }, 10);
+            run.run.wait();
+            expect(stopped, std::string(name) + ": the error stops the driven run (Exception)");
+            expect(framesKept, std::string(name) + ": the failing frame is kept for inspection");
+            expect(desc.find("error") != std::string::npos || desc.find("Uncaught") != std::string::npos,
+                   std::string(name) + ": the stop carries the error [" + desc + "]");
+            expect(stillPaused, std::string(name) + ": the run is paused, not failed, while stopped");
+            expect(ended, std::string(name) + ": the run ends after the release");
+            if (exitInstead)
+                expect(driver.failed() == failedBefore, std::string(name) + ": an exit while held back ends the run, not fails it");
+            else
+                expect(driver.failed() > failedBefore, std::string(name) + ": continuing fails the run with the error");
+            sink.take();
+        };
+        heldBack("var a = [1, 2, 3]\n"
+                 "func pick(i):\n"
+                 "  return a[i]\n"
+                 "var b = pick(10)\n"
+                 "print('never')\n", "harness_deferred_fatal", "pick", false);
+        heldBack("func boom():\n"
+                 "  raise 'boom'\n"
+                 "boom()\n"
+                 "print('never')\n", "harness_deferred_raise", "boom", false);
+        heldBack("var a = [1, 2, 3]\n"
+                 "func pick(i):\n"
+                 "  return a[i]\n"
+                 "var b = pick(10)\n", "harness_deferred_exit", "pick", true);
+        coord.setStopOnFatal(false);
+    }
+
     // 27. A host ends a claimed run from a non-driver thread: the body does
     //     not reach its end, the run completes (not fails) with the host's
     //     code on the handle, and a run not yet claimed is cancelled instead.

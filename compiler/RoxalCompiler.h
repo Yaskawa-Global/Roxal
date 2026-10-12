@@ -51,6 +51,9 @@ public:
     static bool debugInfoDefault() { return s_debugInfoDefault; }
     void setCacheWriteEnabled(bool enabled);
     void setModuleResolverVM(VM* vm);
+    // Per compile: debug info off (a debugger evaluation's throwaway code
+    // registers nothing in the debug index).
+    void setDebugInfoEnabled(bool on) { debugInfoEnabled_ = on; }
     bool replMode() const { return replModeFlag; }
 
     virtual TraversalOrder traversalOrder() const;

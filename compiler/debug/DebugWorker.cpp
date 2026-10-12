@@ -107,7 +107,7 @@ void DebugWorker::run()
             // worker stays at the armed cadence -- an execution starting
             // under the hold publishes its pause from the RT driver, which
             // cannot wake us.
-            const bool pausePending = coordinator_.hostPausePending();
+            const bool pausePending = coordinator_.stopPending();
             const bool fastPoll = coordinator_.slowPathArmed()
                                   || coordinator_.hasAsyncPending()
                                   || coordinator_.hasStopOwners();

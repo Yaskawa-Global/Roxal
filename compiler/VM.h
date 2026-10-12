@@ -107,6 +107,7 @@ public:
     // The VM half of the two execution collaborators: they exist as separate
     // classes precisely so a host does not see the surface below.
     friend class EmbeddedRuntime;
+    friend class DebugInspector;
     friend class ReplSession;
     // Resumes a FuncNode body that yielded, by re-entering execute() on the
     // thread it left suspended.  Part of the runtime, not an embedding: a
@@ -796,6 +797,16 @@ public:
     // provenance on dataflow signals/nodes for introspection.
     struct SourceLocation { std::string name; size_t line = 0; size_t col = 0; };
     SourceLocation currentSourceLocation() const;
+    // A debugger evaluation runs on this OS thread (DebugInspector::
+    // evaluateExpression): natives that act on the world -- robot motion --
+    // refuse (inDebugEvaluation), and the output it makes is captured into
+    // `capture` instead of reaching the sink.
+    struct DebugEvaluationScope {
+        explicit DebugEvaluationScope(std::string* capture);
+        ~DebugEvaluationScope();
+        std::string* previous;
+    };
+    static bool inDebugEvaluation() { return debugEvalCapture_ != nullptr; }
     struct ScopedOutputRoute {
         explicit ScopedOutputRoute(const OutputRoute& route);
         ~ScopedOutputRoute();
@@ -1090,6 +1101,7 @@ protected:
     static thread_local ustring nativeCallContext_;
     static thread_local std::string nativeCallOverrun_; // set by callNativeFn() on overrun
     static thread_local OutputRoute currentOutputRoute_;
+    static thread_local std::string* debugEvalCapture_;   // DebugEvaluationScope
 
     // Dataflow thread flag: when true, module var reads return const refs
     // and module var writes raise a runtime error.
@@ -1198,6 +1210,17 @@ public:
     void raiseException(Value exc);
     bool unwindToExceptionHandler(Value& exc); // shared unwinder; true = handler entered
     void debugFatalStopIfArmed(const std::string& description, Chunk* chunk, size_t instruction); // exception-stop policy
+    // The exception stop on a thread the host drives in real-time slices,
+    // which must not park: published without parking, the frames kept, the
+    // error's teardown deferred to the run's next slice after the release
+    // (Thread::deferredFatal).  False: not applicable, teardown as usual.
+    bool deferFatalForDebugger(const std::string& description, Chunk* chunk, size_t instruction);
+    // Whether this thread's error would be deferred (the policy armed, the
+    // outermost execution of a thread driven in slices, a worker to complete it).
+    bool fatalDeferrable();
+    // runtimeError()'s teardown, shared with a deferred error's completion.
+    void publishRuntimeErrorAndWake();
+    void emitRuntimeErrorDiagnostic(const std::string& text, const std::string& file, int line, int col);
     // Raise a catchable Roxal ZeroDivisionError carrying `msg`. Used by the
     // arithmetic opcodes to convert a native roxal::ZeroDivisionError into an
     // exception user code can try/except, rather than a fatal runtimeError().

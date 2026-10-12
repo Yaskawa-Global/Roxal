@@ -328,6 +328,207 @@ test('client_eof_failsafe', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// A breakpoint while an actor sits in a native call longer than the old 3 s
+// stop budget: the stop stays pending and lands when the call returns --
+// never skipped.  The actor's thread is named by its type.
+test('pending_stop_over_native_call', async () => {
+  const c = new DapClient();
+  await c.send('initialize', { adapterID: 'roxal' });
+  const launchP = c.send('launch', { program: fixture('fixture_blocked.rox') });
+  await c.waitEvent('initialized');
+  await launchP;
+  const bp = await c.send('setBreakpoints', {
+    source: { path: fixture('fixture_blocked.rox') }, breakpoints: [{ line: 9 }] });
+  assert(bp.body.breakpoints[0].verified, 'breakpoint not verified');
+  assert(Number.isInteger(bp.body.breakpoints[0].id), 'breakpoint has no id');
+  const t0 = Date.now();
+  await c.send('configurationDone');
+  const stopped = await c.waitEvent('stopped', e => e.body.reason === 'breakpoint', 10000);
+  const waited = Date.now() - t0;
+  assert(waited > 3000, `stopped after ${waited} ms: the actor's call had not returned`);
+  assert(!c.outputText().includes('stop failed'), 'the stop failed: ' + c.outputText());
+  assert(!c.outputText().includes('past the breakpoint line'), 'the breakpoint line ran');
+  const th = await c.send('threads');
+  const names = th.body.threads.map(t => t.name);
+  assert(names.includes('main'), `threads ${names}`);
+  assert(names.some(n => /^Blocker #\d+$/.test(n)), `no actor-named thread in ${names}`);
+  await c.send('continue', { threadId: stopped.body.threadId });
+  await c.waitEvent('exited', e => e.body.exitCode === 0);
+  await c.send('disconnect');
+  await c.exited;
+  assert(c.outputText().includes('past the breakpoint line'), 'program did not finish');
+});
+
+// ---------------------------------------------------------------------------
+// Pause answers at once; the stop lands when the actor's call returns.
+test('pause_pending_answers_at_once', async () => {
+  const c = new DapClient();
+  await c.send('initialize', { adapterID: 'roxal' });
+  const launchP = c.send('launch', { program: fixture('fixture_blocked_loop.rox') });
+  await c.waitEvent('initialized');
+  await launchP;
+  await c.send('configurationDone');
+  await new Promise(r => setTimeout(r, 300));
+  const t0 = Date.now();
+  const p = await c.send('pause', { threadId: 1 });
+  const answered = Date.now() - t0;
+  assert(p.success, `pause failed: ${p.message}`);
+  assert(answered < 500, `pause answered after ${answered} ms`);
+  const stopped = await c.waitEvent('stopped', e => e.body.reason === 'pause', 8000);
+  assert(Date.now() - t0 > 1500, 'stopped before the actor returned');
+  const st = await c.send('stackTrace', { threadId: stopped.body.threadId });
+  assert(st.body.stackFrames.length >= 1, 'no frames');
+  await c.send('terminate');
+  await c.waitEvent('exited');
+  await c.send('disconnect');
+  await c.exited;
+});
+
+// ---------------------------------------------------------------------------
+// Vectors, matrices and orients show their numbers, and expand.
+test('values_show_numbers', async () => {
+  const c = new DapClient();
+  await c.send('initialize', { adapterID: 'roxal' });
+  const launchP = c.send('launch', { program: fixture('fixture_values.rox') });
+  await c.waitEvent('initialized');
+  await launchP;
+  await c.send('setBreakpoints', { source: { path: fixture('fixture_values.rox') }, breakpoints: [{ line: 4 }] });
+  await c.send('configurationDone');
+  const stopped = await c.waitEvent('stopped', e => e.body.reason === 'breakpoint');
+  const st = await c.send('stackTrace', { threadId: stopped.body.threadId });
+  const scopes = await c.send('scopes', { frameId: st.body.stackFrames[0].id });
+  const mod = scopes.body.scopes.find(s => s.name === 'Module');
+  assert(mod, 'no Module scope');
+  const vars = await c.send('variables', { variablesReference: mod.variablesReference });
+  const by = Object.fromEntries(vars.body.variables.map(v => [v.name, v]));
+  assert(by.v?.value === '[1 2.5 3]', `v = ${by.v?.value}`);
+  assert(by.m?.value === '[[1 2] [3 4]]', `m = ${by.m?.value}`);
+  assert(/y=90/.test(by.o?.value ?? ''), `o = ${by.o?.value}`);
+  const vk = await c.send('variables', { variablesReference: by.v.variablesReference });
+  assert(vk.body.variables.map(x => `${x.name}=${x.value}`).join(' ') === '[0]=1 [1]=2.5 [2]=3',
+         `v children ${JSON.stringify(vk.body.variables)}`);
+  const ok = await c.send('variables', { variablesReference: by.o.variablesReference });
+  const on = Object.fromEntries(ok.body.variables.map(x => [x.name, x.value]));
+  assert(on.y === '90°' && on.r === '0°' && on.quaternion, `o children ${JSON.stringify(on)}`);
+  const ev = await c.send('evaluate', { expression: 'v', frameId: st.body.stackFrames[0].id, context: 'hover' });
+  assert(ev.body?.result === '[1 2.5 3]', `evaluate v = ${ev.body?.result}`);
+  await c.send('continue', { threadId: stopped.body.threadId });
+  await c.waitEvent('exited');
+  await c.send('disconnect');
+  await c.exited;
+});
+
+// ---------------------------------------------------------------------------
+// A breakpoint set before its module compiles is reported unverified (with
+// an id), then verified by a `breakpoint` changed event; the importer's
+// Module scope lists its own names and an expensive Imported scope the
+// rest; `source` serves a module's text.
+test('imports_breakpoints_scopes_source', async () => {
+  const c = new DapClient();
+  await c.send('initialize', { adapterID: 'roxal' });
+  const early = await c.send('setBreakpoints', {
+    source: { path: fixture('fixture_lib.rox') }, breakpoints: [{ line: 3 }] });
+  const b0 = early.body.breakpoints[0];
+  assert(b0.verified === false && Number.isInteger(b0.id), `early ${JSON.stringify(b0)}`);
+  const launchP = c.send('launch', { program: fixture('fixture_importer.rox') });
+  await c.waitEvent('initialized');
+  await launchP;
+  const changed = await c.waitEvent('breakpoint', e => e.body.breakpoint.id === b0.id, 5000);
+  assert(changed.body.reason === 'changed' && changed.body.breakpoint.verified === true
+         && changed.body.breakpoint.line === 3, `changed ${JSON.stringify(changed.body)}`);
+  await c.send('setBreakpoints', { source: { path: fixture('fixture_importer.rox') }, breakpoints: [{ line: 3 }] });
+  await c.send('configurationDone');
+  const s1 = await c.waitEvent('stopped', e => e.body.reason === 'breakpoint');
+  const st1 = await c.send('stackTrace', { threadId: s1.body.threadId });
+  assert(st1.body.stackFrames[0].name === 'helper', `top ${st1.body.stackFrames[0].name}`);
+  assert(st1.body.stackFrames[0].source.path.endsWith('fixture_lib.rox'), 'lib frame path');
+  const src = await c.send('source', { source: { path: fixture('fixture_lib.rox') } });
+  assert(src.success && src.body.content.includes('func helper(x):'), `source ${src.message}`);
+  await c.send('continue', { threadId: s1.body.threadId });
+  const s2 = await c.waitEvent('stopped', e => e.body.reason === 'breakpoint');
+  const st2 = await c.send('stackTrace', { threadId: s2.body.threadId });
+  const scopes = await c.send('scopes', { frameId: st2.body.stackFrames[0].id });
+  const mod = scopes.body.scopes.find(s => s.name === 'Module');
+  const imp = scopes.body.scopes.find(s => s.name === 'Imported');
+  assert(mod && imp && imp.expensive === true && mod.expensive === false,
+         `scopes ${JSON.stringify(scopes.body.scopes)}`);
+  const own = (await c.send('variables', { variablesReference: mod.variablesReference })).body.variables.map(v => v.name);
+  const imported = (await c.send('variables', { variablesReference: imp.variablesReference })).body.variables.map(v => v.name);
+  assert(own.includes('mine') && !own.includes('helper') && !own.includes('libvar'), `own ${own}`);
+  assert(imported.includes('helper') && imported.includes('libvar') && !imported.includes('mine'),
+         `imported ${imported}`);
+  await c.send('continue', { threadId: s2.body.threadId });
+  await c.waitEvent('exited');
+  await c.send('disconnect');
+  await c.exited;
+});
+
+// ---------------------------------------------------------------------------
+// `attach`: answered at once with `initialized`; a launch after it refused.
+test('attach_then_launch_refused', async () => {
+  const c = new DapClient();
+  await c.send('initialize', { adapterID: 'roxal' });
+  const a = await c.send('attach', {});
+  assert(a.success, `attach failed: ${a.message}`);
+  await c.waitEvent('initialized', () => true, 3000);
+  const l = await c.send('launch', { program: fixture('fixture_basic.rox') });
+  assert(!l.success, 'launch after attach should be refused');
+  await c.send('disconnect');
+  const code = await Promise.race([c.exited,
+    new Promise((_, rej) => setTimeout(() => rej(new Error('adapter did not exit')), 10000))]);
+  assert(code === 0, `exit code ${code}`);
+});
+
+// ---------------------------------------------------------------------------
+// Tier 2 (read-only): watch / repl evaluate expressions and calls in the
+// stopped frame; hover stays a path; an error is the evaluation's, not the
+// program's; a call waiting on a parked actor is refused; the run goes on.
+test('evaluate_expressions_in_frame', async () => {
+  const c = new DapClient();
+  await c.send('initialize', { adapterID: 'roxal' });
+  const launchP = c.send('launch', { program: fixture('fixture_eval.rox') });
+  await c.waitEvent('initialized');
+  await launchP;
+  await c.send('setBreakpoints', { source: { path: fixture('fixture_eval.rox') }, breakpoints: [{ line: 15 }] });
+  await c.send('configurationDone');
+  const stopped = await c.waitEvent('stopped', e => e.body.reason === 'breakpoint');
+  const st = await c.send('stackTrace', { threadId: stopped.body.threadId });
+  const frameId = st.body.stackFrames[0].id;
+  const ev = (expression, context = 'repl') => c.send('evaluate', { expression, context, frameId });
+  const expect = async (expr, want, context) => {
+    const r = await ev(expr, context);
+    assert(r.success && r.body.result === want, `${expr} -> ${r.body?.result ?? r.message} (wanted ${want})`);
+  };
+  await expect('total + 1', '16');
+  await expect('helper(total)', '30');
+  await expect('len([1, 2, 3])', '3');
+  await expect('[1.0 2.0] * 2', '[2 4]', 'watch');
+  await expect('n', '5', 'watch');
+  const hover = await ev('total + 1', 'hover');
+  assert(!hover.success, 'hover evaluated an expression');
+  const div = await ev('total / 0');
+  assert(!div.success && /zero|divi/i.test(div.message), `division: ${div.message}`);
+  const bad = await ev('nosuch + 1');
+  assert(!bad.success, 'an unknown name evaluated');
+  const blocked = await ev('b.get() + 1');
+  assert(!blocked.success && /waits|stopped|did not finish/i.test(blocked.message), `actor call: ${blocked.message}`);
+  // A statement-action value typed at the console is reported, not run; as a
+  // watch it is just a value.
+  const stmt = await ev('cmd()');
+  assert(!stmt.success && /statement/.test(stmt.message), `cmd() as a statement: ${stmt.message ?? stmt.body?.result}`);
+  const asWatch = await ev('cmd()', 'watch');
+  assert(asWatch.success && /^Cmd\{/.test(asWatch.body.result), `cmd() as a watch: ${asWatch.body?.result ?? asWatch.message}`);
+  const again = await ev('total');
+  assert(again.success && again.body.result === '15', 'the frame changed');
+  await c.send('continue', { threadId: stopped.body.threadId });
+  await c.waitEvent('exited', e => e.body.exitCode === 0);
+  await c.send('disconnect');
+  await c.exited;
+  assert(c.outputText().includes('r=15'), 'the program did not finish normally');
+  assert(!c.outputText().includes('ran'), 'a statement action ran from an evaluation');
+});
+
+// ---------------------------------------------------------------------------
 let failed = 0;
 for (const t of tests) {
   try {

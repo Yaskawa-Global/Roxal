@@ -33,7 +33,7 @@ void StopCoordinator::beginExecution()
     // hold and collects the acknowledgements (advancePendingStop).
     if ((owners_.load(std::memory_order_acquire) & ownerBit(StopOwner::Host)) != 0
         && beginStop(DebugStopReason::Host))
-        hostPending_.store(true, std::memory_order_release);
+        pending_.store(true, std::memory_order_release);
 }
 
 void StopCoordinator::endExecution()
@@ -45,7 +45,7 @@ void StopCoordinator::endExecution()
     // The debugger's interest ends with the execution; the host's does not
     // (while it holds, the next execution starts paused).
     owners_.fetch_and(uint8_t(~ownerBit(StopOwner::Debugger)), std::memory_order_acq_rel);
-    hostPending_.store(false, std::memory_order_release);
+    pending_.store(false, std::memory_order_release);
     if (stopped_.load(std::memory_order_acquire)) {
         resumeNow(/*releaseHold=*/false);
         return;
@@ -180,11 +180,14 @@ StopCoordinator::StopOutcome StopCoordinator::requestStop(DebugStopReason reason
     // host pauses through requestHostPause.
     if (!beginStop(reason)) {
         if (forming_.load(std::memory_order_acquire)
-            && hostPending_.load(std::memory_order_acquire)) {
-            // A pending host pause: join it, and help it along -- this may be
-            // the worker that would otherwise advance it.  If it does not
-            // complete in our budget it stays pending as the host's.
-            owners_.fetch_or(ownerBit(StopOwner::Debugger), std::memory_order_acq_rel);
+            && pending_.load(std::memory_order_acquire)) {
+            // A pending stop: join it, and help it along -- this may be the
+            // worker that would otherwise advance it.  If it does not
+            // complete in our budget it stays pending as its owners' (the
+            // Debugger share is dropped only if this request added it).
+            const bool hadDebugger =
+                (owners_.fetch_or(ownerBit(StopOwner::Debugger), std::memory_order_acq_rel)
+                 & ownerBit(StopOwner::Debugger)) != 0;
             const TimePoint deadline = TimePoint::currentTime() + timeout;
             for (;;) {
                 advancePendingStop();
@@ -197,8 +200,9 @@ StopCoordinator::StopOutcome StopCoordinator::requestStop(DebugStopReason reason
                 std::unique_lock<std::mutex> lk(domain_->stopMutex);
                 domain_->ackCv.wait_for(lk, std::chrono::milliseconds(1));
             }
-            owners_.fetch_and(uint8_t(~ownerBit(StopOwner::Debugger)),
-                              std::memory_order_acq_rel);
+            if (!hadDebugger)
+                owners_.fetch_and(uint8_t(~ownerBit(StopOwner::Debugger)),
+                                  std::memory_order_acq_rel);
             std::string waiting;
             {
                 std::lock_guard<std::mutex> lk(infoMutex_);
@@ -358,7 +362,7 @@ bool StopCoordinator::tryCommitPass(uint64_t epoch, std::string& laggard)
     cancelArmedStepsInEpoch();
     stopped_.store(true, std::memory_order_release);
     forming_.store(false, std::memory_order_release);
-    hostPending_.store(false, std::memory_order_release);
+    pending_.store(false, std::memory_order_release);
     if (DebugHostControl* hc = hostControl_.load(std::memory_order_acquire))
         hc->onDebugStopped({ sessionId_,
                              holdGeneration_.load(std::memory_order_acquire),
@@ -381,7 +385,7 @@ StopCoordinator::StopOutcome StopCoordinator::giveUp(uint64_t epoch, const std::
             const std::string prefix = "stop timed out waiting for ";
             waitingFor_ = why.rfind(prefix, 0) == 0 ? why.substr(prefix.size()) : std::string();
         }
-        hostPending_.store(true, std::memory_order_release);
+        pending_.store(true, std::memory_order_release);
         if (DebugWorker* w = workerRaw_.load(std::memory_order_acquire))
             w->notifyRecheck();
         return { false, why };
@@ -402,7 +406,7 @@ StopCoordinator::StopOutcome StopCoordinator::rollback(uint64_t epoch, const std
                                 holdGeneration_.load(std::memory_order_acquire),
                                 epoch, why });
     forming_.store(false, std::memory_order_release);
-    hostPending_.store(false, std::memory_order_release);
+    pending_.store(false, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lk(infoMutex_);
         waitingFor_.clear();
@@ -423,7 +427,7 @@ void StopCoordinator::cancelPending()
     // opened, report nothing as failed (it did not fail; it was withdrawn).
     releaseAll();
     forming_.store(false, std::memory_order_release);
-    hostPending_.store(false, std::memory_order_release);
+    pending_.store(false, std::memory_order_release);
     {
         std::lock_guard<std::mutex> lk(infoMutex_);
         stopInfo_.reset();
@@ -456,11 +460,40 @@ StopCoordinator::HostPauseState StopCoordinator::requestHostPause()
         waitingFor_.clear();
     }
     pendingWokenEpoch_.store(epoch, std::memory_order_release);
-    hostPending_.store(true, std::memory_order_release);
+    pending_.store(true, std::memory_order_release);
     openHoldAndWake(epoch, DebugStopReason::Host, 0);
     if (DebugWorker* w = workerRaw_.load(std::memory_order_acquire))
         w->notifyRecheck();
     return HostPauseState::Pending;
+}
+
+StopCoordinator::PauseState StopCoordinator::requestDebuggerPause()
+{
+    ensureWorker();
+    std::lock_guard<std::recursive_mutex> control(controlMutex_);
+    if (stopped_.load(std::memory_order_acquire) || forming_.load(std::memory_order_acquire)) {
+        // Join what is already stopped or forming (a host hold, a trap).
+        owners_.fetch_or(ownerBit(StopOwner::Debugger), std::memory_order_acq_rel);
+        return stopped_.load(std::memory_order_acquire) ? PauseState::Stopped
+                                                         : PauseState::Pending;
+    }
+    if (!beginStop(DebugStopReason::Pause))
+        return PauseState::Idle;   // nothing executes
+    owners_.fetch_or(ownerBit(StopOwner::Debugger), std::memory_order_acq_rel);
+    const uint64_t epoch = currentEpoch();
+    {
+        std::lock_guard<std::mutex> lk(infoMutex_);
+        StopInfo info;
+        info.reason = DebugStopReason::Pause;
+        stopInfo_ = info;
+        waitingFor_.clear();
+    }
+    pendingWokenEpoch_.store(epoch, std::memory_order_release);
+    pending_.store(true, std::memory_order_release);
+    openHoldAndWake(epoch, DebugStopReason::Pause, 0);
+    if (DebugWorker* w = workerRaw_.load(std::memory_order_acquire))
+        w->notifyRecheck();
+    return PauseState::Pending;
 }
 
 void StopCoordinator::releaseHostPause()
@@ -477,7 +510,7 @@ void StopCoordinator::releaseHostPause()
             return;   // taken again meanwhile
         if (stopped_.load(std::memory_order_acquire))
             resumeNow(/*releaseHold=*/true);
-        else if (hostPending_.load(std::memory_order_acquire))
+        else if (pending_.load(std::memory_order_acquire))
             cancelPending();
     });
 }
@@ -494,7 +527,7 @@ void StopCoordinator::releaseForExit()
         // hold stays the host's to drop (as at session end).
         if (stopped_.load(std::memory_order_acquire))
             resumeNow(/*releaseHold=*/false);
-        else if (hostPending_.load(std::memory_order_acquire))
+        else if (pending_.load(std::memory_order_acquire))
             cancelPending();
     });
 }
@@ -503,7 +536,7 @@ void StopCoordinator::resumeForShutdown()
 {
     std::lock_guard<std::recursive_mutex> control(controlMutex_);
     owners_.store(0, std::memory_order_release);
-    hostPending_.store(false, std::memory_order_release);
+    pending_.store(false, std::memory_order_release);
     if (stopped_.load(std::memory_order_acquire))
         resumeNow(/*releaseHold=*/false);
     else if (forming_.load(std::memory_order_acquire))
@@ -518,7 +551,7 @@ StopCoordinator::PauseStatus StopCoordinator::pauseStatus()
     s.debugger = (o & ownerBit(StopOwner::Debugger)) != 0;
     s.stopped = stopped_.load(std::memory_order_acquire);
     s.pending = !s.stopped && forming_.load(std::memory_order_acquire)
-                && hostPending_.load(std::memory_order_acquire);
+                && pending_.load(std::memory_order_acquire);
     std::lock_guard<std::mutex> lk(infoMutex_);
     if (s.pending)
         s.waitingFor = waitingFor_;
@@ -527,13 +560,13 @@ StopCoordinator::PauseStatus StopCoordinator::pauseStatus()
 
 void StopCoordinator::advancePendingStop()
 {
-    if (!hostPending_.load(std::memory_order_acquire))
+    if (!pending_.load(std::memory_order_acquire))
         return;
     std::lock_guard<std::recursive_mutex> control(controlMutex_);
-    if (!hostPending_.load(std::memory_order_acquire))
+    if (!pending_.load(std::memory_order_acquire))
         return;
     if (!forming_.load(std::memory_order_acquire)) {
-        hostPending_.store(false, std::memory_order_release);
+        pending_.store(false, std::memory_order_release);
         return;
     }
     if (owners_.load(std::memory_order_acquire) == 0) {
@@ -592,6 +625,10 @@ void StopCoordinator::resume(bool releaseHold)
     owners_.fetch_and(uint8_t(~ownerBit(StopOwner::Debugger)), std::memory_order_acq_rel);
     if ((owners_.load(std::memory_order_acquire) & ownerBit(StopOwner::Host)) != 0)
         return;   // the host still holds it: the domain stays stopped
+    if (!stopped_.load(std::memory_order_acquire) && pending_.load(std::memory_order_acquire)) {
+        cancelPending();   // still forming, and nobody wants it now
+        return;
+    }
     resumeNow(releaseHold);
 }
 
@@ -754,10 +791,24 @@ void StopCoordinator::completeAsyncStop()
             info.description = std::move(stagedFailure_);
         stopInfo_ = std::move(info);
     }
+    std::lock_guard<std::recursive_mutex> control(controlMutex_);
+    pendingWokenEpoch_.store(epoch, std::memory_order_release);
     openHoldAndWake(epoch, reason, trapThread_.load(std::memory_order_relaxed));
-    // (awaitQuiescence cancels preempted steps before publishing the stop;
-    // a rollback delivered its failure notice + backoff already.)
-    awaitQuiescence(epoch, asyncStopTimeout_);
+    // One pass now; a stop that cannot commit yet -- a thread still inside a
+    // native call -- stays PENDING and the worker re-checks it every 2 ms
+    // (advancePendingStop) until the last thread parks.  Never rolled back
+    // for being slow: a skipped breakpoint is worse than a late one.
+    // (tryCommitPass cancels preempted steps before publishing the stop.)
+    std::string laggard;
+    if (tryCommitPass(epoch, laggard))
+        return;
+    if (!forming_.load(std::memory_order_acquire) || currentEpoch() != epoch)
+        return;   // withdrawn meanwhile
+    {
+        std::lock_guard<std::mutex> lk(infoMutex_);
+        waitingFor_ = laggard;
+    }
+    pending_.store(true, std::memory_order_release);
 }
 
 std::optional<StopCoordinator::StopInfo> StopCoordinator::stoppedInfo()

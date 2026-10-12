@@ -1068,6 +1068,7 @@ void RoxalCompiler::bindImport(VM& vm, ObjModuleType* importer,
     // earlier binding: after VM::forgetUserModules() a re-import resolves to
     // a new revision, which a fragment session's module and a shared
     // namespace node would otherwise keep reaching through the old one.
+    importer->importedVars.insert(components.front().hashCode());   // `pkg` or the module
     ObjModuleType* parent = importer;
     ustring packageFullName;
     for (size_t i = 0; i + 1 < components.size(); ++i) {

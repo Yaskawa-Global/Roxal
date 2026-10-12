@@ -37,10 +37,15 @@ class VM;
 // exception) or by the embedding host (a controller hold), or both, and stays
 // in force while any owner holds it: the debugger's continue releases only
 // the debugger's part, the host's release only the host's, and the domain
-// resumes when neither is left.  A host pause never fails: it stays PENDING
-// while a thread is inside a native call (or otherwise slow to reach a stop
-// point) -- threads park as they arrive -- until the last one does, or the
-// host releases it.  Exit beats both (releaseForExit).
+// resumes when neither is left.
+//
+// Pending stops.  A host pause, a debugger pause (requestDebuggerPause) and a
+// breakpoint / step / exception stop never fail because a thread is slow to
+// reach a stop point (inside a native call, say): the stop stays PENDING --
+// threads park as they arrive, the worker re-checks every 2 ms -- until the
+// last one does, or its owners withdraw it.  Exit beats every owner
+// (releaseForExit).  Only the blocking requestStop keeps a deadline, rolling
+// back when it expires (unless the host has joined).
 //
 // Threading: requestStop()/resume()/stepAndResume() are called by ONE
 // controlling thread at a time (the debug worker / test controller) --
@@ -89,7 +94,8 @@ public:
     // resumes only if the host holds no part of the stop (check isStopped()
     // afterwards).  releaseHold=true is a normal continue (exactly one
     // DebugContinueNotice when it resumes); releaseHold=false is the step
-    // resume shape -- the hold generation stays held.
+    // resume shape -- the hold generation stays held.  A stop still pending
+    // that nobody owns any more is withdrawn.
     void resume(bool releaseHold = true);
 
     // Take a share of a stop already in force (a debugger pause while the
@@ -102,9 +108,16 @@ public:
         Pending,    // forming: waiting for threads to reach a stop point
         Stopped,    // committed
     };
+    using PauseState = HostPauseState;
     // Add the Host owner and start a stop if none is forming or active.
     // Non-blocking; any non-RT thread.
     HostPauseState requestHostPause();
+    // The debugger's pause, non-blocking: add the Debugger owner and start a
+    // stop if none is forming or active (joining one that is).  Pending until
+    // every thread has parked; DebugStopNotice when it commits.  Idle when
+    // nothing executes (the Debugger owner is not kept: the next execution
+    // starts running).  Controlling thread.
+    PauseState requestDebuggerPause();
     // Drop the Host owner.  When no owner remains, a committed stop resumes
     // and a pending one is cancelled (on the worker).  Any non-RT thread.
     void releaseHostPause();
@@ -120,15 +133,15 @@ public:
         bool host { false };        // the Host owner is held
         bool debugger { false };    // the Debugger owner is held
         bool stopped { false };     // committed
-        bool pending { false };     // a host pause still forming
-        std::string waitingFor;     // the thread a pending pause waits for
+        bool pending { false };     // a stop still forming (either owner's)
+        std::string waitingFor;     // the thread a pending stop waits for
     };
     PauseStatus pauseStatus();
 
-    // Worker: one quiescence pass over a pending host pause, committing it
-    // when every thread has acknowledged.  Cheap when nothing is pending.
+    // Worker: one quiescence pass over a pending stop, committing it when
+    // every thread has acknowledged.  Cheap when nothing is pending.
     void advancePendingStop();
-    bool hostPausePending() const { return hostPending_.load(std::memory_order_acquire); }
+    bool stopPending() const { return pending_.load(std::memory_order_acquire); }
     bool hasStopOwners() const { return owners_.load(std::memory_order_acquire) != 0; }
 
     bool isStopped() const { return stopped_.load(std::memory_order_acquire); }
@@ -190,8 +203,8 @@ public:
     bool tryBeginAsyncStop(DebugStopReason reason, uint64_t threadId,
                            const void* chunk, uint32_t stmtIndex,
                            bool canNotify, std::string description = {});
-    // Worker-side completion: hold notification, wakes, acknowledgement
-    // collection, commit-or-rollback.
+    // Worker-side completion: hold notification, wakes, one acknowledgement
+    // pass; a stop that cannot commit yet stays pending (advancePendingStop).
     void completeAsyncStop();
 
     // Location/reason of the current committed stop (empty when running).
@@ -237,6 +250,9 @@ public:
     bool hasAsyncPending() const {
         return asyncPending_.load(std::memory_order_acquire);
     }
+    // The debug worker exists (an async stop can be published from an RT
+    // path, which cannot create it).
+    bool workerReady() const { return workerRaw_.load(std::memory_order_acquire) != nullptr; }
 
     // Step-state lifecycle: the armed step and its paired demand must have
     // exactly one owner.  cancelStepIfArmed: disarm + release the demand;
@@ -314,10 +330,11 @@ private:
     // outlives an execution (the next one starts paused); the Debugger bit
     // does not.
     std::atomic<uint8_t> owners_ { 0 };
-    // A host pause is forming and the worker advances it.
-    std::atomic<bool> hostPending_ { false };
-    // The epoch whose hold a pending host pause has opened (a pause begun
-    // on the RT driver opens it later, on the worker).
+    // A stop (host pause, debugger pause, breakpoint / step / exception) is
+    // forming and the worker advances it; no deadline.
+    std::atomic<bool> pending_ { false };
+    // The epoch whose hold a pending stop has opened (a host pause begun on
+    // the RT driver opens it later, on the worker).
     std::atomic<uint64_t> pendingWokenEpoch_ { 0 };
     // Serializes commit / rollback / cancel / resume across the controlling
     // threads (worker, host threads, an in-VM test controller, the
@@ -350,7 +367,6 @@ private:
     std::atomic<bool> workerRetired_ { false };
     // Raw mirror for the RT trap path (set-once before the slow path arms).
     std::atomic<DebugWorker*> workerRaw_ { nullptr };
-    TimeDuration asyncStopTimeout_ { TimeDuration::milliSecs(3000) };
     // Strong membership leases of the COMMITTED epoch: retained until
     // resume/rollback/session-end so no member Thread object can be
     // destroyed during the stopped interval -- the inspection phase reads

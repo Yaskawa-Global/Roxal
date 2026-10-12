@@ -114,6 +114,18 @@ thread_local ustring VM::nativeCallContext_;
 thread_local std::string VM::nativeCallOverrun_;
 thread_local bool VM::onDataflowThread_ { false };
 thread_local OutputRoute VM::currentOutputRoute_ {};
+thread_local std::string* VM::debugEvalCapture_ { nullptr };
+
+VM::DebugEvaluationScope::DebugEvaluationScope(std::string* capture)
+    : previous(debugEvalCapture_)
+{
+    debugEvalCapture_ = capture;
+}
+
+VM::DebugEvaluationScope::~DebugEvaluationScope()
+{
+    debugEvalCapture_ = previous;
+}
 
 std::string VM::consumeNativeCallOverrun()
 {
@@ -475,6 +487,14 @@ const OutputRoute& VM::currentOutputRoute()
 
 void VM::emitOutput(const OutputEventView& event, OutputDelivery delivery)
 {
+    // A debugger evaluation's prints and errors belong to its result, not
+    // the program's output.
+    if (debugEvalCapture_) {
+        debugEvalCapture_->append(event.text);
+        if (event.kind != OutputKind::Print && !event.text.empty() && event.text.back() != '\n')
+            debugEvalCapture_->push_back('\n');
+        return;
+    }
 #ifdef ROXAL_COMPUTE_SERVER
     if (currentOutputRoute_.routesRemotely()) {
         auto conn = currentOutputRoute_.remoteConn.lock();
@@ -2274,7 +2294,10 @@ PrepareProgramResult VM::prepareProgram(std::istream& source,
                 [&](const VariablesMap::NameValue& nv) {
                     // overwrite=false: a name the script imports/declares
                     // for itself wins (matches `import X.*` precedence).
-                    modPtr->vars.store(nv.first.hashCode(), nv.first,
+                    const int32_t hash = nv.first.hashCode();
+                    if (!modPtr->vars.exists(hash))
+                        modPtr->importedVars.insert(hash);
+                    modPtr->vars.store(hash, nv.first,
                                        nv.second, /*overwrite=*/false);
                 });
         }
@@ -2467,6 +2490,28 @@ SliceResult VM::driveRunSlice(RunRecord& run, TimeDuration budget)
         requestDomainExit(*thread->domain, code);
     }
 
+    // A runtime error held back for the debugger (deferFatalForDebugger):
+    // paused while its stop is in force; once released, its teardown runs
+    // now -- the run fails with it, or ends if an exit was asked meanwhile.
+    if (thread->deferredFatal.active) {
+        if (stopCoordinator().stopFormingOrActive()) {
+            slice.state = SliceState::DebugPaused;
+            return slice;
+        }
+        const Thread::DeferredFatal df = thread->deferredFatal;
+        thread->deferredFatal = Thread::DeferredFatal{};
+        if (isExitRequested() && !run.prepared->session) {
+            resetStack();
+            run.phase = RunPhase::Finished;
+            slice.state = SliceState::ExecutionEnded;
+            return slice;
+        }
+        publishRuntimeErrorAndWake();
+        emitRuntimeErrorDiagnostic(df.text, df.file, df.line, df.col);
+        resetStack();
+        return fail(takeRuntimeErrorMessage());
+    }
+
     // The body has returned; hand the run over.  Nothing is executed in this
     // slice -- the transition is the work.
     if (run.phase == RunPhase::MainReturned) {
@@ -2541,6 +2586,12 @@ SliceResult VM::driveRunSlice(RunRecord& run, TimeDuration budget)
     }
 
     // ---- Classify -------------------------------------------------------
+    // A runtime error held back for the debugger: the slice ends as a
+    // debugger pause with the frames intact (see deferFatalForDebugger).
+    if (result.first == ExecutionStatus::RuntimeError && thread->deferredFatal.active) {
+        slice.state = SliceState::DebugPaused;
+        return slice;
+    }
     // A fragment ended by exit() (typed in it, or raised elsewhere in its
     // session) returned from execute() at the exit guard with its frames
     // still on the session's thread.  The line is over; the session is not.
@@ -7274,7 +7325,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
     // Mirrors the frames-empty handling in OpCode::Throw.
     auto handleZeroDivision = [&](const char* msg) -> bool {
         raiseZeroDivisionError(msg);
-        if (hasRuntimeError() || thread->frames.empty())
+        if (hasRuntimeError() || thread->frames.empty() || thread->deferredFatal.active)
             return true;
         frame = thread->frames.end()-1;
         return false;
@@ -8288,7 +8339,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                         }
                     } catch (std::exception& e) {
                         raiseException(Value::exceptionVal(Value::stringVal(toUnicodeString(e.what()))));
-                        if (hasRuntimeError()) return errorReturn;
+                        if (hasRuntimeError() || thread->deferredFatal.active) return errorReturn;
                         if (!thread->frames.empty()) frame = thread->frames.end()-1;
                         goto postInstructionDispatch;
                     }
@@ -8668,7 +8719,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                         }
                     } catch (std::exception& e) {
                         raiseException(Value::exceptionVal(Value::stringVal(toUnicodeString(e.what()))));
-                        if (hasRuntimeError()) return errorReturn;
+                        if (hasRuntimeError() || thread->deferredFatal.active) return errorReturn;
                         if (!thread->frames.empty()) frame = thread->frames.end()-1;
                         goto postInstructionDispatch;
                     }
@@ -8879,7 +8930,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                         }
                     } catch (std::exception& e) {
                         raiseException(Value::exceptionVal(Value::stringVal(toUnicodeString(e.what()))));
-                        if (hasRuntimeError()) return errorReturn;
+                        if (hasRuntimeError() || thread->deferredFatal.active) return errorReturn;
                         if (!thread->frames.empty()) frame = thread->frames.end()-1;
                         goto postInstructionDispatch;
                     }
@@ -9096,7 +9147,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                         }
                     } catch (std::exception& e) {
                         raiseException(Value::exceptionVal(Value::stringVal(toUnicodeString(e.what()))));
-                        if (hasRuntimeError()) return errorReturn;
+                        if (hasRuntimeError() || thread->deferredFatal.active) return errorReturn;
                         if (!thread->frames.empty()) frame = thread->frames.end()-1;
                         goto postInstructionDispatch;
                     }
@@ -10335,12 +10386,16 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
             case OpCode::DefineModuleConst: {
                 ObjString* name = readString();
                 moduleType()->constVars.insert(name->hash);
+                if (!moduleType()->importedVars.empty())
+                    moduleType()->importedVars.erase(name->hash);   // its own now
                 // Clone vector/matrix/tensor for by-value semantics
                 moduleVars().store(name->hash, name->s, cloneIfValueSemantics(pop()));
                 break;
             }
             case OpCode::DefineModuleVar: {
                 ObjString* name = readString();
+                if (!moduleType()->importedVars.empty())
+                    moduleType()->importedVars.erase(name->hash);   // its own now
                 // Clone vector/matrix/tensor for by-value semantics
                 moduleVars().store(name->hash, name->s, cloneIfValueSemantics(pop()));
                 break;
@@ -10573,12 +10628,18 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
             }
             case OpCode::NewRange: {
                 bool closed = ((readByte() & 1) > 0);
-                if (!peek(2).isNil() && !peek(2).isNumber())
+                if (!peek(2).isNil() && !peek(2).isNumber()) {
                     runtimeError("The start bound of a range must be a number");
-                if (!peek(1).isNil() && !peek(1).isNumber())
+                    return errorReturn;
+                }
+                if (!peek(1).isNil() && !peek(1).isNumber()) {
                     runtimeError("The stop bound of a range must be a number");
-                if (!peek(0).isNil() && !peek(0).isNumber())
+                    return errorReturn;
+                }
+                if (!peek(0).isNil() && !peek(0).isNumber()) {
                     runtimeError("The step of a range must be a number");
+                    return errorReturn;
+                }
                 auto rangeVal = Value::rangeVal(peek(2),peek(1),peek(0),closed);
                 popN(3);
                 push(rangeVal);
@@ -11006,7 +11067,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                 // the raise went uncaught or was stashed for actor forwarding,
                 // in which case there is no frame to continue on (mirrors both
                 // OpCode::Throw and handleZeroDivision).
-                if (hasRuntimeError() || thread->frames.empty())
+                if (hasRuntimeError() || thread->frames.empty() || thread->deferredFatal.active)
                     return errorReturn;
                 frame = thread->frames.end()-1;
                 break;
@@ -11418,6 +11479,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                     const bool replReimport = (replModuleType() == toModuleType);
 
                     auto storeImported = [&](int32_t hash, const ustring& name, const Value& v) {
+                        if (replReimport || !toModuleType->vars.exists(hash))
+                            toModuleType->importedVars.insert(hash);
                         if (v.isObj() && isOverloadSet(v)) {
                             auto cloneObj = newOverloadSetObj(name);
                             auto* src = asOverloadSet(v);
@@ -13014,6 +13077,14 @@ bool VM::unwindToExceptionHandler(Value& exc)
                 if (!it->exceptionHandlers.empty()) { anyHandler = true; break; }
                 if (it->unwindOnReturn) break;
             }
+            if (!anyHandler && fatalDeferrable()) {
+                // A thread driven in real-time slices cannot park: the
+                // uncaught exception is reported now, at the raise site, and
+                // held back for the debugger with the frames intact (or, if
+                // it cannot be held, torn down as usual) -- uncaught either way.
+                runtimeError("Uncaught exception: " + objExceptionToString(asException(exc)));
+                return false;
+            }
             if (!anyHandler) {
                 auto frame = thread->frames.end() - 1;
                 Chunk* ch = asFunction(asClosure(frame->closure)->function)->chunk.get();
@@ -13430,19 +13501,17 @@ std::string VM::takeRuntimeErrorMessage()
 
 void VM::runtimeError(const std::string& format, ...)
 {
+    // An error already held back for the debugger on this thread (see
+    // deferFatalForDebugger): the run is failing with that one; a second
+    // report from the same unwinding is dropped.
+    if (thread && thread->deferredFatal.active)
+        return;
     // NOTE: the error flag + wakes are published AFTER the (optional)
     // debugger exception stop below -- publishing the flag first would
     // start terminating other threads before the world can be frozen for
     // inspection.  With no debugger attached the flag is set a few
     // microseconds later; nothing observes the difference.
-    auto publishErrorAndWake = [this] {
-        setRuntimeErrorFlag();
-        // Wake all threads so they can notice the error flag and terminate
-        threads.apply([](const std::pair<const uint64_t, ptr<Thread>>& entry){
-            if (entry.second)
-                entry.second->wake();
-        });
-    };
+    auto publishErrorAndWake = [this] { publishRuntimeErrorAndWake(); };
 
     va_list args;
     va_start(args, format);
@@ -13522,18 +13591,41 @@ void VM::runtimeError(const std::string& format, ...)
 
     const std::string text = rendered.str();
 
+    // A thread driven in real-time slices cannot park here: its stop is
+    // published without parking and the error's teardown waits for the
+    // release, on the run's next slice (the frames stay inspectable).
+    if (deferFatalForDebugger(text, chunk.get(), instruction)) {
+        thread->deferredFatal = Thread::DeferredFatal{ true, text, fname, line, col };
+        return;
+    }
+
     // Debugger exception stop: with the policy armed, publish an Exception
     // stop and PARK -- before the error flag starts terminating other
     // threads and before resetStack() destroys this stack -- so the
     // failure is inspectable exactly where it happened.  On release
     // (continue/terminate), fall through to the pre-existing teardown,
     // which then runs exactly once.  Excluded, as at statement boundaries:
-    // RT/GC-yield slices and bounded dataflow eval sections, which must
-    // not park here.
+    // RT/GC-yield slices (deferred above) and bounded dataflow eval
+    // sections, which must not park here.
     debugFatalStopIfArmed(text, chunk.get(), instruction);
 
     publishErrorAndWake();
+    emitRuntimeErrorDiagnostic(text, fname, line, col);
+    resetStack();
+}
 
+void VM::publishRuntimeErrorAndWake()
+{
+    setRuntimeErrorFlag();
+    // Wake all threads so they can notice the error flag and terminate
+    threads.apply([](const std::pair<const uint64_t, ptr<Thread>>& entry){
+        if (entry.second)
+            entry.second->wake();
+    });
+}
+
+void VM::emitRuntimeErrorDiagnostic(const std::string& text, const std::string& fname, int line, int col)
+{
     OutputEventView event;
     event.kind = OutputKind::Diagnostic;
     event.severity = OutputSeverity::Error;
@@ -13550,8 +13642,39 @@ void VM::runtimeError(const std::string& format, ...)
         };
     }
     emitOutput(event, OutputDelivery::LocalAndCallRoute);
+}
 
-    resetStack();
+bool VM::fatalDeferrable()
+{
+    auto& coord = stopCoordinator();
+    return coord.stopOnFatal() && thread && thread->execute_depth == 1
+        && thread->dataflowEvalDepth == 0
+        && !thread->debugExcluded.load(std::memory_order_relaxed)
+        && (SimpleMarkSweepGC::inGCYieldSectionOnThisThread() || thread->rtYieldOnGC)
+        && coord.workerReady();
+}
+
+bool VM::deferFatalForDebugger(const std::string& description, Chunk* chunk, size_t instruction)
+{
+    // Only the OUTERMOST execution of a thread the host drives in slices: a
+    // nested one (a native callback) must complete, and its invoker expects
+    // the error now.
+    if (!fatalDeferrable())
+        return false;
+    auto& coord = stopCoordinator();
+    int32_t stmtIdx = -1;
+    if (chunk && chunk->debugInfo)
+        stmtIdx = debugLocateStatement(*chunk->debugInfo, uint32_t(instruction));
+    // canNotify=false: the RT shape (the worker's poll picks it up).  If a
+    // stop is already forming or in force, the error joins it.
+    if (!coord.tryBeginAsyncStop(DebugStopReason::Exception, thread->id(),
+                                 stmtIdx >= 0 ? static_cast<const void*>(chunk) : nullptr,
+                                 stmtIdx >= 0 ? uint32_t(stmtIdx) : 0,
+                                 /*canNotify=*/false, description)
+        && !coord.stopFormingOrActive())
+        return false;
+    coord.ackNoPark(*thread);
+    return true;
 }
 
 

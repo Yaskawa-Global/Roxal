@@ -2303,6 +2303,11 @@ struct ObjModuleType : public ObjTypeSpec
     // variables declared at runtime via VM OpCode::DefineModuleVar
     VariablesMap vars;
     std::unordered_set<int32_t> constVars;
+    // Names in `vars` an import bound (a module name, `import m.*` / named
+    // symbols, a host launch's standard imports) rather than the module's own
+    // declarations -- the debugger lists the two apart.  A declaration of the
+    // same name makes it the module's own again.  Name hashes, like constVars.
+    std::unordered_set<int32_t> importedVars;
 
     void registerModuleAlias(const ustring& alias,
                              const ustring& moduleFullName);

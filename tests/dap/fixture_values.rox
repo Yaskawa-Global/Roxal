@@ -1,0 +1,4 @@
+var v = [1.0 2.5 3.0]
+var m = [1.0 2.0; 3.0 4.0]
+var o = orient(r=0deg, p=0deg, y=90deg)
+var done = 1

@@ -2629,9 +2629,23 @@ statement boundary satisfying the mode publishes a new stop.
 
 A stop is all-or-nothing. It is reported only once every member thread has
 acknowledged, dataflow admission is closed, and no evaluator is still active.
-A stop that cannot form rolls everything back — acknowledged members are
-released, no stop event is delivered — and names the thread that did not reach
-a safe point.
+`requestStop` keeps a deadline: a stop that cannot form in time rolls everything
+back — acknowledged members are released, no stop event is delivered — and names
+the thread that did not reach a safe point.
+
+Every other stop is **pending** instead of failing: a breakpoint, a step, an
+exception stop, `requestHostPause()` and the debugger's own non-blocking pause,
+
+```cpp
+coord.requestDebuggerPause();   // Idle (nothing runs) / Pending / Stopped
+```
+
+stay forming while a thread is inside a native call — threads park as they
+reach a safe point, the worker re-checks every 2 ms — and commit when the last
+one does; `pauseStatus().waitingFor` names the laggard.  A pending stop nobody
+owns any more is withdrawn (`resume()` with no host share, `releaseHostPause()`
+with no debugger share); exit beats it (`releaseForExit()`).  A breakpoint is
+therefore never skipped because an actor was busy in a long native call.
 
 ### Breakpoints
 
@@ -2689,9 +2703,31 @@ invalidated at the top of every release — continue, step, rollback, session en
 world that has moved on. Variables are paged (`start`, `count`) and rendering
 is bounded, so a large or cyclic structure costs a page, not a traversal.
 
-Evaluation is deliberately restricted to safe reads: identifiers, `.property`,
+`evaluate` is deliberately restricted to safe reads: identifiers, `.property`,
 `[index]` and `['key']` paths resolved innermost-first through locals,
 upvalues and module variables. It runs no user code and mutates nothing.
+
+`evaluateExpression` takes any expression — operators, calls, getters — and
+stays read-only towards the stopped program: the frame's live locals and
+upvalues are passed *by value* to a throwaway function compiled against the
+frame's module (module names and imports resolve as in the frame; no debug info
+is registered), which runs on a fresh debug-excluded thread in its own execution
+domain, on the calling (worker) thread, bounded (2 s by default).  It is never a
+member of the stop, breakpoints never trap inside it, and an error or `exit()`
+ends only the evaluation.  A call that would wait for a result the stopped
+program has to produce (an actor method, a future) is refused.  Output it makes
+is captured into the result; `VM::inDebugEvaluation()` lets a host's natives
+refuse what must not happen from an evaluation (robot motion, say).  The DAP
+session uses paths for hover and falls back to expressions for watch and repl.
+A console (repl) line whose value has a statement action -- `movj(...)` builds a
+Motion, which as a statement would run -- is reported as such rather than
+echoed: the debugger does not run statements; a watch shows the plain value.
+
+Values render with their numbers: a vector `[1 2.5 3]`, a matrix row by row, an
+orient as roll / pitch / yaw (children: components, rows, `r`/`p`/`y` and the
+quaternion).  A frame's Module scope lists the module's own names; what its
+imports bound (`ObjModuleType::importedVars`) is a separate, `expensive`
+Imported scope.  An actor's thread is named by its type (`Line #3`).
 
 ### Service threads that must keep running
 
@@ -2720,6 +2756,16 @@ inspectable; the stop's `description` carries the message and rendered stack.
 Continue or terminate then performs the normal teardown exactly once. Off by
 default: with no debugger attached, behaviour is unchanged.
 
+On a thread the host drives in real-time slices (inside a GC-yield section, or
+`rtYieldOnGC`), which must never park, the error is **held back** instead
+(`VM::deferFatalForDebugger`): the stop is published without parking, the
+frames are kept, and the slice ends as `DebugPaused`.  Once the stop is
+released, the run's next slice performs the teardown — the run fails with the
+error, or ends if an exit was requested meanwhile (`Thread::deferredFatal`).
+An uncaught raise is held back at the raise site the same way.  Only the
+outermost execution of the thread defers; an error inside a native callback
+completes as before.
+
 ### Teardown
 
 `VM::shutdown()` already performs the debugger's half, in the order the
@@ -2745,7 +2791,20 @@ The host's own obligations are therefore small, but real:
 ### If you want a protocol instead of an API
 
 `roxal --dap` runs the same core behind a Debug Adapter Protocol adapter on
-stdio, which is what the VS Code extension in `vscode/` launches. An embedding
+stdio, which is what the VS Code extension in `vscode/` launches.  An embedding
+can also host `DapSession` over its own transport (FC does, over its API):
+
+- `attach` instead of `launch` when the host starts the program itself — the
+  session answers at once with `initialized`; the host calls `bindRun(mainThreadId)`
+  once the run exists (an entry stop is recognised without it: a Step stop the
+  client never asked for);
+- `setSourceMapper({toClient, fromClient})` presents the host's own paths
+  (FC: library-relative) for breakpoints, frames and output; a source the mapper
+  does not claim keeps its absolute path, `presentationHint: deemphasize`, and the
+  `source` request returns its text from `ModuleDebugIndex`;
+- breakpoints carry ids, and a module compiled after its breakpoints were set
+  sends `breakpoint` (changed) events — from the registering thread, so
+  "verified" always reaches the client before the stop it causes. An embedding
 that already has its own IPC should use the typed core above rather than
 carrying JSON: the browser IDE does exactly that, exposing the core through a
 `debug` store instead of a socket.

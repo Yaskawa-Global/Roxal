@@ -1,0 +1,11 @@
+import sys
+type Blocker actor:
+  proc go():
+    _test_block(2500)
+    print("blocker done", flush=true)
+var b = Blocker()
+b.go()
+var n = 0
+while n < 2000:
+  n = n + 1
+  wait(ms=5)

@@ -1,0 +1,18 @@
+type Cmd object:
+  var n = 0
+  statement action proc execute():
+    print("ran")
+func cmd() -> Cmd:
+  return Cmd()
+var base = 10
+func helper(x):
+  return x * 2
+type Box actor:
+  func get() -> int:
+    return 1
+func work(n :int) -> int:
+  var total = n + base
+  return total
+var b = Box()
+var r = work(5)
+print("r={r}")

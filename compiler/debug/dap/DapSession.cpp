@@ -17,6 +17,24 @@ DapSession::DapSession(VM& vm, StopCoordinator& coord,
     : vm_(vm), coord_(coord), inspector_(coord),
       sendProtocol_(std::move(sendProtocol)), sendOutput_(std::move(sendOutput))
 {
+    // A module compiled or imported after its breakpoints were set rebinds
+    // them: report the change, so "unverified" turns verified.  Sent at once
+    // from the registering (compiling) thread, never via the worker: the
+    // module may run -- and stop at one of these breakpoints -- before the
+    // worker would get to it, and the client must hear "verified" before
+    // "stopped".  (The destructor clears the listener, waiting out a call.)
+    BreakpointManager::instance().setRebindListener(
+        [this](const std::string& key, const std::vector<BreakpointManager::Bound>& bound) {
+            std::vector<std::pair<int, std::pair<bool, int>>> plain;
+            for (const auto& b : bound)
+                plain.push_back({ b.requestedLine, { b.verified, b.boundLine } });
+            onBreakpointsRebound(key, plain);
+        });
+}
+
+DapSession::~DapSession()
+{
+    BreakpointManager::instance().setRebindListener(nullptr);
 }
 
 // ---- id mapping -------------------------------------------------------------
@@ -105,6 +123,17 @@ void DapSession::dispatchRequest(const Json& req)
         reqLaunch(req);   // response deferred until setup completes
         return;
     }
+    if (cmd == "attach") {
+        // The host starts the run (and binds it: bindRun); breakpoints may be
+        // set at once -- they bind as the run's modules compile.
+        if (launchRequested_.load() || attached_.exchange(true)) {
+            sendResponse(req, Json(), false, "already launched or attached");
+            return;
+        }
+        sendResponse(req, Json());
+        sendEvent("initialized", Json());
+        return;
+    }
     if (cmd == "configurationDone") {
         configurationDone_.store(true, std::memory_order_release);
         sendResponse(req, Json());
@@ -183,10 +212,16 @@ void DapSession::dispatchRequest(const Json& req)
         return;
     }
     if (cmd == "evaluate") {
-        // Tier 1 only: safe path resolution, identical under every context
-        // (hover/watch/repl).
-        auto r = inspector_.evaluate(args["frameId"].int_value(),
-                                     args["expression"].string_value());
+        // Tier 1 first, under every context: a path is read with no user
+        // code.  Hover stops there; watch and repl go on to Tier 2 -- any
+        // expression, read-only, in the frame's scope (evaluateExpression).
+        const int frameId = args["frameId"].int_value();
+        const std::string expr = args["expression"].string_value();
+        auto r = inspector_.evaluate(frameId, expr);
+        const std::string context = args["context"].string_value();
+        if (!r.ok && context != "hover" && coord_.isStopped())
+            r = inspector_.evaluateExpression(frameId, expr, TimeDuration::milliSecs(2000),
+                                              /*asStatement=*/context == "repl");
         if (r.ok) {
             sendResponse(req, Json::object {
                 { "result", r.value },
@@ -199,7 +234,31 @@ void DapSession::dispatchRequest(const Json& req)
         return;
     }
     if (cmd == "source") {
-        sendResponse(req, Json(), false, "source content not available");
+        // The text the VM compiled (ModuleDebugIndex keeps it), by reference
+        // (a synthetic source) or by path -- for a read-only view of a frame
+        // in a file the client does not have.
+        std::string key;
+        const int ref = args["sourceReference"].int_value();
+        if (ref > 0) {
+            auto it = sourceRefs_.find(ref);
+            if (it != sourceRefs_.end())
+                key = it->second;
+        } else {
+            key = args["source"]["path"].string_value();
+            if (key.empty())
+                key = args["source"]["name"].string_value();
+            key = vmPath(key);
+        }
+        std::optional<ModuleDebugIndex::SourceEntry> entry;
+        if (!key.empty())
+            entry = ModuleDebugIndex::instance().lookupBySource(key);
+        if (entry && !entry->sourceText.empty())
+            sendResponse(req, Json::object {
+                { "content", entry->sourceText },
+                { "mimeType", "text/x-roxal" },
+            });
+        else
+            sendResponse(req, Json(), false, "source content not available");
         return;
     }
     if (cmd == "terminate") {
@@ -222,7 +281,7 @@ void DapSession::dispatchRequest(const Json& req)
         quitRequested_.store(true, std::memory_order_release);
         return;
     }
-    // Honest about the rest (no restart / attach / evaluate / disassembly).
+    // Honest about the rest (no restart / disassembly / setVariable ...).
     sendResponse(req, Json(), false, "unsupported request: " + cmd);
 }
 
@@ -261,6 +320,10 @@ Json DapSession::reqLaunch(const Json& req)
     // ExecutionSession reset boundary exists).
     if (launchRequested_.load(std::memory_order_acquire)) {
         sendResponse(req, Json(), false, "launch already received (restart is not supported)");
+        return Json();
+    }
+    if (attached_.load(std::memory_order_acquire)) {
+        sendResponse(req, Json(), false, "attached: the host starts the run");
         return Json();
     }
     const Json& args = req["arguments"];
@@ -319,6 +382,8 @@ Json DapSession::reqSetBreakpoints(const Json& args)
     std::string path = args["source"]["path"].string_value();
     if (path.empty())
         path = args["source"]["name"].string_value();
+    path = vmPath(path);
+    const std::string key = BreakpointManager::requestKey(path);
     std::vector<int> lines;
     if (args["breakpoints"].is_array()) {
         for (const auto& b : args["breakpoints"].array_items())
@@ -328,13 +393,82 @@ Json DapSession::reqSetBreakpoints(const Json& args)
             lines.push_back(fromClientLine(l.int_value()));
     }
     auto bound = BreakpointManager::instance().setBreakpoints(path, lines);
+    std::lock_guard<std::mutex> ids(breakpointIdsMutex_);
     Json::array out;
     for (const auto& b : bound) {
-        Json::object bp { { "verified", b.verified } };
-        bp["line"] = toClientLine(b.verified ? b.boundLine : b.requestedLine);
+        const int line = b.verified ? b.boundLine : b.requestedLine;
+        auto [it, fresh] = breakpointIds_.try_emplace({ key, b.requestedLine },
+                                                      BpState { nextBreakpointId_, false, 0 });
+        if (fresh)
+            ++nextBreakpointId_;
+        it->second.verified = b.verified;
+        it->second.line = line;
+        Json::object bp { { "id", it->second.id }, { "verified", b.verified } };
+        bp["line"] = toClientLine(line);
         out.push_back(Json(std::move(bp)));
     }
     return Json::object { { "breakpoints", out } };
+}
+
+void DapSession::onBreakpointsRebound(
+    const std::string& key, const std::vector<std::pair<int, std::pair<bool, int>>>& bound)
+{
+    std::lock_guard<std::mutex> ids(breakpointIdsMutex_);
+    for (const auto& [requested, state] : bound) {
+        auto it = breakpointIds_.find({ key, requested });
+        if (it == breakpointIds_.end())
+            continue;   // not set through this session
+        const bool verified = state.first;
+        const int line = verified ? state.second : requested;
+        if (it->second.verified == verified && it->second.line == line)
+            continue;
+        it->second.verified = verified;
+        it->second.line = line;
+        sendEvent("breakpoint", Json::object {
+            { "reason", "changed" },
+            { "breakpoint", Json::object {
+                { "id", it->second.id },
+                { "verified", verified },
+                { "line", toClientLine(line) },
+            } },
+        });
+    }
+}
+
+Json DapSession::clientSource(const std::string& vmSource)
+{
+    std::error_code ec;
+    std::string abs;
+    if (std::filesystem::exists(vmSource, ec) && !ec) {
+        auto c = std::filesystem::weakly_canonical(vmSource, ec);
+        abs = ec ? vmSource : c.string();
+    }
+    if (mapper_.toClient) {
+        if (auto mapped = mapper_.toClient(abs.empty() ? vmSource : abs)) {
+            return Json::object {
+                { "name", std::filesystem::path(*mapped).filename().string() },
+                { "path", *mapped },
+            };
+        }
+    }
+    Json::object src;
+    if (!abs.empty()) {
+        // Only REAL files get a path: canonicalizing a synthetic source name
+        // ("cli") would fabricate a filesystem path the client then tries to
+        // open.
+        src["name"] = std::filesystem::path(vmSource).filename().string();
+        src["path"] = abs;
+    } else {
+        // Synthetic: served by reference (`source`).
+        src["name"] = vmSource;
+        auto [it, fresh] = sourceRefOf_.try_emplace(vmSource, int(sourceRefOf_.size()) + 1);
+        if (fresh)
+            sourceRefs_[it->second] = vmSource;
+        src["sourceReference"] = it->second;
+    }
+    if (mapper_.toClient)
+        src["presentationHint"] = "deemphasize";   // not one of the client's files
+    return src;
 }
 
 Json DapSession::reqBreakpointLocations(const Json& args)
@@ -343,6 +477,7 @@ Json DapSession::reqBreakpointLocations(const Json& args)
     std::string path = args["source"]["path"].string_value();
     if (path.empty())
         path = args["source"]["name"].string_value();
+    path = vmPath(path);
     const int startLine = fromClientLine(args["line"].int_value());
     const int endLine = args["endLine"].is_number()
         ? fromClientLine(args["endLine"].int_value()) : startLine;
@@ -414,21 +549,8 @@ Json DapSession::reqStackTrace(const Json& args)
             { "line", toClientLine(f.line) },
             { "column", clientColumnsStartAt1_ ? f.column + 1 : f.column },
         };
-        if (!f.source.empty()) {
-            // Only REAL files get a path: canonicalizing a synthetic source
-            // name ("cli") would fabricate a filesystem path the client
-            // then tries to open.
-            std::error_code ec;
-            if (std::filesystem::exists(f.source, ec) && !ec) {
-                auto abs = std::filesystem::weakly_canonical(f.source, ec);
-                fr["source"] = Json::object {
-                    { "name", std::filesystem::path(f.source).filename().string() },
-                    { "path", ec ? f.source : abs.string() },
-                };
-            } else {
-                fr["source"] = Json::object { { "name", f.source } };
-            }
-        }
+        if (!f.source.empty())
+            fr["source"] = clientSource(f.source);
         out.push_back(Json(std::move(fr)));
     }
     return Json::object { { "stackFrames", out } };
@@ -441,7 +563,7 @@ Json DapSession::reqScopes(const Json& args)
         out.push_back(Json(Json::object {
             { "name", sc.name },
             { "variablesReference", sc.variablesHandle },
-            { "expensive", false },
+            { "expensive", sc.expensive },
         }));
     return Json::object { { "scopes", out } };
 }
@@ -471,23 +593,21 @@ Json DapSession::reqVariables(const Json& args)
 
 Json DapSession::reqPause(bool& ok, std::string& err)
 {
-    if (coord_.joinStop(StopOwner::Debugger))
-        return Json();   // already stopped (the host's hold, say): now ours too
-    auto out = coord_.requestStop(DebugStopReason::Pause,
-                                  TimeDuration::milliSecs(3000));
-    if (!out.stopped && !coord_.isStopped()) {
-        // A racing breakpoint/step stop counts as success (a stopped event
-        // is on its way); a genuine failure is reported.
+    // Non-blocking: the stop is pending until every thread has parked (one
+    // inside a native call parks when it returns); `stopped` follows then.
+    // Already stopped (the host's hold, say): the stop is now ours too.
+    if (coord_.requestDebuggerPause() == StopCoordinator::PauseState::Idle) {
         ok = false;
-        err = out.failure;
+        err = "nothing is running";
     }
     return Json();
 }
 
 Json DapSession::reqContinue()
 {
-    if (coord_.isStopped())
-        coord_.resume(/*releaseHold=*/true);
+    // Releases the debugger's part of a stop -- or withdraws one still
+    // pending (a pause or breakpoint waiting for a thread in a native call).
+    coord_.resume(/*releaseHold=*/true);
     return Json::object { { "allThreadsContinued", true } };
 }
 
@@ -510,7 +630,9 @@ Json DapSession::reqStep(const Json& args, Thread::DebugStepMode mode,
         err = "unknown thread";
         return Json();
     }
+    clientStepArmed_.store(true);
     if (!coord_.stepAndResume(*target, mode)) {
+        clientStepArmed_.store(false);
         ok = false;
         err = coord_.pauseStatus().host ? "held by the controller: release it to step"
                                         : "cannot step";
@@ -573,7 +695,11 @@ void DapSession::onDebugStopped(const DebugStopNotice&) noexcept
         // preempted the armed entry step, the breakpoint label wins and a
         // LATER step must not resurrect "entry".
         const bool entryWasPending = entryPending_.exchange(false);
-        if (entryWasPending && reason == "step")
+        const bool clientStep = clientStepArmed_.exchange(false);
+        // The entry step is armed at activation, which for an attached
+        // session may come before the host binds the run: a Step stop the
+        // client never asked for is that one.
+        if (reason == "step" && (entryWasPending || !clientStep))
             reason = "entry";
         uint64_t tid = info ? info->threadId : 0;
         if (tid == 0)
@@ -632,14 +758,23 @@ OutputResult DapSession::emit(const OutputEventView& event)
     if (event.kind != OutputKind::Print)
         body["output"] = std::string(event.text) + "\n";
     if (event.source.has_value() && !event.source->sourceName.empty()) {
+        // (Program threads: no source references here -- that map is the
+        // worker's.  A synthetic source goes by name.)
         const std::string src(event.source->sourceName);
         std::error_code ec;
-        Json::object srcObj { { "name",
-            std::filesystem::path(src).filename().string() } };
+        std::string abs;
         if (std::filesystem::exists(src, ec) && !ec) {
-            auto abs = std::filesystem::weakly_canonical(src, ec);
-            srcObj["path"] = ec ? src : abs.string();
+            auto c = std::filesystem::weakly_canonical(src, ec);
+            abs = ec ? src : c.string();
         }
+        Json::object srcObj { { "name", std::filesystem::path(src).filename().string() } };
+        std::optional<std::string> mapped;
+        if (mapper_.toClient)
+            mapped = mapper_.toClient(abs.empty() ? src : abs);
+        if (mapped)
+            srcObj["path"] = *mapped;
+        else if (!abs.empty())
+            srcObj["path"] = abs;
         body["source"] = Json(std::move(srcObj));
         if (event.source->line > 0)
             body["line"] = toClientLine(int(event.source->line));

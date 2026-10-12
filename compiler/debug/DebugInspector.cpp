@@ -10,6 +10,12 @@
 #include "StopCoordinator.h"
 #include "../Chunk.h"
 #include "../Introspection.h"
+#include "../ExecutionDomain.h"
+#include "../RoxalCompiler.h"
+#include "../VM.h"
+#include "ModuleDebugIndex.h"
+#include <sstream>
+#include <unordered_map>
 #include "../Object.h"
 #include "../Thread.h"
 #include "../VM.h"
@@ -75,7 +81,23 @@ static bool valueHasChildren(const Value& v)
         return !asObjectInstance(v)->instanceType.isNil();
     if (isFuture(v) || isSignal(v))
         return true;
+    if (isVector(v))
+        return asVector(v)->length() > 0;
+    if (isMatrix(v))
+        return asMatrix(v)->rows() > 0;
+    if (isOrient(v))
+        return true;
     return false;   // tensors/actors/natives: opaque (summary rendered)
+}
+
+// A leaf child: a value already rendered, no handle.
+static DebugVarDesc leafVar(std::string name, std::string value, std::string type)
+{
+    DebugVarDesc d;
+    d.name = std::move(name);
+    d.value = std::move(value);
+    d.type = std::move(type);
+    return d;
 }
 
 DebugVarDesc DebugInspector::makeVar(std::string name, const Value& v,
@@ -138,6 +160,17 @@ std::vector<DebugThreadDesc> DebugInspector::threads()
         DebugThreadDesc d;
         d.threadId = t->id();
         d.name = "thread " + std::to_string(t->id());
+        // An actor's thread is named by its type ("Line #3"): parked, so its
+        // instance link is stable; a dead weak link keeps the plain name.
+        if (t->isActorThread()) {
+            Value inst = t->actorInstanceValue();
+            if (isActorInstance(inst)) {
+                const Value& ty = asActorInstance(inst)->instanceType;
+                if (isObjectType(ty))
+                    d.name = toUTF8StdString(asObjectType(ty)->name) + " #"
+                           + std::to_string(t->id());
+            }
+        }
         DebugHandle h;
         h.kind = DebugHandleKind::Thread;
         h.epoch = epoch;
@@ -221,12 +254,13 @@ std::vector<DebugScopeDesc> DebugInspector::scopes(int32_t frameHandle)
         return out;
     const CallFrame& f = t->frames[fi];
 
-    auto addScope = [&](DebugScopeKind kind, const char* name) {
+    auto addScope = [&](DebugScopeKind kind, const char* name, bool expensive = false) {
         DebugHandle sh = *h;
         sh.kind = DebugHandleKind::Scope;
         sh.scope = kind;
         DebugScopeDesc d;
         d.name = name;
+        d.expensive = expensive;
         d.variablesHandle = coord_.handleTable().create(sh);
         out.push_back(std::move(d));
     };
@@ -234,8 +268,12 @@ std::vector<DebugScopeDesc> DebugInspector::scopes(int32_t frameHandle)
     addScope(DebugScopeKind::Locals, "Locals");
     if (isClosure(f.closure) && !asClosure(f.closure)->upvalues.empty())
         addScope(DebugScopeKind::Upvalues, "Upvalues");
-    if (isClosure(f.closure) && !asFunction(asClosure(f.closure)->function)->moduleType.isNil())
+    if (isClosure(f.closure) && !asFunction(asClosure(f.closure)->function)->moduleType.isNil()) {
         addScope(DebugScopeKind::ModuleVars, "Module");
+        const Value mt = asFunction(asClosure(f.closure)->function)->moduleType;
+        if (isModuleType(mt) && !asModuleType(mt)->importedVars.empty())
+            addScope(DebugScopeKind::ImportedVars, "Imported", /*expensive=*/true);
+    }
     return out;
 }
 
@@ -324,11 +362,42 @@ std::vector<DebugVarDesc> DebugInspector::scopeChildren(const DebugHandle& h,
         const Value mt = asFunction(asClosure(f.closure)->function)->moduleType;
         if (mt.isNil())
             break;
-        // Already-synchronized PAGED snapshot: serving one page must not
-        // copy and refcount the whole module.
-        auto vars = asModuleType(mt)->vars.snapshotRange(start, count);
-        for (const auto& nv : vars)
-            out.push_back(makeVar(toUTF8StdString(nv.first), nv.second, epoch));
+        ObjModuleType* module = asModuleType(mt);
+        if (module->importedVars.empty()) {
+            // Already-synchronized PAGED snapshot: serving one page must not
+            // copy and refcount the whole module.
+            auto vars = module->vars.snapshotRange(start, count);
+            for (const auto& nv : vars)
+                out.push_back(makeVar(toUTF8StdString(nv.first), nv.second, epoch));
+            break;
+        }
+        // Own declarations only (the imports are their own scope): a filtered
+        // walk, paged over the names that pass.
+        size_t seen = 0;
+        module->vars.forEach([&](const VariablesMap::NameValue& nv) {
+            if (out.size() >= count
+                || module->importedVars.count(nv.first.hashCode()) != 0)
+                return;
+            if (seen++ >= start)
+                out.push_back(makeVar(toUTF8StdString(nv.first), nv.second, epoch));
+        });
+        break;
+    }
+    case DebugScopeKind::ImportedVars: {
+        if (!isClosure(f.closure))
+            break;
+        const Value mt = asFunction(asClosure(f.closure)->function)->moduleType;
+        if (!isModuleType(mt))
+            break;
+        ObjModuleType* module = asModuleType(mt);
+        size_t seen = 0;
+        module->vars.forEach([&](const VariablesMap::NameValue& nv) {
+            if (out.size() >= count
+                || module->importedVars.count(nv.first.hashCode()) == 0)
+                return;
+            if (seen++ >= start)
+                out.push_back(makeVar(toUTF8StdString(nv.first), nv.second, epoch));
+        });
         break;
     }
     }
@@ -365,6 +434,37 @@ std::vector<DebugVarDesc> DebugInspector::valueChildren(const DebugHandle& h,
         for (size_t i = start; i < entries.size() && out.size() < count; ++i)
             out.push_back(makeVar(entries[i].name,
                                   inst->getProperty(entries[i].name), epoch));
+    } else if (isVector(v)) {
+        // Components as leaves: numbers, no handles (nothing to expand).
+        const Eigen::VectorXd& x = asVector(v)->vec();
+        for (size_t i = start; i < size_t(x.size()) && out.size() < count; ++i)
+            out.push_back(leafVar("[" + std::to_string(i) + "]",
+                                  formatDebugNumber(x[Eigen::Index(i)]), "real"));
+    } else if (isMatrix(v)) {
+        // Rows as leaves, rendered like vectors.
+        const Eigen::MatrixXd& m = asMatrix(v)->mat();
+        for (size_t r = start; r < size_t(m.rows()) && out.size() < count; ++r) {
+            std::string row = "[";
+            for (Eigen::Index c = 0; c < m.cols(); ++c)
+                row += (c ? " " : "") + formatDebugNumber(m(Eigen::Index(r), c));
+            out.push_back(leafVar("[" + std::to_string(r) + "]", row + "]", "vector"));
+        }
+    } else if (isOrient(v)) {
+        // Roll / pitch / yaw in degrees (as the orient prints), then the
+        // quaternion (w x y z).
+        const Eigen::Quaterniond& q = asOrient(v)->quat();
+        const Eigen::Vector3d ea = q.toRotationMatrix().canonicalEulerAngles(2, 1, 0);
+        const double deg = 180.0 / M_PI;
+        std::vector<DebugVarDesc> all {
+            leafVar("r", formatDebugNumber(ea[2] * deg) + "\u00B0", "real"),
+            leafVar("p", formatDebugNumber(ea[1] * deg) + "\u00B0", "real"),
+            leafVar("y", formatDebugNumber(ea[0] * deg) + "\u00B0", "real"),
+            leafVar("quaternion", "[" + formatDebugNumber(q.w()) + " " + formatDebugNumber(q.x())
+                                  + " " + formatDebugNumber(q.y()) + " " + formatDebugNumber(q.z()) + "]",
+                    "vector"),
+        };
+        for (size_t i = start; i < all.size() && out.size() < count; ++i)
+            out.push_back(std::move(all[i]));
     } else if (isFuture(v) || isSignal(v)) {
         // Fixed logical child lists paged with the SAME [start, start+count)
         // contract as every other value.  emit() is lazy so a sliced-out
@@ -644,6 +744,215 @@ DebugInspector::EvalResult DebugInspector::evaluate(int32_t frameHandle,
     res.type = std::move(d.type);
     res.childHandle = d.childHandle;
     return res;
+}
+
+// ---- Tier 2 (read-only) evaluation -----------------------------------------
+
+namespace {
+bool isIdentifier(const std::string& s)
+{
+    if (s.empty() || !(std::isalpha((unsigned char)s[0]) || s[0] == '_'))
+        return false;
+    for (char c : s)
+        if (!(std::isalnum((unsigned char)c) || c == '_'))
+            return false;
+    return true;
+}
+}  // namespace
+
+DebugInspector::EvalResult DebugInspector::evaluateExpression(int32_t frameHandle,
+                                                              const std::string& expression,
+                                                              TimeDuration budget, bool asStatement)
+{
+    ScopedGCMutatorCover gcCover;
+    EvalResult res;
+    if (!coord_.isStopped()) {
+        res.error = "not stopped";
+        return res;
+    }
+    if (expression.find_first_not_of(" \t") == std::string::npos) {
+        res.error = "nothing to evaluate";
+        return res;
+    }
+    if (expression.find('\n') != std::string::npos || expression.find('\r') != std::string::npos) {
+        res.error = "one expression, on one line";
+        return res;
+    }
+    const uint64_t epoch = coord_.currentEpoch();
+    auto h = coord_.handleTable().lookup(frameHandle, epoch);
+    if (!h || h->kind != DebugHandleKind::Frame) {
+        res.error = "invalid frame";
+        return res;
+    }
+    ptr<Thread> t;
+    size_t fi = 0;
+    if (!resolveFrame(*h, t, fi)) {
+        res.error = "stale frame";
+        return res;
+    }
+    const CallFrame& f = t->frames[fi];
+    if (!isClosure(f.closure)) {
+        res.error = "no function at this frame";
+        return res;
+    }
+    Value module = asFunction(asClosure(f.closure)->function)->moduleType;
+    if (module.isWeak())
+        module = module.strongRef();
+    if (!isModuleType(module)) {
+        res.error = "the frame's module is gone";
+        return res;
+    }
+
+    // The names in scope at this point, innermost local shadow first, then
+    // upvalues -- passed as parameters (by value: read-only).  `this` and
+    // compiler temporaries are not passed.
+    std::vector<std::string> names;
+    std::vector<Value> values;
+    std::unordered_map<std::string, std::pair<uint32_t, size_t>> local;   // name -> (startOffset, index)
+    const Chunk* ch = frameChunk(f);
+    if (ch && ch->debugInfo) {
+        const uint32_t off = frameCodeOffset(*t, fi);
+        const size_t slotLimit = frameSlotLimit(*t, f);
+        for (const auto& lv : ch->debugInfo->locals) {
+            if (off < lv.startOffset || off >= lv.endOffset || lv.slot >= slotLimit)
+                continue;
+            if ((lv.flags & DebugLocalSynthetic) != 0)
+                continue;
+            const std::string name = toUTF8StdString(lv.name);
+            if (!isIdentifier(name) || name == "this" || name.rfind("__", 0) == 0)
+                continue;
+            auto it = local.find(name);
+            if (it == local.end()) {
+                local.emplace(name, std::make_pair(lv.startOffset, names.size()));
+                names.push_back(name);
+                values.push_back(f.slots[lv.slot]);
+            } else if (lv.startOffset > it->second.first) {   // the innermost shadow wins
+                it->second.first = lv.startOffset;
+                values[it->second.second] = f.slots[lv.slot];
+            }
+        }
+        const auto& ups = asClosure(f.closure)->upvalues;
+        const auto& upNames = ch->debugInfo->upvalues;
+        for (size_t i = 0; i < ups.size() && i < upNames.size(); ++i) {
+            if (!isUpvalue(ups[i]) || !asUpvalue(ups[i])->location)
+                continue;
+            const std::string name = toUTF8StdString(upNames[i].name);
+            if (!isIdentifier(name) || name == "this" || local.count(name))
+                continue;
+            local.emplace(name, std::make_pair(0u, names.size()));
+            names.push_back(name);
+            values.push_back(*asUpvalue(ups[i])->location);
+        }
+    }
+
+    // Compile a throwaway function against the frame's module.  Never run
+    // the module code it came with: the function is taken from the compiled
+    // graph and called alone, so the module gains nothing.
+    std::string params;
+    for (const auto& n : names)
+        params += (params.empty() ? "" : ", ") + n;
+    const std::string source = "func __rox_debug_eval(" + params + "):\n  return (" + expression + ")\n";
+    std::string captured;
+    Value compiled = Value::nilVal();
+    {
+        VM& vm = VM::instance();
+        // A stopped thread may be compiling (an import): never wait on it.
+        std::unique_lock<std::mutex> prep(vm.preparationMutex_, std::try_to_lock);
+        if (!prep.owns_lock()) {
+            res.error = "the program is compiling; try again";
+            return res;
+        }
+        VM::DebugEvaluationScope capture(&captured);
+        try {
+            RoxalCompiler compiler;
+            compiler.setModuleResolverVM(&vm);
+            compiler.setDebugInfoEnabled(false);
+            compiler.setCacheReadEnabled(false);
+            compiler.setCacheWriteEnabled(false);
+            std::istringstream in(source);
+            compiled = compiler.compile(in, "<evaluate>", module, "<evaluate>");
+        } catch (const std::exception& e) {
+            captured += e.what();
+        }
+    }
+    Value fn = Value::nilVal();
+    if (isFunction(compiled)) {
+        ModuleDebugIndex::forEachFunctionInGraph(compiled, [&](ObjFunction* candidate) {
+            if (fn.isNil() && toUTF8StdString(candidate->name) == "__rox_debug_eval")
+                fn = Value::objRef(candidate);
+        });
+    }
+    if (fn.isNil()) {
+        res.error = captured.empty() ? "the expression does not compile" : captured;
+        while (!res.error.empty() && res.error.back() == '\n') res.error.pop_back();
+        return res;
+    }
+    // Rooted for the stop's duration (the handle table is a persistent root).
+    {
+        DebugHandle keep;
+        keep.kind = DebugHandleKind::Variable;
+        keep.epoch = epoch;
+        keep.value = compiled;
+        coord_.handleTable().create(keep);
+    }
+
+    // Run it on a fresh thread of its own domain, on this (the worker's) OS
+    // thread, bounded.
+    VM& vm = VM::instance();
+    ptr<ExecutionDomain> domain = make_ptr<ExecutionDomain>();
+    domain->replSession = true;   // exit() in it ends the evaluation, not more
+    ptr<Thread> et = Thread::create(domain, ThreadKind::Repl);
+    et->debugExcluded.store(true, std::memory_order_release);
+    ptr<Thread> saved = VM::thread;
+    VM::thread = et;
+    struct Restore {
+        ptr<Thread>& slot; ptr<Thread> prev; VM& vm;
+        ~Restore() { vm.resetStack(); slot = prev; }
+    } restore { VM::thread, saved, vm };
+    vm.resetStack();
+    Value closure = Value::closureVal(fn);
+    std::pair<ExecutionStatus, Value> r;
+    {
+        VM::DebugEvaluationScope evaluating(&captured);
+        r = vm.invokeClosure(asClosure(closure), values, TimePoint::currentTime() + budget);
+    }
+    switch (r.first) {
+    case ExecutionStatus::OK: {
+        // Typed as a statement, a value with a statement action would run
+        // (a Motion would move): say so rather than echo the bare value.
+        if (asStatement) {
+            const Value& v = r.second;
+            ObjObjectType* type = isObjectInstance(v) ? asObjectType(asObjectInstance(v)->instanceType)
+                                : isActorInstance(v) ? asObjectType(asActorInstance(v)->instanceType)
+                                : nullptr;
+            for (ObjObjectType* ty = type; ty; ty = ty->superType.isNil() ? nullptr : asObjectType(ty->superType)) {
+                if (ty->statementActionMethodHash >= 0) {
+                    res.error = "a " + toUTF8StdString(type->name)
+                              + ": as a statement it would run (its statement action); "
+                                "the debugger does not run statements";
+                    return res;
+                }
+            }
+        }
+        DebugVarDesc d = makeVar("result", r.second, epoch);
+        res.ok = true;
+        res.value = d.value;
+        res.type = d.type;
+        res.childHandle = d.childHandle;
+        return res;
+    }
+    case ExecutionStatus::Yielded:
+        res.error = et->awaitedFuture.isNonNil() || et->pendingWaitFor.isNonNil()
+            ? "it waits for a result the stopped program would have to produce"
+            : "it did not finish in " + std::to_string(int(budget.microSecs() / 1000)) + " ms";
+        return res;
+    default: {
+        std::string why = vm.takeRuntimeErrorMessage();
+        res.error = why.empty() ? (captured.empty() ? "evaluation failed" : captured) : why;
+        while (!res.error.empty() && res.error.back() == '\n') res.error.pop_back();
+        return res;
+    }
+    }
 }
 
 } // namespace roxal

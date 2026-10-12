@@ -25,7 +25,7 @@ BreakpointManager& BreakpointManager::instance()
     return m;
 }
 
-static std::string canonicalRequestKey(const std::string& source)
+std::string BreakpointManager::requestKey(const std::string& source)
 {
     std::error_code ec;
     if (!source.empty() && std::filesystem::exists(source, ec) && !ec) {
@@ -55,7 +55,7 @@ BreakpointManager::setBreakpoints(const std::string& source,
                                   const std::vector<int>& lines)
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    const std::string key = canonicalRequestKey(source);
+    const std::string key = requestKey(source);
     if (lines.empty())
         requests_.erase(key);
     else
@@ -67,21 +67,33 @@ BreakpointManager::setBreakpoints(const std::string& source,
 
 void BreakpointManager::onSourceRegistered(const std::string& sourceKey)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
-    std::string requestKey = sourceKey;
-    if (requests_.find(requestKey) == requests_.end()) {
-        // A synthetic source registers as "name#content-hash", but a web
-        // client stores its request under the bare display name: rebind
-        // that request against the fresh registration.
-        const size_t hash = sourceKey.rfind('#');
-        if (hash == std::string::npos)
-            return;
-        requestKey = sourceKey.substr(0, hash);
-        if (requests_.find(requestKey) == requests_.end())
-            return;
+    std::string key = sourceKey;
+    std::vector<Bound> bound;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (requests_.find(key) == requests_.end()) {
+            // A synthetic source registers as "name#content-hash", but a web
+            // client stores its request under the bare display name: rebind
+            // that request against the fresh registration.
+            const size_t hash = sourceKey.rfind('#');
+            if (hash == std::string::npos)
+                return;
+            key = sourceKey.substr(0, hash);
+            if (requests_.find(key) == requests_.end())
+                return;
+        }
+        bound = bindLocked(key);
+        updateSlowPathDemand();
     }
-    bindLocked(requestKey);
-    updateSlowPathDemand();
+    std::lock_guard<std::mutex> lk(listenerMutex_);
+    if (rebindListener_)
+        rebindListener_(key, bound);
+}
+
+void BreakpointManager::setRebindListener(RebindListener listener)
+{
+    std::lock_guard<std::mutex> lk(listenerMutex_);
+    rebindListener_ = std::move(listener);
 }
 
 std::vector<BreakpointManager::Bound>

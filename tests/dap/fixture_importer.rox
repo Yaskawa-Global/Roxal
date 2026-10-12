@@ -1,0 +1,3 @@
+import fixture_lib.*
+var mine = helper(2)
+var done = mine

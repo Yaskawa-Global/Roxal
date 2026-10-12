@@ -143,6 +143,20 @@ void renderInstance(const Value& v, RenderCtx& ctx, size_t depth)
     ctx.out += "}";
 }
 
+// Numbers as the VM prints them (6 significant digits), bounded like a list.
+void renderNumbers(const double* xs, size_t n, size_t stride, RenderCtx& ctx)
+{
+    ctx.out += "[";
+    const size_t shown = std::min(n, ctx.opts.maxChildren);
+    size_t i = 0;
+    for (; i < shown && ctx.budgetLeft(); ++i) {
+        if (i) ctx.out += " ";
+        ctx.out += formatDebugNumber(xs[i * stride]);
+    }
+    if (n > i) ctx.out += " ...+" + std::to_string(n - i);
+    ctx.out += "]";
+}
+
 void renderInto(const Value& v, RenderCtx& ctx, size_t depth)
 {
     if (!ctx.budgetLeft()) return;
@@ -232,14 +246,44 @@ void renderInto(const Value& v, RenderCtx& ctx, size_t depth)
         }
     } else if (isObjectInstance(v)) {
         renderInstance(v, ctx, depth);
+    } else if (isVector(v)) {
+        const Eigen::VectorXd& x = asVector(v)->vec();
+        renderNumbers(x.data(), size_t(x.size()), 1, ctx);
+    } else if (isMatrix(v)) {
+        // Row by row (Eigen is column-major: stride = rows).
+        const Eigen::MatrixXd& m = asMatrix(v)->mat();
+        const size_t rows = size_t(m.rows());
+        if (depth >= ctx.opts.maxDepth) {
+            ctx.out += "Matrix(" + std::to_string(m.rows()) + "x" + std::to_string(m.cols()) + ")";
+            return;
+        }
+        ctx.out += "[";
+        const size_t shown = std::min(rows, ctx.opts.maxChildren);
+        size_t r = 0;
+        for (; r < shown && ctx.budgetLeft(); ++r) {
+            if (r) ctx.out += " ";
+            renderNumbers(m.data() + r, size_t(m.cols()), rows, ctx);
+        }
+        if (rows > r) ctx.out += " ...+" + std::to_string(rows - r);
+        ctx.out += "]";
+    } else if (isOrient(v)) {
+        ctx.out += objOrientToString(asOrient(v));   // static formatting: roll, pitch, yaw
     } else {
-        // Everything else (vector, matrix, orient, event, native, qt/js
-        // handles, ...) renders as an opaque typed marker.
+        // Everything else (event, native, qt/js handles, ...) renders as an
+        // opaque typed marker.
         ctx.out += "<" + describeValueType(v) + ">";
     }
 }
 
 } // namespace
+
+std::string formatDebugNumber(double x)
+{
+    if (x == 0.0) x = 0.0;   // no "-0"
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "%.6g", x);
+    return buf;
+}
 
 std::string renderValue(const Value& v, const RenderOptions& opts)
 {

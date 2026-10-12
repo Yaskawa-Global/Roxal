@@ -1,0 +1,4 @@
+var libvar = 7
+func helper(x):
+  var y = x + libvar
+  return y

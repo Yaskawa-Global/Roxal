@@ -37,4 +37,7 @@ struct RenderOptions {
 
 std::string renderValue(const Value& v, const RenderOptions& opts = {});
 
+// A number as debugger previews show it (6 significant digits, no "-0").
+std::string formatDebugNumber(double x);
+
 } // namespace roxal

@@ -138,6 +138,12 @@ public:
 
     // is this thread associated with an actor instance?
     bool isActorThread() const { return actor; }
+    // The associated actor instance (a strong ref), or nil when there is none
+    // or it is gone.  Read it only while the thread is quiesced (the debugger
+    // naming a stopped actor's thread).
+    Value actorInstanceValue() const {
+        return actorInstance.isWeak() ? actorInstance.strongRef() : actorInstance;
+    }
 
     // Identity of the associated actor instance, for COMPARE-ONLY use (the
     // debugger control-capability check) -- never dereference through this.
@@ -291,6 +297,20 @@ public:
     // See the safepoint poll sites in VM::execute and
     // SimpleMarkSweepGC::tryEnterGCSection.
     bool rtYieldOnGC { false };
+
+    // A runtime error held back for the debugger on a thread driven in
+    // real-time slices (VM::deferFatalForDebugger): the exception stop was
+    // published without parking and the frames are kept for inspection; the
+    // error's teardown (flag, diagnostic, stack reset) runs on the run's next
+    // slice once the stop is released.  Driver thread only.
+    struct DeferredFatal {
+        bool active { false };
+        std::string text;      // the rendered diagnostic
+        std::string file;
+        int line { 0 };
+        int col { 0 };
+    };
+    DeferredFatal deferredFatal;
 
     // State event handler dispatch within execute().
     // Handlers are pushed as regular call frames one at a time.

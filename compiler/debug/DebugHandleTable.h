@@ -45,7 +45,8 @@ enum class DebugHandleKind : uint8_t {
 enum class DebugScopeKind : uint8_t {
     Locals    = 0,
     Upvalues  = 1,
-    ModuleVars = 2,
+    ModuleVars = 2,      // the module's own declarations
+    ImportedVars = 3,    // names its imports bound (ObjModuleType::importedVars)
 };
 
 struct DebugHandle {

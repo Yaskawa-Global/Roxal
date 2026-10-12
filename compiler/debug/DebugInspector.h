@@ -40,6 +40,8 @@
 
 #include <cstdint>
 #include <string>
+
+#include "core/TimePoint.h"
 #include <vector>
 
 #include "DebugHandleTable.h"
@@ -80,7 +82,8 @@ struct DebugFrameDesc {
 
 struct DebugScopeDesc {
     int32_t variablesHandle { 0 };
-    std::string name;              // "Locals" / "Upvalues" / "Module"
+    std::string name;              // "Locals" / "Upvalues" / "Module" / "Imported"
+    bool expensive { false };      // a client should not expand it unasked
 };
 
 struct DebugVarDesc {
@@ -127,6 +130,23 @@ public:
         int32_t childHandle { 0 };
     };
     EvalResult evaluate(int32_t frameHandle, const std::string& expression);
+
+    // Tier 2, read-only: any expression -- operators, calls, getters -- in
+    // the stopped frame's scope.  The frame's live locals and upvalues are
+    // passed BY VALUE to a throwaway function compiled against the frame's
+    // module (module names and imports resolve as they do in the frame), and
+    // it runs on a fresh debug-excluded thread in its own execution domain:
+    // never a member of the stop, breakpoints never trap inside it, an error
+    // or exit() ends only the evaluation.  Bounded by `budget`; a call that
+    // waits for a result the stopped program would have to produce is
+    // refused.  Output it makes is returned with an error, never printed;
+    // robot motion is refused (VM::inDebugEvaluation).  `asStatement` (a
+    // console line): a value with a statement action -- `movj(...)` builds a
+    // Motion, which as a statement would run -- is reported as such instead
+    // of echoed: nothing runs it here.  Debug worker only.
+    EvalResult evaluateExpression(int32_t frameHandle, const std::string& expression,
+                                  TimeDuration budget = TimeDuration::milliSecs(2000),
+                                  bool asStatement = false);
 
     DebugLimits& limits() { return limits_; }
 

@@ -19,7 +19,9 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -46,6 +48,7 @@ public:
 
     DapSession(VM& vm, StopCoordinator& coord,
                SendFn sendProtocol, OutputSendFn sendOutput);
+    ~DapSession() override;
 
     // ---- transport-side entry points ----
     // Handle one client request (call on the debug worker only).
@@ -63,6 +66,25 @@ public:
     void onTransportClosed();
 
     // ---- adapter queries ----
+    // `attach`: the client debugs a run the HOST starts (an embedding whose
+    // programs start through its own API).  Answered at once, `initialized`
+    // follows; `launch` is refused afterwards (and `attach` after a launch).
+    bool attachRequested() const { return attached_.load(); }
+    // The host started the run an attached session debugs: its main thread
+    // (stop events whose thread is otherwise unknown).  The run may already
+    // have stopped by then -- an entry stop is recognised without it (a Step
+    // stop the client never asked for).
+    void bindRun(uint64_t mainThreadId) { setMainThreadId(mainThreadId); }
+    // Source paths as the client knows them.  toClient: a VM source (the
+    // canonical path of a file, or a synthetic name) -> the client's path, or
+    // nullopt when the source is not the client's (it keeps its absolute
+    // path, de-emphasised).  fromClient: the client's path -> the VM's.  Set
+    // before the session handles requests.
+    struct SourceMapper {
+        std::function<std::optional<std::string>(const std::string&)> toClient;
+        std::function<std::string(const std::string&)> fromClient;
+    };
+    void setSourceMapper(SourceMapper m) { mapper_ = std::move(m); }
     bool launchRequested() const { return launchRequested_.load(); }
     bool configurationDone() const { return configurationDone_.load(); }
     bool quitRequested() const { return quitRequested_.load(); }
@@ -116,6 +138,14 @@ private:
     uint64_t roxalThreadId(int32_t dapId);
     void requestTerminate();
     void sendHeldStopped();
+    // DAP Source for a VM source name (mapped, de-emphasised or synthetic).
+    Json clientSource(const std::string& vmSource);
+    std::string vmPath(const std::string& clientPath) const {
+        return mapper_.fromClient ? mapper_.fromClient(clientPath) : clientPath;
+    }
+    // A registration rebound breakpoints set earlier (the registering thread).
+    void onBreakpointsRebound(const std::string& key,
+                              const std::vector<std::pair<int, std::pair<bool, int>>>& bound);
 
     VM& vm_;
     StopCoordinator& coord_;
@@ -131,7 +161,21 @@ private:
     std::atomic<bool> entryPending_ { false };
     std::atomic<bool> terminatedSent_ { false };
     std::atomic<uint64_t> mainThreadId_ { 0 };
+    std::atomic<bool> attached_ { false };
+    // A client step is armed (cleared at every stop): a Step stop without
+    // one is the entry step armed at activation.
+    std::atomic<bool> clientStepArmed_ { false };
+    SourceMapper mapper_;
     std::string programPath_;
+    // Worker-only: synthetic sources served by reference.
+    std::map<int, std::string> sourceRefs_;
+    std::map<std::string, int> sourceRefOf_;
+    // Breakpoint ids per (request key, requested line) with the state last
+    // reported: the worker (setBreakpoints) and registering threads (rebind).
+    std::mutex breakpointIdsMutex_;
+    struct BpState { int id; bool verified; int line; };
+    std::map<std::pair<std::string, int>, BpState> breakpointIds_;
+    int nextBreakpointId_ { 1 };
     std::function<void()> terminate_;
     int deferredLaunchSeq_ { 0 };   // worker-only state
 
