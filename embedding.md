@@ -249,7 +249,8 @@ struct MyHost : roxal::DebugHostControl {
                                                    : roxal::DebugHostResult::Rejected;
     }
     // ...onDebugStopped / onDebugContinueRequested / onDebugStopFailed /
-    //    onDebugSessionEnded
+    //    onDebugSessionEnded; optionally onDebugStepResumed /
+    //    onDebugHoldReasserted (both default to no-ops)
 };
 ```
 
@@ -266,10 +267,40 @@ What you are guaranteed:
 - `Queued` means you accepted responsibility for a controlled halt. **It does
   not mean anything is stationary**, and the debugger never waits for it.
 - **Stepping keeps the hold.** Step in/next/out emit no continue notice, so
-  stepping can never restart what you are holding.
+  stepping can never restart what you are holding. You are still told about
+  it: each step that resumes the program sends one `onDebugStepResumed`, and
+  the stop that ends it — the step landing, or a breakpoint, pause, host hold
+  or exception preempting it — sends `onDebugHoldReasserted` for the same
+  generation, never a second `onDebugHoldRequested`. The step notice always
+  arrives first. During a step **every** thread of the program runs, not only
+  the one being stepped.
 - A normal continue emits **exactly one** `onDebugContinueRequested`.
 - Terminate, disconnect, fatal error, failed stop and session end never
   silently release a hold. You get the notice; the policy is yours.
+- **An exit never releases the hold either** — whether the run's stop had
+  committed or was still pending, no continue notice is sent, so nothing a host
+  releases on that notice can restart mid-termination.
+
+**Releasing during a step (debounced).** Whether anything physical moves
+during a step is your decision. A host that holds motion can let a step that
+waits on motion complete without ever moving the machine on a step over
+ordinary code: hold on `onDebugHoldRequested` and `onDebugHoldReasserted`;
+on `onDebugStepResumed` (and on `onDebugContinueRequested`) arm a short
+release timer (~100 ms), and cancel it if a re-assert arrives first. A step
+over a non-motion line re-stops well inside the window, so nothing moves; a
+step over `movj(..., wait=true)` outlasts it, the motion runs, and its future
+can resolve so the step completes. Because the step notice always precedes
+the re-assert that ends that step, the timer is armed before it can be
+cancelled.
+
+**When a run ends while held.** The hold generation then outlives the run: the
+next execution's first stop re-asserts it rather than opening a new one. Once
+the run has ended, deal with whatever you were holding for it (flush or abandon
+the held motion — the program that owned it is gone), then tell the coordinator
+with `vm.stopCoordinator().holdDropped()`. That closes the generation without a
+notice, so the next stop opens a fresh one with `onDebugHoldRequested`. It is
+refused (returns `false`) while a stop is committed or still forming: that stop
+owns the generation.
 
 ## Rules that apply to every shape
 

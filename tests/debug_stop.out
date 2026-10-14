@@ -15,11 +15,13 @@ Test: inspect_stack_variables passed - bind=1 thr=1 frames=1 locals=1 up=1 mod=1
 Test: inspect_handle_lifecycle passed - exhaust=1 epoch=1 stale=1
 Test: inspect_reread_and_completion passed - reread=1 val=1
 Test: step_preempted_by_breakpoint passed - stop1=1 bpPreempts=1 bitClear=1 val=1
+Test: host_pause_during_step_reasserts passed - step=1 hostStop=1 notices='SRT' released=1 val=1
+Test: stop_timeout_host_joined_one_notice passed - pendingAsHost=1 notices=1 committed=1 released=1
 Test: rebind_supersede_gc passed - bind=1 rebindStop=1 val=1
 Test: rt_slice_breakpoint passed - bind=1 rtPaused=1 stop=1 val=1
 Test: excluded_thread_runs_through_stop passed - stopped=1 progressed=1 held=1 val=1
-Test: hold_notice_contract passed - holds=15 conts=15 stops=18 fails=1
+Test: hold_notice_contract passed - holds=17 conts=17 stops=22 fails=1 reasserts=6 steps=4
 Test: gc_split_prepared passed - stop=1 handle=1
-Debug stop tests: Passed 22 failed 0
+Debug stop tests: Passed 24 failed 0
 Test: gc_during_stop_real_collection passed - collected=1 handle=1 val=1
 Debug stop GC tests: Passed 1 failed 0
