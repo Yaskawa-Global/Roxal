@@ -123,11 +123,22 @@ public:
     void releaseHostPause();
     // Exit beats pause: the current execution is ending, so release any stop
     // whoever owns it and accept no new one in this execution.  The Host
-    // owner is kept for the next execution.  Any non-RT thread.
+    // owner is kept for the next execution.  The hold generation is NOT
+    // released -- committed or still pending, no continue notice is sent;
+    // dropping the hold is the host's decision.  Any non-RT thread.
     void releaseForExit();
     // VM shutdown: drop every owner and release whatever is stopped or
     // forming, synchronously (the worker is about to be joined).
     void resumeForShutdown();
+    // The host has dropped whatever it held for the current hold generation
+    // -- typically after a run ended while held (an exit never releases the
+    // hold: see releaseForExit), once it has flushed or abandoned that run's
+    // held activity.  Closes the generation without any notice, so the next
+    // stop opens a fresh one with onDebugHoldRequested (which the host may
+    // reject) rather than re-asserting the old one.  Refused (false) while a
+    // stop is committed or forming -- that stop owns the generation; true
+    // otherwise, held or not.  Any non-RT thread.
+    bool holdDropped();
 
     struct PauseStatus {
         bool host { false };        // the Host owner is held
@@ -233,7 +244,9 @@ public:
     // generation.  The next statement boundary satisfying the mode
     // publishes a Step stop through the async path.  Refused (false) when
     // nothing is stopped or the host holds the stop: a step means "run one
-    // step now", which a host hold forbids.
+    // step now", which a host hold forbids.  Once the domain has resumed,
+    // the host gets onDebugStepResumed (no continue notice); the stop that
+    // ends the step re-asserts the hold, always after that notice.
     bool stepAndResume(Thread& t, Thread::DebugStepMode mode);
 
     // Slow-path demand accounting: while nonzero, IntrDebugSlowPath routes
@@ -314,8 +327,12 @@ private:
     // Physically release a committed stop (whoever owns it).
     void resumeNow(bool releaseHold);
     // Withdraw a pending stop nobody owns any more: parked threads released,
-    // the hold opened for it closed again, no failure reported.
-    void cancelPending();
+    // no failure reported.  With releaseHold, the hold opened for it is
+    // closed again (one onDebugContinueRequested); without it -- the
+    // execution is ending -- the hold generation stays held, exactly as when
+    // an exit resumes a committed stop: an exit must never be what restarts
+    // motion.
+    void cancelPending(bool releaseHold);
     void releaseAll();
     uint8_t ownerBit(StopOwner o) const { return uint8_t(o); }
 

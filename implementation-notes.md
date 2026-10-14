@@ -2568,11 +2568,37 @@ What the host is guaranteed:
 3. **Stepping keeps the hold.** Step in/next/out retain the hold generation and
    produce no continue notice, so stepping can never implicitly restart
    whatever the host is holding.
+   The host is told, though, so it can apply its own policy (e.g. a debounced
+   release while a step runs): `stepAndResume` sends one `onDebugStepResumed`
+   once the domain has resumed, and a stop that forms while the generation is
+   held -- the step landing, anything preempting it, or the first stop after
+   an execution that ended held -- goes through `openHoldAndWake`'s failed
+   `holdActive_` exchange and sends `onDebugHoldReasserted` with the
+   unchanged generation instead of a second `onDebugHoldRequested`. Both are
+   sent under `controlMutex_` (`stepAndResume` holds it across `resume()`;
+   `openHoldAndWake` takes it), so a step's notice always precedes the
+   re-assert of the stop that ends it. Each stop opens its hold once: every
+   opener records `pendingWokenEpoch_` (or, for the async path, consumes
+   `asyncPending_`) before `openHoldAndWake`, so the worker's
+   `advancePendingStop` never re-opens -- and re-notifies -- a stop a
+   `requestStop` left pending as the host's. Stop epochs count per execution
+   domain, so `rebind()` resets that marker: each run's first stop is epoch 1,
+   and a marker left from the previous run's epoch 1 would otherwise make a
+   run that starts paused look already opened -- no hold notice, no wake.
 4. A normal continue produces **exactly one** `onDebugContinueRequested`, for
    that generation.
 5. Terminate, disconnect while stopped, a fatal error, a failed stop and
    session end never silently release a hold. The corresponding notice is
    delivered and the host applies its own fail-safe policy.
+   An exit (`releaseForExit`, `endExecution`, `resumeForShutdown`) never
+   releases it at all: a committed stop resumes with `releaseHold=false`, and
+   a still-pending one is withdrawn by `cancelPending(releaseHold=false)` --
+   including when the worker's `advancePendingStop` reaches it first (an exit
+   drops the Debugger owner before posting its release; with
+   `acceptingStops_` already false, that withdrawal keeps the hold too). The
+   generation therefore outlives the run; the host closes it with
+   `holdDropped()` once it has dealt with the held activity (refused while a
+   stop is committed or forming), and the next stop opens a fresh generation.
 6. A `Rejected` return is recorded and surfaced as a debugger warning. Roxal
    still quiesces; a safety-critical integration should treat rejection as a
    fault and keep execution stopped.
@@ -2585,7 +2611,12 @@ So the sequence a host sees, with the driver looping the whole time:
    host:   onDebugHoldRequested(generation N)   <- start the controlled hold
    host:   onDebugStopped
    driver: runFor -> Paused, Paused, Paused ... <- cadence kept, no blocking
-   (steps: more Paused; NO continue notice; still generation N)
+   (each step: host: onDebugStepResumed(N)        <- may release, debounced
+               driver: runFor -> Yielded ...
+               host: onDebugHoldReasserted(N)     <- hold again: step landed
+               host: onDebugStopped
+               driver: runFor -> Paused ...
+    NO continue notice; still generation N)
    host:   onDebugContinueRequested(generation N)  <- exactly once
    driver: runFor -> Yielded, Yielded ...
 ```

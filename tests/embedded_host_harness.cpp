@@ -133,7 +133,9 @@ private:
 // reached through a queue, never inline here.
 struct HostControlSink final : DebugHostControl {
     std::atomic<int> holds { 0 }, stops { 0 }, conts { 0 }, fails { 0 }, ends { 0 };
+    std::atomic<int> stepResumes { 0 }, reasserts { 0 };
     std::atomic<uint64_t> lastHoldGen { 0 }, lastContGen { 0 };
+    std::atomic<uint64_t> lastStepGen { 0 }, lastReassertGen { 0 };
     std::atomic<bool> calledOnDriver { false };
     std::atomic<bool> driverKnown { false };
     std::thread::id driverThread {};
@@ -160,6 +162,18 @@ struct HostControlSink final : DebugHostControl {
     }
     void onDebugStopFailed(const DebugStopFailure&) noexcept override { note(); ++fails; }
     void onDebugSessionEnded(const DebugSessionEnd&) noexcept override { note(); ++ends; }
+    void onDebugStepResumed(const DebugStepNotice& n) noexcept override
+    {
+        note();
+        lastStepGen.store(n.holdGeneration, std::memory_order_release);
+        ++stepResumes;
+    }
+    void onDebugHoldReasserted(const DebugHoldRequest& r) noexcept override
+    {
+        note();
+        lastReassertGen.store(r.holdGeneration, std::memory_order_release);
+        ++reasserts;
+    }
 };
 
 // Observes module lifecycle hooks so the harness can assert that a fresh
@@ -467,7 +481,7 @@ int main()
 
         // The controller is its own thread: a host's debug client never runs
         // on the driver.
-        bool stopped = false, inspected = false, steppedHeld = false;
+        bool stopped = false, inspected = false, steppedHeld = false, stepNoticed = false;
         bool releasedOnce = false, keptCadence = false;
         // Reported on failure: which of the four inspection queries came back
         // empty says whether the stop landed somewhere unexpected or the
@@ -512,8 +526,13 @@ int main()
                 inspected = threadListed && !frames.empty() && varsOk && evalOk;
 
                 // 9. Step retains the hold: no continue notice, same
-                //    generation.
+                //    generation.  The host IS told: one step notice as the
+                //    domain resumes, one re-assert as the step lands -- both
+                //    for that same generation, and no new hold request.
                 const int contsAtStep = host.conts.load();
+                const int holdsAtStep = host.holds.load();
+                const int stepsAtStep = host.stepResumes.load();
+                const int reassertsAtStep = host.reasserts.load();
                 const uint64_t genAtStep = coord.holdGeneration();
                 // The stopped thread lives in ITS RUN'S domain, not the
                 // VM's default one: find it by id across every thread.
@@ -527,6 +546,11 @@ int main()
                                && host.conts.load() == contsAtStep
                                && coord.holdGeneration() == genAtStep
                                && coord.holdActive();
+                    stepNoticed = host.stepResumes.load() == stepsAtStep + 1
+                               && host.reasserts.load() == reassertsAtStep + 1
+                               && host.holds.load() == holdsAtStep
+                               && host.lastStepGen.load() == genAtStep
+                               && host.lastReassertGen.load() == genAtStep;
                 }
             }
 
@@ -552,12 +576,14 @@ int main()
                + " vars=" + std::to_string(inspVars)
                + " eval=" + std::to_string(inspEval) + "]");
         expect(steppedHeld, "a step retains the hold and emits no continue notice");
+        expect(stepNoticed, "a step sends one step notice and its landing one re-assert,"
+                            " for the same generation and with no new hold request");
         expect(releasedOnce, "an ordinary continue releases the hold exactly once");
         expect(host.holds.load() > holdsBefore, "the host was asked to hold");
         expect(host.conts.load() == contsBefore + 1,
                "exactly one release notice for the whole session");
         expect(!host.calledOnDriver.load(std::memory_order_acquire),
-               "no hold notice was delivered on the driver thread");
+               "no hold notice (step and re-assert included) was delivered on the driver thread");
 
         const bool finished = waitUntil([&] { return driver.ended() > endedBefore; });
         expect(finished,
@@ -721,14 +747,26 @@ int main()
                "a host pause released while pending is withdrawn");
         (void)second;
 
-        // Exit beats the pause.
+        // Exit beats the pause -- but never releases the hold: no continue
+        // notice for a committed stop ended by exit.
         coord.requestHostPause();
         expect(waitUntil(hostPaused, 10), "the host pause holds the run again");
+        expect(!coord.holdDropped(), "holdDropped is refused while a stop is committed");
+        const int contsBeforeCommittedExit = host.conts.load();
         expect(runtime.requestExit(run.run, 0) == ExitRequestStatus::Requested,
                "a held run accepts a host exit");
         expect(waitUntil([&] { return driver.ended() > endedBefore; }),
                "a held run ends on exit");
         run.run.wait();
+        expect(host.conts.load() == contsBeforeCommittedExit,
+               "exiting a committed stop sends no continue notice (the hold stays the host's)");
+
+        // The host, having dealt with the ended run's held activity, drops
+        // the hold generation: the next stop opens a fresh one, so the host
+        // hears onDebugHoldRequested again (not a re-assert of the old one).
+        expect(coord.holdDropped(), "holdDropped is accepted once nothing is stopped or forming");
+        const int holdsBeforeNext = host.holds.load();
+        const uint64_t genBeforeNext = host.lastHoldGen.load();
 
         // Still held: the next execution starts paused, and runs on release.
         expect(coord.pauseStatus().host, "the host's hold outlives the execution");
@@ -738,6 +776,9 @@ int main()
         SubmitResult next = runtime.submit(std::move(nextRun.program));
         expect(next.status == SubmitStatus::Accepted, "the next program is accepted");
         expect(waitUntil(hostPaused, 10), "an execution under a host hold starts paused");
+        expect(host.holds.load() == holdsBeforeNext + 1
+                   && host.lastHoldGen.load() == genBeforeNext + 1,
+               "after holdDropped, the next stop opens a fresh hold generation");
         expect(sink.take().empty(), "nothing ran before the release");
         coord.releaseHostPause();
         expect(waitUntil([&] { return driver.ended() > endedBefore; }),
@@ -828,7 +869,8 @@ int main()
         std::this_thread::sleep_for(std::chrono::milliseconds(200));   // into the native
 
         bool pendingFirst = false, namedActor = false, committed = false, resumed = false;
-        bool withdrawn = false, exitBeat = false;
+        bool withdrawn = false, exitBeat = false, pendingAtExit = false;
+        int contsBeforePendingExit = 0;
         std::string waiting;
         std::thread controller([&] {
             const auto t0 = std::chrono::steady_clock::now();
@@ -856,9 +898,13 @@ int main()
                 return !s.pending && !s.stopped && !s.debugger;
             }, 10);
 
-            // Exit beats a pending debugger pause.
+            // Exit beats a pending debugger pause -- without releasing the
+            // hold it opened: no continue notice (a host debouncing motion
+            // release on that notice would restart motion mid-termination).
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            contsBeforePendingExit = host.conts.load();
             coord.requestDebuggerPause();
+            pendingAtExit = coord.pauseStatus().pending;
             exitBeat = runtime.requestExit(run.run, 0) == ExitRequestStatus::Requested;
         });
         controller.join();
@@ -873,6 +919,71 @@ int main()
         run.run.wait();
         expect(!coord.pauseStatus().pending && !coord.isStopped(),
                "nothing is pending or stopped after the exit");
+        expect(pendingAtExit, "the debugger pause was still pending when the exit came");
+        expect(host.conts.load() == contsBeforePendingExit,
+               "exiting a pending stop sends no continue notice (the hold stays the host's)");
+        sink.take();
+    }
+
+    // 30b. Each run's stops count from epoch 1 in its own domain, so a run's
+    //      first stop can share its epoch number with the previous run's
+    //      last.  That must not read as "already opened": a run that starts
+    //      paused under a host hold still notifies the host -- re-asserting a
+    //      generation the previous run left held, or opening a fresh one
+    //      after holdDropped().
+    {
+        StopCoordinator& coord = vm.stopCoordinator();
+        auto hostPaused = [&] {
+            auto s = coord.pauseStatus();
+            return s.stopped && s.host;
+        };
+        // A run whose only stop is a host pause (its epoch 1), ended by exit
+        // while held: the generation stays held, the host keeps its pause.
+        auto heldAtExit = [&](const std::string& name) {
+            const int endedBefore = driver.ended();
+            PrepareProgramResult p = prepareOffDriver(
+                vm, "while true:\n  wait(us=1000)\n", name);
+            SubmitResult r = runtime.submit(std::move(p.program));
+            expect(waitUntil([&] { return r.run.state() == RunState::Running; }),
+                   name + ": the program runs");
+            coord.requestHostPause();
+            expect(waitUntil(hostPaused, 10), name + ": its first stop is a host pause");
+            expect(runtime.requestExit(r.run, 0) == ExitRequestStatus::Requested,
+                   name + ": exits while held");
+            expect(waitUntil([&] { return driver.ended() > endedBefore; }), name + ": ends");
+            r.run.wait();
+        };
+        // The next run starts paused (the host still holds) at ITS epoch 1;
+        // count the hold notices it produces, then release it to finish.
+        auto startPaused = [&](const std::string& name, int& holds, int& reasserts) {
+            const int endedBefore = driver.ended();
+            const int holds0 = host.holds.load(), reasserts0 = host.reasserts.load();
+            PrepareProgramResult p = prepareOffDriver(vm, "print('ran')\n", name);
+            SubmitResult r = runtime.submit(std::move(p.program));
+            expect(waitUntil(hostPaused, 10), name + ": starts paused");
+            holds = host.holds.load() - holds0;
+            reasserts = host.reasserts.load() - reasserts0;
+            coord.releaseHostPause();
+            expect(waitUntil([&] { return driver.ended() > endedBefore; }), name + ": runs once released");
+            r.run.wait();
+            expect(sink.take() == "ran\n", name + ": completed");
+        };
+
+        int holds = -1, reasserts = -1;
+        heldAtExit("harness_epoch_a");
+        startPaused("harness_epoch_b", holds, reasserts);
+        expect(holds == 0 && reasserts == 1,
+               "a run starting paused under a generation the previous run left held"
+               " re-asserts it [holds=" + std::to_string(holds)
+               + " reasserts=" + std::to_string(reasserts) + "]");
+
+        heldAtExit("harness_epoch_c");
+        expect(coord.holdDropped(), "holdDropped between runs");
+        startPaused("harness_epoch_d", holds, reasserts);
+        expect(holds == 1 && reasserts == 0,
+               "after holdDropped, a run starting paused opens a fresh generation"
+               " [holds=" + std::to_string(holds)
+               + " reasserts=" + std::to_string(reasserts) + "]");
         sink.take();
     }
 
