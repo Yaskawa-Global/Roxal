@@ -2448,15 +2448,32 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
 
         struct MockHost : DebugHostControl {
             std::atomic<int> holds{0}, stops{0}, conts{0}, failsN{0}, ends{0};
+            std::atomic<int> stepResumes{0}, reasserts{0};
+            std::atomic<uint64_t> lastHoldGen{0}, lastReassertGen{0}, lastStepGen{0};
             std::atomic<bool> rejectNext{false};
-            DebugHostResult onDebugHoldRequested(const DebugHoldRequest&) noexcept override
-                { holds++;
+            // Notice order, one letter each: H(old) R(eassert) S(tep resumed)
+            // T (stopped) C(ontinue) F(ailed) E(nded).
+            std::mutex seqMutex;
+            std::string seq;
+            void log(char c) noexcept { std::lock_guard<std::mutex> lk(seqMutex); seq.push_back(c); }
+            std::string seqFrom(size_t mark) {
+                std::lock_guard<std::mutex> lk(seqMutex);
+                return mark < seq.size() ? seq.substr(mark) : std::string();
+            }
+            size_t seqMark() { std::lock_guard<std::mutex> lk(seqMutex); return seq.size(); }
+            DebugHostResult onDebugHoldRequested(const DebugHoldRequest& r) noexcept override
+                { holds++; lastHoldGen = r.holdGeneration; log('H');
                   return rejectNext.exchange(false) ? DebugHostResult::Rejected
                                                     : DebugHostResult::Queued; }
-            void onDebugStopped(const DebugStopNotice&) noexcept override { stops++; }
-            void onDebugContinueRequested(const DebugContinueNotice&) noexcept override { conts++; }
-            void onDebugStopFailed(const DebugStopFailure&) noexcept override { failsN++; }
-            void onDebugSessionEnded(const DebugSessionEnd&) noexcept override { ends++; }
+            void onDebugStopped(const DebugStopNotice&) noexcept override { stops++; log('T'); }
+            void onDebugContinueRequested(const DebugContinueNotice&) noexcept override
+                { conts++; log('C'); }
+            void onDebugStopFailed(const DebugStopFailure&) noexcept override { failsN++; log('F'); }
+            void onDebugSessionEnded(const DebugSessionEnd&) noexcept override { ends++; log('E'); }
+            void onDebugStepResumed(const DebugStepNotice& n) noexcept override
+                { stepResumes++; lastStepGen = n.holdGeneration; log('S'); }
+            void onDebugHoldReasserted(const DebugHoldRequest& r) noexcept override
+                { reasserts++; lastReassertGen = r.holdGeneration; log('R'); }
         } mock;
         auto& coord = vm.stopCoordinator();
         coord.setHostControl(&mock);
@@ -2572,19 +2589,32 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
         // 4. Step-resume shape: releasing without the hold keeps the hold
         //    generation; the next stop opens no new hold; a normal continue
         //    releases exactly once.
+        //    The second stop forms while the generation is held: it
+        //    re-asserts that same generation (onDebugHoldReasserted), never a
+        //    second onDebugHoldRequested.  (A bare resume(false) is the step
+        //    SHAPE only -- no step was armed, so no onDebugStepResumed; the
+        //    real steps in 8 and 10 assert that notice.)
         {
             auto o1 = coord.requestStop(DebugStopReason::Pause, stopBudget);
             const int holdsAfterFirst = mock.holds.load();
+            const int reassertsAfterFirst = mock.reasserts.load();
+            const uint64_t genFirst = mock.lastHoldGen.load();
+            const int stepsBefore = mock.stepResumes.load();
             coord.resume(/*releaseHold=*/false);   // step shape
             const int contsAfterStep = mock.conts.load();
             auto o2 = coord.requestStop(DebugStopReason::Pause, stopBudget);
             const int holdsAfterSecond = mock.holds.load();
+            const bool reasserted = mock.reasserts.load() == reassertsAfterFirst + 1
+                                    && mock.lastReassertGen.load() == genFirst;
             coord.resume(/*releaseHold=*/true);
             reportTest("step_keeps_hold_generation",
                        o1.stopped && o2.stopped
                        && holdsAfterSecond == holdsAfterFirst   // no new hold
+                       && reasserted                            // same generation, re-asserted
+                       && mock.stepResumes.load() == stepsBefore
                        && contsAfterStep == mock.conts.load() - 1,  // exactly one continue at the end
-                       o1.failure + o2.failure);
+                       o1.failure + o2.failure
+                       + (reasserted ? "" : " reassert missing or wrong generation"));
         }
 
         // 5. Timeout rollback: a thread wedged "in native" (deterministic
@@ -2844,6 +2874,8 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                 (void)r0;
                 VM::thread = savedThread;
                 bool bindOk = false, stopOk = false, stepOk = false, valOk = false;
+                bool noticesOk = false;
+                std::string notices;
                 if (er == ExecutionStatus::OK) {
                     const std::string key = ModuleDebugIndex::stableSourceKey("cli", src);
                     auto bound = BreakpointManager::instance().setBreakpoints(key, {6});
@@ -2861,6 +2893,11 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                                             .snapshotLeases(vm.defaultDomain()->id()))
                             if (lt->id() == si->threadId) { wt = lt; break; }
                     if (stopOk && wt) {
+                        const int holds0 = mock.holds.load(), conts0 = mock.conts.load();
+                        const int steps0 = mock.stepResumes.load();
+                        const int reasserts0 = mock.reasserts.load();
+                        const uint64_t gen = mock.lastHoldGen.load();
+                        const size_t mark = mock.seqMark();
                         coord.stepAndResume(*wt, Thread::DebugStepMode::Next);
                         for (int i = 0; i < 400 && !coord.isStopped(); ++i)
                             std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -2868,6 +2905,17 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                         stepOk = si2.has_value()
                                  && si2->reason == DebugStopReason::Step
                                  && si2->line == 7;
+                        // One step notice, then the landing re-asserts the
+                        // SAME generation -- in that order; no new hold, no
+                        // continue.
+                        notices = mock.seqFrom(mark);
+                        noticesOk = mock.stepResumes.load() == steps0 + 1
+                                    && mock.reasserts.load() == reasserts0 + 1
+                                    && mock.holds.load() == holds0
+                                    && mock.conts.load() == conts0
+                                    && mock.lastStepGen.load() == gen
+                                    && mock.lastReassertGen.load() == gen
+                                    && notices.rfind("SR", 0) == 0;
                     }
                     BreakpointManager::instance().setBreakpoints(key, {});
                     if (coord.isStopped())
@@ -2882,11 +2930,13 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                             valOk = v.isInt() && v.asInt() == 600;
                         }
                     }
-                    ok = bindOk && stopOk && stepOk && valOk;
+                    ok = bindOk && stopOk && stepOk && valOk && noticesOk;
                     detail = "bind=" + std::to_string(bindOk)
                            + " stop=" + std::to_string(stopOk)
                            + " step=" + std::to_string(stepOk)
                            + " val=" + std::to_string(valOk);
+                    if (!noticesOk)
+                        detail += " notices='" + notices + "'";
                 } else detail = "script failed";
             } else detail = "compile failed";
             VM::thread = savedThread;
@@ -3149,12 +3199,17 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                     const bool stop1Ok = si.has_value()
                         && si->reason == DebugStopReason::Breakpoint && si->line == 4;
                     bool stop2Ok = false, bitClear = false, valOk = false;
+                    bool noticesOk = false;
+                    std::string notices;
                     ptr<Thread> wt;
                     if (si.has_value())
                         for (auto& lt : ThreadManager::instance()
                                             .snapshotLeases(vm.defaultDomain()->id()))
                             if (lt->id() == si->threadId) { wt = lt; break; }
                     if (stop1Ok && wt) {
+                        const int holds0 = mock.holds.load();
+                        const int reasserts0 = mock.reasserts.load();
+                        const size_t mark = mock.seqMark();
                         coord.stepAndResume(*wt, Thread::DebugStepMode::Next);
                         for (int i = 0; i < 400 && !coord.isStopped(); ++i)
                             std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -3163,6 +3218,12 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                         stop2Ok = si2.has_value()
                                   && si2->reason == DebugStopReason::Breakpoint
                                   && si2->line == 5;
+                        // The preempting stop re-asserts the held generation
+                        // (after the step notice); it opens no new hold.
+                        notices = mock.seqFrom(mark);
+                        noticesOk = mock.reasserts.load() == reasserts0 + 1
+                                    && mock.holds.load() == holds0
+                                    && notices.rfind("SR", 0) == 0;
                     }
                     BreakpointManager::instance().setBreakpoints(key, {});
                     // step cancelled by the commit sweep + breakpoints
@@ -3181,16 +3242,159 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
                             valOk = v.isInt() && v.asInt() == 6;
                         }
                     }
-                    ok = stop1Ok && stop2Ok && bitClear && valOk
+                    ok = stop1Ok && stop2Ok && bitClear && valOk && noticesOk
                          && !coord.isStopped();
                     detail = "stop1=" + std::to_string(stop1Ok)
                            + " bpPreempts=" + std::to_string(stop2Ok)
                            + " bitClear=" + std::to_string(bitClear)
                            + " val=" + std::to_string(valOk);
+                    if (!noticesOk)
+                        detail += " notices='" + notices + "'";
                 } else detail = "script failed";
             } else detail = "compile failed";
             VM::thread = savedThread;
             reportTest("step_preempted_by_breakpoint", ok, detail);
+        }
+
+        // 10b. A host pause arriving DURING a step: the stop it forms finds
+        //      the generation still held, so it re-asserts it (after the
+        //      step's own notice) and opens no second hold; releasing the
+        //      host pause is the one continue, and the call completes.
+        {
+            auto savedThread = VM::thread;
+            const std::string src =
+                "type HP actor:\n"
+                "  func go() -> int:\n"
+                "    wait(ms=150)\n"
+                "    var a = 1\n"
+                "    wait(ms=600)\n"
+                "    var b = 2\n"
+                "    return a + b\n"
+                "var h = HP()\n"
+                "var r = h.go()\n";
+            bool ok = false; std::string detail;
+            std::stringstream s10b(src);
+            if (setupTestProgram(vm, s10b, "cli") == ExecutionStatus::OK) {
+                ObjModuleType* modType = vm.moduleType();
+                auto [er, r0] = vm.execute();
+                (void)r0;
+                VM::thread = savedThread;
+                if (er == ExecutionStatus::OK) {
+                    const std::string key = ModuleDebugIndex::stableSourceKey("cli", src);
+                    BreakpointManager::instance().setBreakpoints(key, {4});
+                    for (int i = 0; i < 400 && !coord.isStopped(); ++i)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    BreakpointManager::instance().setBreakpoints(key, {});
+                    auto si = coord.stoppedInfo();
+                    ptr<Thread> wt;
+                    if (si.has_value())
+                        for (auto& lt : ThreadManager::instance()
+                                            .snapshotLeases(vm.defaultDomain()->id()))
+                            if (lt->id() == si->threadId) { wt = lt; break; }
+                    bool firstStep = false, hostStop = false, noticesOk = false;
+                    bool released = false, valOk = false;
+                    std::string notices;
+                    if (wt) {
+                        // Step onto line 5 (the long wait) ...
+                        coord.stepAndResume(*wt, Thread::DebugStepMode::Next);
+                        for (int i = 0; i < 400 && !coord.isStopped(); ++i)
+                            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                        auto si2 = coord.stoppedInfo();
+                        firstStep = si2.has_value() && si2->reason == DebugStopReason::Step
+                                    && si2->line == 5;
+                        // ... then step over it, and pause from the host
+                        // while the step is still running.
+                        const int holds0 = mock.holds.load(), conts0 = mock.conts.load();
+                        const int reasserts0 = mock.reasserts.load();
+                        const uint64_t gen = mock.lastHoldGen.load();
+                        const size_t mark = mock.seqMark();
+                        if (firstStep) {
+                            coord.stepAndResume(*wt, Thread::DebugStepMode::Next);
+                            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                            coord.requestHostPause();
+                            for (int i = 0; i < 400; ++i) {
+                                auto ps = coord.pauseStatus();
+                                if (ps.stopped && ps.host) { hostStop = true; break; }
+                                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                            }
+                            auto si3 = coord.stoppedInfo();
+                            hostStop = hostStop && si3.has_value()
+                                       && si3->reason == DebugStopReason::Host;
+                            notices = mock.seqFrom(mark);
+                            noticesOk = mock.reasserts.load() == reasserts0 + 1
+                                        && mock.lastReassertGen.load() == gen
+                                        && mock.holds.load() == holds0
+                                        && mock.conts.load() == conts0
+                                        && notices.rfind("SR", 0) == 0;
+                            coord.releaseHostPause();
+                            for (int i = 0; i < 400 && coord.isStopped(); ++i)
+                                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                            released = !coord.isStopped() && mock.conts.load() == conts0 + 1;
+                        }
+                    }
+                    if (coord.isStopped())
+                        coord.resume();
+                    auto fOpt = modType->vars.load(toUnicodeString("r"));
+                    if (fOpt.has_value() && isFuture(fOpt.value())) {
+                        auto& f = asFuture(fOpt.value())->future;
+                        if (f.valid()
+                            && f.wait_for(std::chrono::milliseconds(3000))
+                                   == std::future_status::ready) {
+                            Value v = f.get();
+                            valOk = v.isInt() && v.asInt() == 3;
+                        }
+                    }
+                    ok = firstStep && hostStop && noticesOk && released && valOk;
+                    detail = "step=" + std::to_string(firstStep)
+                           + " hostStop=" + std::to_string(hostStop)
+                           + " notices='" + notices + "'"
+                           + " released=" + std::to_string(released)
+                           + " val=" + std::to_string(valOk);
+                } else detail = "script failed";
+            } else detail = "compile failed";
+            VM::thread = savedThread;
+            reportTest("host_pause_during_step_reasserts", ok, detail);
+        }
+
+        // 10c. A debugger stop that times out after the host joined stays
+        //      pending as the host's, and the worker carries it on -- but it
+        //      is still ONE stop: exactly one hold notice (requested or
+        //      re-asserted), however often the worker advances it.
+        {
+            auto laggard = Thread::create(vm.defaultDomain(), ThreadKind::Actor);
+            laggard->debugOwnership.store(Thread::DebugOwnership::Executing,
+                                          std::memory_order_release);
+            const int notices0 = mock.holds.load() + mock.reasserts.load();
+            const int fails0 = mock.failsN.load();
+            std::thread joiner([&] {
+                std::this_thread::sleep_for(std::chrono::milliseconds(40));
+                coord.requestHostPause();
+            });
+            auto out = coord.requestStop(DebugStopReason::Pause, TimeDuration::milliSecs(200));
+            joiner.join();
+            auto ps = coord.pauseStatus();
+            const bool pendingAsHost = !out.stopped && ps.pending && ps.host;
+            std::this_thread::sleep_for(std::chrono::milliseconds(60));   // worker passes
+            const int notices1 = mock.holds.load() + mock.reasserts.load();
+            laggard->debugOwnership.store(Thread::DebugOwnership::Idle,
+                                          std::memory_order_release);
+            bool committed = false;
+            for (int i = 0; i < 400 && !committed; ++i) {
+                committed = coord.isStopped();
+                if (!committed)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            coord.releaseHostPause();
+            for (int i = 0; i < 400 && coord.isStopped(); ++i)
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            const bool released = !coord.isStopped();
+            reportTest("stop_timeout_host_joined_one_notice",
+                       pendingAsHost && notices1 == notices0 + 1 && committed && released
+                       && mock.failsN.load() == fails0,
+                       "pendingAsHost=" + std::to_string(pendingAsHost)
+                       + " notices=" + std::to_string(notices1 - notices0)
+                       + " committed=" + std::to_string(committed)
+                       + " released=" + std::to_string(released));
         }
 
         // 11. Outstanding breakpoint requests survive source SUPERSESSION
@@ -3423,19 +3627,26 @@ Value ModuleSys::runtests_builtin(VM& vm, ArgsView args)
         }
 
         // 8. Exactly-once hold-generation contract across the whole suite:
-        //    14 running->held transitions, 14 continues, 17 stopped notices
-        //    (6g and the step-preemption test each contribute one hold, TWO
-        //    stops -- step/second-breakpoint keep the hold generation -- and
-        //    one continue; inspection, rebind, and RT-slice one of each),
-        //    1 failure, 0 session ends.
+        //    17 running->held transitions (onDebugHoldRequested), 17
+        //    continues, 22 stopped notices, 1 failure, 0 session ends.  Every
+        //    committed stop that forms while the generation is already held
+        //    re-asserts it instead of opening a new one: 22 stops less the 16
+        //    committed among the 17 opened (5's first stop rolls back, leaving
+        //    the generation held for 5's second) = 6 re-asserts (4, 5, the
+        //    step landing in 8, the preempting breakpoint in 10, and 10b's
+        //    step landing and host pause).  4 step notices: one per
+        //    stepAndResume (8, 10, and 10b's two).
         reportTest("hold_notice_contract",
-                   mock.holds.load() == 15 && mock.conts.load() == 15
-                   && mock.stops.load() == 18 && mock.failsN.load() == 1
-                   && mock.ends.load() == 0,
+                   mock.holds.load() == 17 && mock.conts.load() == 17
+                   && mock.stops.load() == 22 && mock.failsN.load() == 1
+                   && mock.ends.load() == 0
+                   && mock.reasserts.load() == 6 && mock.stepResumes.load() == 4,
                    "holds=" + std::to_string(mock.holds.load())
                    + " conts=" + std::to_string(mock.conts.load())
                    + " stops=" + std::to_string(mock.stops.load())
-                   + " fails=" + std::to_string(mock.failsN.load()));
+                   + " fails=" + std::to_string(mock.failsN.load())
+                   + " reasserts=" + std::to_string(mock.reasserts.load())
+                   + " steps=" + std::to_string(mock.stepResumes.load()));
 
         // 14. Prepare the CROSS-BOUNDARY collection scenario: leave a
         //     breakpoint stop ACTIVE with a live inspection handle, then

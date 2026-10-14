@@ -135,6 +135,10 @@ bool StopCoordinator::beginStop(DebugStopReason reason)
 void StopCoordinator::openHoldAndWake(uint64_t epoch, DebugStopReason reason,
                                       uint64_t threadId)
 {
+    // Under controlMutex_ (most callers already hold it): holdDropped()
+    // decides "no stop is forming" and clears the generation under it, so a
+    // stop's hold opening cannot interleave with that.
+    std::lock_guard<std::recursive_mutex> control(controlMutex_);
     // Host hold notification: exactly once per running-to-held generation.
     // Invoked by a non-RT thread (sync controller or the debug worker),
     // never by the RT/interpreter callback that discovered the stop
@@ -163,6 +167,21 @@ void StopCoordinator::openHoldAndWake(uint64_t epoch, DebugStopReason reason,
                                    OutputSeverity::Warning, "debug");
             }
         }
+    } else if (DebugHostControl* hc = hostControl_.load(std::memory_order_acquire)) {
+        // A stop forming while the generation is already held: a step
+        // landing, or a breakpoint / pause / host hold / exception
+        // preempting it, or a generation still held from an earlier
+        // execution.  Not a new generation -- re-assert the current one, so
+        // a host that released anything during a step holds again.  Each
+        // stop reaches here once: every opener records pendingWokenEpoch_
+        // (or, for completeAsyncStop, consumes asyncPending_) before calling.
+        DebugHoldRequest req;
+        req.sessionId = sessionId_;
+        req.holdGeneration = holdGeneration_.load(std::memory_order_acquire);
+        req.stopEpoch = epoch;
+        req.reason = reason;
+        req.threadId = threadId;
+        hc->onDebugHoldReasserted(req);
     }
 
     // Wake everything that might be blocked so it reaches a stop point:
@@ -224,6 +243,10 @@ StopCoordinator::StopOutcome StopCoordinator::requestStop(DebugStopReason reason
         info.reason = reason;
         stopInfo_ = info;
     }
+    // Recorded as the other openers do: if this stop later stays pending as
+    // the host's (giveUp), the worker's advancePendingStop must not open --
+    // and notify -- its hold a second time.
+    pendingWokenEpoch_.store(epoch, std::memory_order_release);
     openHoldAndWake(epoch, reason, VM::thread ? VM::thread->id() : 0);
     // (tryCommitPass cancels preempted steps before publishing the stop.)
     return awaitQuiescence(epoch, timeout);
@@ -418,13 +441,14 @@ StopCoordinator::StopOutcome StopCoordinator::rollback(uint64_t epoch, const std
     return { false, why };
 }
 
-void StopCoordinator::cancelPending()
+void StopCoordinator::cancelPending(bool releaseHold)
 {
     std::lock_guard<std::recursive_mutex> control(controlMutex_);
     if (!forming_.load(std::memory_order_acquire))
         return;
     // Nobody wants it any more: release what parked, close the hold it
-    // opened, report nothing as failed (it did not fail; it was withdrawn).
+    // opened (unless the execution is ending -- see the header), report
+    // nothing as failed (it did not fail; it was withdrawn).
     releaseAll();
     forming_.store(false, std::memory_order_release);
     pending_.store(false, std::memory_order_release);
@@ -433,7 +457,7 @@ void StopCoordinator::cancelPending()
         stopInfo_.reset();
         waitingFor_.clear();
     }
-    if (holdActive_.exchange(false, std::memory_order_acq_rel)) {
+    if (releaseHold && holdActive_.exchange(false, std::memory_order_acq_rel)) {
         if (DebugHostControl* hc = hostControl_.load(std::memory_order_acquire))
             hc->onDebugContinueRequested(
                 { sessionId_, holdGeneration_.load(std::memory_order_acquire) });
@@ -511,7 +535,7 @@ void StopCoordinator::releaseHostPause()
         if (stopped_.load(std::memory_order_acquire))
             resumeNow(/*releaseHold=*/true);
         else if (pending_.load(std::memory_order_acquire))
-            cancelPending();
+            cancelPending(/*releaseHold=*/true);
     });
 }
 
@@ -524,12 +548,27 @@ void StopCoordinator::releaseForExit()
     postToWorker([this] {
         std::lock_guard<std::recursive_mutex> control(controlMutex_);
         // releaseHold=false: an exit must never be what restarts motion; the
-        // hold stays the host's to drop (as at session end).
+        // hold stays the host's to drop (as at session end) -- for a stop
+        // still pending just as for a committed one.
         if (stopped_.load(std::memory_order_acquire))
             resumeNow(/*releaseHold=*/false);
         else if (pending_.load(std::memory_order_acquire))
-            cancelPending();
+            cancelPending(/*releaseHold=*/false);
     });
+}
+
+bool StopCoordinator::holdDropped()
+{
+    std::lock_guard<std::recursive_mutex> control(controlMutex_);
+    // A live stop owns the generation: its release (or failure) is what
+    // ends it.  beginStop sets forming_ before any openHoldAndWake, and that
+    // runs under this mutex -- so either the stop is visible here, or its
+    // hold opens after this store (a fresh generation).
+    if (stopped_.load(std::memory_order_acquire)
+        || forming_.load(std::memory_order_acquire))
+        return false;
+    holdActive_.store(false, std::memory_order_release);
+    return true;
 }
 
 void StopCoordinator::resumeForShutdown()
@@ -570,7 +609,10 @@ void StopCoordinator::advancePendingStop()
         return;
     }
     if (owners_.load(std::memory_order_acquire) == 0) {
-        cancelPending();   // released before it committed
+        // Released before it committed.  If the execution is ending, this is
+        // releaseForExit's withdrawal reached first by the worker (it drops
+        // the Debugger owner before posting): keep the hold, as it does.
+        cancelPending(/*releaseHold=*/acceptingStops_.load(std::memory_order_acquire));
         return;
     }
     const uint64_t epoch = currentEpoch();
@@ -626,7 +668,7 @@ void StopCoordinator::resume(bool releaseHold)
     if ((owners_.load(std::memory_order_acquire) & ownerBit(StopOwner::Host)) != 0)
         return;   // the host still holds it: the domain stays stopped
     if (!stopped_.load(std::memory_order_acquire) && pending_.load(std::memory_order_acquire)) {
-        cancelPending();   // still forming, and nobody wants it now
+        cancelPending(releaseHold);   // still forming, and nobody wants it now
         return;
     }
     resumeNow(releaseHold);
@@ -851,6 +893,15 @@ bool StopCoordinator::stepAndResume(Thread& t, Thread::DebugStepMode mode)
     }
     addSlowPathDemand();   // released when the step fires or is cancelled
     resume(/*releaseHold=*/false);   // stepping never releases the motion hold
+    // Tell the host the domain is running for the step (the generation stays
+    // held).  Still under controlMutex_: the step's own stop -- or anything
+    // preempting it -- re-asserts the hold in openHoldAndWake, which takes
+    // the same mutex, so this notice always arrives first.
+    if (!stopped_.load(std::memory_order_acquire)) {
+        if (DebugHostControl* hc = hostControl_.load(std::memory_order_acquire))
+            hc->onDebugStepResumed(
+                { sessionId_, holdGeneration_.load(std::memory_order_acquire), t.id() });
+    }
     return true;
 }
 
