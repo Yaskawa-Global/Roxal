@@ -16,6 +16,13 @@
 // 'webgpu' or 'cpu' (the wasm EP IS CPU execution), matching the native
 // vocabulary so scripts asserting on model.device() port unchanged.
 //
+// 'auto' means best available all the way to the first inference: an EP can
+// build a session yet lack a kernel the model needs when it runs (ORT-web's
+// WebGPU MaxPool with ceil_mode: D-FINE).  An auto session on WebGPU keeps a
+// copy of its weights until its first run succeeds; if that run fails, the
+// session is rebuilt on the wasm EP and the run retried, and
+// opts.onFallback(id, reason) says so (model.device() keeps its first answer).
+//
 // ESM on purpose: imported by Vite for the web app and dynamically imported
 // by the node test runner -- one implementation, no drift.
 
@@ -55,6 +62,7 @@ function ioDescriptors(meta) {
 
 export default function makeRoxalNN(ort, opts = {}) {
     const sessions = new Map();
+    const autoWeights = new Map();     // id -> weights of an auto session on WebGPU, until its first run
     let nextId = 1;
 
     async function createWith(modelBytes, providers) {
@@ -90,6 +98,9 @@ export default function makeRoxalNN(ort, opts = {}) {
 
             const id = nextId++;
             sessions.set(id, session);
+            // (a copy: the bytes may be a view over the caller's memory)
+            if (device !== 'webgpu' && device !== 'cpu' && resolved === 'webgpu')
+                autoWeights.set(id, modelBytes.slice());
             return {
                 id,
                 device: resolved,
@@ -104,25 +115,44 @@ export default function makeRoxalNN(ort, opts = {}) {
             const feedMap = {};
             for (const f of feeds)
                 feedMap[f.name] = new ort.Tensor(f.dtype, typedView(f.dtype, f.data), f.shape);
-            const results = await session.run(feedMap);
-            // Positional parity with native: order by the session's own list.
-            return session.outputNames.map(name => {
-                const t = results[name];
-                const data = t.data;
-                return {
-                    dtype: t.type,
-                    shape: normalizeShape(t.dims),
-                    data: new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
-                };
-            });
+            let results;
+            try {
+                results = await session.run(feedMap);
+            } catch (e) {
+                const weights = autoWeights.get(id);
+                if (!weights) throw e;
+                autoWeights.delete(id);
+                session.release().catch(() => {});
+                const cpu = await createWith(weights, ['wasm']);
+                sessions.set(id, cpu);
+                if (opts.onFallback) opts.onFallback(id, e instanceof Error ? e.message : String(e));
+                results = await cpu.run(feedMap);
+                return outputsOf(cpu, results);
+            }
+            autoWeights.delete(id);            // it ran: WebGPU has what this model needs
+            return outputsOf(session, results);
         },
 
         close(id) {
             const session = sessions.get(id);
+            autoWeights.delete(id);
             if (session) {
                 sessions.delete(id);
                 session.release().catch(() => {});
             }
         },
     };
+
+    // Positional parity with native: order by the session's own list.
+    function outputsOf(session, results) {
+        return session.outputNames.map(name => {
+            const t = results[name];
+            const data = t.data;
+            return {
+                dtype: t.type,
+                shape: normalizeShape(t.dims),
+                data: new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+            };
+        });
+    }
 }

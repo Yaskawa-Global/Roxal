@@ -508,7 +508,14 @@ void ModuleGrpc::addNativeMethod(ObjObjectType* type,
                                                toUnicodeString("grpc"),
                                                toUnicodeString("grpc")));
     ObjFunction* of = asFunction(fnVal);
-    of->builtinInfo = make_ptr<BuiltinFuncInfo>(fn, defaultValues);
+    // TEMPORARY: every stub method is marked noMutateSelf, so a call through a
+    // const stub (a service held by an object passed to an actor, say) is
+    // allowed.  It covers init and close too.  To revisit: the const-reference
+    // logic for actor parameters needs to change to match objects, and each
+    // RPC's mutability could come from the proto (MethodOptions
+    // idempotency_level NO_SIDE_EFFECTS / IDEMPOTENT) or another annotation
+    // rather than a blanket true.
+    of->builtinInfo = make_ptr<BuiltinFuncInfo>(fn, defaultValues, 0, /*noMutateSelf=*/true);
     of->ownerType = Value::objRef(type);
     of->fnType = FunctionType::Method;
     of->access = ast::Access::Public;

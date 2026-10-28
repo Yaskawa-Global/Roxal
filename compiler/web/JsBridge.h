@@ -150,6 +150,8 @@ public:
 
     const std::vector<uint8_t>& bytes() const { return buf_; }
     void clear()                              { buf_.clear(); }
+    // Drop the buffer's storage when its capacity exceeds `limit` bytes.
+    void releaseIfLarge(size_t limit)         { if (buf_.capacity() > limit) std::vector<uint8_t>().swap(buf_); }
     bool empty() const                        { return buf_.empty(); }
     size_t size() const                       { return buf_.size(); }
 

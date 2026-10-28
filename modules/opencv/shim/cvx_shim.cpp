@@ -16,8 +16,13 @@
 #include <opencv2/core/utils/logger.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/geometry.hpp>   // OpenCV 5: boundingRect/contourArea/getRotationMatrix2D live here
+#include <opencv2/opencv_modules.hpp>   // HAVE_OPENCV_<module>: a wasm build has no imgcodecs/videoio
+#ifdef HAVE_OPENCV_IMGCODECS
 #include <opencv2/imgcodecs.hpp>
+#endif
+#ifdef HAVE_OPENCV_VIDEOIO
 #include <opencv2/videoio.hpp>
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -45,6 +50,13 @@ static const bool g_quietLogs = [] {
 #define CVX_CATCH(errret) \
     } catch (const std::exception& e) { g_lastError = e.what(); return errret; } \
       catch (...) { g_lastError = "unknown error"; return errret; }
+
+// A function whose OpenCV module this build lacks (a wasm build has no
+// imgcodecs/videoio) stays defined and fails with this message, so init.rox
+// declares the same API everywhere and `import opencv` never fails over it.
+#define CVX_UNAVAILABLE(module, errret) \
+    do { g_lastError = std::string(__func__) + ": not available in this build (OpenCV built without " module ")"; \
+         return errret; } while (0)
 
 static cv::Mat borrow(const void* data, int h, int w, int c)
 {
@@ -102,6 +114,7 @@ int cvx_mat_copy_to(void* mat, void* dst, int64_t dstBytes)
 //
 // imgcodecs
 
+#ifdef HAVE_OPENCV_IMGCODECS
 // Decode an image file; result is an RGB (or RGBA/gray, per requested channels) Mat handle.
 // channels: 0 = as-is (color files -> 3), 1 = grayscale, 3 = RGB, 4 = RGBA.
 void* cvx_imread(const char* path, int channels)
@@ -142,6 +155,10 @@ int cvx_imwrite(const char* path, const void* data, int h, int w, int c)
     return 0;
     CVX_CATCH(-1)
 }
+#else
+void* cvx_imread(const char*, int) { CVX_UNAVAILABLE("imgcodecs", nullptr); }
+int cvx_imwrite(const char*, const void*, int, int, int) { CVX_UNAVAILABLE("imgcodecs", -1); }
+#endif
 
 //
 // imgproc (tensor-direct: caller allocates correctly-sized outputs)
@@ -217,6 +234,7 @@ double cvx_threshold(const void* src, int h, int w,
 //
 // videoio
 
+#ifdef HAVE_OPENCV_VIDEOIO
 void* cvx_cap_open(int index)
 {
     CVX_TRY
@@ -277,6 +295,14 @@ int cvx_cap_read(void* cap, void* dst, int h, int w)
     return 1;
     CVX_CATCH(-1)
 }
+#else
+void* cvx_cap_open(int) { CVX_UNAVAILABLE("videoio", nullptr); }
+void* cvx_cap_open_file(const char*) { CVX_UNAVAILABLE("videoio", nullptr); }
+void cvx_cap_release(void*) {}
+double cvx_cap_get(void*, int) { CVX_UNAVAILABLE("videoio", 0.0); }
+int cvx_cap_set(void*, int, double) { CVX_UNAVAILABLE("videoio", -1); }
+int cvx_cap_read(void*, void*, int, int) { CVX_UNAVAILABLE("videoio", -1); }
+#endif
 
 } // extern "C"
 
@@ -447,6 +473,7 @@ int cvx_bounding_rect(const int32_t* pts, int n, int32_t* out4)
 //
 // video: deterministic close + VideoWriter
 
+#ifdef HAVE_OPENCV_VIDEOIO
 // release the camera/file now (LED off, file closed); the handle itself is
 // freed later by the GC finalizer
 void cvx_cap_close(void* cap) { static_cast<cv::VideoCapture*>(cap)->release(); }
@@ -489,6 +516,13 @@ int cvx_writer_write(void* wrp, const void* data, int h, int w)
 void cvx_writer_close(void* wrp) { static_cast<CvxWriter*>(wrp)->w.release(); }
 
 void cvx_writer_release(void* wrp) { delete static_cast<CvxWriter*>(wrp); }
+#else
+void cvx_cap_close(void*) {}
+void* cvx_writer_open(const char*, const char*, double, int, int) { CVX_UNAVAILABLE("videoio", nullptr); }
+int cvx_writer_write(void*, const void*, int, int) { CVX_UNAVAILABLE("videoio", -1); }
+void cvx_writer_close(void*) {}
+void cvx_writer_release(void*) {}
+#endif
 
 } // extern "C"
 
@@ -503,7 +537,7 @@ void cvx_writer_release(void* wrp) { delete static_cast<CvxWriter*>(wrp); }
 #include <opencv2/stereo.hpp>
 
 // shared post-decode normalization: 8-bit + RGB/RGBA channel order
-static cv::Mat* cvxFinishDecoded(cv::Mat img, int channels)
+[[maybe_unused]] static cv::Mat* cvxFinishDecoded(cv::Mat img, int channels)
 {
     if (img.depth() != CV_8U)
         img.convertTo(img, CV_8U);
@@ -532,6 +566,7 @@ extern "C" {
 //
 // in-memory image codecs
 
+#ifdef HAVE_OPENCV_IMGCODECS
 // encode an RGB image; returns a Mat handle holding the byte stream (1 x N)
 void* cvx_imencode(const char* ext, const void* data, int h, int w, int c, int quality)
 {
@@ -568,6 +603,10 @@ void* cvx_imdecode(const void* buf, int64_t nbytes, int channels)
     return cvxFinishDecoded(std::move(img), channels);
     CVX_CATCH(nullptr)
 }
+#else
+void* cvx_imencode(const char*, const void*, int, int, int, int) { CVX_UNAVAILABLE("imgcodecs", nullptr); }
+void* cvx_imdecode(const void*, int64_t, int) { CVX_UNAVAILABLE("imgcodecs", nullptr); }
+#endif
 
 //
 // ArUco markers
@@ -1803,3 +1842,11 @@ int cvx_in_range_u16(const uint16_t* src, int h, int w, uint8_t* dst,
 } // extern "C"
 
 #include "cvx_gen.inc"
+
+// Static-FFI registration (wasm builds, which cannot dlopen this library): the
+// table tools/ffi_static_registry.py generates from init.rox, included here --
+// after every definition -- so its prototypes are checked against them.  See
+// compiler/FFIStatic.h and cmake/RoxalStaticFFI.cmake.
+#ifdef ROXAL_FFI_STATIC_TABLE
+#include ROXAL_FFI_STATIC_TABLE
+#endif

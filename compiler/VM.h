@@ -182,6 +182,10 @@ public:
 
     void setDisassemblyOutput(bool outputBytecodeDisassembly);
     void appendModulePaths(const std::vector<std::string>& modulePaths);
+    /// Replace the module path (a host serving another library, say).  Only
+    /// later compilations see it; registered modules stay as loaded
+    /// (forgetUserModules).  Waits for a compilation in progress.
+    void setModulePaths(std::vector<std::string> modulePaths);
     const std::vector<std::string>& getModulePaths() const { return modulePaths; }
     void setScriptArguments(const std::vector<std::string>& args);
     const std::vector<std::string>& getScriptArguments() const { return scriptArguments; }

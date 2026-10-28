@@ -2004,6 +2004,19 @@ void VM::appendModulePaths(const std::vector<std::string>& modulePaths)
     }
 }
 
+void VM::setModulePaths(std::vector<std::string> paths)
+{
+    // Not while a compilation reads the list.
+    std::lock_guard<std::mutex> preparation(preparationMutex_);
+    #ifdef ROXAL_ENABLE_GRPC
+    if (grpcModule)
+        for (const auto& path : paths)
+            if (std::find(modulePaths.begin(), modulePaths.end(), path) == modulePaths.end())
+                grpcModule->addProtoPath(path);
+    #endif
+    modulePaths = std::move(paths);
+}
+
 // See the declaration in VM.h.  Out-of-line with an opaque pointer so VM.h
 // doesn't need SimpleMarkSweepGC.h (nested ExternalParticipant can't be
 // forward-declared).

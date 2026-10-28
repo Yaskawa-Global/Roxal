@@ -426,7 +426,25 @@ endif()
 # explicitly and the build fails clearly if libffi is missing.  Only probed when
 # ROXAL_ENABLE_FFI is ON -- an FFI-less build must not require libffi to be
 # installed at all (that is the point of the flag).
-if(ROXAL_ENABLE_FFI)
+if(ROXAL_ENABLE_FFI AND EMSCRIPTEN)
+    # As for PCRE2: pkg-config would find the native libffi, useless to a wasm
+    # link.  deps/libffi-wasm (install-deps.sh libffi-wasm) is libffi's own
+    # wasm32 port, built with the same -fwasm-exceptions -pthread as libroxal.a.
+    # There is no dlopen in wasm: libraries reached through sys.loadlib are
+    # linked into the host and registered (compiler/FFIStatic.h).
+    if(NOT DEFINED LIBFFI_ROOT AND EXISTS "${ROXAL_DEPS_DIR}/libffi-wasm/lib/libffi.a")
+        set(LIBFFI_ROOT "${ROXAL_DEPS_DIR}/libffi-wasm")
+    endif()
+    if(NOT LIBFFI_ROOT)
+        message(FATAL_ERROR "FFI in a wasm build needs libffi cross-built for wasm: "
+                            "run install-deps.sh libffi-wasm, or set LIBFFI_ROOT")
+    endif()
+    set(LIBFFI_ROOT "${LIBFFI_ROOT}" CACHE PATH "libffi (wasm32) install prefix")
+    set(LIBFFI_INCLUDE_DIRS "${LIBFFI_ROOT}/include")
+    find_library(LIBFFI_LIBRARIES NAMES ffi PATHS "${LIBFFI_ROOT}/lib"
+                 NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH REQUIRED)
+    message(STATUS "FFI: enabled — libffi (wasm32) ${LIBFFI_LIBRARIES}")
+elseif(ROXAL_ENABLE_FFI)
     pkg_check_modules(LIBFFI REQUIRED libffi)
     # Report the resolved library, not LIBFFI_LIBDIR: pkg-config reports the
     # latter as the prefix libdir (/usr/lib) while the actual .so commonly lives
@@ -995,6 +1013,10 @@ if(EIGEN3_INCLUDE_DIR)
     list(APPEND _roxal_abi_incs_export "${EIGEN3_INCLUDE_DIR}")
 endif()
 list(REMOVE_DUPLICATES _roxal_abi_incs_export)
+set(_roxal_libffi_export "")
+if(ROXAL_ENABLE_FFI AND EMSCRIPTEN)
+    set(_roxal_libffi_export "${LIBFFI_LIBRARIES}")
+endif()
 file(WRITE "${CMAKE_BINARY_DIR}/roxal_features.cmake"
     # Build configuration, not a feature: hosts link libroxal.a as a prebuilt
     # artifact, so they must compile the roxal headers with a compatible
@@ -1029,6 +1051,10 @@ file(WRITE "${CMAKE_BINARY_DIR}/roxal_features.cmake"
     "set(ROXAL_HAS_INSPECT ${ROXAL_ENABLE_INSPECT})\n"
     "set(ROXAL_HAS_WEB ${ROXAL_ENABLE_WEB})\n"
     "set(ROXAL_HAS_FFI ${ROXAL_ENABLE_FFI})\n"
+    # The libffi a wasm host must link (libroxal.a references it; a static
+    # archive carries no link dependencies of its own).  Empty natively, where
+    # the host finds the system libffi itself.
+    "set(ROXAL_LIBFFI_LIBRARY \"${_roxal_libffi_export}\")\n"
     "set(ROXAL_HAS_XML ${ROXAL_ENABLE_XML})\n"
     "set(ROXAL_HAS_MEDIA ${ROXAL_ENABLE_MEDIA})\n"
     "set(ROXAL_HAS_MEDIA_AUDIO ${ROXAL_ENABLE_MEDIA_AUDIO})\n"

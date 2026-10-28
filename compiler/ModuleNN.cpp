@@ -864,17 +864,29 @@ Value ModuleNN::nn_model_init_builtin(ArgsView args)
 
     auto wrapper = std::make_shared<ModelWrapper>();
 
-    std::ifstream in(path, std::ios::binary);
-    if (!in)
-        throw std::invalid_argument("Model.init: cannot open '" + path + "'");
-    std::vector<uint8_t> modelBytes((std::istreambuf_iterator<char>(in)),
-                                    std::istreambuf_iterator<char>());
+    // The weights are read in one piece into a buffer of the file's size
+    // (growing one byte by byte peaked at about three times a model's size,
+    // and wasm memory never shrinks back), handed to the provider, and freed
+    // before the wait: only the request in flight holds them after that.
+    Value created;
+    {
+        std::ifstream in(path, std::ios::binary | std::ios::ate);
+        if (!in)
+            throw std::invalid_argument("Model.init: cannot open '" + path + "'");
+        const std::streamoff fileSize = in.tellg();
+        if (fileSize < 0)
+            throw std::invalid_argument("Model.init: cannot size '" + path + "'");
+        std::vector<uint8_t> modelBytes(static_cast<size_t>(fileSize));
+        in.seekg(0, std::ios::beg);
+        if (fileSize > 0 && !in.read(reinterpret_cast<char*>(modelBytes.data()), fileSize))
+            throw std::invalid_argument("Model.init: cannot read '" + path + "'");
+        created = web::nnCreate(std::move(modelBytes), deviceArg);
+    }
 
     // Block until the provider compiled the model. Native init blocks the
     // same way inside Ort::Session construction; a WebGPU shader compile can
     // take a while on first load, hence the generous ceiling.
-    Value meta = web::nnAwaitBlocking(
-        web::nnCreate(std::move(modelBytes), deviceArg), 120000);
+    Value meta = web::nnAwaitBlocking(created, 120000);
     if (!isDict(meta))
         throw std::invalid_argument("Model.init: malformed provider reply");
     ObjDict* md = asDict(meta);

@@ -9,9 +9,15 @@
 # dataflow all arrive by linking roxalcore. There is nothing for this script to
 # keep in sync; it only spells out the configure flags.
 #
-# Prerequisites (see ../install-deps.sh emsdk antlr4-wasm):
+# Prerequisites (see ../install-deps.sh emsdk antlr4-wasm libffi-wasm):
 #   emsdk           ~/dev/emsdk or ~/emsdk, or $EMSDK
 #   deps/antlr4-wasm-mt   ANTLR4 C++ runtime cross-built with matching flags
+#   deps/libffi-wasm      libffi's wasm32 port (FFI: @cfunc against libraries
+#                         linked into the host -- compiler/FFIStatic.h)
+#
+# Configure runs only when the build dir has no CMakeCache.txt.  A build dir
+# configured before FFI was enabled keeps ROXAL_ENABLE_FFI=OFF until it is
+# reconfigured (--clean, or cmake -DROXAL_ENABLE_FFI=ON on it).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -34,6 +40,8 @@ command -v em++ >/dev/null || { echo "em++ not found -- run ../install-deps.sh e
 
 [ -d "$ROXAL/deps/antlr4-wasm-mt" ] || {
     echo "missing $ROXAL/deps/antlr4-wasm-mt -- run ../install-deps.sh antlr4-wasm" >&2; exit 1; }
+[ -f "$ROXAL/deps/libffi-wasm/lib/libffi.a" ] || {
+    echo "missing $ROXAL/deps/libffi-wasm -- run ../install-deps.sh libffi-wasm" >&2; exit 1; }
 
 # -fwasm-exceptions and -pthread are NOT passed here: the root CMakeLists applies
 # them for every EMSCRIPTEN build, so they cannot drift from what libroxal.a and
@@ -41,7 +49,7 @@ command -v em++ >/dev/null || { echo "em++ not found -- run ../install-deps.sh e
 if [ ! -f "$BUILD/CMakeCache.txt" ]; then
     emcmake cmake -B "$BUILD" -S "$ROXAL" \
         -DCMAKE_BUILD_TYPE=Release \
-        -DROXAL_ENABLE_FFI=OFF \
+        -DROXAL_ENABLE_FFI=ON \
         -DROXAL_UNICODE_BACKEND=builtin \
         -DROXAL_ENABLE_SOCKET=OFF \
         -DROXAL_ENABLE_FILEIO=ON \

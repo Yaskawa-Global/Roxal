@@ -38,9 +38,10 @@ const DIGITS = '0123456789'
 const INPUT_TYPES = ['bool', 'byte', 'int', 'real', 'number', 'string',
                      'vector', 'matrix', 'tensor']
 // How an output is shown while the diagram runs: printed by the harness's
-// probe ('text'), or painted at the node from an image-valued signal
-// ('image'); see harness() and web.ImageView.
-const OUTPUT_VIEWS = ['text', 'image']
+// probe ('text'), painted at the node from an image-valued signal
+// ('image'; see harness() and web.ImageView), or drawn in a 3D view of the
+// cell ('scene': a pose as axes, site bodies as ghosts).
+const OUTPUT_VIEWS = ['text', 'image', 'scene']
 
 const STIMULUS = {'bool': 'false', 'byte': 'byte(0)', 'int': '0',
                   'real': '0.0', 'number': '0.0', 'string': "''",

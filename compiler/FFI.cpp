@@ -1,16 +1,97 @@
 #include "FFI.h"
+#include "FFIStatic.h"
 #include "VM.h"
 #include "SimpleMarkSweepGC.h"
 
 #include <cstring>
+#include <memory>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 #include <dlfcn.h>
 #include <ffi.h>
 #include <filesystem>
 #include <system_error>
 
 using namespace roxal;
+
+namespace {
+
+// A library linked into the executable (FFIStatic.h).  An ObjLibrary's handle
+// points at one of these instead of a dlopen handle; staticLibraryFor() tells
+// the two apart.
+struct StaticLibrary {
+    std::unordered_map<std::string, void*> symbols;
+};
+
+std::mutex& staticLibraryMutex()
+{
+    static std::mutex m;
+    return m;
+}
+
+// File name -> library.  Entries are never removed, so handles stay valid.
+std::unordered_map<std::string, std::unique_ptr<StaticLibrary>>& staticLibraries()
+{
+    static std::unordered_map<std::string, std::unique_ptr<StaticLibrary>> libs;
+    return libs;
+}
+
+StaticLibrary* findStaticLibrary(const std::string& fileName)
+{
+    std::lock_guard<std::mutex> lock(staticLibraryMutex());
+    auto it = staticLibraries().find(fileName);
+    return it == staticLibraries().end() ? nullptr : it->second.get();
+}
+
+StaticLibrary* staticLibraryFor(void* handle)
+{
+    std::lock_guard<std::mutex> lock(staticLibraryMutex());
+    for (const auto& entry : staticLibraries())
+        if (entry.second.get() == handle)
+            return entry.second.get();
+    return nullptr;
+}
+
+// dlsym for either kind of handle; on failure `error` says why.
+void* resolveSymbol(void* handle, const std::string& name, std::string& error)
+{
+    if (StaticLibrary* lib = staticLibraryFor(handle)) {
+        auto it = lib->symbols.find(name);
+        if (it != lib->symbols.end())
+            return it->second;
+        error = "symbol '" + name + "' is not linked into this build";
+        return nullptr;
+    }
+    void* p = dlsym(handle, name.c_str());
+    if (!p) {
+        const char* e = dlerror();
+        error = e ? e : ("symbol '" + name + "' not found");
+    }
+    return p;
+}
+
+// Integer types whose width follows the target: long, size_t and friends are
+// 32-bit on wasm32.  Marshalling dispatches on the ffi_type, so naming the
+// right-sized one is all a 32-bit target needs.
+ffi_type* signedOfSize(size_t bytes) { return bytes == 8 ? &ffi_type_sint64 : &ffi_type_sint32; }
+ffi_type* unsignedOfSize(size_t bytes) { return bytes == 8 ? &ffi_type_uint64 : &ffi_type_uint32; }
+
+}
+
+void roxal::registerStaticLibrary(const char* fileName, const StaticFFISymbol* symbols, size_t count)
+{
+    auto lib = std::make_unique<StaticLibrary>();
+    for (size_t i = 0; i < count; ++i)
+        lib->symbols[symbols[i].name] = symbols[i].address;
+    std::lock_guard<std::mutex> lock(staticLibraryMutex());
+    auto& slot = staticLibraries()[fileName];
+    if (slot)
+        slot->symbols = std::move(lib->symbols);   // keep the handle already given out
+    else
+        slot = std::move(lib);
+}
 
 void* roxal::createFFIWrapper(void* fn, ffi_type* retType,
                               const std::vector<ffi_type*>& argTypes)
@@ -80,11 +161,22 @@ Value roxal::loadlib_native(ArgsView args)
             path = combined.lexically_normal();
     }
 
+    // A library linked into the executable answers to its file name, wherever
+    // the .rox code expects to find it.
+    if (StaticLibrary* lib = findStaticLibrary(path.filename().string()))
+        return Value::libraryVal(lib);
+
+#ifdef __EMSCRIPTEN__
+    throw std::runtime_error("library '" + path.filename().string()
+                             + "' is not linked into this build (a wasm build cannot dlopen; "
+                               "link it in and register it -- see compiler/FFIStatic.h)");
+#else
     void* h = dlopen(path.string().c_str(), RTLD_LAZY);
     if (!h)
         throw std::runtime_error(std::string("dlopen failed: ") + dlerror());
 
     return Value::libraryVal(h);
+#endif
 }
 
 Value roxal::ffi_native(ArgsView args)
@@ -303,10 +395,18 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                     argTypes.push_back(&ffi_type_sint32);
                 else if (type=="uint32_t")
                     argTypes.push_back(&ffi_type_uint32);
-                else if (type=="int64_t" || type=="long long" || type=="long" || type=="ssize_t" || type=="intptr_t")
+                else if (type=="int64_t" || type=="long long")
                     argTypes.push_back(&ffi_type_sint64);
-                else if (type=="uint64_t" || type=="unsigned long long" || type=="unsigned long" || type=="size_t" || type=="uintptr_t")
+                else if (type=="long")
+                    argTypes.push_back(signedOfSize(sizeof(long)));
+                else if (type=="ssize_t" || type=="intptr_t")
+                    argTypes.push_back(signedOfSize(sizeof(intptr_t)));
+                else if (type=="uint64_t" || type=="unsigned long long")
                     argTypes.push_back(&ffi_type_uint64);
+                else if (type=="unsigned long")
+                    argTypes.push_back(unsignedOfSize(sizeof(unsigned long)));
+                else if (type=="size_t" || type=="uintptr_t")
+                    argTypes.push_back(unsignedOfSize(sizeof(size_t)));
                 else if (type=="int16_t")
                     argTypes.push_back(&ffi_type_sint16);
                 else if (type=="uint16_t")
@@ -334,7 +434,8 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                     else if (base=="int16_t") ppt = PrimitivePtrType::Int16;
                     else if (base=="uint32_t") ppt = PrimitivePtrType::UInt32;
                     else if (base=="int32_t" || base=="int") ppt = PrimitivePtrType::Int32;
-                    else if (base=="uint64_t" || base=="unsigned long long" || base=="size_t") ppt = PrimitivePtrType::UInt64;
+                    else if (base=="uint64_t" || base=="unsigned long long") ppt = PrimitivePtrType::UInt64;
+                    else if (base=="size_t") ppt = sizeof(size_t) == 8 ? PrimitivePtrType::UInt64 : PrimitivePtrType::UInt32;
                     else if (base=="int64_t" || base=="long long") ppt = PrimitivePtrType::Int64;
                     else if (base=="float") ppt = PrimitivePtrType::Float32;
                     else if (base=="double" || base=="real") ppt = PrimitivePtrType::Float64;
@@ -468,10 +569,18 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
                 retType = &ffi_type_sint32;
             else if (r=="uint32_t")
                 retType = &ffi_type_uint32;
-            else if (r=="int64_t" || r=="long long" || r=="long" || r=="ssize_t" || r=="intptr_t")
+            else if (r=="int64_t" || r=="long long")
                 retType = &ffi_type_sint64;
-            else if (r=="uint64_t" || r=="unsigned long long" || r=="unsigned long" || r=="size_t" || r=="uintptr_t")
+            else if (r=="long")
+                retType = signedOfSize(sizeof(long));
+            else if (r=="ssize_t" || r=="intptr_t")
+                retType = signedOfSize(sizeof(intptr_t));
+            else if (r=="uint64_t" || r=="unsigned long long")
                 retType = &ffi_type_uint64;
+            else if (r=="unsigned long")
+                retType = unsignedOfSize(sizeof(unsigned long));
+            else if (r=="size_t" || r=="uintptr_t")
+                retType = unsignedOfSize(sizeof(size_t));
             else if (r=="int16_t")
                 retType = &ffi_type_sint16;
             else if (r=="uint16_t")
@@ -571,16 +680,17 @@ Value roxal::callCFunc(ObjClosure* closure, const CallSpec& callSpec, Value* arg
             }
         }
 
-        void* fnPtr = dlsym(handle, cname.c_str());
+        std::string symbolError;
+        void* fnPtr = resolveSymbol(handle, cname, symbolError);
         if (!fnPtr)
-            throw std::runtime_error(std::string("dlsym failed: ")+dlerror());
+            throw std::runtime_error(std::string("dlsym failed: ")+symbolError);
 
         void (*freeFn)(void*) = nullptr;
         if (auto freeExpr = getArg("free")) {
             std::string freeName = toUTF8StdString(asUString(evalExpr(freeExpr)));
-            void* f = dlsym(handle, freeName.c_str());
+            void* f = resolveSymbol(handle, freeName, symbolError);
             if (!f)
-                throw std::runtime_error(std::string("dlsym failed for free function '")+freeName+"': "+dlerror());
+                throw std::runtime_error(std::string("dlsym failed for free function '")+freeName+"': "+symbolError);
             freeFn = reinterpret_cast<void(*)(void*)>(f);
         }
 

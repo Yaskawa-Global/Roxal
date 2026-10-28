@@ -499,6 +499,14 @@ void defer(const Encoder& request)
 {
     requireIssuable("a JS write");
     const auto& r = request.bytes();
+    // A request at the flush size on its own (a model's weights) goes out as
+    // it is, after what is queued: copying it into the batch would hold it
+    // twice, and the batch would keep its capacity on this thread for good.
+    if (r.size() >= kFlushThreshold && canIssueOps()) {
+        flush();
+        transport()->send(r);
+        return;
+    }
     auto& d = const_cast<std::vector<uint8_t>&>(t_deferred.bytes());
     d.insert(d.end(), r.begin(), r.end());
     if (t_deferred.size() >= kFlushThreshold) flush();
@@ -509,6 +517,9 @@ void flush()
     if (t_deferred.empty() || !canIssueOps()) return;
     transport()->send(t_deferred.bytes());
     t_deferred.clear();
+    // A batch that grew large gives its memory back (wasm memory never shrinks,
+    // but freed blocks are reused; held capacity is not).
+    t_deferred.releaseIfLarge(4 * kFlushThreshold);
 }
 
 // ----------------------------------------------------------------- callbacks

@@ -26,7 +26,7 @@ ALL_TARGETS=(eigen antlr4 cyclonedds grpc media pugixml onnxruntime opencv libre
 # WebAssembly cross-build toolchain. Deliberately NOT part of 'all': these are a
 # cross toolchain rather than native libraries, and emsdk alone is ~1GB, so
 # pulling it into "build every native dep" would be a surprise. Use 'wasm'.
-WASM_TARGETS=(emsdk antlr4-wasm pcre2-wasm pugixml-wasm)
+WASM_TARGETS=(emsdk antlr4-wasm pcre2-wasm pugixml-wasm libffi-wasm)
 KNOWN_TARGETS=("${ALL_TARGETS[@]}" "${WASM_TARGETS[@]}")
 
 # emsdk installs OUTSIDE deps/ -- it is a toolchain, not a library, and this is
@@ -48,6 +48,7 @@ declare -A TARGET_DESC=(
     [antlr4-wasm]="ANTLR4 4.13.1 C++ runtime cross-built for wasm (needs emsdk)"
     [pcre2-wasm]="PCRE2 10.44 cross-built for wasm (regex module; needs emsdk)"
     [pugixml-wasm]="pugixml 1.15 cross-built for wasm (xml builtins; needs emsdk)"
+    [libffi-wasm]="libffi 3.8.0 cross-built for wasm (FFI: @cfunc/sys.loadlib; needs emsdk)"
 )
 
 print_help() {
@@ -294,6 +295,36 @@ if should_build pugixml-wasm; then
     cmake --build pugixml/build-wasm -j"$JOBS"
     cmake --install pugixml/build-wasm
     echo "  -> installed to $DEPS_DIR/pugixml-wasm"
+fi
+
+# ---------- libffi 3.8.0, cross-built for wasm ----------
+# libffi's own wasm32 port (ffi_call goes through the wasm function table from
+# JS), so @cfunc works in a wasm build; libraries are linked in and registered
+# rather than dlopen'd (compiler/FFIStatic.h).  The release tarball ships a
+# generated configure, so no autotools are needed.  Same -fwasm-exceptions
+# -pthread pair as libroxal.a.
+if should_build libffi-wasm; then
+    echo "=== Building libffi 3.8.0 for wasm ==="
+    [ -f "$EMSDK_DIR/emsdk_env.sh" ] || {
+        echo "ERROR: emsdk not found at $EMSDK_DIR -- run '$(basename "$0") emsdk' first" >&2; exit 1; }
+    set +u; source "$EMSDK_DIR/emsdk_env.sh" >/dev/null 2>&1; set -u
+
+    cd "$BUILD_TMP"
+    LIBFFI_TGZ=libffi-3.8.0.tar.gz
+    LIBFFI_SHA256=7da3e2d9a171eb0a038f592ecad3ff2bb2550f3496d87b3b29ad0cf4430c0db4
+    [ -f "$LIBFFI_TGZ" ] || wget -q "https://github.com/libffi/libffi/releases/download/v3.8.0/$LIBFFI_TGZ"
+    echo "$LIBFFI_SHA256  $LIBFFI_TGZ" | sha256sum -c -
+    rm -rf libffi-3.8.0-wasm && mkdir libffi-3.8.0-wasm
+    tar xzf "$LIBFFI_TGZ" -C libffi-3.8.0-wasm --strip-components=1
+    (
+        cd libffi-3.8.0-wasm
+        CFLAGS="-O2 -fwasm-exceptions -pthread" emconfigure ./configure \
+            --host=wasm32-unknown-emscripten --prefix="$DEPS_DIR/libffi-wasm" \
+            --enable-static --disable-shared --disable-dependency-tracking \
+            --disable-builddir --disable-multi-os-directory --disable-raw-api --disable-docs
+        emmake make -j"$JOBS" install
+    )
+    echo "  -> installed to $DEPS_DIR/libffi-wasm"
 fi
 
 # ---------- CycloneDDS (C library) + CycloneDDS-CXX ----------
