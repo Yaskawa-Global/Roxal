@@ -8,8 +8,8 @@
 // left on the driver (the run's thread while it runs, none after it ends).
 //
 // One scenario per process, named by argv[1]: the engine is a process
-// singleton and the nodes a finished run created stay registered, so
-// scenarios sharing a process would evaluate each other's nodes.
+// singleton that outlives each run, so scenarios sharing a process would
+// evaluate each other's nodes.
 //
 // As in the embedded host harness, wall-clock time is only a deadlock guard.
 // What is asserted is the program's own result, and that the cycles really
@@ -198,7 +198,7 @@ struct Scenario {
     bool requireOverrun;
     // A node body fails (or exits) on purpose: the run it belongs to must
     // end that way, with this in its diagnostic, and the engine must go on
-    // evaluating afterwards.
+    // ticking afterwards.
     RunState expectedState = RunState::Completed;
     const char* diagnosticContains = nullptr;
     int expectedExitCode = 0;
@@ -215,6 +215,11 @@ struct Scenario {
     // one value per cycle, from the driver thread between the program's
     // slices.
     bool hostSetsEventSource = false;
+    // Something longer-lived stores the program's lifted output, as a robot
+    // stores a signal left on it: the host takes a wrapper on it mid-run.
+    bool hostHoldsOutput = false;
+    // The run's nodes must be gone from the engine once it has ended.
+    bool nodesGoAfterRun = false;
 };
 
 // A Roxal-bodied gate feeding back on itself, then a busy loop of
@@ -376,8 +381,8 @@ const char* kTickAfterRun =
 
 // A node whose body raises once (on the clock's third tick): its run fails
 // with the node's error, as the program's own error would fail it, and the
-// engine -- its context discarded with the failure -- keeps evaluating the
-// same node on later ticks.
+// engine -- its context discarded with the failure -- goes on ticking, the
+// node having ended with the run.
 const char* kNodeError =
     "func check(x :int) -> int:\n"
     "  if x == 3:\n"
@@ -422,6 +427,22 @@ const char* kHostSetEvent =
     "  n = n + 1\n"
     "print(r.value)\n";
 
+// A node whose body lives in the program's own module and reads a variable
+// there, so it needs that module whenever it runs.  The run's end retires the
+// module: the node must not be evaluated from then on, whether the program
+// left its output out of scope or stored somewhere that outlives it.
+const char* kOwnBodyAfterRun =
+    "var gain = 2\n"
+    "func scale(x :int) -> int:\n"
+    "  return x * gain\n"
+    "var c = clock(100)\n"
+    "var out = scale(c)\n"
+    "c.run()\n"
+    "var k :int = 0\n"
+    "while k < 200000:\n"
+    "  k = k + 1\n"
+    "print(k)\n";
+
 const Scenario kScenarios[] = {
     { "busy_loop",      kBusyLoop,      "200000\n",       false, false, false },
     { "wait_loop",      kWaitLoop,      "20\n",           false, false, false },
@@ -443,7 +464,20 @@ const Scenario kScenarios[] = {
       RunState::Completed, nullptr, 7, false, false, 1 },
     { "host_set_event", kHostSetEvent,  "11\n",           false, false, false,
       RunState::Completed, nullptr, 0, false, false, 0, true },
+    { "own_body_after_run", kOwnBodyAfterRun, "200000\n", true,  false, false,
+      RunState::Completed, nullptr, 0, false, false, 0, false, false, true },
+    { "stored_output_after_run", kOwnBodyAfterRun, "200000\n", true, false, false,
+      RunState::Completed, nullptr, 0, false, false, 0, false, true, true },
 };
+
+// Function nodes the engine still holds.
+size_t liveNodes(df::DataflowEngine& engine)
+{
+    size_t nodes = 0;
+    for (const auto& island : engine.allSubnetworks())
+        nodes += island.funcs.size();
+    return nodes;
+}
 
 int runScenario(const Scenario& scenario)
 {
@@ -484,6 +518,19 @@ int runScenario(const Scenario& scenario)
             }
             hostIn->set(Value::intVal(++hostSets));
         });
+    ptr<df::Signal> heldOutput;
+    if (scenario.hostHoldsOutput)
+        driver.setHostWork([&] {
+            if (heldOutput)
+                return;
+            for (const auto& s : engine->allSignals()) {
+                if (!s->isSourceSignal()) {
+                    engine->registerSignalWrapper(s);
+                    heldOutput = s;
+                    break;
+                }
+            }
+        });
     driver.start();
 
     std::stringstream stream(scenario.source);
@@ -511,8 +558,32 @@ int runScenario(const Scenario& scenario)
         expect(waitUntil([&] { return driver.afterTotal() >= 20; }),
                name + ": the host kept ticking after the run ended");
 
+    if (scenario.nodesGoAfterRun)
+        expect(waitUntil([&] { return liveNodes(*engine) == 0; }),
+               name + ": the run's node left the engine after the run ended");
+    if (scenario.hostHoldsOutput) {
+        expect(heldOutput != nullptr, name + ": the host found the output to hold");
+        if (heldOutput) {
+            // Stored, the signal outlives the script as a value: it keeps the
+            // last one its node delivered, and nothing updates it any more.
+            const Value last = heldOutput->lastValue();
+            expect(last.isInt(), name + ": the stored signal keeps its last value");
+            const int ticks = driver.afterTotal();
+            expect(waitUntil([&] { return driver.afterTotal() >= ticks + 20; }),
+                   name + ": the host kept ticking");
+            if (last.isInt())
+                expect(heldOutput->lastValue().isInt()
+                           && heldOutput->lastValue().asInt() == last.asInt(),
+                       name + ": the stored signal no longer updates");
+        }
+    }
+
     driver.stop();
     hostIn.reset();   // before the VM shuts down
+    if (heldOutput) {
+        engine->unregisterSignalWrapper(heldOutput);
+        heldOutput.reset();
+    }
 
     const std::string output = sink.text();
     // One line of context for any failure below.
@@ -579,13 +650,13 @@ int runScenario(const Scenario& scenario)
         expect(!engine->consumeNodeOverruns().empty(),
                name + ": the late ticks were reported to the host");
     }
-    // The engine keeps evaluating after the run ended (after its failure,
-    // for the failing scenarios): ticks that complete, or with a budget too
-    // small for a whole tick, make progress and yield -- anything but Error.
+    // The engine keeps ticking after the run ended (after its failure, for
+    // the failing scenarios): ticks that complete, or with a budget too small
+    // for a whole tick, make progress and yield -- anything but Error.
     if (scenario.tickAfterRun)
         expect(driver.after(TickResult::Complete) + driver.after(TickResult::Yielded) >= 20
                    && driver.after(TickResult::Error) == 0,
-               name + ": ticks after the run kept evaluating ("
+               name + ": ticks after the run went on ("
                    + std::to_string(driver.after(TickResult::Complete)) + " complete, "
                    + std::to_string(driver.after(TickResult::Yielded)) + " yielded, "
                    + std::to_string(driver.after(TickResult::Error)) + " error)");

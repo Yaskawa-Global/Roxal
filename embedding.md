@@ -236,6 +236,11 @@ anything on the driver, and does not touch the REPL session or the services.
 (On the synchronous path, where the process *is* the program, `exit()` keeps
 its process semantics.)
 
+**A program's dataflow ends with it.** The engine outlives every run, and a host
+goes on ticking it between programs, but the signals a program created are in
+the scope of its module and are not evaluated once it has ended. A signal stored
+somewhere that outlives the program keeps the last value its node delivered.
+
 ### Being told to hold
 
 A host with machinery attached implements `DebugHostControl` so debugger

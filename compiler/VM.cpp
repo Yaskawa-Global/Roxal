@@ -2774,10 +2774,12 @@ bool VM::finalizeRunRecord(RunRecord& run, bool failed)
     // Retire the launch's module.  Every compiled module is pinned in
     // ObjModuleType::allModules so weak closure links can find it; for a
     // fresh program that pin outlived the program, and repeated launches
-    // grew it without bound.  With the domain quiescent nothing of the run
-    // can reach the module any more.  A fragment's module is the session's,
-    // and imports are canonical in the user-module registry -- neither is
-    // touched.
+    // grew it without bound.  With the domain quiescent none of the run's
+    // threads can reach the module any more.  The dataflow engine outlives
+    // the run and may still hold a node of this script: its body finds the
+    // module gone and the node is dropped (FuncExecResult::Retired).  A
+    // fragment's module is the session's, and imports are canonical in the
+    // user-module registry -- neither is touched.
     if (!fragment && run.prepared) {
         const Value moduleVal = run.prepared->roots.get().module;
         if (isModuleType(moduleVal)) {

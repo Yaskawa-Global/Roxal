@@ -2433,6 +2433,21 @@ main thread.
   never retire. The `StopCoordinator` is re-bound to the active domain at
   activation, so a stop on a run never reaches the session's actors or the
   services.
+- **A script's dataflow ends with it.** The engine is a process singleton and
+  outlives every run, but a script's signals are in the scope of its module:
+  when the module goes, the wrappers in its variables go, and the wrapper-driven
+  pruning (`~ObjSignal` -> `removeSignal` -> `removeFunc`) takes the nodes and
+  signals out of the engine. That pruning is not synchronised with retirement,
+  and a signal stored somewhere that outlives the script (a robot's target)
+  stops it altogether, so a node can still be registered after its module has
+  gone. Since a function reaches its module through a weak link,
+  `FuncNode::conditionallyExecute` takes a strong hold on the module before
+  running a closure body, and keeps it (in `FuncYieldState`, traced) only until
+  the body is over. A dead link reports `FuncExecResult::Retired` and the engine
+  removes the node; a stored signal keeps its last value. The hold must stay
+  that short, and the link weak: a node holding its module for good would hold
+  the variables that hold its own signals, and the graph would stay in scope for
+  ever.
 - **End of execution.** Every join-all first tells the coordinator execution
   is ending: it refuses new stops (an execution-lifetime gate, reopened at
   each activation), releases an active stop without releasing the host's

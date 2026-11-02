@@ -204,6 +204,7 @@ void FuncNode::trace(roxal::ValueVisitor& visitor) const
         visitValue(v);
     for (const auto& v : m_funcYieldState.pendingOutputFutures)
         visitValue(v);
+    visitValue(m_funcYieldState.bodyModule);
     // Per-output default values (returned by initialValueForOutput) are
     // retained Values too.
     for (const auto& d : m_outputDefaults) {
@@ -603,6 +604,21 @@ FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline
             return FuncExecResult::Error;
         }
 
+        // A function reaches its module through a weak link, so a node can
+        // outlive the module of the script that created it: the wrappers that
+        // keep a node registered go after the module does, or never, if a
+        // signal of the node is stored somewhere that outlives the script.
+        // Such a body has nothing to run against.  Any other is held until it
+        // is over, in case the script ends meanwhile -- and only that long:
+        // the module's variables hold the node's own signals, so a node
+        // holding its module for good would keep them in scope for ever.
+        const Value& moduleLink = asFunction(asClosure(closure)->function)->moduleType;
+        if (!moduleLink.isNil()) {
+            m_funcYieldState.bodyModule = moduleLink.strongRef();
+            if (m_funcYieldState.bodyModule.isNil())
+                return FuncExecResult::Retired;
+        }
+
         auto result = [&] {
             DataflowThreadGuard dfGuard;
             return vm.invokeClosure(asClosure(closure), args, deadline);
@@ -623,6 +639,8 @@ FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline
             return result.first == ExecutionStatus::Paused ? FuncExecResult::Paused
                                                            : FuncExecResult::Yielded;
         }
+
+        m_funcYieldState.bodyModule = Value::nilVal();
 
         if (result.first != ExecutionStatus::OK) {
             return FuncExecResult::Error;
@@ -761,6 +779,7 @@ FuncExecResult FuncNode::resumeExecution(TimePoint deadline)
 
     // Execution completed - process outputs
     m_funcYieldState.active = false;
+    m_funcYieldState.bodyModule = Value::nilVal();
     TimePoint time = m_funcYieldState.executionTime;
     Values inputValues = m_funcYieldState.inputValues;
 

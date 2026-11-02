@@ -1514,6 +1514,13 @@ DataflowEngine::TickResult DataflowEngine::evaluateIsland(
                 else if (result == FuncExecResult::Error) {
                     return TickResult::Error;
                 }
+                else if (result == FuncExecResult::Retired) {
+                    // The script that defined the body has ended.  The node
+                    // goes, with any of its signals nothing else holds; one
+                    // stored elsewhere keeps its last value.  This evaluation
+                    // is on a copy of the island, which removal leaves alone.
+                    removeFunc(func);
+                }
                 // FuncExecResult::NotExecuted - continue to next func
             }
         }

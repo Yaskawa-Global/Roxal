@@ -887,7 +887,8 @@ if(NOT EMSCRIPTEN)
     foreach(scenario busy_loop wait_loop yielding_node overrun_orphan tick_after_run
                      node_error node_exit best_effort_late
                      background_node_error network_change_mid_tick
-                     lift_collects node_exit_sliced host_set_event)
+                     lift_collects node_exit_sliced host_set_event
+                     own_body_after_run stored_output_after_run)
         add_test(NAME RoxalDataflowHostThread_${scenario}
                  COMMAND roxal_dataflow_host_thread_test ${scenario})
     endforeach()

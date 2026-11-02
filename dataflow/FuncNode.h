@@ -29,10 +29,12 @@ enum class FuncExecResult {
     Completed,     // Executed and finished
     Yielded,       // VM yielded mid-execution (deadline exceeded)
     Error,         // Runtime error during execution
-    Paused         // Debugger stop acknowledged mid-execution: same state
+    Paused,        // Debugger stop acknowledged mid-execution: same state
                    // retention as Yielded (closure/Thread/call state live),
                    // but resumption comes from the stop release, not the
                    // time budget
+    Retired        // Not executed: the body's module is gone, the script
+                   // that defined it having ended.  The engine drops the node.
 };
 
 // State for resuming a yielded func node execution
@@ -47,6 +49,9 @@ struct FuncYieldState {
     // evaluates again at this time with its current inputs -- the latest
     // input is never dropped behind an in-flight inference.
     std::optional<TimePoint> rerunTime;
+    // The body's module, held from the start of a body until it is over --
+    // running or suspended, and no longer (see conditionallyExecute).
+    roxal::Value bodyModule;
 };
 
 class FuncNode
