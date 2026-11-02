@@ -232,6 +232,12 @@ protected:
     // that domain is gone.
     ptr<roxal::ExecutionDomain> ownerDomain() const { return m_ownerDomain.lock(); }
 
+    // A body failed outside the VM (a native node threw): it fails the node's
+    // run as an uncaught exception would, if the node still has one.  True if
+    // this was news: a node that goes on failing, tick after tick, is reported
+    // once, until it next completes.
+    bool reportBodyFailure(const std::string& what);
+
 private:
     // After the body ran: a failure (uncaught exception) or exit() it raised
     // on the executing thread's domain belongs to the owner -- carry it
@@ -251,6 +257,8 @@ private:
 
     // Weak: a node must not keep a finished run's domain alive.
     weak_ptr<roxal::ExecutionDomain> m_ownerDomain;
+
+    bool m_failureReported { false };   // see reportBodyFailure
 
     friend class DataflowEngine;
 

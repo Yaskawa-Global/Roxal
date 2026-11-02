@@ -678,6 +678,7 @@ FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline
         index++;
     }
 
+    m_failureReported = false;
     return FuncExecResult::Completed;
 }
 
@@ -842,6 +843,22 @@ void FuncNode::carryOutcomeToOwner()
         }
         vm.clearDefaultDomainRuntimeError();
     }
+}
+
+bool FuncNode::reportBodyFailure(const std::string& what)
+{
+    if (m_failureReported)
+        return false;
+    m_failureReported = true;
+    if (ownerDomain() && roxal::VM::thread) {
+        roxal::VM::instance().reportUncaughtInInvocation(what);
+        carryOutcomeToOwner();
+    } else {
+        // Its run has ended: there is nothing left to fail, and raising the
+        // error here would fail whichever domain this evaluation runs in.
+        roxal::VM::emitDiagnostic(what, roxal::OutputSeverity::Error, "dataflow");
+    }
+    return true;
 }
 
 void FuncNode::abandonSuspendedExecution()

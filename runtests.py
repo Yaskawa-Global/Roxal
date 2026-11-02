@@ -1330,7 +1330,9 @@ try:
 
         passed = True
         expect_err = os.path.exists(testerr)
-        if compProc.returncode != 0 and not expect_err:
+        # An .err test expects the program to fail and say why, not the process
+        # to die: killed by a signal (an abort, a crash) fails any test.
+        if (compProc.returncode != 0 and not expect_err) or compProc.returncode < 0:
             print(f"FAIL: {opt_expected}", flush=True)
             print(f"-- return code {compProc.returncode} --")
             if compProc.returncode < 0:

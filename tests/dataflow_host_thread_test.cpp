@@ -427,6 +427,35 @@ const char* kHostSetEvent =
     "  n = n + 1\n"
     "print(r.value)\n";
 
+// An instruction in a node's body throws, past anything a Roxal `try` could
+// catch: as fatal as in the program itself, so the node's run fails, with the
+// reason, and the host's loop goes on.
+const char* kNodeThrows =
+    "func bad(x :int) -> int:\n"
+    "  if x == 3:\n"
+    "    print([10mm 20])\n"
+    "  return x\n"
+    "var c = clock(10)\n"
+    "var r = bad(c)\n"
+    "c.run()\n"
+    "var k :int = 0\n"
+    "while k < 3000000:\n"
+    "  k = k + 1\n"
+    "print(k)\n";
+
+// The same from a native node: the program's set() makes the division throw
+// on a tick.
+const char* kNativeNodeThrows =
+    "var s = signal(10, 1)\n"
+    "var r = 10 / s\n"
+    "var k :int = 0\n"
+    "while k < 100000:\n"
+    "  k = k + 1\n"
+    "s.set(0)\n"
+    "while k < 3000000:\n"
+    "  k = k + 1\n"
+    "print(k)\n";
+
 // A node whose body lives in the program's own module and reads a variable
 // there, so it needs that module whenever it runs.  The run's end retires the
 // module: the node must not be evaluated from then on, whether the program
@@ -468,6 +497,14 @@ const Scenario kScenarios[] = {
       RunState::Completed, nullptr, 0, false, false, 0, false, false, true },
     { "stored_output_after_run", kOwnBodyAfterRun, "200000\n", true, false, false,
       RunState::Completed, nullptr, 0, false, false, 0, false, true, true },
+    { "node_throws",    kNodeThrows,    "",               true,  false, false,
+      RunState::Failed, "vector literal mixes", 0 },
+    { "native_node_throws", kNativeNodeThrows, "",        true,  false, false,
+      RunState::Failed, "Divide by 0", 0 },
+    // Stored, the failing native node outlives its run and goes on failing
+    // every tick: reported once, and the ticks go on.
+    { "stored_native_node_throws", kNativeNodeThrows, "", true,  false, false,
+      RunState::Failed, "Divide by 0", 0, false, false, 0, false, true },
 };
 
 // Function nodes the engine still holds.
@@ -567,14 +604,22 @@ int runScenario(const Scenario& scenario)
             // Stored, the signal outlives the script as a value: it keeps the
             // last one its node delivered, and nothing updates it any more.
             const Value last = heldOutput->lastValue();
-            expect(last.isInt(), name + ": the stored signal keeps its last value");
+            expect(!last.isNil(), name + ": the stored signal keeps its last value");
             const int ticks = driver.afterTotal();
             expect(waitUntil([&] { return driver.afterTotal() >= ticks + 20; }),
                    name + ": the host kept ticking");
-            if (last.isInt())
-                expect(heldOutput->lastValue().isInt()
-                           && heldOutput->lastValue().asInt() == last.asInt(),
-                       name + ": the stored signal no longer updates");
+            expect(toString(heldOutput->lastValue()) == toString(last),
+                   name + ": the stored signal no longer updates");
+        }
+        if (scenario.diagnosticContains) {
+            const std::string text = sink.diagnostics();
+            const std::string needle = scenario.diagnosticContains;
+            size_t reports = 0;
+            for (size_t at = text.find(needle); at != std::string::npos;
+                 at = text.find(needle, at + needle.size()))
+                reports++;
+            expect(reports == 1, name + ": the failure is reported once, not per tick ("
+                                     + std::to_string(reports) + ")");
         }
     }
 

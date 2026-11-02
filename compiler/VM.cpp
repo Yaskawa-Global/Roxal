@@ -7506,6 +7506,13 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
     //
     //  main dispatch loop
 
+    // An instruction that can throw turns it into a runtimeError() itself; one
+    // that reaches the catch below did not, and it means the same.  Nothing
+    // above execute() may be relied on to catch it: on a host's driver thread
+    // and in a node's body on a tick there is nothing, and a script's fatal
+    // error must end the script, not the host's process.
+    try {
+
     for(;;) {
 
         // Local alias for the Thread field so existing handler code can use the
@@ -11772,6 +11779,11 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
             frame = thread->frames.end()-1;
 
     } // for
+
+    } catch (const std::exception& e) {
+        runtimeError("%s", e.what());
+        return errorReturn;
+    }
 
     return std::make_pair(ExecutionStatus::OK, Value::nilVal());
 

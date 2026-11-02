@@ -236,6 +236,12 @@ anything on the driver, and does not touch the REPL session or the services.
 (On the synchronous path, where the process *is* the program, `exit()` keeps
 its process semantics.)
 
+**A fatal error ends the run, not your process.** What is fatal is what is fatal
+on the synchronous path: an error a Roxal `try` cannot catch. There it ends the
+process; in a driven program it fails that run, with the reason on the handle,
+and the next program runs normally. So does the failure of a dataflow node,
+native or Roxal, which fails the run the node belongs to.
+
 **A program's dataflow ends with it.** The engine outlives every run, and a host
 goes on ticking it between programs, but the signals a program created are in
 the scope of its module and are not evaluated once it has ended. A signal stored

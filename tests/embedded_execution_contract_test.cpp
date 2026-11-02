@@ -1291,6 +1291,23 @@ int main()
             expect(sink.take() == "unaffected\n", "and runs normally");
         }
 
+        // 2b. A C++ exception out of an instruction is as fatal as in a
+        // synchronous program -- no Roxal `try` catches it -- but in a driven
+        // one that ends the run, not the process.
+        {
+            RunHandle bad = runToHandover("try:\n  print([10mm 20])\nexcept e:\n  print('caught')\n"
+                                          "print('after')\n", "phase_j_throwing");
+            expect(bad.failed(), "a throwing instruction fails its run");
+            expect(bad.wait().state == RunState::Failed, "and finalizes as Failed");
+            expect(bad.diagnostic().find("vector literal mixes") != std::string::npos,
+                   "with the exception's message as the reason: " + bad.diagnostic());
+            expect(sink.take().find("caught") == std::string::npos, "and no try caught it");
+            RunHandle good = runToHandover("print('unaffected')\n", "phase_j_after_throw");
+            expect(!good.failed() && good.wait().state == RunState::Completed,
+                   "the next run is unaffected");
+            expect(sink.take() == "unaffected\n", "and runs normally");
+        }
+
         // 3. exit() in a driven program ends that run, nothing else.
         {
             RunHandle run = runToHandover("print('before')\nexit(7)\nprint('after')\n", "phase_j_exit");

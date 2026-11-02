@@ -2433,6 +2433,16 @@ main thread.
   never retire. The `StopCoordinator` is re-bound to the active domain at
   activation, so a stop on a run never reaches the session's actors or the
   services.
+- **A fatal error ends the run.** Instructions that can throw catch it as a
+  `runtimeError()`, and `execute()` does the same around its dispatch loop for
+  any that do not, so no C++ exception leaves it: with a driver there is nothing
+  above to catch one, and it would end the process. The split between what a
+  Roxal `try` can catch and what is fatal is the same on every path; only what
+  fatal ends differs. A native node's exception reaches `evaluateIsland`, which
+  fails the node's run through `FuncNode::reportBodyFailure` as an uncaught
+  exception in a Roxal body would. It reports once per streak of failures, so a
+  node stored past its run does not report on every tick or hold up the rest of
+  the tick.
 - **A script's dataflow ends with it.** The engine is a process singleton and
   outlives every run, but a script's signals are in the scope of its module:
   when the module goes, the wrappers in its variables go, and the wrapper-driven

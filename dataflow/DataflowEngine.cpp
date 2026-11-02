@@ -1470,7 +1470,18 @@ DataflowEngine::TickResult DataflowEngine::evaluateIsland(
                 const TimePoint execStart =
                     budgeted ? TimePoint::currentTime() : TimePoint::zero();
 
-                auto result = func->conditionallyExecute(evaluationTime, deadline);
+                FuncExecResult result;
+                try {
+                    result = func->conditionallyExecute(evaluationTime, deadline);
+                } catch (const std::exception& e) {
+                    // A native body threw (a Roxal body's failures come back
+                    // as Error).  Nothing above may catch this on a host's
+                    // tick.  Once reported, a node that goes on failing is
+                    // passed over, so the rest of the tick still runs.
+                    if (func->reportBodyFailure(e.what()))
+                        return TickResult::Error;
+                    continue;
+                }
 
                 if (result == FuncExecResult::Completed) {
                     if (budgeted) {
