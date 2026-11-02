@@ -125,6 +125,9 @@ namespace {
 // bounds only the COLLECTOR's reaction to a section exit (collection-start
 // latency), never the RT thread, whose enter/exit cost stays one atomic op.
 constexpr std::chrono::microseconds kRTSectionPollInterval{25};
+// How often a barrier held up by Running threads wakes them again (see
+// waitForRunningAtBarrier).
+constexpr std::chrono::milliseconds kBarrierWakeInterval{10};
 }
 
 namespace {
@@ -525,7 +528,7 @@ void SimpleMarkSweepGC::collectorThreadMain() {
             if (sectionsHeld) {
                 safepointCv_.wait_for(lock, kRTSectionPollInterval);
             } else {
-                safepointCv_.wait(lock);
+                waitForRunningAtBarrier(lock);
             }
         }
         if (collectorState_->stop.load(std::memory_order_acquire) ||
@@ -821,9 +824,8 @@ void SimpleMarkSweepGC::requestCollect() {
     // RT path: an allocation inside an RT yield section may cross the
     // threshold and land here.  wakeAllThreadsForGC() takes per-thread sleep
     // mutexes (blocking work) -- never do that on the RT thread.  Defer the
-    // wake: the next thread to reach a safepoint poll performs it (the
-    // dataflow actor participant self-wakes within its ~10ms drain timeout
-    // even without a notify, so the deferral is bounded).
+    // wake: the next thread to reach a safepoint poll performs it.  No thread
+    // may be coming -- see waitForRunningAtBarrier, which bounds the deferral.
     if (inGCYieldSectionOnThisThread()) {
         deferredGCWakePending_.store(true, std::memory_order_release);
         return;
@@ -1183,6 +1185,29 @@ bool SimpleMarkSweepGC::anyRunningLocked() const
     return false;
 }
 
+// A Running thread may never reach a poll by itself: an idle actor sleeps in
+// its queue wait, Running until something wakes it.  A wake deferred from an RT
+// yield section relies on some other thread reaching a poll, and there may be
+// none.  RT sections resume when the world restarts, while threads parked for
+// the last collection stay behind its reclaim fence -- so the next request can
+// land during the reclaim, and those threads then wait straight on for it
+// without passing a poll, the actors asleep and the RT thread refused its
+// sections.  So the barrier does not wait unattended: whoever waits at it is not
+// on the RT path, and wakes everyone again.  That recovers any wake lost in any
+// other way too.  mutex_ is released for the wake, as wakeAllThreadsForGC()
+// requires; callers re-evaluate the barrier afterwards.
+void SimpleMarkSweepGC::waitForRunningAtBarrier(std::unique_lock<std::mutex>& lock)
+{
+    if (safepointCv_.wait_for(lock, kBarrierWakeInterval) != std::cv_status::timeout)
+        return;
+    deferredGCWakePending_.store(false, std::memory_order_release);
+    if (VM* vm = vm_.load(std::memory_order_acquire)) {
+        lock.unlock();
+        vm->wakeAllThreadsForGC();
+        lock.lock();
+    }
+}
+
 void SimpleMarkSweepGC::enterRunning()
 {
     std::unique_lock<std::mutex> lock(mutex_);
@@ -1305,7 +1330,7 @@ void SimpleMarkSweepGC::pollContext(Thread* currentThread)
                 if (sectionsHeld) {
                     safepointCv_.wait_for(lock, kRTSectionPollInterval);
                 } else {
-                    safepointCv_.wait(lock);
+                    waitForRunningAtBarrier(lock);
                 }
             }
             if (anotherCollectorTookOver) {

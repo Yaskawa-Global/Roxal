@@ -515,7 +515,8 @@ private:
     std::atomic<std::uint64_t> nextExternalParticipantId_{1};
     std::atomic<bool> collectionRequested_{false};
     // A requestCollect() from inside an RT yield section defers the (blocking)
-    // wakeAllThreadsForGC to the next non-RT thread reaching a safepoint poll.
+    // wakeAllThreadsForGC to the next non-RT thread reaching a safepoint poll,
+    // or failing that to the barrier (waitForRunningAtBarrier).
     std::atomic<bool> deferredGCWakePending_{false};
     // An auto-trigger threshold crossing happened while the VM singleton was
     // still constructing (requesting then would re-enter VM::instance()
@@ -630,6 +631,7 @@ private:
     std::vector<std::unique_ptr<MutatorContext>> contexts_;  // under mutex_
     MutatorContext* ensureContextLocked();
     bool anyRunningLocked() const;   // barrier term (excludes callers that parked first)
+    void waitForRunningAtBarrier(std::unique_lock<std::mutex>& lock);
 public:
     // Diagnostics: snapshot of mutator context states (best-effort try-lock;
     // returns false if the GC mutex is contended).  counts[0..3] =

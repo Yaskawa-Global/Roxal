@@ -3236,7 +3236,13 @@ out early when a request arrives, see `Thread::rtYieldOnGC` and the
 (`rtSectionCount_` atomic, seq-cst Dekker pairing with `requestCollect`).
 A `requestCollect()` *from inside* a section defers its thread-waking side
 effects to the next non-RT safepoint poll (`deferredGCWakePending_`) — waking
-sleepers takes locks the RT path must not touch.
+sleepers takes locks the RT path must not touch. There may be no such poll: an
+idle actor sleeping in its queue wait counts as Running, and the threads that
+could poll may be parked behind the last collection's reclaim fence, which the
+RT thread does not consult, and wait straight on for its next request. So a
+barrier held up by Running threads wakes everyone again every 10 ms
+(`waitForRunningAtBarrier`), on the collector or on the thread that self-elected.
+That also recovers a wake lost any other way.
 
 #### `CollectionDeferralScope` — compilation latches requests
 

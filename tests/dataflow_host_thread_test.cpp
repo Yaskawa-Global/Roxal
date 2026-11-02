@@ -427,6 +427,35 @@ const char* kHostSetEvent =
     "  n = n + 1\n"
     "print(r.value)\n";
 
+// A collection requested from the driver during the reclaim of the one before.
+// A request from a yield section wakes nobody itself.  Threads parked for the
+// first collection are held by its reclaim fence while the driver runs on, and
+// stay parked for the second without passing a poll; and the actor went to
+// sleep in between, so it counts as running until something wakes it.  Cyclic
+// garbage, which only the sweep frees, makes the reclaim long enough.
+const char* kGcDuringReclaim =
+    "type Node object:\n"
+    "  var next = nil\n"
+    "type Worker actor:\n"
+    "  func ping(x :int) -> int:\n"
+    "    return x + 1\n"
+    "proc garbage(n :int):\n"
+    "  var i :int = 0\n"
+    "  while i < n:\n"
+    "    var a = Node()\n"
+    "    a.next = a\n"
+    "    i = i + 1\n"
+    "var total :int = 0\n"
+    "var round :int = 0\n"
+    "while round < 12:\n"
+    "  garbage(40000)\n"
+    "  gc()\n"
+    "  var w = Worker()\n"
+    "  total = total + int(w.ping(1))\n"
+    "  gc()\n"
+    "  round = round + 1\n"
+    "print(total)\n";
+
 // An instruction in a node's body throws, past anything a Roxal `try` could
 // catch: as fatal as in the program itself, so the node's run fails, with the
 // reason, and the host's loop goes on.
@@ -505,6 +534,7 @@ const Scenario kScenarios[] = {
     // every tick: reported once, and the ticks go on.
     { "stored_native_node_throws", kNativeNodeThrows, "", true,  false, false,
       RunState::Failed, "Divide by 0", 0, false, false, 0, false, true },
+    { "gc_during_reclaim", kGcDuringReclaim, "24\n",      false, false, false },
 };
 
 // Function nodes the engine still holds.
