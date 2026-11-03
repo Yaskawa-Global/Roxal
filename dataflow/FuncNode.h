@@ -33,8 +33,12 @@ enum class FuncExecResult {
                    // retention as Yielded (closure/Thread/call state live),
                    // but resumption comes from the stop release, not the
                    // time budget
-    Retired        // Not executed: the body's module is gone, the script
+    Retired,       // Not executed: the body's module is gone, the script
                    // that defined it having ended.  The engine drops the node.
+    Held           // A resumed async body failed with UnavailableError: the
+                   // evaluation is settled but delivered nothing, the outputs
+                   // keeping their last values (from resumeExecution only;
+                   // conditionallyExecute never returns it)
 };
 
 // State for resuming a yielded func node execution
@@ -217,6 +221,9 @@ protected:
     bool hasPendingFutureYield() const
     { return m_funcYieldState.active && !m_funcYieldState.pendingOutputFutures.empty(); }
 
+    // What such a yield waits on: its body's outputs, some of them futures.
+    const Values& pendingFutureOutputs() const { return m_funcYieldState.pendingOutputFutures; }
+
     // The evaluation time of the yielded execution (valid while hasYieldedWork()).
     TimePoint yieldedExecutionTime() const { return m_funcYieldState.executionTime; }
 
@@ -239,6 +246,10 @@ protected:
     bool reportBodyFailure(const std::string& what);
 
 private:
+    // A resumed async body failed with UnavailableError (see Held): warn,
+    // once until the node next delivers, that it keeps its last outputs.
+    void reportHold(const roxal::Value& exception);
+
     // After the body ran: a failure (uncaught exception) or exit() it raised
     // on the executing thread's domain belongs to the owner -- carry it
     // there, wherever the body ran.  See the definition.
@@ -259,6 +270,7 @@ private:
     weak_ptr<roxal::ExecutionDomain> m_ownerDomain;
 
     bool m_failureReported { false };   // see reportBodyFailure
+    bool m_holdReported { false };      // see reportHold
 
     friend class DataflowEngine;
 
@@ -267,6 +279,12 @@ private:
 
     // Map a body's return value onto the output ports (see the definition).
     Values distributeReturnValue(const roxal::Value& returned) const;
+
+    // The body finished, at `time` on `inputValues`, returning
+    // `outputValues`: publish them -- or, if any is a future, keep them
+    // pending (a future-based yield, see hasPendingFutureYield).  Whether the
+    // body ran straight through or was resumed after a deadline yield.
+    FuncExecResult finishEvaluation(TimePoint time, const Values& inputValues, const Values& outputValues);
 };
 
 }

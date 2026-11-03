@@ -135,6 +135,9 @@ if(ROXAL_ENABLE_AI_NN AND NOT EMSCRIPTEN)
     # (onnxruntime-web / onnxruntime-node) -- see compiler/web/NnBridge.h.
     set(ROXAL_ENABLE_ONNX ON CACHE BOOL "Enabled implicitly by ROXAL_ENABLE_AI_NN" FORCE)
 endif()
+# ai.nn models served by an NVIDIA Triton Inference Server over gRPC
+# (ai.nn.Model("triton://host/model")), beside in-process ONNX Runtime ones.
+option(ROXAL_ENABLE_TRITON "Enable ai.nn models served by NVIDIA Triton (requires gRPC and native ai.nn)" OFF)
 option(ROXAL_ENABLE_MEDIA "Enable media module (PNG/JPEG image I/O)" OFF)
 # Audio is a separate axis from images: miniaudio drives real playback/capture
 # devices, which a browser tab reaches only through Web Audio on the main
@@ -178,7 +181,15 @@ if(ROXAL_ENABLE_ALL)
     set(ROXAL_COMPUTE_SERVER ON CACHE BOOL "Enabled by ROXAL_ENABLE_ALL" FORCE)
     set(ROXAL_ENABLE_ONNX ON CACHE BOOL "Enabled by ROXAL_ENABLE_ALL" FORCE)
     set(ROXAL_ENABLE_AI_NN ON CACHE BOOL "Enabled by ROXAL_ENABLE_ALL" FORCE)
+    set(ROXAL_ENABLE_TRITON ON CACHE BOOL "Enabled by ROXAL_ENABLE_ALL" FORCE)
     set(ROXAL_ENABLE_MEDIA ON CACHE BOOL "Enabled by ROXAL_ENABLE_ALL" FORCE)
+endif()
+# Triton backs ai.nn models over gRPC: meaningless without both, and a wasm
+# build has neither a gRPC client nor ONNX Runtime.  A plain variable, as for
+# MEDIA_AUDIO: a FORCEd cache entry would stick at OFF.
+if(ROXAL_ENABLE_TRITON AND (EMSCRIPTEN OR NOT (ROXAL_ENABLE_GRPC AND ROXAL_ENABLE_AI_NN)))
+    message(STATUS "ROXAL_ENABLE_TRITON needs gRPC and native ai.nn; disabling triton")
+    set(ROXAL_ENABLE_TRITON OFF)
 endif()
 
 # Expose the project version and git hash to the codebase
@@ -557,6 +568,7 @@ if(ROXAL_ENABLE_GRPC)
     list(APPEND COMPILER_SOURCES
         compiler/grpc/ClientCall.cpp
         compiler/grpc/Connector.cpp
+        compiler/grpc/GrpcStatus.cpp
         compiler/grpc/ProtoAdapter.cpp
         compiler/grpc/ModuleGrpc.cpp
     )
@@ -586,6 +598,25 @@ if(ROXAL_COMPUTE_SERVER)
 endif()
 if(ROXAL_ENABLE_AI_NN)
     list(APPEND COMPILER_SOURCES compiler/ModuleNN.cpp)
+endif()
+if(ROXAL_ENABLE_TRITON)
+    # The Triton protocol's messages, generated at build time by the protoc
+    # that matches the linked libprotobuf.  Messages only: calls are made
+    # through grpc::GenericStub by method path, so no grpc_cpp_plugin.
+    set(ROXAL_TRITON_PROTO_DIR "${CMAKE_CURRENT_BINARY_DIR}/triton_proto")
+    file(MAKE_DIRECTORY "${ROXAL_TRITON_PROTO_DIR}")
+    protobuf_generate(
+        LANGUAGE cpp
+        OUT_VAR ROXAL_TRITON_PROTO_SRCS
+        PROTOS "${CMAKE_SOURCE_DIR}/third_party/triton/triton_inference.proto"
+        IMPORT_DIRS "${CMAKE_SOURCE_DIR}/third_party/triton"
+        PROTOC_OUT_DIR "${ROXAL_TRITON_PROTO_DIR}")
+    set_source_files_properties(${ROXAL_TRITON_PROTO_SRCS} PROPERTIES COMPILE_OPTIONS "-w")
+    list(FILTER ROXAL_TRITON_PROTO_SRCS INCLUDE REGEX "\\.cc$")
+    list(APPEND COMPILER_SOURCES ${ROXAL_TRITON_PROTO_SRCS})
+    list(APPEND COMPILER_SOURCES compiler/nn/TritonEndpoint.cpp compiler/nn/TritonInfer.cpp
+                                 compiler/nn/TritonDeploy.cpp)
+    include_directories("${ROXAL_TRITON_PROTO_DIR}")
 endif()
 if(ROXAL_ENABLE_MEDIA)
     list(APPEND COMPILER_SOURCES compiler/ModuleMedia.cpp)
@@ -717,7 +748,7 @@ else()
 endif()
 set(_roxal_features_on "")
 set(_roxal_features_off "")
-foreach(_roxal_feature FILEIO GRPC DDS REGEX XML SOCKET FFI ONNX AI_NN MEDIA MEDIA_AUDIO QT INSPECT WEB)
+foreach(_roxal_feature FILEIO GRPC DDS REGEX XML SOCKET FFI ONNX AI_NN TRITON MEDIA MEDIA_AUDIO QT INSPECT WEB)
     string(TOLOWER "${_roxal_feature}" _roxal_feature_label)
     if(ROXAL_ENABLE_${_roxal_feature})
         list(APPEND ROXAL_ABI_DEFINITIONS ROXAL_ENABLE_${_roxal_feature})
@@ -810,6 +841,48 @@ if(ROXAL_ENABLE_FILEIO AND NOT EMSCRIPTEN)
     add_test(NAME RoxalFileOps COMMAND roxal_fileops_test)
 endif()
 
+# Which failed gRPC calls are temporary (UnavailableError) and which raise for
+# good: shared by the grpc module and ai.nn's Triton client.
+if(ROXAL_ENABLE_GRPC AND NOT EMSCRIPTEN)
+    add_executable(roxal_grpc_status_test
+        compiler/grpc/GrpcStatus_test.cpp compiler/grpc/GrpcStatus.cpp)
+    if(ROXAL_GRPC_FROM_SOURCE)
+        target_link_libraries(roxal_grpc_status_test PRIVATE gRPC::grpc++)
+    else()
+        target_include_directories(roxal_grpc_status_test PRIVATE ${GRPC_INCLUDE_DIRS})
+    endif()
+    add_test(NAME RoxalGrpcStatus COMMAND roxal_grpc_status_test)
+endif()
+
+# The vendored Triton protocol messages: field numbers pinned to Triton's, and
+# the inference messages ai.nn writes and reads with tensor bytes outside them.
+if(ROXAL_ENABLE_TRITON)
+    add_executable(roxal_triton_proto_test
+        compiler/nn/TritonProto_test.cpp compiler/nn/TritonInfer.cpp ${ROXAL_TRITON_PROTO_SRCS})
+    target_include_directories(roxal_triton_proto_test PRIVATE compiler/nn)
+    if(ROXAL_GRPC_FROM_SOURCE)
+        target_link_libraries(roxal_triton_proto_test PRIVATE gRPC::grpc++ protobuf::libprotobuf)
+    else()
+        target_include_directories(roxal_triton_proto_test PRIVATE ${GRPC_INCLUDE_DIRS})
+        target_link_libraries(roxal_triton_proto_test PRIVATE ${GRPC_LIBRARIES} protobuf::libprotobuf)
+    endif()
+    add_test(NAME RoxalTritonProto COMMAND roxal_triton_proto_test)
+
+    # Deploying a model from its files: which files, their content-addressed
+    # name, placing them in a shared repository, the upload request.
+    add_executable(roxal_triton_deploy_test
+        compiler/nn/TritonDeploy_test.cpp compiler/nn/TritonDeploy.cpp ${ROXAL_TRITON_PROTO_SRCS})
+    target_include_directories(roxal_triton_deploy_test PRIVATE compiler/nn)
+    if(ROXAL_GRPC_FROM_SOURCE)
+        target_link_libraries(roxal_triton_deploy_test PRIVATE gRPC::grpc++ protobuf::libprotobuf)
+    else()
+        target_include_directories(roxal_triton_deploy_test PRIVATE ${GRPC_INCLUDE_DIRS})
+        target_link_libraries(roxal_triton_deploy_test PRIVATE ${GRPC_LIBRARIES} protobuf::libprotobuf)
+    endif()
+    add_test(NAME RoxalTritonDeploy COMMAND roxal_triton_deploy_test
+             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+endif()
+
 # Build the static library containing the core compiler and VM
 add_library(roxalcore STATIC ${CORE_SOURCES} ${COMPILER_SOURCES} ${GENERATED_SOURCES})
 set_target_properties(roxalcore PROPERTIES OUTPUT_NAME roxal)
@@ -884,7 +957,7 @@ if(NOT EMSCRIPTEN)
     # singleton, so scenarios sharing one would evaluate each other's nodes.
     add_executable(roxal_dataflow_host_thread_test tests/dataflow_host_thread_test.cpp)
     target_link_libraries(roxal_dataflow_host_thread_test PRIVATE roxalcore)
-    foreach(scenario busy_loop wait_loop yielding_node overrun_orphan tick_after_run
+    foreach(scenario busy_loop wait_loop yielding_node yielding_node_future overrun_orphan tick_after_run
                      node_error node_exit best_effort_late
                      background_node_error network_change_mid_tick
                      lift_collects node_exit_sliced host_set_event
@@ -1050,6 +1123,9 @@ file(WRITE "${CMAKE_BINARY_DIR}/roxal_features.cmake"
     "set(ROXAL_HAS_GRPC ${ROXAL_ENABLE_GRPC})\n"
     "set(ROXAL_HAS_DDS ${ROXAL_ENABLE_DDS})\n"
     "set(ROXAL_HAS_ONNX ${ROXAL_ENABLE_ONNX})\n"
+    # Links nothing beyond what ROXAL_HAS_GRPC already requires (grpc++,
+    # protobuf); exported so hosts can detect triton:// model support.
+    "set(ROXAL_HAS_TRITON ${ROXAL_ENABLE_TRITON})\n"
     "set(ROXAL_HAS_REGEX ${ROXAL_ENABLE_REGEX})\n"
     "set(ROXAL_HAS_INSPECT ${ROXAL_ENABLE_INSPECT})\n"
     "set(ROXAL_HAS_WEB ${ROXAL_ENABLE_WEB})\n"

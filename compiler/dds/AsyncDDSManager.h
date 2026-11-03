@@ -16,6 +16,9 @@
 
 namespace roxal {
 
+class NativePromise;
+
+
 // Pending async DDS operation
 struct PendingDDSOp {
     enum class Type {
@@ -23,7 +26,7 @@ struct PendingDDSOp {
     };
 
     Type type;
-    ptr<std::promise<Value>> promise;
+    std::shared_ptr<NativePromise> promise;
     std::shared_future<Value> future;
 
     // DDS write operation data

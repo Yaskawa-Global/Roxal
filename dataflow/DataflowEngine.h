@@ -529,12 +529,28 @@ private:
     // once one resolves, finishes its island downstream of it.  Recorded
     // by evaluateIsland() (a future yield does not suspend the island)
     // and by initializeNode().
+    //
+    // A node whose evaluation was HELD (FuncExecResult::Held: its service
+    // unavailable) stays listed with a retry time instead: nothing else would
+    // evaluate it again, its inputs may never change, so the engine thread
+    // evaluates it afresh once that time comes.
     struct AsyncYield {
         ptr<FuncNode> func;
         TimePoint time;      // the evaluation the node yielded in
+        std::optional<TimePoint> retryAt;    // held: evaluate again then
     };
     std::vector<AsyncYield> m_asyncYields;     // guarded by m_mutex
+    // Rouses run()'s idle waits the moment an async body's future resolves,
+    // rather than at the next 1ms poll: noteAsyncYield registers it with each
+    // future the node waits on (which holds it weakly).  It sets
+    // m_asyncYieldResolved under m_pendingEventMutex; serviceAsyncYields
+    // clears it.
+    struct AsyncYieldWake;
+    std::shared_ptr<AsyncYieldWake> m_asyncYieldWake;
+    std::atomic<bool> m_asyncYieldResolved { false };
     void noteAsyncYield(const ptr<FuncNode>& func, TimePoint time);
+    void watchAsyncYield(const ptr<FuncNode>& func);
+    void noteHeldRetry(const ptr<FuncNode>& func, TimePoint at);
     bool hasAsyncYields();
     bool serviceAsyncYields();
     // Position of func in island's execution order (false if absent).

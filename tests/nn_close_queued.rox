@@ -1,0 +1,37 @@
+# close() with predicts still queued behind one in flight: each queued one
+# resolves to a "model closed" error (they used to hang -- the worker exited
+# without ever settling them), the one in flight completes, and a predict
+# after close() is refused.
+# double-dynamic.onnx: output = input * 2, shape [N, 4]; a large N makes each
+# inference slow enough that the later ones are still queued at close().
+import ai.nn
+
+var model = ai.nn.Model("../modules/ai/double-dynamic.onnx", device='cpu', warmup=false)
+var x = tensor(2000000, 4, dtype='float32')
+
+var futures = []
+for i in range(0..<8):
+    futures.append(model.predict(x))
+model.close()
+
+var completed = 0
+var closed = 0
+for f in futures:
+    try:
+        if f is nil:
+            print('nil result')
+        completed = completed + 1
+    except e:
+        if "model closed" in string(e):
+            closed = closed + 1
+        else:
+            print(e)
+print(completed + closed)
+print(closed >= 1)
+
+try:
+    model.predict(x)
+    print('not reached')
+except e:
+    print("closed" in string(e))
+print('done')

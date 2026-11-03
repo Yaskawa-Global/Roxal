@@ -10,10 +10,6 @@ struct TokenizerWrapper;  // opaque native state for Tokenizer instances
 
 namespace roxal {
 
-// GC root hook: pins the input tensors held by queued and in-flight
-// InferenceWorker jobs. Called from SimpleMarkSweepGC::visitRoots.
-void nnTraceWorkers(ValueVisitor& visitor);
-
 class ModuleNN : public BuiltinModule {
 public:
     ModuleNN();
@@ -39,12 +35,17 @@ public:
     // Module-level functions
     Value nn_tensor_device_builtin(ArgsView args);
     Value nn_memory_info_builtin(ArgsView args);
+    Value nn_server_info_builtin(ArgsView args);
+    Value nn_use_repository_builtin(ArgsView args);
 
     // Model object methods
     Value nn_model_init_builtin(ArgsView args);
     Value nn_model_inputs_builtin(ArgsView args);
     Value nn_model_outputs_builtin(ArgsView args);
     Value nn_model_device_builtin(ArgsView args);
+    Value nn_model_server_info_builtin(ArgsView args);
+    Value nn_model_deployment_builtin(ArgsView args);
+    Value nn_model_unload_builtin(ArgsView args);
     Value nn_model_close_builtin(ArgsView args);
 
     // Tokenizer object methods

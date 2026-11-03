@@ -22,7 +22,7 @@ struct PendingSocketOp {
     Type type;
     int fd;
     int bufferSize;
-    std::shared_ptr<std::promise<Value>> promise;
+    std::shared_ptr<NativePromise> promise;
     double timeoutSeconds;
     std::string hostname;  // For resolve operations
 };

@@ -1,0 +1,57 @@
+# A lifted predict of a Triton model whose server goes down, or answers too
+# slowly for the model's timeout: the node keeps its last output, the
+# model's `available` signal follows the server, and the node delivers again
+# once the server is back -- without a new input.  A rejected input, though,
+# ends the run as any failing node does.
+import ai.nn
+
+# The mock's control model: 0 up, 1 down, 2 slow (scripts/triton_mock_server.py)
+var control = ai.nn.Model("triton://__TRITON_ADDR__/__control")
+proc serverMode(mode :int):
+    var t = tensor(1, dtype='int32')
+    t[0] = mode
+    var ok = control.predict(t)[0]
+
+serverMode(0)
+var model = ai.nn.Model("triton://__TRITON_ADDR__/scale_shift", outputs=['doubled'], timeout=0.3)
+when model.available becomes false:
+    print("model unavailable")
+when model.available becomes true:
+    print("model available again")
+
+var x = tensor(1, 4, dtype='float32')
+x[0, 3] = 1.0
+var frame = signal(0, x)                  # event-driven
+var doubled = model.predict(frame)
+wait(ms=300)
+print(doubled.value[0, 3])
+
+print("--- server down")
+serverMode(1)
+var x2 = tensor(1, 4, dtype='float32')
+x2[0, 3] = 2.0
+frame.set(x2)
+wait(ms=300)
+print(doubled.value[0, 3])
+
+print("--- server up, no new input")
+serverMode(0)
+wait(ms=1500)
+print(doubled.value[0, 3])
+
+print("--- server slow")
+serverMode(2)
+var x3 = tensor(1, 4, dtype='float32')
+x3[0, 3] = 3.0
+frame.set(x3)
+wait(ms=600)
+print(doubled.value[0, 3])
+serverMode(0)
+wait(ms=1500)
+print(doubled.value[0, 3])
+
+print("--- input rejected")
+var reject = ai.nn.Model("triton://__TRITON_ADDR__/reject")
+var y = reject.predict(frame)
+wait(ms=300)
+print("not reached")

@@ -1,0 +1,22 @@
+# A model released while its inferences are still queued and running: the
+# results still arrive, and the worker winds down on its own.  The jobs used
+# to hold the model itself, so the last one to finish released it ON the
+# worker thread, whose destructor then joined that same thread
+# (std::terminate).
+# double-dynamic.onnx: output = input * 2, shape [N, 4]; a large N keeps the
+# inferences running while the model is collected.
+import ai.nn
+
+var model = ai.nn.Model("../modules/ai/double-dynamic.onnx", device='cpu', warmup=false)
+var x = tensor(2000000, 4, dtype='float32')
+x[1999999, 3] = 1.5
+
+var futures = []
+for i in range(0..<4):
+    futures.append(model.predict(x))
+model = nil
+gc()
+
+for f in futures:
+    print(f[1999999, 3])
+print('done')

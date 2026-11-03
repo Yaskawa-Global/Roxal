@@ -1,0 +1,13 @@
+2
+--- server down
+model unavailable
+2
+--- server up, no new input
+model available again
+4
+--- server slow
+model unavailable
+4
+model available again
+6
+--- input rejected

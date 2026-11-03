@@ -12,6 +12,7 @@ import json
 import re
 import time
 import tempfile
+import shutil
 from typing import Set
 
 # Maximum time in seconds to allow each test to run
@@ -29,6 +30,13 @@ TEST_NAME_WIDTH = 32
 # whichever way the race landed.
 GRPC_TEST_ADDR = "127.0.0.1:28927"
 GRPC_TEST_ADDR_PLACEHOLDER = "__GRPC_TEST_ADDR__"
+# The Triton mock (scripts/triton_mock_server.py) for ai.nn's Triton tests,
+# whose scripts name it as __TRITON_ADDR__.
+TRITON_MOCK_ADDR = "127.0.0.1:28928"
+TRITON_ADDR_PLACEHOLDER = "__TRITON_ADDR__"
+# The directory the server serves as a model repository, for the tests that
+# deploy models: the mock's own (made at start), or --triton-repository's.
+TRITON_REPO_PLACEHOLDER = "__TRITON_REPO__"
 COMPUTE_TEST_ADDR = "127.0.0.1:28925"
 COMPUTE_TEST_ADDR_2 = "127.0.0.1:28926"
 COMPUTE_TEST_ADDR_PLACEHOLDER = "__COMPUTE_TEST_ADDR__"
@@ -48,6 +56,13 @@ def read_compute_protocol_version(project_root: str) -> int:
 parser = argparse.ArgumentParser(description="Run Roxal tests.")
 parser.add_argument('--convs', action='store_true', help='Include tests/conversions/* tests')
 parser.add_argument('--all', action='store_true', help='Run all tests, including conversions and long running tests')
+parser.add_argument('--triton-url', metavar='HOST:PORT',
+                    help='Also run the triton_real_* tests against the Triton server at HOST:PORT, '
+                         'serving the model repository scripts/triton-test-repo.sh builds')
+parser.add_argument('--triton-repository', metavar='DIR',
+                    help='With --triton-url: also run the deployment tests (triton_real_deploy_*). '
+                         'The server must run with --model-control-mode=explicit and serve DIR, as '
+                         'this machine sees it, as one of its model repositories')
 parser.add_argument('--opcode-prof', action='store_true', help='Enable opcode profiling for each Roxal invocation')
 parser.add_argument('--nocache', action='store_true', help='Disable reading and writing Roxal bytecode cache files')
 parser.add_argument('--nogc', action='store_true', help='Disable Roxal garbage collection during tests')
@@ -294,7 +309,7 @@ tests = [
     'tensor_take', 'tensor_take_err', 'tensor_equals', 'tensor_argmax_axis', 'tensor_reshape',
     'tensor_bytes_len_err', 'tensor_bytes_conflict_err', 'tensor_uint16',
     'tensor_introspect',
-    'math_relu', 'math_softmax', 'math_argmax', 'math_clamp', 'math_abs',
+    'math_relu', 'math_softmax', 'math_argmax', 'math_fnv1a64', 'math_clamp', 'math_abs',
     'value_semantics', 'value_semantics_cow',
     'weakref', 'strongref', 'is_operator', 'in_operator', 'stackdepth', 'modulevar2',
     'const_basic', 'const_assign_err', 'const_nonliteral_err', 'const_missing_initializer_err',
@@ -425,20 +440,24 @@ xml_tests = [
     'xml_to_xml_raw', 'xml_invalid', 'xml_mode_errors',
     'xml_write_mode_error', 'xml_shape_error'
 ]
-socket_tests = ['socket_basic']
+socket_tests = ['socket_basic', 'socket_futures']
 # @cfunc / @cstruct / sys.loadlib against tests/testlib.so; need ROXAL_ENABLE_FFI
 ffi_tests = [
     'ffi1', 'ffi_addfloats', 'ffi_struct_out', 'ffi_inttypes', 'ffi_strlen', 'ffi_relative',
     'ffi_toupper', 'ffi_primptr', 'ffi_voidptr_struct', 'cstruct1', 'cstruct2', 'cstruct3',
     'cstruct_byval', 'cstruct_array',
-    'ffi_int64', 'ffi_ptr_return', 'ffi_free', 'ffi_tensor', 'ffi_tensor_mismatch_err', 'df_lift_module_ref', 'df_lift_unused_target',
+    'ffi_int64', 'ffi_ptr_return', 'ffi_free', 'ffi_tensor', 'ffi_tensor_mismatch_err', 'df_lift_module_ref', 'df_lift_unused_target', 'df_hold_unavailable', 'df_hold_clocked',
     'ffi_nullptr', 'ffi_blocking',
     'ffi_ptrptr_slot', 'ffi_ptrptr_nil_err',
     'nested_cstruct', 'nested_cstruct_ptr', 'nested_cstruct_byval', 'nested_cstruct_align',
     'nested_cstruct_infer', 'cstruct_array_struct', 'cstruct_array_overflow_err',
 ]
-nn_tests = ['nn_mnist', 'nn_signal', 'nn_chain', 'nn_signal_chain', 'nn_dynamic', 'nn_multi_io', 'nn_multi_output_lift', 'nn_event_async_lift', 'nn_async', 'nn_tokenizer']
+nn_tests = ['nn_mnist', 'nn_signal', 'nn_chain', 'nn_signal_chain', 'nn_dynamic', 'nn_multi_io', 'nn_multi_output_lift', 'nn_event_async_lift', 'nn_async', 'nn_tokenizer', 'nn_fail_raises', 'nn_fail_lift', 'nn_fail_lift_clocked', 'nn_close_queued', 'nn_release_inflight', 'nn_input_checks', 'nn_outputs_select', 'nn_combinators', 'nn_await_latency']
 nn_lfs_tests = ['nn_dfine', 'nn_exit_inflight']  # require LFS model files (only run with --all)
+triton_tests = ['triton_basic', 'triton_hold', 'triton_exit_inflight', 'triton_deploy']  # against the Triton mock
+triton_real_tests = ['triton_real_models']  # against a real server (only with --triton-url)
+# against a real server in explicit mode, sharing a repository (with --triton-url and --triton-repository)
+triton_real_deploy_tests = ['triton_real_deploy']
 media_tests = ['media_read_write', 'media_manipulate', 'media_convert',
                'media_pixel_ops',
                # audio: run with ROXAL_AUDIO_BACKEND=null (no hardware needed)
@@ -519,6 +538,7 @@ tests += xml_tests
 tests += socket_tests
 tests += ffi_tests
 tests += nn_tests
+tests += triton_tests
 tests += media_tests
 
 # Bytecode-cache scenarios (several runs per case, see
@@ -592,6 +612,12 @@ if include_convs:
         if f.endswith('.rox') and ('decimal' not in f) and os.path.exists(os.path.join(conv_test_dir, os.path.splitext(f)[0] + '.out'))
     ])
     tests += conv_tests
+
+if args.triton_url:
+    tests += triton_real_tests
+    if args.triton_repository:
+        triton_real_tests += triton_real_deploy_tests
+        tests += triton_real_deploy_tests
 
 if args.all:
     tests += long_running_tests
@@ -752,6 +778,21 @@ else:
 if not has_grpc and any(test in tests for test in grpc_tests):
     print("Skipping gRPC tests (feature not enabled).")
     tests = [t for t in tests if t not in grpc_tests]
+if any(test in tests for test in triton_tests):
+    try:
+        import grpc, grpc_tools  # noqa: F401 -- the Triton mock's needs
+        have_python_grpc = True
+    except ImportError:
+        have_python_grpc = False
+    if 'triton' not in features:
+        print("Skipping Triton tests (feature not enabled).")
+        tests = [t for t in tests if t not in triton_tests]
+    elif not have_python_grpc:
+        print("Skipping Triton tests (the mock server needs grpcio and grpcio-tools).")
+        tests = [t for t in tests if t not in triton_tests]
+if 'triton' not in features and any(test in tests for test in triton_real_tests):
+    print("Skipping real-Triton tests (feature not enabled).")
+    tests = [t for t in tests if t not in triton_real_tests]
 if not has_fileio and any(test in tests for test in fileio_tests):
     print("Skipping fileio tests (feature not enabled).")
     tests = [t for t in tests if t not in fileio_tests]
@@ -855,6 +896,7 @@ if has_nn and any(test in tests for test in nn_lfs_tests):
         print("Skipping LFS-dependent nn tests (model files not available; run 'git lfs pull').")
         tests = [t for t in tests if t not in nn_lfs_tests]
 needs_grpc_server = has_grpc and any(test in tests for test in grpc_server_tests)
+needs_triton_mock = any(test in tests for test in triton_tests)
 needs_compute_server = has_compute_server and any(test in tests for test in compute_server_tests)
 
 env_base = os.environ.copy()
@@ -896,6 +938,29 @@ def start_grpc_test_server(env) -> subprocess.Popen:
     except subprocess.TimeoutExpired:
         proc.kill()
     raise RuntimeError(f"Timed out waiting for gRPC test server to start: {last_error}")
+
+
+def start_triton_mock(env, repository) -> subprocess.Popen:
+    script_path = os.path.join(project_root, 'scripts', 'triton_mock_server.py')
+    host, port_str = TRITON_MOCK_ADDR.split(':', 1)
+    proc = subprocess.Popen(
+        [sys.executable, script_path, "--address", TRITON_MOCK_ADDR, "--repository", repository],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
+    deadline = time.time() + 10.0
+    last_error = None
+    while time.time() < deadline:
+        if proc.poll() is not None:
+            output, _ = proc.communicate(timeout=0.1)
+            raise RuntimeError(f"Triton mock failed to start (exit {proc.returncode}): "
+                               f"{output.decode(errors='ignore')}")
+        try:
+            with socket.create_connection((host, int(port_str)), timeout=0.25):
+                return proc
+        except OSError as exc:
+            last_error = exc
+            time.sleep(0.1)
+    proc.kill()
+    raise RuntimeError(f"Timed out waiting for the Triton mock to start: {last_error}")
 
 
 def start_compute_test_server(env, address: str) -> tuple[subprocess.Popen, str, tempfile.NamedTemporaryFile]:
@@ -1036,6 +1101,8 @@ print(result)
             pass
 
 grpc_server_proc = None
+triton_mock_proc = None
+triton_mock_repo = None
 compute_server_proc = None
 compute_server_proc_2 = None
 compute_server_log = None
@@ -1048,6 +1115,13 @@ total_start_time = time.perf_counter()
 
 try:
     grpc_server_proc = start_grpc_test_server(env_base) if needs_grpc_server else None
+    if needs_triton_mock:
+        # On another filesystem than the source tree where possible (tmpfs),
+        # so that deploying to it cannot hard-link and takes the symlink and
+        # copy paths.
+        triton_mock_repo = tempfile.mkdtemp(
+            prefix='roxal_triton_repo_', dir='/dev/shm' if os.path.isdir('/dev/shm') else None)
+        triton_mock_proc = start_triton_mock(env_base, triton_mock_repo)
     if needs_compute_server:
         compute_server_proc, compute_test_addr, compute_server_log = start_compute_test_server(env_base, COMPUTE_TEST_ADDR)
         if any(test in tests for test in compute_server_double_hop_tests):
@@ -1134,6 +1208,19 @@ try:
             with open(testrox, 'r', encoding='utf-8') as handle:
                 source = handle.read().replace(GRPC_TEST_ADDR_PLACEHOLDER,
                                                GRPC_TEST_ADDR)
+            temp_handle = tempfile.NamedTemporaryFile(
+                mode='w', suffix='.rox', prefix=f'{test}_', dir=test_dir,
+                delete=False, encoding='utf-8'
+            )
+            with temp_handle:
+                temp_handle.write(source)
+            run_testrox = temp_handle.name
+        if test in triton_tests or test in triton_real_tests:
+            server = args.triton_url if test in triton_real_tests else TRITON_MOCK_ADDR
+            repository = args.triton_repository if test in triton_real_tests else triton_mock_repo
+            with open(testrox, 'r', encoding='utf-8') as handle:
+                source = (handle.read().replace(TRITON_ADDR_PLACEHOLDER, server)
+                          .replace(TRITON_REPO_PLACEHOLDER, os.path.abspath(repository or '')))
             temp_handle = tempfile.NamedTemporaryFile(
                 mode='w', suffix='.rox', prefix=f'{test}_', dir=test_dir,
                 delete=False, encoding='utf-8'
@@ -1253,7 +1340,7 @@ try:
 
         if test in long_running_tests:
             timeout_secs = GC_STRESS_TIMEOUT_SECS
-        elif test in nn_lfs_tests:
+        elif test in nn_lfs_tests or test in triton_tests or test in triton_real_tests:
             timeout_secs = NN_LFS_TIMEOUT_SECS
         elif test in doom_tests:
             # WAD/texture setup + software renders; slow on Debug builds
@@ -1325,6 +1412,16 @@ try:
             if test not in failing_tests:
                 unexpected_failures.append(test)
             continue
+        finally:
+            if (test in triton_tests or test in triton_real_tests) and run_testrox != testrox:
+                # the address-substituted copy, and the cache compiled from it
+                for generated in (run_testrox, os.path.join(
+                        os.path.dirname(run_testrox),
+                        '.' + os.path.splitext(os.path.basename(run_testrox))[0] + '.roc')):
+                    try:
+                        os.remove(generated)
+                    except OSError:
+                        pass
         duration_ms = (time.perf_counter() - start_time) * 1000
 
 
@@ -1486,6 +1583,14 @@ finally:
             grpc_server_proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
             grpc_server_proc.kill()
+    if triton_mock_proc:
+        triton_mock_proc.terminate()
+        try:
+            triton_mock_proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            triton_mock_proc.kill()
+    if triton_mock_repo:
+        shutil.rmtree(triton_mock_repo, ignore_errors=True)
     os.chdir(cwd)
 
 total_duration = time.perf_counter() - total_start_time

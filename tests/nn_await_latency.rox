@@ -1,0 +1,33 @@
+# Awaiting a native future costs what the work does: whatever resolves it
+# wakes the waiter.  It used to cost at least the 1ms the waiter slept
+# between looks -- for a script awaiting predict, and for a dataflow node
+# whose predict the engine polled.  (Both averages here are ~0.05-0.2ms; the
+# bounds leave room for a loaded machine.)
+import ai.nn
+
+var m = ai.nn.Model("../modules/ai/scale-shift.onnx", device='cpu', outputs=['doubled'])
+var x = tensor(1, 4, dtype='float32')
+x[0, 3] = 4.0
+
+var n = 100
+var s = 0.0
+var start = Time.steady_now()
+for i in range(0..<n):
+    s = s + m.predict(x)[0, 3]
+print(s == 800.0)
+print(Time.steady_now().since(start).total_millis() / n < 0.6)
+
+# A lifted predict on an event-driven source: set the source, spin until the
+# node's output shows the result.
+var sig = signal(0, x)
+var d = m.predict(sig)
+wait(ms=300)
+var spin = 0
+start = Time.steady_now()
+for i in range(1..<n+1):
+    var xi = tensor(1, 4, dtype='float32')
+    xi[0, 3] = real(i)
+    sig.set(xi)
+    while d.value[0, 3] != real(2 * i):
+        spin = spin + 1
+print(Time.steady_now().since(start).total_millis() / n < 0.7)

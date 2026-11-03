@@ -1,0 +1,17 @@
+# math.fnv1a64: the FNV-1a 64-bit hash (as fileio's content tags use), its
+# 64 bits as an int -- so negative for half the hashes.
+import math
+
+print(math.fnv1a64(""))
+print(math.fnv1a64("a"))
+print(math.fnv1a64("ab"))
+# seed continues from an earlier result
+print(math.fnv1a64("b", seed=math.fnv1a64("a")) == math.fnv1a64("ab"))
+# a tensor hashes its raw bytes: one uint8 element 97 is the string "a"
+var t = tensor(1, dtype='uint8')
+t[0] = 97
+print(math.fnv1a64(t) == math.fnv1a64("a"))
+try:
+    var h = math.fnv1a64(3)
+except e:
+    print("hashes a string or a tensor" in string(e))

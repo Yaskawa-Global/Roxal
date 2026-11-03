@@ -40,7 +40,7 @@ struct PendingIOOp {
     };
 
     Type type;
-    ptr<std::promise<Value>> promise;
+    std::shared_ptr<NativePromise> promise;
     std::shared_future<Value> future;   // Track future for waitForFile
 
     // File operation data

@@ -76,7 +76,28 @@ void printTrace() {
 #endif
 
 
+// See m_asyncYieldWake.  Outlives the engine if a future still holds it, so
+// the engine detaches it on the way out.
+struct DataflowEngine::AsyncYieldWake final : roxal::FutureWakeTarget {
+    explicit AsyncYieldWake(DataflowEngine* e) : engine(e) {}
+
+    void futureResolved() override {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!engine)
+            return;
+        {
+            std::lock_guard<std::mutex> pending(engine->m_pendingEventMutex);
+            engine->m_asyncYieldResolved.store(true, std::memory_order_relaxed);
+        }
+        engine->m_pendingEventCv.notify_all();
+    }
+
+    std::mutex mutex;
+    DataflowEngine* engine;   // null once the engine is gone
+};
+
 DataflowEngine::DataflowEngine()
+    : m_asyncYieldWake(std::make_shared<AsyncYieldWake>(this))
 {
     // Strict unless the host asked for best-effort (RuntimeConfig
     // dataflow.scheme: 'best-effort' warns on a tick overrun instead of
@@ -93,6 +114,10 @@ DataflowEngine::DataflowEngine()
 
 DataflowEngine::~DataflowEngine()
 {
+    {
+        std::lock_guard<std::mutex> lock(m_asyncYieldWake->mutex);
+        m_asyncYieldWake->engine = nullptr;
+    }
     clear();
 }
 
@@ -396,6 +421,9 @@ void DataflowEngine::clear()
     signalWrapperRefs.clear();
     signals.clear();
     funcs.clear();
+    // A node awaiting an async body holds its pending futures and inputs,
+    // which must go before the VM frees them.
+    m_asyncYields.clear();
     m_networkModified = false;
     m_tickNotifier.clear();
     m_tickStart = TimePoint::zero();
@@ -763,6 +791,7 @@ void DataflowEngine::run() {
                 m_pendingEventCv.wait_for(lk, waitDur, [&]{
                     return m_shouldStop.load(std::memory_order_relaxed)
                         || !m_pendingEventUpdates.empty()
+                        || m_asyncYieldResolved.load(std::memory_order_relaxed)
                         || m_tickRequests.load(std::memory_order_relaxed)
                                != m_tickRequestsDone.load(std::memory_order_relaxed)
                         || roxal::SimpleMarkSweepGC::instance().isCollectionRequested();
@@ -814,8 +843,16 @@ void DataflowEngine::run() {
             gapWork |= serviceBackgroundIslands(bgDue);
             gapWork |= servicePendingTickRequests();
             gapWork |= serviceAsyncYields();
-            if (!gapWork)
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            if (!gapWork) {
+                // 1ms, or until an async body's future resolves (or a stop,
+                // or a collection waiting on gcPoll()).
+                std::unique_lock<std::mutex> lk(m_pendingEventMutex);
+                m_pendingEventCv.wait_for(lk, std::chrono::milliseconds(1), [&]{
+                    return m_shouldStop.load(std::memory_order_relaxed)
+                        || m_asyncYieldResolved.load(std::memory_order_relaxed)
+                        || roxal::SimpleMarkSweepGC::instance().isCollectionRequested();
+                });
+            }
         }
         if (m_shouldStop || m_hostDriven.load(std::memory_order_relaxed))
             continue;  // stop, or the host took over -> re-evaluate via outer loop
@@ -1338,7 +1375,30 @@ DataflowEngine::TickResult DataflowEngine::resumeTickEvaluation(TimePoint deadli
     // If a func was mid-execution, resume it first
     if (m_yieldState.funcWasExecuting && m_yieldState.yieldedFunc) {
         const TimePoint resumeStart = TimePoint::currentTime();
-        auto result = m_yieldState.yieldedFunc->resumeExecution(deadline);
+        auto& func = m_yieldState.yieldedFunc;
+        FuncExecResult result;
+        bool passedOver = false;
+        try {
+            result = func->resumeExecution(deadline);
+        } catch (const std::exception& e) {
+            // As in evaluateIsland: nothing above may catch this on a host's
+            // tick.  A node that goes on failing is passed over, and the rest
+            // of the tick still runs.
+            if (func->reportBodyFailure(e.what())) {
+                m_yieldState.active = false;
+                return TickResult::Error;
+            }
+            result = FuncExecResult::NotExecuted;
+            passedOver = true;
+        }
+        if (result == FuncExecResult::Yielded && func->hasPendingFutureYield()) {
+            // The body finished, returning a future (an actor call, predict):
+            // pending, as in evaluateIsland -- the tick goes on with the
+            // node's last delivered value, and its next tick checks the
+            // future again.  Resuming it here every call instead would hold
+            // up the rest of the tick until the future resolved.
+            result = FuncExecResult::NotExecuted;
+        }
         if (result == FuncExecResult::Yielded)
             return TickResult::Yielded;
         if (result == FuncExecResult::Paused)
@@ -1360,10 +1420,11 @@ DataflowEngine::TickResult DataflowEngine::resumeTickEvaluation(TimePoint deadli
             return TickResult::Error;
         }
 
-        // Func completed - update outputs and continue
+        // Func completed (or is pending on a future) - update outputs and continue
         m_yieldState.funcWasExecuting = false;
-        for (auto& output : m_yieldState.yieldedFunc->m_outputs)
-            updateSignalConsumerInputAvailability(output.signal, m_yieldState.tickTime);
+        if (!passedOver)
+            for (auto& output : m_yieldState.yieldedFunc->m_outputs)
+                updateSignalConsumerInputAvailability(output.signal, m_yieldState.tickTime);
         m_yieldState.funcIndex++;
         m_yieldState.yieldedFunc = nullptr;
     }
@@ -1950,13 +2011,38 @@ void DataflowEngine::noteAsyncYield(const ptr<FuncNode>& func, TimePoint time)
     for (auto& y : m_asyncYields)
         if (y.func == func) {
             // Still the same in-flight evaluation (the node re-yields on
-            // its own rerun; see FuncNode::resumeExecution): keep the
-            // record current.
+            // its own rerun; see FuncNode::resumeExecution), or a held node
+            // evaluated again before its retry: keep the record current.
             y.time = func->yieldedExecutionTime();
+            y.retryAt.reset();
+            watchAsyncYield(func);
             return;
         }
-    m_asyncYields.push_back({func, time});
+    m_asyncYields.push_back({func, time, std::nullopt});
+    watchAsyncYield(func);
     m_pendingEventCv.notify_all();   // shorten the engine thread's idle wait
+}
+
+
+void DataflowEngine::watchAsyncYield(const ptr<FuncNode>& func)
+{
+    // Each future wakes the engine once, when it resolves (at once, if it
+    // already has); registering the same one again is a no-op.
+    for (const auto& output : func->pendingFutureOutputs())
+        if (roxal::isFuture(output))
+            roxal::asFuture(output)->addWakeTarget(m_asyncYieldWake);
+}
+
+
+void DataflowEngine::noteHeldRetry(const ptr<FuncNode>& func, TimePoint at)
+{
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    for (auto& y : m_asyncYields)
+        if (y.func == func) {
+            y.retryAt = at;
+            return;
+        }
+    m_asyncYields.push_back({func, at, at});
 }
 
 
@@ -1969,6 +2055,8 @@ bool DataflowEngine::hasAsyncYields()
 
 bool DataflowEngine::serviceAsyncYields()
 {
+    // Whatever resolved since the last pass is handled by this one.
+    m_asyncYieldResolved.store(false, std::memory_order_relaxed);
     if (!hasAsyncYields())
         return false;
 
@@ -1991,6 +2079,7 @@ bool DataflowEngine::serviceAsyncYields()
     }
 
     bool didWork = false;
+    const TimePoint now = TimePoint::currentTime();
     for (const auto& y : pending) {
         auto drop = [&] {
             std::lock_guard<std::recursive_mutex> lock(m_mutex);
@@ -1998,40 +2087,84 @@ bool DataflowEngine::serviceAsyncYields()
                                     [&](const AsyncYield& e){ return e.func == y.func; }),
                                 m_asyncYields.end());
         };
+        // The island is looked up now (not recorded): a rebuild since the
+        // yield would have invalidated any saved position.  A node whose
+        // island is now clocked is the ticks' to poll and retry.
+        NetworkIsland island;
+        auto inEventIsland = [&] {
+            std::lock_guard<std::recursive_mutex> lock(m_mutex);
+            for (const auto& isl : m_networkIslands) {
+                if (std::find(isl.funcs.begin(), isl.funcs.end(), y.func) != isl.funcs.end()) {
+                    island = isl;
+                    return island.tickPeriod == TimeDuration::zero();
+                }
+            }
+            return false;
+        };
+        // A native body threw, in a resumed delivery, its rerun or a retry:
+        // as in evaluateIsland, nothing above may catch it -- out of here it
+        // would end the engine thread's run loop.
+        auto settle = [&](auto&& evaluate) {
+            try {
+                return evaluate();
+            } catch (const std::exception& e) {
+                y.func->reportBodyFailure(e.what());
+                return FuncExecResult::Error;
+            }
+        };
+
+        if (y.retryAt) {
+            // Held, its retry not due yet -- or due: evaluate it afresh on
+            // its current inputs, which may yield anew.  (Only async bodies
+            // hold, and they yield rather than complete here.)
+            if (now < *y.retryAt)
+                continue;
+            didWork = true;
+            drop();
+            if (!inEventIsland())
+                continue;
+            settle([&] { return y.func->conditionallyExecute(now, TimePoint::max()); });
+            if (y.func->hasPendingFutureYield())
+                noteAsyncYield(y.func, y.func->yieldedExecutionTime());
+            continue;
+        }
 
         if (!y.func->hasPendingFutureYield()) {   // delivered elsewhere (an event's evaluation)
             drop();
             continue;
         }
-        auto result = y.func->resumeExecution(TimePoint::max());
+        FuncExecResult result = settle([&] { return y.func->resumeExecution(TimePoint::max()); });
         if (result == FuncExecResult::Yielded)
             continue;   // still in flight
         didWork = true;
+        if (result == FuncExecResult::Held) {
+            // Nothing was delivered: consumers, and the island downstream,
+            // are as they were.  A rerun that yielded anew is polled as
+            // usual; otherwise the node is evaluated again after a pause.
+            if (!inEventIsland())
+                drop();
+            else if (y.func->hasPendingFutureYield())
+                noteAsyncYield(y.func, y.func->yieldedExecutionTime());
+            else
+                noteHeldRetry(y.func, now + TimeDuration::milliSecs(1000));
+            continue;
+        }
         if (result != FuncExecResult::Completed) {
             drop();
             continue;
         }
 
         // Delivered at y.time: finish the island downstream of the node, at
-        // that time.  The island is looked up now (not recorded): a rebuild
-        // since the yield would have invalidated any saved position.
-        NetworkIsland island;
-        bool found = false;
+        // that time.
+        const bool found = inEventIsland();
         {
             std::lock_guard<std::recursive_mutex> lock(m_mutex);
-            for (const auto& isl : m_networkIslands) {
-                if (std::find(isl.funcs.begin(), isl.funcs.end(), y.func) != isl.funcs.end()) {
-                    island = isl;
-                    found = true;
-                    break;
-                }
-            }
             for (const auto& output : y.func->m_outputs)
                 updateSignalConsumerInputAvailability(output.signal, y.time);
         }
         // The rerun (if any) may have yielded anew: keep polling it, from
         // its own evaluation time, unless the island is now clocked.
-        if (y.func->hasPendingFutureYield() && found && island.tickPeriod == TimeDuration::zero())
+        if (y.func->hasPendingFutureYield() && found)
             noteAsyncYield(y.func, y.func->yieldedExecutionTime());
         else
             drop();

@@ -818,14 +818,53 @@ Resolution never blocks the C++ dispatch loop. `tryAwaitFuture()` checks if the
 future is ready (zero-wait `wait_for`). If not:
 1. The thread registers as a waiter on the future (`ObjFuture::addWaiter`)
 2. `thread->awaitedFuture` is set and the instruction pointer is rewound
-3. The dispatch loop yields to `postInstructionDispatch` which sleeps on the
-   thread's condition variable (1ms polling fallback)
-4. When the promise is fulfilled, `ObjFuture::wakeWaiters()` signals waiting
-   threads
+3. The dispatch loop yields to `postInstructionDispatch`, which sleeps in
+   `VM::waitForFuture` on the thread's condition variable (1ms fallback). It
+   re-checks readiness under the sleep mutex, which `Thread::wake()` notifies
+   under, so a resolution at any moment wakes it. (`Value::resolveFuture`, the
+   blocking form, waits the same way.)
+4. Whatever fulfils the promise wakes the waiting threads
 5. On the next loop iteration, the future is ready and resolved in-place
 
 This allows the VM to process events, respect `execute(deadline)` deadlines, and
 yield control back to the caller during the wait.
+
+### Who wakes the waiters
+
+A future's waiters live in a `FutureWaitList` of their own, shared by the
+`ObjFuture` and whatever resolves it. There are three kinds of waiter:
+
+- threads blocked on the future
+- `allof`/`anyof` combinators, held by weak Value
+- `FutureWakeTarget`s, held by `std::weak_ptr`. The dataflow engine uses one;
+  see below.
+
+The list is emptied when the `ObjFuture` goes, so the weak Values never outlive
+it there. `FutureWaitList::wake()` wakes the threads and the targets, and
+notifies the combinators. A combinator allocates its result, so `wake()` runs
+only on a thread the GC can see.
+
+- **Actor calls:** the actor thread holds the `ObjFuture` and calls
+  `ObjFuture::wakeWaiters()` after `set_value`.
+- **Native producers** (an inference worker, an I/O loop, a gRPC or DDS
+  thread) hold a `NativePromise`, never a bare `std::promise<Value>`. Such a
+  thread does not hold the ObjFuture, so a bare promise would leave every
+  waiter to its 1ms poll, and leave a combinator over the future waiting
+  forever. `NativePromise::future()` makes the ObjFuture on the VM thread,
+  sharing its wait list. `resolve()` then works on any thread:
+  - It joins the GC as an `ExternalParticipant` if the thread is not a VM
+    thread and not already a participant.
+  - It fulfils the promise, wakes the list, and lets go of the value before
+    returning. A producer may drop the `NativePromise` anywhere afterwards
+    without releasing a Value.
+  - Its caller must hold no lock the collector might take, and must have made
+    the value where the GC could see it.
+- **The dataflow engine** polls the nodes whose async bodies are in flight
+  (`serviceAsyncYields`). `noteAsyncYield` registers the engine's
+  `AsyncYieldWake` target with each future a node waits on. The target sets
+  `m_asyncYieldResolved` under `m_pendingEventMutex` and notifies
+  `m_pendingEventCv`, and both of `run()`'s idle waits wake on it. The engine
+  detaches the target when it is destroyed, since a future may still hold it.
 
 ### Actor Return Resolution
 
@@ -961,9 +1000,9 @@ Each input awaitable becomes one `Slot`. Wakeup wiring depends on the kind
 
 - **Future slot:** the combinator registers as a waiter on the input
   `ObjFuture` via `addCombinatorWaiter` (a weak Value ref + slot index).
-  `ObjFuture::wakeWaiters` already runs after `set_value`; we extended its
-  `waiters` vector to a `Waiter` variant (Thread *or* Combinator, in
-  `Object.h`) so combinator wakeups go through the same path.
+  Combinator wakeups go through the same path as thread wakeups: the future's
+  `FutureWaitList`, woken by whatever fulfils the future (see "Who wakes the
+  waiters" above).
 - **Event-type slot:** registers a one-shot `HandlerRegistration` on the
   calling thread whose closure wraps a sentinel ObjFunction
   `__combinator_relay` (kept on `VM::combinatorRelayFunction`, alongside
@@ -1098,7 +1137,22 @@ in a *future yield*: no VM thread is suspended (the node waits on a worker),
 so `evaluateIsland` does not suspend the island for it -- consumers go on
 with the node's last delivered value (or wait, if it never delivered) and the
 node is polled again (`conditionallyExecute` -> `resumeExecution`) at the
-island's next evaluation.  A poll at a newer time while the futures are still
+island's next evaluation.
+- **Both ways a body finishes go through `FuncNode::finishEvaluation`**:
+  straight through, or resumed after a deadline yield (a host-driven tick
+  slices script nodes; `resumeTickEvaluation` resumes them).  So a sliced
+  body that ends by returning a future (an actor call, `predict`) leaves it
+  pending too.
+- **The bug this closed:** the resumed path once published the future
+  itself.  Comparing it with the int already delivered resolved it on the
+  host's tick, blocking, and an exception in it threw out of `tickFor` and
+  aborted the process.
+- **`resumeTickEvaluation`** treats a resumed node that is now pending like
+  `evaluateIsland` does, and finishes the tick rather than resuming the node
+  on every call until its future resolves.  It also catches a resumed body's
+  C++ exception as `evaluateIsland` does (`reportBodyFailure`), and passes
+  the node over.
+- **Test:** `RoxalDataflowHostThread_yielding_node_future`.  A poll at a newer time while the futures are still
 pending records `FuncYieldState::rerunTime`; once they resolve the node
 evaluates again on its current inputs (pure gate applies), so the latest
 input is never dropped behind an in-flight inference.  A clocked island polls
@@ -1265,6 +1319,289 @@ a handler that `set()`s another event-driven signal enqueues the chained
 update rather than recursing, so arbitrarily long handler chains run at
 constant native stack depth (a 100k-link convergence cap turns a
 non-converging cross-island cycle into a clear error).
+
+**Failed async bodies.** A future that resolves to an exception Value is the
+body raising, settled in `FuncNode::resumeExecution`:
+
+- **Any exception but an `UnavailableError`** fails the node through
+  `reportBodyFailure`, exactly as a native body that throws does (once per
+  streak). The outputs keep their values, and a pending rerun is dropped.
+- **An `UnavailableError`** (the builtin "not now" type, e.g. ai.nn's Triton
+  backend with its server unreachable or past its deadline) *holds* the node.
+  `resumeExecution` returns `FuncExecResult::Held`: settled, nothing
+  delivered.
+  - Every output keeps its last value; one is never published without the
+    others.
+  - A Warning is emitted once per streak (`m_holdReported`, cleared on the
+    next delivery).
+  - The pending rerun still runs.
+  - `previousInputValues` stays at the last *delivered* inputs, so the pure
+    gate lets a later evaluation retry.
+  - `conditionallyExecute` absorbs `Held` (it never returns it).
+- **Retrying.** A clocked island retries on the next tick. An event-driven
+  island may never see another input, so `serviceAsyncYields` re-lists the
+  held node with `AsyncYield::retryAt` (one second on) and evaluates it
+  afresh then. Downstream is evaluated only after a delivery.
+- **Scope.** Holding applies to async bodies only. A script's own
+  `raise UnavailableError(..)` in a node body is reported by the VM as an
+  uncaught exception before FuncNode sees it, and fails the run like any
+  other.
+
+`DataflowEngine::clear()` drops `m_asyncYields` with everything else: a record
+still listed at VM shutdown kept a node, and the futures and inputs in its
+yield state, alive past `VM::freeObjects`.
+
+## ai.nn backends (ModuleNN)
+
+A `Model` is a front end over one `ModelSession`, the backend.
+
+- **The front end:** the signature (`TensorSpec`s for inputs and outputs),
+  device, the `closed` flag, predict's argument checks (`parsePredictInputs`:
+  every input exactly once, with the model's dtype and a compatible shape),
+  the per-instance `predict` closure, `outputs=` selection (`selectOutputs`
+  reorders/subsets the signature before a backend binds its outputs), and
+  the per-model `available` source signal.
+- **A session:** opens its backend, filling in the signature, then runs
+  `submit(inputs, heldValues) -> future` and `close()`.
+- **The sessions:**
+  - `OrtSession`: ONNX Runtime in this process.
+  - `WebSession`: the wasm build's host provider through `NnBridge`.
+  - `TritonSession`: `triton://host[:port]/model[?version=N]`, native builds
+    with `ROXAL_ENABLE_TRITON`, which needs gRPC and native ai.nn.
+
+**OrtSession's worker.** One `InferenceWorker` thread per model serializes
+`Session::Run`.
+
+- **A job holds an `OrtRunTarget`** (the session, the output bindings), never
+  the model. The thread outlives the model:
+  - Releasing a model only *retires* its worker. The thread drains its queue
+    and exits, and the module joins it when the next worker starts or at
+    shutdown.
+  - A release can run in `VM::freeObjects` on the collector, where a join
+    would hold up collections for an inference.
+  - A job that held the model used to release it on the worker itself, which
+    then joined its own thread.
+- **`close()`** resolves queued jobs to an error and does not wait for the one
+  in flight.
+- **GC rules on the worker thread:**
+  - A finished job is dropped inside the worker's `ExternalParticipant`
+    window.
+  - Abandoned jobs drop their held inputs before the error Values are
+    allocated.
+- **Roots.** The worker registry, `NnBridge`'s pending table and the Triton
+  error-type cache are program-lifetime `TracedMember`s. A root may not be
+  created inside an RT yield section, and a host-driven run (`driveFor`)
+  executes `Model.init` inside one. For the same reason the warmup tensors are
+  held in a Roxal list in a local `Value` rather than a rooted `std::vector`.
+
+**Triton.**
+
+- **`TritonEndpoint`** (`compiler/nn`) is one per `host:port`, shared by its
+  models, and knows nothing of Roxal values.
+  - It makes the gRPC channel on its own demoted thread, so gRPC's internal
+    threads never inherit an RT host thread's scheduling, and completes
+    asynchronous calls on that thread's CompletionQueue.
+  - Calls go through `grpc::GenericStub` by method path
+    (`/inference.GRPCInferenceService/ModelInfer`). The messages are generated
+    at build time from `third_party/triton/triton_inference.proto`, a trimmed
+    copy of Triton's with its field numbers and a renamed package; no
+    `grpc_cpp_plugin` is involved.
+  - Message size limits are raised past gRPC's 4 MB default.
+- **`Model.init`** asks who the server is (`ServerMetadata`), then for the
+  model's metadata, then readiness. These are blocking calls inside a
+  `GCBlockedScope`.
+  - Only an unreachable server fails the first call; one that will not say
+    is left unnamed.
+  - A named server's identity goes into the model's `where`, so every message
+    about the model names it ("... at host:8001 (triton 2.62.0): ...").
+  - It is kept as the session's `ModelServerInfo` (`model.server_info()`).
+    Its `kind` ("triton", the source scheme) is Roxal's, so a future remote
+    backend can be told apart. The name, version and extensions are the
+    server's own.
+  - `ai.nn.server_info(address)` asks the same thing without a model.
+- **`predict` sends its inputs without copying them**
+  (`compiler/nn/TritonInfer`).
+  - Protobuf would copy each input three times: into the message, into the
+    serialized string, and into gRPC's buffer. For a 4.9 MB frame that cost
+    about 5 ms on the calling thread, because each copy landed in freshly
+    mapped pages.
+  - Instead the request goes out as its header (every field but
+    `raw_input_contents`) followed by one hand-encoded `raw_input_contents`
+    field per input. Each input's bytes are a gRPC slice over the tensor's
+    own memory. Protobuf parses a message concatenated from its fields, and a
+    repeated field keeps its entries' order.
+  - The slice holds `ObjTensor::sharedData()`, a reference to the tensor's
+    storage and not a Value, so a call in flight still needs no root. A write
+    to the tensor meanwhile copies first (COW). `ensureOrtUnique` takes an
+    acquire fence, so the sending thread's release is seen before an in-place
+    write.
+  - When the channel is already in `TRANSIENT_FAILURE`, `predict` returns an
+    already-resolved `UnavailableError` future without building a request.
+- **The reply is copied once.** Every field except `raw_output_contents` is
+  re-encoded and parsed by protobuf. Each output's bytes are read straight
+  from gRPC's buffer pieces into a 64-byte-aligned block, and the output
+  tensor adopts that block without copying it (a view `Ort::Value` whose
+  storage deleter frees the block).
+  - This decode runs on the endpoint thread *before* the `ExternalParticipant`
+    window opens, so a collection never waits on a multi-megabyte copy.
+  - Inside the window the outputs are matched **by name**, since Triton's
+    autofill lists them in its own order, not the ONNX graph's, and their
+    dtypes and byte counts are checked.
+  - It sets `available` on transitions only (every set of an event-driven
+    source evaluates its island) through a weak reference, and resolves the
+    promise.
+- **Failure mapping.** `compiler/grpc/GrpcStatus` classifies a failure for
+  both ai.nn and the grpc module:
+  - `UNAVAILABLE` and `DEADLINE_EXCEEDED` become `UnavailableError`.
+  - Application statuses become `ProgramException`. These include
+    `RESOURCE_EXHAUSTED`, which also means "message too large".
+  - Anything else becomes `RuntimeException`.
+- **Shutdown.** `ModuleNN::onShutdown` cancels the calls in flight, settles
+  them, joins the endpoint threads, and empties the error-type cache before
+  the VM frees anything.
+- **Tests.**
+  - `scripts/triton_mock_server.py` stands in for Triton. A control model
+    switches it up, down or slow, and `runtests` starts it for the
+    `triton_*` tests.
+  - `scripts/triton-test-repo.sh` plus `runtests --triton-url HOST:PORT` run
+    `triton_real_*` against a real server.
+
+**Server versions.** No server version is pinned or checked, unlike the
+libraries in `install-deps.sh`. Those are compiled into libroxal and its
+hosts, so a mismatch breaks the ABI. A Triton server is another process,
+reached over a network protocol (KServe v2 over gRPC), and protobuf fields
+are only ever added, never renumbered.
+
+- The fields ai.nn uses are identical from Triton 23.01 through `main` as of
+  2026-09 (checked against each branch's `grpc_service.proto`; see the
+  header of `third_party/triton/triton_inference.proto`).
+- Tested against 25.10, both CPU and GPU.
+- What can differ between servers is behaviour, not the protocol. Each such
+  case is handled where it arises:
+  - Output order: ai.nn binds outputs by name.
+  - Dynamic dimensions: checked as shapes.
+  - Datatypes ai.nn has no tensor dtype for (BF16, UINT32/64, BYTES): an
+    init error naming the tensor.
+  - A server that does not speak the protocol at all: its gRPC error,
+    raised at `Model.init`.
+
+**Deploying models** (`Model(path, server=...)`, `compiler/nn/TritonDeploy`).
+- **The file set:** `modelFiles` names a model's files as Triton's backends
+  expect them.
+  - An `.onnx` becomes `model.onnx`, plus the external-data files it names.
+    These are found by walking the protobuf wire format, without a schema, to
+    every TensorProto's `external_data` "location": initializers, sparse
+    initializers, node attributes, subgraphs.  Names leaving the model's
+    directory are refused.
+  - `.plan`/`.engine` becomes `model.plan`, `.pt` becomes `model.pt`, and an
+    `.xml` becomes `model.xml` with its `.bin` as `model.bin`.
+  - A directory is deployed as it is, hidden files left out.
+  - Sources are canonical paths: a hard link to a symlink would link the
+    symlink.
+- **The name:** `roxal.<stem>.<16 hex>`, FNV-1a 64 (`core/fnv1a.h`) over each
+  file's name, size and content, and the configuration JSON.  Each file's
+  hash is memoized per process by (path, size, mtime, inode).
+- **`Model.init`:**
+  1. Ask `ServerMetadata`, and require the `model_repository` extension.
+  2. If `ModelReady(name)`, reuse it.
+  3. Otherwise deploy by one of two transports, then open it as
+     `triton://<server>/<name>`.
+- **Repository transport** (a shared directory configured for the server):
+  - **Configuration:** script > `RuntimeConfig` `triton.repositories` (host,
+    `roxal --triton-repository`) > `ROXAL_TRITON_REPOSITORIES`.
+  - **Probe:** once per server and directory, Roxal makes
+    `roxal.probe.<random>/` there and requires it in `RepositoryIndex`.
+    Triton has no gRPC call that reveals or adds repository paths, so this is
+    the only check.
+  - **Placement:** each file is hard-linked, else symlinked, else copied, into
+    a hidden staging directory, which is renamed into place.  An existing
+    `<name>` is kept.
+  - **Load:** by name.  If it fails while a symlink is in place, the symlinks
+    become copies and the load is retried.  Roxal then copies at once for that
+    server and directory for the rest of the process.
+- **Upload transport:** a `RepositoryModelLoad` with a `file:1/<name>`
+  parameter per file.
+  - **No copies:** hand-encoded as `TritonInfer` does, each file's bytes a gRPC
+    slice over an `mmap`.
+  - **2 GB limit:** one gRPC message, `INT32_MAX` both for Triton and for
+    protobuf.
+  - **Always a configuration:** Triton reads uploaded files only when a
+    `config` parameter comes with them; without one it looks on disk ("failed
+    to poll from model repository").  So `{}` is sent when the script gives
+    none, and Triton fills in the rest.
+- **Errors:**
+  - A server not in explicit mode refuses with UNAVAILABLE ("... not allowed
+    if polling is enabled").  That is matched by message and raised as a
+    `ProgramException`, not `UnavailableError`, which would mean "try again".
+  - Other failures go through the gRPC classifier.
+- **Unload:** `RepositoryModelUnload`, then the model is closed; `remove=true`
+  deletes `<repository>/<name>`.  `close()` never unloads: deployments are
+  content-addressed and may be shared.
+- **Threading and GC:** the file work runs inside `GCBlockedScope`s, and the
+  calls are the endpoint's blocking ones (also GC-blocked).  No Values are
+  involved and no roots are made, so this is safe inside a host-driven run's
+  RT yield section.
+
+**Running a Triton server for development.** `install-deps.sh` does not fetch
+a server; NVIDIA's container image is the simplest one.
+
+- **The image:** `docker pull nvcr.io/nvidia/tritonserver:25.10-py3` (server
+  2.62.0, about 12.5 GB). It runs on the CPU as it is.
+- **GPU access:** needs the NVIDIA Container Toolkit, from NVIDIA's CUDA apt
+  repository:
+  ```
+  sudo apt-get install -y nvidia-container-toolkit
+  sudo nvidia-ctk runtime configure --runtime=docker
+  sudo systemctl restart docker
+  docker run --rm --gpus all nvcr.io/nvidia/tritonserver:25.10-py3 nvidia-smi   # check
+  ```
+- **A model repository:** a directory holding `<model>/1/model.onnx` per model.
+  No `config.pbtxt` is needed: Triton fills one in from the ONNX file, listing
+  inputs and outputs in its own order. `scripts/triton-test-repo.sh [DIR]`
+  builds one from the small `modules/ai` test models and prints the run
+  command.
+- **Run it:**
+  ```
+  docker run -d --name roxal-triton [--gpus all] -p 18001:8001 -p 18000:8000 \
+      -v <repo>:/models:ro nvcr.io/nvidia/tritonserver:25.10-py3 \
+      tritonserver --model-repository=/models
+  curl -sf localhost:18000/v2/health/ready && echo ready
+  ```
+  - 8001 is gRPC, the port `triton://` uses, and 8000 is HTTP, here only for
+    the readiness check. Mapping them to other host ports avoids clashing
+    with anything already on 8000/8001.
+  - `--model-control-mode=explicit --load-model=<name>` serves only the named
+    models.
+  - `--ipc=host` is needed only to try system shared memory, where the
+    server must see the client's `/dev/shm`.
+- **Use it:** `python3 runtests.py --triton-url localhost:18001`, or
+  `ai.nn.Model("triton://127.0.0.1:18001/<model>")` in a script. Stop it with
+  `docker rm -f roxal-triton`.
+- **To deploy models from Roxal** (`Model(path, server=...)`), start the server
+  in explicit mode, and give it a host directory as a second, shared
+  repository:
+  ```
+  mkdir -p ~/roxal-triton
+  docker run -d --name roxal-triton [--gpus all] -p 18001:8001 -p 18000:8000 \
+      -v <repo>:/models:ro -v ~/roxal-triton:/roxal-models:ro \
+      nvcr.io/nvidia/tritonserver:25.10-py3 \
+      tritonserver --model-repository=/models --model-repository=/roxal-models \
+                   --model-control-mode=explicit --load-model='*'
+  export ROXAL_TRITON_REPOSITORIES="localhost:18001=$HOME/roxal-triton"
+  ```
+  - `--model-control-mode=explicit` lets clients load and unload models.
+    `--load-model='*'` still loads everything in the repositories at start;
+    in explicit mode nothing is loaded otherwise.
+  - The shared directory is optional: without it, models are uploaded, up to
+    2 GB each.
+  - `:ro` is enough: Roxal writes into it from the host side, and Triton only
+    reads its repositories.
+  - Deployment tests: `python3 runtests.py --triton-url localhost:18001
+    --triton-repository ~/roxal-triton`.
+- **Measuring the server alone:** NVIDIA's `perf_analyzer`, installed with
+  `pip install 'tritonclient[grpc]' perf-analyzer` (in a virtualenv). Its
+  `--shared-memory system` mode loads `libcudart.so` even on a CPU-only
+  server, so put a CUDA runtime library on its library path.
 
 ## DDS Module (ModuleDDS)
 

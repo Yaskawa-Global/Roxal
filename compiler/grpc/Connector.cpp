@@ -157,10 +157,10 @@ Value ACUCommunicator::callStreaming(const std::string& methodName,
             if (status.ok()) {
                 // For client streaming, the response comes at the end
                 // The actual response data should have been received via onServerMessage
-                state->responsePromise->set_value(Value::nilVal());
+                state->responsePromise->resolve(Value::nilVal());
             } else {
                 // Set error - the promise will resolve to nil
-                state->responsePromise->set_value(Value::nilVal());
+                state->responsePromise->resolve(Value::nilVal());
             }
         }
 
@@ -209,9 +209,8 @@ Value ACUCommunicator::callStreaming(const std::string& methodName,
         return state->outputSignal;
     } else {
         // For client-only streaming, return a future that resolves when stream closes
-        state->responsePromise = std::make_shared<std::promise<Value>>();
-        auto future = state->responsePromise->get_future().share();
-        return Value::futureVal(future);
+        state->responsePromise = std::make_shared<NativePromise>();
+        return state->responsePromise->future();
     }
 }
 
@@ -262,31 +261,6 @@ void ACUCommunicator::onInputSignalStopped(std::shared_ptr<ActiveStreamState> st
         if (state->handle && !state->handle->clientDone) {
             m_caller->CloseClientStream(state->handle);
         }
-    }
-}
-
-const char* roxal::grpcStatusCodeName(grpc::StatusCode code)
-{
-    switch (code) {
-        case grpc::StatusCode::OK: return "OK";
-        case grpc::StatusCode::CANCELLED: return "CANCELLED";
-        case grpc::StatusCode::UNKNOWN: return "UNKNOWN";
-        case grpc::StatusCode::INVALID_ARGUMENT: return "INVALID_ARGUMENT";
-        case grpc::StatusCode::DEADLINE_EXCEEDED: return "DEADLINE_EXCEEDED";
-        case grpc::StatusCode::NOT_FOUND: return "NOT_FOUND";
-        case grpc::StatusCode::ALREADY_EXISTS: return "ALREADY_EXISTS";
-        case grpc::StatusCode::PERMISSION_DENIED: return "PERMISSION_DENIED";
-        case grpc::StatusCode::UNAUTHENTICATED: return "UNAUTHENTICATED";
-        case grpc::StatusCode::RESOURCE_EXHAUSTED: return "RESOURCE_EXHAUSTED";
-        case grpc::StatusCode::FAILED_PRECONDITION: return "FAILED_PRECONDITION";
-        case grpc::StatusCode::ABORTED: return "ABORTED";
-        case grpc::StatusCode::OUT_OF_RANGE: return "OUT_OF_RANGE";
-        case grpc::StatusCode::UNIMPLEMENTED: return "UNIMPLEMENTED";
-        case grpc::StatusCode::INTERNAL: return "INTERNAL";
-        case grpc::StatusCode::UNAVAILABLE: return "UNAVAILABLE";
-        case grpc::StatusCode::DATA_LOSS: return "DATA_LOSS";
-        case grpc::StatusCode::DO_NOT_USE: return "DO_NOT_USE";
-        default: return "UNKNOWN";
     }
 }
 

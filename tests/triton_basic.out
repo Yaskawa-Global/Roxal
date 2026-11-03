@@ -1,0 +1,33 @@
+triton
+plus_one
+5
+8
+8
+5
+true
+8
+8
+5
+unknown model: ProgramException
+unreachable server: UnavailableError
+rejected input: ProgramException
+true
+true
+true
+true
+3
+8
+0
+1
+6
+16
+16
+triton triton-mock 0.1
+["model_configuration", "model_repository"]
+triton-mock
+0.1
+true
+unreachable server: UnavailableError
+true
+true
+done

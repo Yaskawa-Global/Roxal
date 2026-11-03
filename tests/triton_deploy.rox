@@ -1,0 +1,104 @@
+# Deploying a model file to a Triton server (here the mock, which serves
+# scale-shift.onnx's content only): Model(path, server=...) uploads it, or
+# places it in a directory the server shares, unless the server already
+# serves the same content -- and then it is used like any triton:// model.
+# scale-shift.onnx: doubled = x * 2, plus_one = x + 1, shape [1, 4]
+import ai.nn
+
+# The mock's control model (scripts/triton_mock_server.py): 3 refuses loads
+# and 4 allows them; 5 makes it unable to see symlinked files, 6 able.
+var control = ai.nn.Model("triton://__TRITON_ADDR__/__control")
+proc setMode(m :int):
+    var t = tensor(1, dtype='int32')
+    t[0] = m
+    var ok = control.predict(t)[0]
+
+var x = tensor(1, 4, dtype='float32')
+x[0, 3] = 4.0
+var file = "../modules/ai/scale-shift.onnx"
+
+# Uploaded, then used like any Triton model.
+var up = ai.nn.Model(file, server="__TRITON_ADDR__", outputs=['doubled'])
+print(up.predict(x)[0, 3])
+var d = up.deployment()
+print(d['transport'])
+print("roxal.scale-shift." in d['name'])
+print(d['repository'] is nil)
+print(up.device())
+
+# The same content again: the server already serves it.
+var again = ai.nn.Model(file, server="triton://__TRITON_ADDR__")
+print(again.deployment()['transport'])
+print(again.deployment()['name'] == d['name'])
+# A configuration makes it a deployment of its own.
+var configured = ai.nn.Model(file, server="__TRITON_ADDR__", config={'max_batch_size': 0})
+print(configured.deployment()['transport'])
+print(configured.deployment()['name'] != d['name'])
+
+# A model the server has of its own is not this program's to unload.
+var served = ai.nn.Model("triton://__TRITON_ADDR__/scale_shift")
+print(served.deployment() is nil)
+try:
+    served.unload()
+except e:
+    print("was not deployed by this program" in string(e))
+
+# Unloading takes it off the server, and closes it; a new Model deploys it anew.
+up.unload()
+try:
+    var r = up.predict(x)
+except e:
+    print("closed" in string(e))
+var back = ai.nn.Model(file, server="__TRITON_ADDR__", outputs=['doubled'])
+print(back.deployment()['transport'])
+print(back.predict(x)[0, 3])
+
+# Through a shared directory: placed there and loaded by name.  The mock
+# cannot see symlinks now, so a file it cannot hard-link (another
+# filesystem) and symlinks instead is copied when the load fails.
+setMode(5)
+ai.nn.use_repository("__TRITON_ADDR__", "__TRITON_REPO__")
+var shared = ai.nn.Model(file, server="__TRITON_ADDR__", config={'note': 'shared'}, outputs=['doubled'])
+print(shared.deployment()['transport'])
+print(shared.deployment()['repository'] == "__TRITON_REPO__")
+print(shared.predict(x)[0, 3])
+shared.unload(true)
+setMode(6)
+ai.nn.use_repository("__TRITON_ADDR__", nil)
+
+# A directory the server does not serve is refused.
+ai.nn.use_repository("__TRITON_ADDR__", "../tests")
+try:
+    var elsewhere = ai.nn.Model(file, server="__TRITON_ADDR__", config={'note': 'elsewhere'})
+except e :ProgramException:
+    print("is not one of" in string(e))
+ai.nn.use_repository("__TRITON_ADDR__", nil)
+
+# A server that loads only its own models refuses -- for good, not "try later".
+setMode(3)
+try:
+    var refused = ai.nn.Model(file, server="__TRITON_ADDR__", config={'note': 'refused'})
+except e :ProgramException:
+    print("--model-control-mode=explicit" in string(e))
+setMode(4)
+
+# Mistakes.
+func refuses(src :string, server, config, expected :string) -> bool:
+    try:
+        var m = ai.nn.Model(src, server=server, config=config)
+        return m is nil
+    except e:
+        if expected in string(e):
+            return true
+        print(e)
+        return false
+
+print(refuses("triton://__TRITON_ADDR__/scale_shift", "__TRITON_ADDR__", nil, "names a model its server already has"))
+print(refuses(file, nil, {'a': 1}, "config applies to a model deployed with server= only"))
+print(refuses("../modules/ai/nothing.onnx", "__TRITON_ADDR__", nil, "there is no model"))
+print(refuses(file, "__TRITON_ADDR__/x", nil, "is not host[:port]"))
+try:
+    var gone = ai.nn.Model(file, server="127.0.0.1:1")
+except e :UnavailableError:
+    print("unreachable server: UnavailableError")
+print('done')

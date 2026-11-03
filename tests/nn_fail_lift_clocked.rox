@@ -1,0 +1,17 @@
+# As nn_fail_lift, on a CLOCKED island: the tick that finds the failed
+# inference ends the run with it as an uncaught exception.
+# shift-const3.onnx: plus = x + c, minus = x - c, c = [1, 2, 3], x of dynamic
+# length N -- an N of 1 or 3 runs, any other N fails in the run.
+import ai.nn
+
+var model = ai.nn.Model("../modules/ai/shift-const3.onnx", device='cpu', warmup=false)
+
+var x = signal(50, tensor(3, dtype='float32'))
+var [plus, minus] = model.predict(x)
+wait(ms=300)
+print(plus.value[2])
+print(minus.value[2])
+
+x.set(tensor(4, dtype='float32'))
+wait(ms=300)
+print('not reached')

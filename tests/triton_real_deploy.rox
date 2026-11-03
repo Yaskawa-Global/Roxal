@@ -1,0 +1,27 @@
+# Against a real Triton server in explicit mode that serves __TRITON_REPO__ as
+# a model repository (runtests --triton-url HOST:PORT --triton-repository DIR):
+# model files deployed from here, by upload and through the shared directory.
+import ai.nn
+
+# add-external.onnx keeps its weights in a second file (ONNX external data):
+# y = x + [10, 20, 30, 40].  Both files go up in one request.
+var x = tensor(1, 4, dtype='float32')
+x[0, 0] = 1.0
+var added = ai.nn.Model("../modules/ai/add-external.onnx", server="__TRITON_ADDR__")
+print(added.deployment()['transport'] == 'upload' or added.deployment()['transport'] == 'reused')
+print(added.predict(x)[0, 0])
+print(added.predict(x)[0, 3])
+added.unload()
+
+# Through the shared directory: placed there, loaded by name, unloaded and
+# its files removed.
+ai.nn.use_repository("__TRITON_ADDR__", "__TRITON_REPO__")
+var shared = ai.nn.Model("../modules/ai/scale-shift.onnx", server="__TRITON_ADDR__",
+                         config={'parameters': {'roxal_test': {'string_value': 'shared'}}}, outputs=['doubled'])
+print(shared.deployment()['transport'])
+print(shared.predict(x)[0, 0])
+var again = ai.nn.Model("../modules/ai/scale-shift.onnx", server="__TRITON_ADDR__",
+                        config={'parameters': {'roxal_test': {'string_value': 'shared'}}})
+print(again.deployment()['transport'])
+shared.unload(true)
+print('done')

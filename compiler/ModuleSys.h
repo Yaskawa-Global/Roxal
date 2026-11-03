@@ -138,4 +138,7 @@ std::string sysTimeSpanDefaultString(ObjectInstance* inst);
 std::string sysQuantityDefaultString(ObjectInstance* inst);
 Value sysNewTimeSpan(int64_t totalMicros);
 
+/// `v` as compact JSON, exactly as to_json(v, false) writes it.
+std::string sysToJson(const Value& v);
+
 }

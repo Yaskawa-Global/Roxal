@@ -1,0 +1,56 @@
+# A node whose async body fails with UnavailableError ("not now": a service
+# unreachable or too slow) keeps its last outputs instead of failing the
+# run: one warning per run of such failures, the network carries on, and the
+# node delivers again once the service is back -- by itself on an
+# event-driven island, even when its input never changes.  Any other
+# failure still ends the run.  A plain call raises it, catchable by type.
+type Svc actor:
+    private var down :bool = false
+
+    proc set_down(d :bool):
+        this.down = d
+
+    func f(x :int) -> int:
+        if x == 5:
+            raise "broken"
+        if this.down:
+            raise UnavailableError("service down")
+        return x * 10
+
+var svc = Svc()
+
+func viaService(x :int):
+    return svc.f(x)       # the actor call's future: an async body
+
+try:
+    svc.set_down(true)
+    var r = svc.f(1)
+    print(r is nil)
+except e :UnavailableError:
+    print("caught UnavailableError")
+svc.set_down(false)
+
+var x = signal(0, 1)      # event-driven: no clock
+var y = viaService(x)
+wait(ms=200)
+x.set(2)
+wait(ms=200)
+print(y.value)
+
+# down: held through two inputs, one warning
+svc.set_down(true)
+x.set(3)
+wait(ms=200)
+x.set(4)
+wait(ms=200)
+print(y.value)
+
+# back up, with no new input: the held node retries on its own
+svc.set_down(false)
+wait(ms=1500)
+print(y.value)
+
+print("--- fatal")
+x.set(5)
+wait(ms=300)
+print("not reached")

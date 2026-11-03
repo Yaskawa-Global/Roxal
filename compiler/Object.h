@@ -1180,6 +1180,12 @@ struct ObjTensor : public Obj
     /// Shape and dtype are read from the Ort::Value.
     explicit ObjTensor(Ort::Value&& ortValue);
 
+    /// Construct over host memory allocated elsewhere, without copying:
+    /// `owner` keeps `data` alive and is released with the tensor's storage.
+    /// `data` must hold numel(shape) * dtypeSize(dtype) bytes.
+    ObjTensor(const std::vector<int64_t>& shape, TensorDType dtype,
+              std::shared_ptr<void> owner, void* data);
+
     /// True when the tensor data lives inside an Ort::Value.
     bool isOrtBacked() const { return ort_value_ != nullptr; }
 
@@ -1197,6 +1203,12 @@ struct ObjTensor : public Obj
     /// If the tensor is on GPU, copy data to CPU (lazy materialization).
     /// Logically const — tensor value unchanged, only memory location.
     void ensureCpu() const;
+
+    /// The tensor's host bytes, kept alive and unchanged while the handle is
+    /// held -- a write to the tensor meanwhile copies first (COW) -- so
+    /// another thread may read them without holding the tensor.  A
+    /// GPU-resident tensor moves to the host first.
+    std::shared_ptr<const void> sharedData() const;
 #else
     bool isOrtBacked() const { return false; }
 #endif
@@ -1352,6 +1364,11 @@ void tensorRawSetElementFromDouble(void* base, TensorDType dtype, int64_t idx, d
 #ifdef ROXAL_ENABLE_ONNX
 /// Create a tensor that takes ownership of an Ort::Value (zero-copy).
 unique_ptr<ObjTensor, UnreleasedObj> newTensorObj(Ort::Value&& ortValue);
+/// Create a tensor over host memory allocated elsewhere (zero-copy); `owner`
+/// keeps `data` alive.
+unique_ptr<ObjTensor, UnreleasedObj> newTensorObj(const std::vector<int64_t>& shape,
+                                                   TensorDType dtype,
+                                                   std::shared_ptr<void> owner, void* data);
 #endif
 
 std::string objTensorToString(const ObjTensor* ot);
@@ -1815,27 +1832,58 @@ inline unique_ptr<ObjClosure, UnreleasedObj> newClosureObj(Value function) { // 
 
 struct ObjCombinator; // forward
 
-// Waiter on an ObjFuture. Either a Thread (woken via Thread::wake()) or a
-// Combinator slot (woken via ObjCombinator::notifySlotReady()). The
-// combinator entry holds a weak Value reference to avoid keeping the
+// Something else to tell when a future resolves -- a dataflow engine polling
+// the async bodies of its nodes.  Held weakly; told on the resolving thread,
+// so it must be quick and must not block.
+struct FutureWakeTarget {
+    virtual ~FutureWakeTarget() = default;
+    virtual void futureResolved() = 0;
+};
+
+// Waiter on an ObjFuture. A Thread (woken via Thread::wake()), a Combinator
+// slot (woken via ObjCombinator::notifySlotReady()), or a FutureWakeTarget.
+// The combinator entry holds a weak Value reference to avoid keeping the
 // combinator alive past its useful lifetime.
 struct ObjFutureWaiter {
-    enum class Kind { Thread, Combinator };
+    enum class Kind { Thread, Combinator, Target };
     Kind kind { Kind::Thread };
     weak_ptr<Thread> thread;
     Value combinator { Value::nilVal() };  // weak ref to ObjCombinator
     uint32_t slotIndex { 0 };
+    std::weak_ptr<FutureWakeTarget> target;
+};
+
+// The waiters of one future, in a block of their own: whatever resolves the
+// future wakes them through it, without holding the ObjFuture (see
+// NativePromise).  Emptied when the ObjFuture goes, so a combinator's weak
+// reference never outlives it here.
+struct FutureWaitList {
+    std::mutex mutex;
+    std::vector<ObjFutureWaiter> waiters;
+
+    void addThread(const ptr<Thread>& t);
+    void addCombinator(const Value& cbWeak, uint32_t slotIndex);
+    void addTarget(const std::shared_ptr<FutureWakeTarget>& target);
+
+    // The future resolved to `resolved`: wake its threads, notify its
+    // combinators and targets, once.  A combinator's result is allocated
+    // here, so the calling thread must be one the GC can see.
+    void wake(const Value& resolved);
+
+    void clear();
 };
 
 struct ObjFuture : public Obj
 {
     ObjFuture(const std::shared_future<Value>& fv,
-              ptr<type::Type> promisedType = nullptr)
-        : future(fv), promisedType(std::move(promisedType))
+              ptr<type::Type> promisedType = nullptr,
+              std::shared_ptr<FutureWaitList> waitList = nullptr)
+        : future(fv), promisedType(std::move(promisedType)),
+          waitList(waitList ? std::move(waitList) : std::make_shared<FutureWaitList>())
     {
         type = ObjType::Future;
     }
-    virtual ~ObjFuture() {}
+    virtual ~ObjFuture() { waitList->clear(); }
 
     Value asValue() { return future.valid() ? future.get() : Value::nilVal(); }
 
@@ -1847,12 +1895,15 @@ struct ObjFuture : public Obj
     // actor-method futures.
     Value producer { Value::nilVal() };
 
-    mutable std::mutex waitMutex;
-    std::vector<ObjFutureWaiter> waiters;
+    std::shared_ptr<FutureWaitList> waitList;
 
-    void addWaiter(const ptr<Thread>& t);
+    void addWaiter(const ptr<Thread>& t) { waitList->addThread(t); }
     // `cbWeak` must be a weak Value reference to an ObjCombinator.
-    void addCombinatorWaiter(const Value& cbWeak, uint32_t slotIndex);
+    void addCombinatorWaiter(const Value& cbWeak, uint32_t slotIndex)
+    { waitList->addCombinator(cbWeak, slotIndex); }
+    // Told at once if the future has already resolved.
+    void addWakeTarget(const std::shared_ptr<FutureWakeTarget>& target);
+    // After resolving the future (an actor call's): wake what waits on it.
     void wakeWaiters();
 
     unique_ptr<Obj, UnreleasedObj> clone(roxal::ptr<CloneContext> ctx) const override;
@@ -1871,13 +1922,46 @@ inline ObjFuture* asFuture(const Value& v) {
 }
 
 inline unique_ptr<ObjFuture, UnreleasedObj> newFutureObj(const std::shared_future<Value>& fv,
-                                                         ptr<type::Type> promisedType = nullptr) {
+                                                         ptr<type::Type> promisedType = nullptr,
+                                                         std::shared_ptr<FutureWaitList> waitList = nullptr) {
     #ifdef DEBUG_BUILD
-    return newObj<ObjFuture>(__func__, __FILE__,__LINE__,fv, std::move(promisedType));
+    return newObj<ObjFuture>(__func__, __FILE__,__LINE__,fv, std::move(promisedType), std::move(waitList));
     #else
-    return newObj<ObjFuture>(fv, std::move(promisedType));
+    return newObj<ObjFuture>(fv, std::move(promisedType), std::move(waitList));
     #endif
 }
+
+// The producing end of a future a native function returns, for a thread
+// that is not the VM's (an inference worker, an I/O loop).  Resolving it
+// fulfils the future AND wakes what waits on it -- a thread blocked on it,
+// an allof()/anyof() over it, a dataflow engine polling it -- which a bare
+// std::promise cannot: they wait on the ObjFuture, which such a thread does
+// not hold.
+class NativePromise {
+public:
+    NativePromise();
+    NativePromise(const NativePromise&) = delete;
+    NativePromise& operator=(const NativePromise&) = delete;
+
+    // The future to hand to Roxal: made on a VM thread, once.
+    Value future(ptr<type::Type> promisedType = nullptr);
+    // The same future, for native code to wait on or inspect (copy it before
+    // resolving: afterwards this end holds nothing).
+    const std::shared_future<Value>& sharedFuture() const { return shared_; }
+
+    // Fulfil it -- once -- on any thread, holding no lock a mutator might
+    // wait for.  `value` must have been made where the GC could see it (a VM
+    // thread, or inside an ExternalParticipant).  Waking the waiters may
+    // allocate, so a thread the GC does not know joins it for that; and this
+    // end lets go of the value before returning, so dropping it later, on any
+    // thread, releases no Value.
+    void resolve(const Value& value);
+
+private:
+    std::promise<Value> promise_;
+    std::shared_future<Value> shared_;
+    std::shared_ptr<FutureWaitList> waitList_;
+};
 
 
 

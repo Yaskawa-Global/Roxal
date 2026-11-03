@@ -2,6 +2,7 @@
 
 #include "AsyncDDSManager.h"
 #include "VM.h"
+#include "Object.h"
 
 using namespace roxal;
 
@@ -45,10 +46,10 @@ Value AsyncDDSManager::submit(PendingDDSOp op)
         start();
     }
 
-    ptr<std::promise<Value>> promise = make_ptr<std::promise<Value>>();
+    auto promise = std::make_shared<NativePromise>();
     op.promise = promise;
-    std::shared_future<Value> future = promise->get_future().share();
-    op.future = future;
+    op.future = promise->sharedFuture();
+    Value future = promise->future();
 
     {
         std::lock_guard<std::mutex> lock(queueMutex);
@@ -56,7 +57,7 @@ Value AsyncDDSManager::submit(PendingDDSOp op)
     }
     queueCV.notify_one();
 
-    return Value::futureVal(future);
+    return future;
 }
 
 void AsyncDDSManager::workerLoop()
@@ -79,14 +80,15 @@ void AsyncDDSManager::workerLoop()
             pendingOps.clear();
         }
 
-        // Process all pending operations
+        // Process all pending operations.  A write can block (reliable QoS)
+        // and allocates nothing; resolve() joins the GC for the waking.
         for (auto& op : toProcess) {
             try {
                 Value result = executeOp(op);
-                op.promise->set_value(result);
+                op.promise->resolve(result);
             } catch (const std::exception& e) {
                 // Set error as nil for now - could create exception value
-                op.promise->set_value(Value::nilVal());
+                op.promise->resolve(Value::nilVal());
             }
         }
     }

@@ -224,6 +224,15 @@ func argmax(x, axis = nil):
   vector or tensor gives one index, counting in row-major order."""
 
 @builtin
+func fnv1a64(data, seed = nil) -> int:
+  """The FNV-1a 64-bit hash of `data`: a string's UTF-8 bytes, or a tensor's
+  raw bytes (as its dtype stores them). The 64 bits come back as an int, so
+  the result may be negative. A fast identity for content -- the same hash
+  fileio's content tags use -- but not cryptographic. `seed` continues from
+  an earlier result: fnv1a64(b, seed=fnv1a64(a)) is the hash of a's bytes
+  followed by b's."""
+
+@builtin
 func min(x) -> real:
   """minimum element value (works on vector, matrix, tensor, or list)"""
 

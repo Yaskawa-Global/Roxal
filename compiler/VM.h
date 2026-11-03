@@ -1095,6 +1095,13 @@ protected:
     // (the original behavior). Defined in VM.cpp.
     void hostOrCondVarWait(Thread* thread, TimeDuration maxWait);
 
+    // Block `thread` until the future it awaits resolves or `maxWait` passes.
+    // It is registered as the future's waiter, and readiness is re-checked under
+    // the sleep mutex Thread::wake() notifies under, so a resolution at any moment
+    // wakes it at once.  (A main thread waiting on a host UI loop is not roused
+    // by a resolution: it polls, every `maxWait`.)
+    void waitForFuture(const ptr<Thread>& thread, ObjFuture* fut, TimeDuration maxWait);
+
     // Native call timing instrumentation.
     // When enabled, callNativeFn() times each C++ native call and warns if it
     // exceeds the remaining RT budget. Identifies blocking builtins by name.

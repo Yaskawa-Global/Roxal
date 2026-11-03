@@ -437,6 +437,9 @@ std::vector<std::string> VM::featureStrings()
 #ifdef ROXAL_ENABLE_AI_NN
     features.push_back("nn");
 #endif
+#ifdef ROXAL_ENABLE_TRITON
+    features.push_back("triton");
+#endif
 #ifdef ROXAL_ENABLE_MEDIA
     features.push_back("media");
 #endif
@@ -1590,6 +1593,11 @@ VM::VM()
     // VM::raiseZeroDivisionError). Named after Python's ZeroDivisionError.
     Value zeroDivType = Value::objVal(newObjectTypeObj(toUnicodeString("ZeroDivisionError"), false));
     asObjectType(zeroDivType)->superType = runtimeExType;
+    // A failure that only means "not now": a service unreachable, or too slow
+    // for the caller's deadline.  An async node body failing with one keeps
+    // its last outputs instead of failing the run (FuncNode::resumeExecution).
+    Value unavailableType = Value::objVal(newObjectTypeObj(toUnicodeString("UnavailableError"), false));
+    asObjectType(unavailableType)->superType = runtimeExType;
 #ifdef ROXAL_ENABLE_FILEIO
     Value fileIOExceptionTypeVal = Value::objectTypeVal(toUnicodeString("FileIOException"), false);
     asObjectType(fileIOExceptionTypeVal)->superType = runtimeExType;
@@ -1608,6 +1616,7 @@ VM::VM()
     asObjectType(assertErrType)->superType = exType;
     globals.storeGlobal(toUnicodeString("AssertionError"), assertErrType);
     globals.storeGlobal(toUnicodeString("ZeroDivisionError"), zeroDivType);
+    globals.storeGlobal(toUnicodeString("UnavailableError"), unavailableType);
 #ifdef ROXAL_ENABLE_FILEIO
     globals.storeGlobal(toUnicodeString("FileIOException"), fileIOExceptionTypeVal);
 #endif
@@ -3023,6 +3032,18 @@ void VM::hostOrCondVarWait(Thread* thread, TimeDuration maxWait)
     if (maxWait.microSecs() <= 0) return;
     std::unique_lock<std::mutex> lk(thread->sleepMutex);
     thread->sleepCondVar.wait_for(lk, std::chrono::microseconds(maxWait.microSecs()));
+}
+
+void VM::waitForFuture(const ptr<Thread>& thread, ObjFuture* fut, TimeDuration maxWait)
+{
+    fut->addWaiter(thread);
+    if (hostEventLoop_ && onMainThread()) {
+        hostOrCondVarWait(thread.get(), maxWait);
+        return;
+    }
+    std::unique_lock<std::mutex> lk(thread->sleepMutex);
+    if (fut->future.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+        thread->sleepCondVar.wait_for(lk, std::chrono::microseconds(maxWait.microSecs()));
 }
 
 
@@ -11652,7 +11673,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
 
         // Sleep while awaiting a future (separate from threadSleep to avoid
         // interfering with wait() builtin semantics).  The 1ms is a polling
-        // fallback; normally wakeWaiters() → Thread::wake() unblocks sooner.
+        // fallback; resolving the future wakes the thread (Thread::wake()).
         if (thread->awaitedFuture.isNonNil()) {
             ObjFuture* fut = asFuture(thread->awaitedFuture);
             if (fut->future.wait_for(std::chrono::microseconds(0)) == std::future_status::ready) {
@@ -11666,9 +11687,9 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                         return errorReturn;
                     return yieldReturn;
                 }
-                // Keep a host UI loop (main thread) pumped while awaiting a future;
-                // else the original 1ms condvar poll. Both re-poll the future above.
-                hostOrCondVarWait(thread.get(), TimeDuration::milliSecs(1));
+                // Woken by whatever resolves the future; the 1ms is the
+                // fallback (and a host UI loop's pump interval).
+                waitForFuture(thread, fut, TimeDuration::milliSecs(1));
             }
         }
 
@@ -11735,9 +11756,9 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                         return errorReturn;
                     return yieldReturn;
                 }
-                // Keep a host UI loop (main thread) pumped while awaiting a future;
-                // else the original 1ms condvar poll. Both re-poll the future above.
-                hostOrCondVarWait(thread.get(), TimeDuration::milliSecs(1));
+                // Woken by whatever resolves the future; the 1ms is the
+                // fallback (and a host UI loop's pump interval).
+                waitForFuture(thread, fut, TimeDuration::milliSecs(1));
             }
         }
 

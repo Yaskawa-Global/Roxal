@@ -162,10 +162,11 @@ Value AsyncIOManager::submit(PendingIOOp op)
         start();
     }
 
-    ptr<std::promise<Value>> promise = make_ptr<std::promise<Value>>();
+    auto promise = std::make_shared<NativePromise>();
     op.promise = promise;
-    std::shared_future<Value> future = promise->get_future().share();
+    std::shared_future<Value> future = promise->sharedFuture();
     op.future = future;
+    Value futureValue = promise->future();
 
     // Track future for file operations (so waitForFile can wait for them)
     if (op.file) {
@@ -179,7 +180,7 @@ Value AsyncIOManager::submit(PendingIOOp op)
     }
     queueCV.notify_one();
 
-    return Value::futureVal(future);
+    return futureValue;
 }
 
 Value AsyncIOManager::getPendingFuture(Value fileValue)
@@ -212,8 +213,9 @@ Value AsyncIOManager::getPendingFuture(Value fileValue)
     }
 
     // Create a combined future that waits for all pending ops
-    ptr<std::promise<Value>> promise = make_ptr<std::promise<Value>>();
-    std::shared_future<Value> combinedFuture = promise->get_future().share();
+    auto promise = std::make_shared<NativePromise>();
+    std::shared_future<Value> combinedFuture = promise->sharedFuture();
+    Value futureValue = promise->future();
 
     // Submit a task that waits for all futures then signals completion
     PendingIOOp waitOp;
@@ -229,7 +231,7 @@ Value AsyncIOManager::getPendingFuture(Value fileValue)
     }
     queueCV.notify_one();
 
-    return Value::futureVal(combinedFuture);
+    return futureValue;
 }
 
 void AsyncIOManager::waitForFile(Value fileValue)
@@ -306,14 +308,14 @@ void AsyncIOManager::workerLoop()
             // close()/flush() future.
             if (!running.load() &&
                 std::chrono::steady_clock::now() > shutdownDeadline) {
-                op.promise->set_value(opFailureValue(op.type));
+                op.promise->resolve(opFailureValue(op.type));
                 ++abandoned;
                 abandonedBytes += op.writeData.size();
                 continue;
             }
             try {
                 Value result = executeOp(op);
-                op.promise->set_value(result);
+                op.promise->resolve(result);
             } catch (const std::exception& e) {
                 // A failed async op must not be silent: report it, and
                 // resolve the future to a script-observable failure value.
@@ -323,13 +325,13 @@ void AsyncIOManager::workerLoop()
                         << " failed: " << e.what();
                 VM::emitDiagnostic(message.str(), OutputSeverity::Error,
                                    "fileio");
-                op.promise->set_value(opFailureValue(op.type));
+                op.promise->resolve(opFailureValue(op.type));
             } catch (...) {
                 VM::emitDiagnostic(
                     std::string("fileio: async ") + opLabel(op) +
                         " failed with unknown error",
                     OutputSeverity::Error, "fileio");
-                op.promise->set_value(opFailureValue(op.type));
+                op.promise->resolve(opFailureValue(op.type));
             }
         }
         if (abandoned) {
@@ -349,16 +351,25 @@ void AsyncIOManager::workerLoop()
     }
 
     // Shutdown: resolve anything queued after the final batch was taken so
-    // no future is left holding a broken promise.
-    std::lock_guard<std::mutex> lock(queueMutex);
-    if (!pendingOps.empty()) {
+    // no future is left holding a broken promise.  The failure values
+    // allocate, so as a GC participant -- entered before queueMutex (the
+    // collector takes it in tracePending), and holding it only to take the
+    // ops: resolving with a lock the collector needs could deadlock.  Out of
+    // the traced queue the ops' Values stay safe: no collection runs while
+    // this thread is a participant outside a safepoint.
+    SimpleMarkSweepGC::ExternalParticipant gcParticipant(SimpleMarkSweepGC::instance());
+    std::list<PendingIOOp> abandoned;
+    {
+        std::lock_guard<std::mutex> lock(queueMutex);
+        abandoned.swap(pendingOps);
+    }
+    if (!abandoned.empty()) {
         VM::emitDiagnostic(
-            "fileio: " + std::to_string(pendingOps.size()) +
+            "fileio: " + std::to_string(abandoned.size()) +
                 " op(s) abandoned at shutdown",
             OutputSeverity::Warning, "fileio");
-        for (auto& op : pendingOps)
-            op.promise->set_value(opFailureValue(op.type));
-        pendingOps.clear();
+        for (auto& op : abandoned)
+            op.promise->resolve(opFailureValue(op.type));
     }
 }
 

@@ -1,0 +1,44 @@
+# Model(..., outputs=[names]) chooses which outputs predict returns, and in
+# what order: a reordering, or a subset (one name gives a single-output
+# predict).  outputs() and the declared arity -- so the lifted destructure --
+# follow the selection.
+# scale-shift.onnx: doubled = x * 2, plus_one = x + 1, shape [1, 4]
+import ai.nn
+
+var x = tensor(1, 4, dtype='float32')
+x[0, 3] = 4.0
+
+var swapped = ai.nn.Model("../modules/ai/scale-shift.onnx", device='cpu',
+                          outputs=['plus_one', 'doubled'])
+print(swapped.outputs()[0]['name'])
+print(swapped.outputs()[1]['name'])
+var res = swapped.predict(x)
+print(res[0][0, 3])
+print(res[1][0, 3])
+
+var sig = signal(0, x)
+var [p, d] = swapped.predict(sig)
+wait(ms=300)
+print(p.value[0, 3])
+print(d.value[0, 3])
+
+var one = ai.nn.Model("../modules/ai/scale-shift.onnx", device='cpu', outputs=['doubled'])
+print(len(one.outputs()))
+var single = one.predict(x)
+print(single[0, 3])
+
+func rejects(sel, expected :string) -> bool:
+    try:
+        var m = ai.nn.Model("../modules/ai/scale-shift.onnx", device='cpu', outputs=sel)
+        return m is nil
+    except e:
+        if expected in string(e):
+            return true
+        print(e)
+        return false
+
+print(rejects(['tripled'], "has no output 'tripled'"))
+print(rejects(['doubled', 'doubled'], "named twice"))
+print(rejects([], "at least one output"))
+print(rejects(['doubled', 3], "list of output names"))
+print('done')

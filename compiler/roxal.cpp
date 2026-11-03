@@ -834,6 +834,9 @@ int main(int argc, const char* argv[])
                 arg == "--astgraph" || arg == "--gc-threshold" ||
                 arg == "--stack-size" || arg == "--max-call-frames" || arg == "--dataflow-scheme"
                 || arg == "--drive-us" || arg == "--drive-tick-us"
+#ifdef ROXAL_ENABLE_TRITON
+                || arg == "--triton-repository"
+#endif
 #ifdef ROXAL_COMPUTE_SERVER
                 || arg == "--port"
 #endif
@@ -887,6 +890,12 @@ int main(int argc, const char* argv[])
         ("drive-tick-us", po::value<long long>(),
          "testing, with --drive-us: also tickFor() the dataflow engine with this budget "
          "(microseconds) each cycle, as a real-time host does")
+        #ifdef ROXAL_ENABLE_TRITON
+        ("triton-repository", po::value< std::vector<std::string> >(),
+         "SERVER=DIR: DIR, as this machine sees it, is a model repository the Triton server SERVER "
+         "serves, so ai.nn models deployed there (Model(path, server=...)) are placed in it rather "
+         "than uploaded (repeatable; overrides ROXAL_TRITON_REPOSITORIES)")
+        #endif
         ("stack-size", po::value<size_t>()->default_value(VM::DefaultMaxStack), stackOptionHelp.c_str())
         ("max-call-frames", po::value<size_t>()->default_value(VM::DefaultMaxCallFrames), frameOptionHelp.c_str())
         #ifdef ROXAL_COMPUTE_SERVER
@@ -1083,6 +1092,15 @@ int main(int argc, const char* argv[])
 
         if (vmap.count("gc-threshold"))
             RuntimeConfig::set("gc.threshold", std::to_string(vmap["gc-threshold"].as<long long>()));
+
+#ifdef ROXAL_ENABLE_TRITON
+        if (vmap.count("triton-repository")) {
+            std::string list;
+            for (const auto& entry : vmap["triton-repository"].as<std::vector<std::string>>())
+                list += (list.empty() ? "" : ";") + entry;
+            RuntimeConfig::set("triton.repositories", list);
+        }
+#endif
 
         // VM limits
         RuntimeConfig::set("vm.stack_size", std::to_string(stackSizeLimit));

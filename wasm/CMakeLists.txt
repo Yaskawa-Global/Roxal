@@ -54,6 +54,7 @@ set(_wasm_models
     "${CMAKE_SOURCE_DIR}/modules/ai/scale-shift.onnx"
     "${CMAKE_SOURCE_DIR}/modules/ai/identity-10.onnx"
     "${CMAKE_SOURCE_DIR}/modules/ai/double-dynamic.onnx"
+    "${CMAKE_SOURCE_DIR}/modules/ai/shift-const3.onnx"
     "${CMAKE_SOURCE_DIR}/modules/ai/mnist-8.onnx")
 set(_wasm_models_stage "${CMAKE_CURRENT_BINARY_DIR}/models")
 

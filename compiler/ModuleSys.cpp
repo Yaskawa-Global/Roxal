@@ -5566,6 +5566,14 @@ struct JsonWriter {
     }
 };
 
+std::string roxal::sysToJson(const Value& v)
+{
+    std::string out;
+    JsonWriter w{out, false, false};
+    w.writeValue(v, 0);
+    return out;
+}
+
 Value ModuleSys::to_json_builtin(VM& vm, ArgsView args)
 {
     if(args.size() < 1 || args.size() > 3)

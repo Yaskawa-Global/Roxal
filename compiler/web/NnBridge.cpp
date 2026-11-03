@@ -5,6 +5,7 @@
 
 #include "Object.h"
 #include "VM.h"
+#include "GCRoots.h"
 
 #include <chrono>
 #include <future>
@@ -26,22 +27,38 @@ namespace {
 struct PendingNn {
     uint32_t callId = 0;
     uint8_t kind = 0;                       // 0=create 1=run 2=close
-    ptr<std::promise<Value>> promise;
+    std::shared_ptr<NativePromise> promise;
     Value futureValue;
     std::vector<Value> heldValues;
 };
 
 struct NnState {
-    std::mutex mutex;                       // requests come from any Roxal thread
+    mutable std::mutex mutex;               // requests come from any Roxal thread
     std::vector<PendingNn> pending;
     uint32_t nextCallId = 1;
     bool installed = false;
 };
 
+// A GC root: in-flight requests pin their futures and held input tensors
+// until the host's reply lands.
+void traceState(ValueVisitor& visitor, const NnState& s)
+{
+    std::lock_guard<std::mutex> lock(s.mutex);
+    for (const auto& p : s.pending) {
+        visitor.visit(p.futureValue);
+        for (const auto& h : p.heldValues)
+            visitor.visit(h);
+    }
+}
+
+// Constructed with the program, not on first use: a root may not be created
+// inside an RT yield section, which is where a host-driven run loads its
+// first model.
+TracedMember<NnState> gState { &traceState };
+
 NnState& state()
 {
-    static NnState s;
-    return s;
+    return *gState;
 }
 
 Value exceptionValue(const std::string& msg)
@@ -112,33 +129,33 @@ void onNnResult(uint32_t callId, const std::vector<Value>& args)
         if (!ok) {
             const std::string msg = isString(body)
                 ? toUTF8StdString(asStringObj(body)->s) : "provider error";
-            entry.promise->set_value(exceptionValue(msg));
+            entry.promise->resolve(exceptionValue(msg));
             return;
         }
 
         switch (entry.kind) {
             case 0:                          // create -> metadata dict, as-is
-                entry.promise->set_value(body);
+                entry.promise->resolve(body);
                 break;
             case 1: {                        // run -> tensor | list of tensors
                 if (!isList(body))
                     throw std::runtime_error("nn: provider run reply is not a list");
                 ObjList* outs = asList(body);
                 if (outs->length() == 1) {
-                    entry.promise->set_value(tensorFromReply(outs->getElement(0)));
+                    entry.promise->resolve(tensorFromReply(outs->getElement(0)));
                 } else {
                     Value listVal = Value::listVal();
                     for (int i = 0; i < outs->length(); ++i)
                         asList(listVal)->append(tensorFromReply(outs->getElement(i)));
-                    entry.promise->set_value(listVal);
+                    entry.promise->resolve(listVal);
                 }
                 break;
             }
             default:
-                entry.promise->set_value(Value::trueVal());
+                entry.promise->resolve(Value::trueVal());
         }
     } catch (const std::exception& e) {
-        entry.promise->set_value(exceptionValue(e.what()));
+        entry.promise->resolve(exceptionValue(e.what()));
     }
 }
 
@@ -149,8 +166,14 @@ void onNnShutdown()
         std::lock_guard<std::mutex> lock(state().mutex);
         orphans.swap(state().pending);
     }
+    // Out of the registry their Values are on no root, and an allocation may
+    // let a collection run: drop them BEFORE allocating the errors.
+    std::vector<std::shared_ptr<NativePromise>> promises;
     for (auto& p : orphans)
-        p.promise->set_value(exceptionValue("nn: abandoned — bridge shutting down"));
+        promises.push_back(std::move(p.promise));
+    orphans.clear();
+    for (auto& promise : promises)
+        promise->resolve(exceptionValue("nn: abandoned — bridge shutting down"));
 }
 
 void ensureInstalled()
@@ -171,9 +194,8 @@ Value submit(uint8_t kind, const std::function<void(Encoder&)>& payload,
 
     PendingNn entry;
     entry.kind = kind;
-    entry.promise = make_ptr<std::promise<Value>>();
-    std::shared_future<Value> fut = entry.promise->get_future().share();
-    entry.futureValue = Value::futureVal(fut);
+    entry.promise = std::make_shared<NativePromise>();
+    entry.futureValue = entry.promise->future();
     entry.heldValues = std::move(heldValues);
 
     Value futureValue = entry.futureValue;
@@ -260,16 +282,6 @@ Value roxal::web::nnAwaitBlocking(const Value& future, int timeoutMs)
             ? toUTF8StdString(asStringObj(msg)->s) : "ai.nn: provider error");
     }
     return v;
-}
-
-void roxal::web::nnTracePending(ValueVisitor& visitor)
-{
-    std::lock_guard<std::mutex> lock(state().mutex);
-    for (const auto& p : state().pending) {
-        visitor.visit(p.futureValue);
-        for (const auto& h : p.heldValues)
-            visitor.visit(h);
-    }
 }
 
 #endif // __EMSCRIPTEN__

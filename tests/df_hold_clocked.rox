@@ -1,0 +1,33 @@
+# As df_hold_unavailable, on a CLOCKED island: while the service is down the
+# node keeps its last output and every tick tries again, so it delivers on
+# the first tick after the service is back -- its input unchanged.
+type Svc actor:
+    private var down :bool = false
+
+    proc set_down(d :bool):
+        this.down = d
+
+    func f(x :int) -> int:
+        if this.down:
+            raise UnavailableError("service down")
+        return x * 10
+
+var svc = Svc()
+
+func viaService(x :int):
+    return svc.f(x)
+
+var x = signal(20, 1)     # 20 Hz: a clocked island
+var y = viaService(x)
+wait(ms=300)
+print(y.value)
+
+svc.set_down(true)
+x.set(2)
+wait(ms=300)
+print(y.value)
+
+svc.set_down(false)
+wait(ms=300)
+print(y.value)
+print("done")

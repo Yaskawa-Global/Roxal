@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/fnv1a.h"
 #include <cstdint>
 #include <cstring>
 #include <stdexcept>
@@ -66,15 +67,6 @@ inline void writeU32(std::vector<std::uint8_t>& buf, std::uint32_t v) {
 inline void writeU64(std::vector<std::uint8_t>& buf, std::uint64_t v) {
     for (int i = 56; i >= 0; i -= 8)
         buf.push_back(static_cast<std::uint8_t>((v >> i) & 0xFF));
-}
-
-inline std::uint64_t fnv1a64(const std::uint8_t* data, std::size_t len) {
-    std::uint64_t hash = 1469598103934665603ull;
-    for (std::size_t i = 0; i < len; ++i) {
-        hash ^= static_cast<std::uint64_t>(data[i]);
-        hash *= 1099511628211ull;
-    }
-    return hash;
 }
 
 inline std::uint64_t fnv1a64(const std::vector<std::uint8_t>& data) {

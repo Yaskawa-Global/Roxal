@@ -1300,6 +1300,7 @@ The built-in exception types form a small hierarchy rooted at `exception`:
 | `RuntimeException` | errors detected while running |
 | `ZeroDivisionError` | a `/` or `rem` with a zero divisor (subtype of `RuntimeException`) |
 | `FileIOException` | fileio errors, e.g. `read_line` on a binary file (subtype of `RuntimeException`) |
+| `UnavailableError` | a failure that only means "not now": a service unreachable, or too slow for its deadline (subtype of `RuntimeException`). A dataflow node whose asynchronous body (such as a model's `predict`) fails with one keeps its last outputs instead of ending the run, and tries again |
 | `ProgramException` | application-level failures |
 | `ConditionalInterrupt` | an `until` condition becoming true |
 | `AssertionError` | a failed `assert` (a *direct* subtype of `exception`, so an `except e :RuntimeException:` around the code under test cannot swallow it) |
@@ -1930,7 +1931,7 @@ Proto enums are emitted as real Roxal enum types, so you can refer to labels suc
 Each proto `service` is emitted as a Roxal actor type. Actor instances expose:
 
 * `init(addr="127.0.0.1:50051", opts=dict)` to configure the target endpoint and optional channel arguments (`timeout_ms`, keep-alive settings, max message sizes, etc.).
-* One method per RPC. Invoking `svc.SomeRpc(req)` queues the call on the actor thread and returns a future that resolves to the RPC response. If the gRPC status is not `OK`, the future raises a Roxal `RuntimeException` (or `ProgramException` for application-level status codes) whose `detail` dict captures the gRPC status code/name/message.
+* One method per RPC. Invoking `svc.SomeRpc(req)` queues the call on the actor thread and returns a future that resolves to the RPC response. If the gRPC status is not `OK`, the future raises a Roxal `RuntimeException` -- an `UnavailableError` when the server is unreachable or overloaded (`UNAVAILABLE`) or the call ran past its deadline (`DEADLINE_EXCEEDED`), a `ProgramException` for application-level status codes -- whose `detail` dict captures the gRPC status code/name/message.
 
 RPC methods accept flattened parameters that mirror the request message fields, plus an optional `request` parameter. All of the field parameters default to `nil`, so you can call an RPC with only the fields you care about:
 
@@ -2395,6 +2396,10 @@ print(best)  // 1
 model.close()
 ```
 
+A model served by an NVIDIA Triton server loads the same way from a `triton://host[:port]/model` source, and is then used exactly as above: `ai.nn.Model("triton://192.168.1.20:8001/mnist")`.
+The source is an ordinary string, so the server can come from a variable: `ai.nn.Model("triton://{server}/mnist")`.
+See *Models Served by Triton* below.
+
 ### Device Selection
 
 By default, `load()` uses GPU (CUDA) when available, falling back to CPU. The `device` parameter overrides this:
@@ -2548,6 +2553,52 @@ var best = argmax(logits)                           // downstream nodes as usual
 
 When models run on GPU, intermediate tensors stay on GPU throughout the signal chain — no CPU round-trip.
 
+To choose which outputs `predict` returns, and in what order, name them: `outputs=['logits', 'pred_boxes']` returns those two in that order, and `outputs=['logits']` makes a single-output `predict`. `outputs()` and the number of derived signals follow the selection.
+
+### When Inference Fails
+
+`predict` checks its input against the model before anything runs: a missing or unknown input name, the wrong dtype or an incompatible shape raises at the call. An inference that then fails while running raises too, when its result is used, so `try`/`except` catches it.
+
+In a dataflow network, an inference node that fails ends the run, as any node whose body raises does -- with one exception. A failure that only means "not now", an `UnavailableError` (a model server unreachable, or too slow for its deadline), makes the node **keep its last outputs**: one warning is printed, the rest of the network carries on with the last result, and the node delivers again once the server answers. It retries by itself, even when its input never changes.
+
+### Models Served by Triton
+
+In builds with Triton support (`ROXAL_ENABLE_TRITON`), a model can run on an [NVIDIA Triton Inference Server](https://github.com/triton-inference-server/server) -- on this machine or another -- instead of in the script's own process:
+
+```roxal
+var detector = ai.nn.Model("triton://gpu-rack:8001/dfine", outputs=['logits', 'pred_boxes'],
+                           timeout=200ms)
+var frame = signal(0, tensor(1, 3, 640, 640, dtype='float32'))
+var [logits, boxes] = detector.predict(frame)     // as for any model
+
+when detector.available becomes false:
+    print("detector unreachable: using its last result")
+```
+
+The source is `triton://host[:port]/model[?version=N]` (the port defaults to 8001, Triton's gRPC port); the model is whatever the server has under that name. Everything else works as for a model run in the process -- `predict` plainly or lifted into a network, `inputs()`, `outputs()` -- with a few differences:
+
+* **Name the outputs.** Triton lists a model's outputs in its own order, which need not be the ONNX file's: without `outputs=`, `predict` returns them in the server's order (see `outputs()`), so `var [logits, boxes] = ...` could silently bind them the wrong way round.
+* **`timeout`** (a time quantity or seconds, default 1 s) bounds each inference. Past it, the call fails with `UnavailableError` -- so a network node keeps its last outputs rather than stalling.
+* **`available`** is a bool signal, false while the server is unreachable or too slow, true again once it answers (for a model run in the process it is always true).
+* `Model(...)` contacts the server: an unreachable server raises `UnavailableError`, a model it does not have a `ProgramException`. `device` must be `'auto'` (the server decides), there is no warm-up, and outputs come back as CPU tensors.
+* **Which server.** `model.server_info()` is the server the model loaded from -- `{kind: 'triton', name: 'triton', version: '2.62.0', extensions: [...]}` -- and `ai.nn.server_info('host[:port]')` asks a server directly, before loading anything. Error messages name it too (`... at gpu-rack:8001 (triton 2.62.0): ...`). No version is required: the protocol Roxal uses is the same from Triton 23.01 on.
+
+### Deploying a Model File to a Triton Server
+
+Where a model runs can be an option of the model rather than a different model: give `Model` the model's *file* and a `server`, and Roxal deploys it there and then uses it like any `triton://` model.
+
+```roxal
+var det = ai.nn.Model("models/dfine_nano.onnx", outputs=['logits', 'pred_boxes'])                    // in this process
+var det = ai.nn.Model("models/dfine_nano.onnx", outputs=['logits', 'pred_boxes'], server="gpu-rack") // on that server
+```
+
+* **The server** is an address, `'host[:port]'` (a host name or an IP; the port defaults to 8001), and must be started with `--model-control-mode=explicit` -- otherwise it loads only its own models, and `Model(...)` says so.
+* **What is deployed:** an `.onnx` file (with the external-data files it names, as ONNX models over 2 GB have), a TensorRT `.plan` (built for the server's TensorRT version and GPU), a TorchScript `.pt` (it needs `config=`, below), an OpenVINO `.xml` with its `.bin`, or a directory of a model's files (a Python model, anything else).
+* **Once per content.** The model is served as `roxal.<file name>.<hash of its content>`. If the server already serves that -- an earlier run, another program -- Roxal uses it as it is; change the file and it is deployed afresh.
+* **How it gets there.** Roxal uploads the files (up to 2 GB in all), unless the server shares a directory with this machine that it serves as a model repository: then the files are placed there (hard-linked if they can be, else symlinked, else copied) and the server loads them by name -- no size limit, nothing over the network. Tell Roxal about such a directory once per machine with the environment variable `ROXAL_TRITON_REPOSITORIES="gpu-rack=/mnt/gpu-rack-models;localhost:8001=~/roxal-triton"` (or `roxal --triton-repository SERVER=DIR`, or an embedding host's `triton.repositories` setting), or from a script with `ai.nn.use_repository(server, directory)`.
+* **`config`** (with `server=`) is a dict overriding Triton's model configuration -- `config={'max_batch_size': 8}`, or `{'instance_group': [{'kind': 'KIND_GPU', 'count': 2}]}`. Triton fills in the rest from the model. It is part of the content: another configuration is another deployment.
+* **Unloading.** A deployed model stays on the server (others may share it) until `model.unload()` takes it off -- `unload(remove=true)` also deletes its files from the shared directory. `close()` never unloads. `model.deployment()` says how it was deployed: `{server, name, transport, repository}`, `transport` being `'upload'`, `'repository'` or `'reused'`.
+* **Security.** A server in explicit mode loads models from anyone who can reach its port -- Python models included, which is running code on that machine. Run it so only on a trusted network.
 
 ### API Reference
 
@@ -2557,17 +2608,23 @@ When models run on GPU, intermediate tensors stay on GPU throughout the signal c
 |----------|-------------|
 | `tensor_device(t)` | Return the device where a tensor resides (`'cpu'` or `'cuda'`). |
 | `memory_info(device='auto')` | Return memory info dict: `{device, total, free, used}` (bytes). |
+| `server_info(address)` | Ask the Triton server at `'host[:port]'` or `'triton://host[:port]'` who it is: `{kind, name, version, extensions}`. `kind` is how Roxal reached it (`'triton'`); the rest is the server's own description. Raises `UnavailableError` if it cannot be reached. |
+| `use_repository(server, directory)` | For this run, deploy models to `server` through `directory`: a directory, as this machine sees it, that the server serves as a model repository. `directory=nil` goes back to `ROXAL_TRITON_REPOSITORIES` / the `triton.repositories` setting. |
 
 #### Model Type
 
 | Method | Description |
 |--------|-------------|
-| `Model(path, device='auto', warmup=true)` | Load an ONNX model. Device: `'auto'`, `'cpu'`, or `'cuda'`. Set `warmup=false` to skip initial warm-up inference. |
+| `Model(path, device='auto', warmup=true, outputs=nil, timeout=nil, server=nil, config=nil)` | Load an ONNX model, or a Triton-served one (`'triton://host[:port]/model'`). Device: `'auto'`, `'cpu'`, or `'cuda'` (Triton: `'auto'` only). Set `warmup=false` to skip initial warm-up inference. `outputs`: the output names `predict` returns, in that order. `timeout`: how long a Triton inference may take (default 1 s). `server`: deploy the model file to that Triton server and run it there; `config`: with `server`, a dict overriding Triton's model configuration. |
 | `predict(input)` | Run inference. Input: tensor, dict `{name: tensor}`, list of tensors, or a signal. Returns tensor (or list if multiple outputs). With a signal input, returns a derived signal, or one derived signal per output for a multi-output model (`var [a, b] = model.predict(sig)`). Declared `-> [tensor, ...]` with one entry per model output. |
 | `inputs()` | Return list of input descriptors: `[{name, shape, dtype}, ...]` |
 | `outputs()` | Return list of output descriptors: `[{name, shape, dtype}, ...]` |
-| `device()` | Return execution device string (`'cpu'` or `'cuda'`). |
-| `close()` | Release model session and free resources. |
+| `device()` | Return execution device string (`'cpu'`, `'cuda'`, or `'triton'`). |
+| `server_info()` | The server a Triton model loaded from, as `ai.nn.server_info()` describes it; `nil` for a model run in this process. |
+| `close()` | Release model session and free resources. Predicts still queued fail with "model closed"; one already running finishes. |
+| `deployment()` | How this program deployed the model with `server=`: `{server, name, transport, repository}`; `nil` for any other model. |
+| `unload(remove=false)` | Take a model deployed with `server=` off its server, and close it; `remove=true` also deletes its files from the shared directory. Raises for other models. |
+| `available` | A bool signal: whether the model's Triton server answers (always true for a model run in this process). |
 
 
 ## Advanced: Calling C Libraries (FFI)
@@ -2982,6 +3039,7 @@ Use `import math` or `import math.*`.  See `math.rox`.
 * `softmax(x)` - softmax function: `exp(x_i) / sum(exp(x_j))` (works on vector or 1D tensor)
 * `argmax(x)` - index of the largest element (works on a vector or a tensor of any rank, counting in row-major order)
 * `argmax(x, axis=n)` - reduce along one axis instead: an int32 tensor of indices with that axis removed, so classifier scores `[1, classes, h, w]` become a class map `[1, h, w]` with `axis=1`. A negative axis counts from the end; a tie keeps the lowest index
+* `fnv1a64(data, seed=nil)` - the FNV-1a 64-bit hash of a string's UTF-8 bytes or a tensor's raw bytes, as an int (so it may be negative). A fast identity for content, not cryptographic. `seed` continues from an earlier result: `fnv1a64(b, seed=fnv1a64(a))` hashes `a`'s bytes followed by `b`'s
 * `min(x)` - minimum element value (works on vector, matrix, tensor, or list)
 * `max(x)` - maximum element value (works on vector, matrix, tensor, or list)
 * `sum(x)` - sum of all elements (works on vector, matrix, tensor, or list)

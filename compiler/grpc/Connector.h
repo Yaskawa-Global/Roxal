@@ -13,6 +13,7 @@
 #include <functional>
 
 #include "ArgsView.h"
+#include "GrpcStatus.h"
 #include "GCRoots.h"
 #include "Value.h"
 #include "ClientCall.h"
@@ -23,6 +24,8 @@ namespace df {
 }
 
 namespace roxal {
+
+class NativePromise;
 
 class Connector {
 public:
@@ -49,8 +52,6 @@ private:
     std::string statusMessage;
 };
 
-const char* grpcStatusCodeName(grpc::StatusCode code);
-
 
 // State for an active streaming RPC
 struct ActiveStreamState {
@@ -71,7 +72,7 @@ struct ActiveStreamState {
     std::vector<std::function<void()>> cleanupCallbacks;
 
     // Promise for client-streaming response (resolves when stream closes)
-    std::shared_ptr<std::promise<Value>> responsePromise;
+    std::shared_ptr<NativePromise> responsePromise;
 };
 
 

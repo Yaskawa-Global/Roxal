@@ -1612,9 +1612,13 @@ bool Value::resolveFuture()
         }
 
         {
+            // Readiness re-checked under the mutex Thread::wake() notifies
+            // under: whatever resolves the future after this wakes the wait
+            // at once.  The 1ms is the fallback.
             std::unique_lock<std::mutex> lk(thread->sleepMutex);
             thread->threadSleep = true;
-            thread->sleepCondVar.wait_for(lk, std::chrono::milliseconds(1));
+            if (fut->future.wait_for(std::chrono::microseconds(0)) != std::future_status::ready)
+                thread->sleepCondVar.wait_for(lk, std::chrono::milliseconds(1));
             thread->threadSleep = false;
         }
 

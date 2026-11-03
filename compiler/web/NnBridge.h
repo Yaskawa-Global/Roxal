@@ -60,10 +60,6 @@ void nnClose(uint32_t sessionId);
 // resolved Value.
 Value nnAwaitBlocking(const Value& future, int timeoutMs);
 
-// GC root hook: pins in-flight requests' futures and held input tensors.
-// Called from SimpleMarkSweepGC::visitRoots; locks internally.
-void nnTracePending(ValueVisitor& visitor);
-
 } // namespace web
 } // namespace roxal
 

@@ -1,0 +1,20 @@
+# A script that ends while Triton inferences are still in flight -- a plain
+# predict never awaited, and a lifted one -- exits cleanly: shutdown cancels
+# the calls and settles them before the VM frees anything.
+import ai.nn
+
+var control = ai.nn.Model("triton://__TRITON_ADDR__/__control")
+proc serverMode(mode :int):
+    var t = tensor(1, dtype='int32')
+    t[0] = mode
+    var ok = control.predict(t)[0]
+
+serverMode(2)                             # slow: every inference takes 2 s
+var model = ai.nn.Model("triton://__TRITON_ADDR__/scale_shift", timeout=5)
+var x = tensor(1, 4, dtype='float32')
+var pending = model.predict(x)
+var frame = signal(0, x)
+var [plus_one, doubled] = model.predict(frame)
+wait(ms=100)
+serverMode(0)
+print("done")

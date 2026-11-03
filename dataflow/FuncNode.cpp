@@ -20,6 +20,17 @@ struct DataflowThreadGuard {
     ~DataflowThreadGuard() { roxal::VM::setOnDataflowThread(false); }
 };
 
+// An exception Value of the builtin UnavailableError type (or a subtype).
+bool isUnavailableError(const roxal::Value& exception)
+{
+    const roxal::Value& type = roxal::asException(exception)->exType;
+    if (!roxal::isObjectType(type))
+        return false;
+    auto unavailable = roxal::VM::instance().loadGlobal(roxal::toUnicodeString("UnavailableError"));
+    return unavailable && roxal::isObjectType(*unavailable)
+        && roxal::isSubtypeOf(roxal::asObjectType(type), roxal::asObjectType(*unavailable));
+}
+
 // The domain of the thread constructing a node: the run (or session, or
 // service) the node belongs to.
 weak_ptr<roxal::ExecutionDomain> creatingDomain()
@@ -498,12 +509,13 @@ FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline
     // futures resolve (see resumeExecution) instead of dropping this
     // update behind the in-flight one.  Resolved: deliver, then -- unless
     // the rerun already covered it -- fall through and evaluate afresh at
-    // this newer time.
+    // this newer time.  A held evaluation (see resumeExecution) is settled
+    // the same way, but delivered nothing.
     bool delivered = false;   // a pending evaluation completed in this call
     if (hasPendingFutureYield()) {
         const TimePoint yieldedAt = m_funcYieldState.executionTime;
         auto result = resumeExecution(deadline);
-        if (result != FuncExecResult::Completed) {
+        if (result != FuncExecResult::Completed && result != FuncExecResult::Held) {
             if (result == FuncExecResult::Yielded && time > yieldedAt
                 && (!m_funcYieldState.rerunTime || time > *m_funcYieldState.rerunTime))
                 m_funcYieldState.rerunTime = time;
@@ -517,8 +529,8 @@ FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline
             return FuncExecResult::Yielded;
         }
         if (time <= yieldedAt)
-            return result;
-        delivered = true;
+            return result == FuncExecResult::Held ? FuncExecResult::NotExecuted : result;
+        delivered = result == FuncExecResult::Completed;
     }
 
     if (!m_operatorSignalsCalled && !inputNames().empty())
@@ -649,8 +661,16 @@ FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline
         outputValues = distributeReturnValue(result.second);
     }
 
-    // Check if any output is a future (async native fn like predict).
-    // If so, yield and let resumeExecution() poll for completion.
+    return finishEvaluation(time, inputValues, outputValues);
+}
+
+FuncExecResult FuncNode::finishEvaluation(TimePoint time, const Values& inputValues,
+                                          const Values& outputValues)
+{
+    // An output that is a future (an async native body such as predict, an
+    // actor call): nothing is published yet.  The node keeps the futures and
+    // is checked again on later evaluations (resumeExecution, Case 1),
+    // without anything waiting for them.
     bool hasPendingFuture = false;
     for (const auto& v : outputValues) {
         if (isFuture(v)) { hasPendingFuture = true; break; }
@@ -679,6 +699,7 @@ FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline
     }
 
     m_failureReported = false;
+    m_holdReported = false;
     return FuncExecResult::Completed;
 }
 
@@ -728,6 +749,43 @@ FuncExecResult FuncNode::resumeExecution(TimePoint deadline)
         m_funcYieldState.pendingOutputFutures.clear();
         m_funcYieldState.rerunTime.reset();
 
+        // A failed async body resolves to an exception.  Any failure but an
+        // UnavailableError fails the node as one whose body raises directly
+        // does -- reported once, its outputs left at their last values, and
+        // a rerun asked for meanwhile dropped with the evaluation it was
+        // waiting behind.  An UnavailableError ("not now": a service
+        // unreachable or too slow) HOLDS the node instead: every output keeps
+        // its last value -- never some outputs and not others -- with one
+        // warning per run of such failures.  The evaluation is settled but
+        // delivered nothing, so the latest input still runs (the rerun) and
+        // the last delivered inputs stay what a later evaluation compares
+        // against: it retries.
+        const Value* fatal = nullptr;
+        const Value* unavailable = nullptr;
+        for (const auto& v : outputValues) {
+            if (!roxal::isException(v))
+                continue;
+            if (!isUnavailableError(v)) {
+                fatal = &v;
+                break;
+            }
+            if (!unavailable)
+                unavailable = &v;
+        }
+        if (fatal) {
+            const std::string what = "Uncaught exception: "
+                + roxal::objExceptionToString(roxal::asException(*fatal));
+            return reportBodyFailure(what) ? FuncExecResult::Error
+                                           : FuncExecResult::NotExecuted;
+        }
+        if (unavailable) {
+            reportHold(*unavailable);
+            if (rerun && *rerun > time
+                && conditionallyExecute(*rerun, deadline) == FuncExecResult::Error)
+                return FuncExecResult::Error;
+            return FuncExecResult::Held;
+        }
+
         if (outputValues.size() != m_outputs.size())
             throw std::runtime_error("FuncNode '"+name()+"' returned "+std::to_string(outputValues.size())+" values, expected "+std::to_string(m_outputs.size())+" values");
 
@@ -740,6 +798,8 @@ FuncExecResult FuncNode::resumeExecution(TimePoint deadline)
             output.signal->setValueAt(time, outputValues[index]);
             index++;
         }
+        m_failureReported = false;
+        m_holdReported = false;
 
         // An evaluation requested while the futures were pending: run it
         // now on the current inputs (the pure gate skips it when they are
@@ -791,23 +851,9 @@ FuncExecResult FuncNode::resumeExecution(TimePoint deadline)
 
     VM::thread = savedThread;
 
-    Values outputValues = distributeReturnValue(returnValue);
-
-    if (outputValues.size() != m_outputs.size())
-        throw std::runtime_error("FuncNode '"+name()+"' returned "+std::to_string(outputValues.size())+" values, expected "+std::to_string(m_outputs.size())+" values");
-
-    previousOutputValues = outputValues;
-    previousInputValues = inputValues;
-    invokeExecutionCallbacks(time, inputValues, outputValues);
-
-    // Update the outputs
-    int index = 0;
-    for (const auto& output : m_outputs) {
-        output.signal->setValueAt(time, outputValues[index]);
-        index++;
-    }
-
-    return FuncExecResult::Completed;
+    // As if it had run straight through: a future it returned (an actor call,
+    // predict) is kept pending, not published.
+    return finishEvaluation(time, inputValues, distributeReturnValue(returnValue));
 }
 
 // Wherever a body runs -- the engine's host context (tickFor), its actor
@@ -843,6 +889,19 @@ void FuncNode::carryOutcomeToOwner()
         }
         vm.clearDefaultDomainRuntimeError();
     }
+}
+
+void FuncNode::reportHold(const roxal::Value& exception)
+{
+    if (m_holdReported)
+        return;
+    m_holdReported = true;
+    const roxal::Value message = roxal::asException(exception)->message;
+    roxal::VM::emitDiagnostic(
+        "FuncNode '" + name() + "' keeps its last outputs: "
+        + (roxal::isString(message) ? roxal::toUTF8StdString(roxal::asStringObj(message)->s)
+                                    : roxal::objExceptionToString(roxal::asException(exception))),
+        roxal::OutputSeverity::Warning, "dataflow");
 }
 
 bool FuncNode::reportBodyFailure(const std::string& what)

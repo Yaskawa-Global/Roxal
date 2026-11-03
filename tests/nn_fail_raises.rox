@@ -1,0 +1,20 @@
+# An inference that fails inside the run itself (not in the up-front shape
+# check) raises where its result is used, so try/except catches it, and the
+# model stays usable.  It used to resolve to nil, which no handler could see.
+# shift-const3.onnx: plus = x + c, minus = x - c, c = [1, 2, 3], x of dynamic
+# length N -- an N of 1 or 3 runs, any other N fails in the run.
+import ai.nn
+
+var model = ai.nn.Model("../modules/ai/shift-const3.onnx", device='cpu', warmup=false)
+
+try:
+    var res = model.predict(tensor(4, dtype='float32'))
+    print(res is nil)
+    print('not reached')
+except e:
+    print('caught')
+
+var ok = model.predict(tensor(3, dtype='float32'))
+print(ok[0][2])
+print(ok[1][2])
+print('done')

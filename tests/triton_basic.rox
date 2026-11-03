@@ -1,0 +1,106 @@
+# A model served by Triton (here the mock, scripts/triton_mock_server.py):
+# its outputs come in the server's order -- which for scale_shift is not the
+# ONNX file's -- unless outputs= names them; it lifts like any model; and
+# its failures raise typed exceptions.
+# scale_shift: doubled = x * 2, plus_one = x + 1, shape [1, 4]
+import ai.nn
+
+# The mock's control model: 0 up, 1 down, 2 slow (scripts/triton_mock_server.py)
+var control = ai.nn.Model("triton://__TRITON_ADDR__/__control")
+var mode = tensor(1, dtype='int32')
+var ok = control.predict(mode)[0]
+
+var x = tensor(1, 4, dtype='float32')
+x[0, 3] = 4.0
+
+var served = ai.nn.Model("triton://__TRITON_ADDR__/scale_shift")
+print(served.device())
+print(served.outputs()[0]['name'])
+var res = served.predict(x)
+print(res[0][0, 3])
+print(res[1][0, 3])
+
+var named = ai.nn.Model("triton://__TRITON_ADDR__/scale_shift", outputs=['doubled', 'plus_one'])
+var res2 = named.predict(x)
+print(res2[0][0, 3])
+print(res2[1][0, 3])
+print(named.available.value)
+
+var one = ai.nn.Model("triton://__TRITON_ADDR__/scale_shift", outputs=['doubled'])
+print(one.predict(x)[0, 3])
+
+var sig = signal(0, x)
+var [d, p] = named.predict(sig)
+wait(ms=300)
+print(d.value[0, 3])
+print(p.value[0, 3])
+
+try:
+    var nope = ai.nn.Model("triton://__TRITON_ADDR__/nope")
+except e :ProgramException:
+    print("unknown model: ProgramException")
+try:
+    var gone = ai.nn.Model("triton://127.0.0.1:1/scale_shift")
+except e :UnavailableError:
+    print("unreachable server: UnavailableError")
+
+var reject = ai.nn.Model("triton://__TRITON_ADDR__/reject")
+try:
+    var r = reject.predict(x)
+    print(r is nil)
+except e :ProgramException:
+    print("rejected input: ProgramException")
+
+func rejects(src :string, device :string, timeout, expected :string) -> bool:
+    try:
+        var m = ai.nn.Model(src, device=device, timeout=timeout)
+        return m is nil
+    except e:
+        if expected in string(e):
+            return true
+        print(e)
+        return false
+
+print(rejects("triton://__TRITON_ADDR__/scale_shift", 'cpu', nil, "device must be 'auto'"))
+print(rejects("triton://__TRITON_ADDR__/scale_shift", 'auto', -1, "timeout must be positive"))
+print(rejects("triton://__TRITON_ADDR__", 'auto', nil, "is not triton://host"))
+print(rejects("../modules/ai/scale-shift.onnx", 'cpu', 0.5, "timeout applies to Triton models only"))
+
+# An output lives in the memory its reply was copied into, and is a tensor
+# like any other: written in place, copied on write, fed to an in-process
+# model and back to the server.
+var out :tensor = one.predict(x)
+var copy = clone(out)
+copy[0, 3] = 1.0
+out[0, 0] = 3.0
+print(out[0, 0])
+print(out[0, 3])
+print(copy[0, 0])
+print(copy[0, 3])
+var local = ai.nn.Model("../modules/ai/scale-shift.onnx", device='cpu', outputs=['doubled'])
+var again = local.predict(out)
+print(again[0, 0])
+print(again[0, 3])
+print(one.predict(out)[0, 3])
+
+# Who the server is: as read when a model loaded, or asked directly; a model
+# run in this process has no server.
+var info = served.server_info()
+print(info['kind'] + ' ' + info['name'] + ' ' + info['version'])
+print(info['extensions'])
+print(ai.nn.server_info("__TRITON_ADDR__")['name'])
+print(ai.nn.server_info("triton://__TRITON_ADDR__")['version'])
+print(local.server_info() is nil)
+try:
+    var none = ai.nn.server_info("127.0.0.1:1")
+except e :UnavailableError:
+    print("unreachable server: UnavailableError")
+try:
+    var bad = ai.nn.server_info("triton://__TRITON_ADDR__/scale_shift")
+except e:
+    print("is not host[:port]" in string(e))
+try:
+    var nope2 = ai.nn.Model("triton://__TRITON_ADDR__/nope")
+except e :ProgramException:
+    print("(triton-mock 0.1)" in string(e))
+print('done')

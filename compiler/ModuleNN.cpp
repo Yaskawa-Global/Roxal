@@ -2,6 +2,7 @@
 #include "VM.h"
 #include "SimpleMarkSweepGC.h"
 #include "Object.h"
+#include "GCRoots.h"
 #include "core/json5.h"
 #include <stdexcept>
 #include <memory>
@@ -9,12 +10,18 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
-#include <queue>
+#include <deque>
+#include <list>
 #include <future>
+#include <optional>
 #include <functional>
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <filesystem>
+#include <map>
+#include <random>
+#include <set>
 #ifdef __linux__
 #include <sys/sysinfo.h>
 #endif
@@ -26,6 +33,18 @@
 #ifdef ROXAL_ENABLE_ONNX
 #include "CudaRuntime.h"
 #endif
+
+#ifdef ROXAL_ENABLE_TRITON
+#include "nn/TritonEndpoint.h"
+#include "nn/TritonInfer.h"
+#include "nn/TritonDeploy.h"
+#include "RuntimeConfig.h"
+#include "triton_inference.pb.h"
+#include "GrpcStatus.h"
+#include "ModuleSys.h"
+#endif
+
+#include "dataflow/Signal.h"
 
 #ifdef __EMSCRIPTEN__
 // The wasm build has no ONNX Runtime; inference is delegated to the host's
@@ -155,122 +174,217 @@ static std::string ortDtypeToString(ONNXTensorElementDataType dt) {
 // Follows the AsyncIOManager pattern: submit work, get future.
 // Each model has its own worker to naturally serialize Session::Run()
 // calls (ONNX sessions are NOT thread-safe for concurrent Run()).
+//
+// The thread outlives the model that started it.  A job holds what it runs
+// (the session), never the model, and releasing a model only RETIRES its
+// worker: the thread drains its queue and exits on its own, and the module
+// joins it later (when the next worker starts, or at shutdown).  A model is
+// released wherever its last reference goes -- in VM::freeObjects on the
+// collector thread, where a join would hold up every collection for the
+// length of an inference; and a job that held the model used to release it
+// on the worker itself, whose join of its own thread was std::terminate.
 
 class InferenceWorker {
-    std::thread workerThread;
-    std::mutex queueMutex;
-    std::condition_variable queueCV;
-    std::atomic<bool> running{false};
-
     struct Job {
         std::function<Value()> work;
-        ptr<std::promise<Value>> promise;
+        std::shared_ptr<NativePromise> promise;
         std::vector<Value> heldValues;  // prevent GC of input tensors
     };
-    std::queue<Job> pendingJobs;
-    // The job currently executing, kept as a MEMBER (not a workerLoop local)
-    // so traceHeld() can reach its heldValues -- the conservative stack scan
-    // does not cover this thread. Same reasoning as AsyncIOManager's
-    // processingOps.
-    Job currentJob;
-    bool currentActive = false;
 
-    // Every live worker, so the GC root walk can find them. Without this the
-    // held input tensors were unreachable from any root: a fire-and-forget
-    // predict whose caller dropped its references could have its inputs swept
-    // MID-INFERENCE.
-    static std::mutex& workersMutex() { static std::mutex m; return m; }
-    static std::vector<InferenceWorker*>& workers() {
-        static std::vector<InferenceWorker*> w; return w;
+    // Everything the thread touches, shared with it: it lives as long as
+    // either the thread or the worker does.
+    struct State {
+        std::mutex queueMutex;
+        std::condition_variable queueCV;
+        std::deque<Job> pendingJobs;
+        // The job currently executing, kept here (not a workerLoop local) so
+        // the registry trace can reach its heldValues -- the conservative
+        // stack scan does not cover this thread. Same reasoning as
+        // AsyncIOManager's processingOps.
+        Job currentJob;
+        bool currentActive = false;
+        bool running = true;    // false: no new work; exit once the queue is empty
+        bool exited = false;
+    };
+
+    // Every worker thread not yet joined, so shutdown can join them, and a
+    // GC root: the held input tensors of queued and in-flight jobs are
+    // reachable from nothing else -- a fire-and-forget predict whose caller
+    // dropped its references could have its inputs swept MID-INFERENCE.
+    struct Entry {
+        std::shared_ptr<State> state;
+        std::thread thread;
+    };
+    struct Registry {
+        mutable std::mutex mutex;
+        std::list<Entry> entries;   // a list: shutdownAll joins through pointers into it
+
+        // Reached with live entries only if shutdownAll never ran (a VM that
+        // was never shut down) and the process is exiting: a joinable
+        // std::thread's destructor would terminate it.
+        ~Registry() {
+            for (auto& e : entries)
+                if (e.thread.joinable())
+                    e.thread.detach();
+        }
+    };
+    static void traceRegistry(ValueVisitor& visitor, const Registry& r) {
+        std::lock_guard<std::mutex> lock(r.mutex);
+        for (const auto& e : r.entries) {
+            State& s = *e.state;
+            std::lock_guard<std::mutex> qlock(s.queueMutex);
+            for (const Job& job : s.pendingJobs)
+                for (const Value& v : job.heldValues)
+                    visitor.visit(v);
+            if (s.currentActive)
+                for (const Value& v : s.currentJob.heldValues)
+                    visitor.visit(v);
+        }
+    }
+    // Constructed with the program, not on first use: a root may not be
+    // created inside an RT yield section, which is where a host-driven run
+    // starts its first worker.
+    static TracedMember<Registry> registry_;
+    static Registry& registry() { return *registry_; }
+
+    std::shared_ptr<State> state_;
+
+    // Join the threads of retired workers that have run dry.  Each has left
+    // its loop, so the join returns at once.
+    static void reapExitedLocked(Registry& reg) {
+        auto& r = reg.entries;
+        for (auto it = r.begin(); it != r.end();) {
+            bool exited;
+            {
+                std::lock_guard<std::mutex> lock(it->state->queueMutex);
+                exited = it->state->exited;
+            }
+            if (exited) {
+                it->thread.join();
+                it = r.erase(it);
+            } else {
+                ++it;
+            }
+        }
     }
 
-    void workerLoop() {
-        while (running) {
+    // No new work: the thread exits once its queue is empty.  Given `abandonWhy`,
+    // queued jobs are not run -- each future resolves to that error instead.
+    // That drops the jobs' held Values and allocates, so only a mutator thread
+    // passes one (Model.close(), shutdown) -- never a release from
+    // VM::freeObjects.  The job in flight is left to finish: Session::Run
+    // cannot be interrupted.  Never waits for the thread.
+    static void retireState(State& s, const char* abandonWhy) {
+        std::deque<Job> abandoned;
+        {
+            std::lock_guard<std::mutex> lock(s.queueMutex);
+            s.running = false;
+            if (abandonWhy)
+                abandoned.swap(s.pendingJobs);
+        }
+        s.queueCV.notify_all();
+        if (abandoned.empty())
+            return;
+        // Out of the queue the held inputs are on no root, and an allocation
+        // may let a collection run: drop them BEFORE allocating the errors.
+        std::vector<std::shared_ptr<NativePromise>> promises;
+        for (auto& job : abandoned)
+            promises.push_back(std::move(job.promise));
+        abandoned.clear();
+        for (auto& promise : promises)
+            promise->resolve(Value::exceptionVal(Value::stringVal(toUnicodeString(abandonWhy))));
+    }
+
+    static void workerLoop(State& s) {
+        while (true) {
             {
-                std::unique_lock<std::mutex> lock(queueMutex);
-                queueCV.wait(lock, [&]{ return !pendingJobs.empty() || !running; });
-                if (!running && pendingJobs.empty()) break;
-                currentJob = std::move(pendingJobs.front());
-                pendingJobs.pop();
-                currentActive = true;
+                std::unique_lock<std::mutex> lock(s.queueMutex);
+                s.queueCV.wait(lock, [&]{ return !s.pendingJobs.empty() || !s.running; });
+                if (s.pendingJobs.empty())
+                    break;   // retired, and nothing left to run
+                s.currentJob = std::move(s.pendingJobs.front());
+                s.pendingJobs.pop_front();
+                s.currentActive = true;
             }
-            try {
+            Job& currentJob = s.currentJob;
+            // The job's work holds no Values, but may hold the last reference
+            // to its session (the model was closed or released meanwhile):
+            // tearing that down is left until after the participant window.
+            std::function<Value()> spentWork;
+            {
                 // A GC participant for the job's duration: the collector's
                 // barrier waits for this thread between polls, so the output
                 // tensors the job allocates on THIS (non-Roxal) thread are
                 // never created behind a running collection -- which would
                 // sweep them, unmarked, before the future ever published
                 // them to a root. The Session::Run inside is bracketed
-                // SafeBlocked (runInference), so a long inference does not
-                // hold the barrier; only the allocation of the results does.
+                // SafeBlocked (runOrt), so a long inference does not hold
+                // the barrier; only the allocation of the results does.
+                // A failure allocates too: it resolves the future to an
+                // exception, raised where the future is consumed.
                 SimpleMarkSweepGC::ExternalParticipant participant(SimpleMarkSweepGC::instance());
-                Value result = currentJob.work();
-                currentJob.promise->set_value(result);
-            } catch (const std::exception& e) {
-                VM::emitDiagnostic(
-                    std::string("ai.nn InferenceWorker error: ") + e.what(),
-                    OutputSeverity::Error, "ai.nn");
-                currentJob.promise->set_value(Value::nilVal());
-            } catch (...) {
-                VM::emitDiagnostic("ai.nn InferenceWorker: unknown error",
-                                   OutputSeverity::Error, "ai.nn");
-                currentJob.promise->set_value(Value::nilVal());
-            }
-            {
-                std::lock_guard<std::mutex> lock(queueMutex);
-                currentJob = Job{};
-                currentActive = false;
+                Value result;
+                try {
+                    result = currentJob.work();
+                } catch (const std::exception& e) {
+                    result = Value::exceptionVal(Value::stringVal(
+                        toUnicodeString(std::string("ai.nn: ") + e.what())));
+                } catch (...) {
+                    result = Value::exceptionVal(Value::stringVal(
+                        toUnicodeString("ai.nn: unknown inference error")));
+                }
+                currentJob.promise->resolve(result);
+
+                // Retire the job while still a participant: dropping its held
+                // inputs decRefs GC objects, which an unregistered thread may
+                // not do while a collection could be marking.
+                Job finished;
+                {
+                    std::lock_guard<std::mutex> lock(s.queueMutex);
+                    finished = std::move(s.currentJob);
+                    s.currentJob = Job{};
+                    s.currentActive = false;
+                }
+                spentWork = std::move(finished.work);
             }
         }
+        std::lock_guard<std::mutex> lock(s.queueMutex);
+        s.exited = true;
     }
 
 public:
     Value submit(std::function<Value()> work, std::vector<Value> heldValues = {}) {
-        auto promise = make_ptr<std::promise<Value>>();
-        auto future = promise->get_future().share();
+        auto promise = std::make_shared<NativePromise>();
+        Value future = promise->future();
         {
-            std::lock_guard<std::mutex> lock(queueMutex);
+            std::lock_guard<std::mutex> lock(state_->queueMutex);
             Job job;
             job.work = std::move(work);
             job.promise = std::move(promise);
             job.heldValues = std::move(heldValues);
-            pendingJobs.push(std::move(job));
+            state_->pendingJobs.push_back(std::move(job));
         }
-        queueCV.notify_one();
-        return Value::futureVal(future);
+        state_->queueCV.notify_one();
+        return future;
     }
 
     void start() {
-        running = true;
-        workerThread = std::thread([this] {
+        state_ = std::make_shared<State>();
+        Registry& reg = registry();
+        std::lock_guard<std::mutex> lock(reg.mutex);
+        reapExitedLocked(reg);
+        std::thread thread([s = state_] {
             VM::demoteCurrentThreadToNonRT();
-            workerLoop();
+            workerLoop(*s);
         });
-        std::lock_guard<std::mutex> lock(workersMutex());
-        workers().push_back(this);
+        reg.entries.push_back(Entry{state_, std::move(thread)});
     }
 
-    void stop() {
-        {
-            std::lock_guard<std::mutex> lock(workersMutex());
-            auto& w = workers();
-            w.erase(std::remove(w.begin(), w.end(), this), w.end());
-        }
-        running = false;
-        queueCV.notify_all();
-        if (workerThread.joinable())
-            workerThread.join();
-    }
-
-    // Abandon everything still queued: each waiter's future resolves to nil.
-    // The in-flight job is untouched -- Session::Run cannot be interrupted, so
-    // it is left to finish and stop()'s join waits for it.
-    void dropPending() {
-        std::lock_guard<std::mutex> lock(queueMutex);
-        while (!pendingJobs.empty()) {
-            pendingJobs.front().promise->set_value(Value::nilVal());
-            pendingJobs.pop();
-        }
+    // See retireState.  Model.close() abandons what is queued; a model merely
+    // released lets its queue drain.
+    void retire(const char* abandonWhy = nullptr) {
+        if (state_)
+            retireState(*state_, abandonWhy);
     }
 
     // VM-shutdown quiesce: bring every worker to rest BEFORE the VM frees a
@@ -281,51 +395,45 @@ public:
     // ONNX Runtime's own statics are destroyed from __run_exit_handlers after
     // main() returns.  Either is a use-after-free deep inside ORT (SIGSEGV at
     // exit whenever a script ends, normally or fatally, with inference in
-    // flight).  Queued jobs are dropped rather than drained: draining would
-    // make exit take one full inference per backlogged frame.
+    // flight).  Queued jobs are abandoned rather than drained: draining would
+    // make exit take one full inference per backlogged frame.  The registry
+    // keeps every entry until its thread is joined, so the trace still pins
+    // the inputs of an inference finishing meanwhile.
     static void shutdownAll() {
-        std::vector<InferenceWorker*> snapshot;
+        Registry& reg = registry();
+        std::vector<Entry*> snapshot;
         {
-            std::lock_guard<std::mutex> lock(workersMutex());
-            snapshot = workers();   // stop() erases from the live list
+            std::lock_guard<std::mutex> lock(reg.mutex);
+            for (auto& e : reg.entries)
+                snapshot.push_back(&e);
         }
-        for (InferenceWorker* w : snapshot) {
-            w->dropPending();
-            w->stop();
-        }
+        for (Entry* e : snapshot)
+            retireState(*e->state, "ai.nn: inference abandoned at shutdown");
+        for (Entry* e : snapshot)
+            if (e->thread.joinable())
+                e->thread.join();
+        std::lock_guard<std::mutex> lock(reg.mutex);
+        reg.entries.clear();
     }
 
-    // GC root hook: pin queued and in-flight jobs' held Values.
-    static void traceHeld(ValueVisitor& visitor) {
-        std::lock_guard<std::mutex> lock(workersMutex());
-        for (InferenceWorker* w : workers()) {
-            std::lock_guard<std::mutex> qlock(w->queueMutex);
-            std::queue<Job> copy = w->pendingJobs;   // std::queue: no iteration
-            while (!copy.empty()) {
-                for (const Value& v : copy.front().heldValues)
-                    visitor.visit(v);
-                copy.pop();
-            }
-            if (w->currentActive)
-                for (const Value& v : w->currentJob.heldValues)
-                    visitor.visit(v);
-        }
-    }
-
+    // Released with its model: never waits (see the class comment).
     ~InferenceWorker() {
-        stop();
+        retire();
     }
 };
 
-// Free-function hook for SimpleMarkSweepGC (keeps InferenceWorker private).
-void roxal::nnTraceWorkers(ValueVisitor& visitor)
-{
-    InferenceWorker::traceHeld(visitor);
-}
+TracedMember<InferenceWorker::Registry> InferenceWorker::registry_ { &InferenceWorker::traceRegistry };
+
+#ifdef ROXAL_ENABLE_TRITON
+static void shutdownTriton();
+#endif
 
 void ModuleNN::onShutdown(VM&)
 {
     InferenceWorker::shutdownAll();
+#ifdef ROXAL_ENABLE_TRITON
+    shutdownTriton();
+#endif
 }
 
 std::function<void()> ModuleNN::shutdownCompleteAction()
@@ -341,26 +449,72 @@ std::function<void()> ModuleNN::shutdownCompleteAction()
 // ModelWrapper — per-model native state
 // ============================================================
 
+// One input or output of a model.
+struct TensorSpec {
+    std::string name;
+    std::vector<int64_t> shape;     // -1: a dynamic dimension
+    std::string dtype;              // a TensorDType name ("float32", ...)
+};
+
+// Named input tensors, in the model's input order.
+using NamedInputs = std::vector<std::pair<std::string, ObjTensor*>>;
+
+// A model's backend.  The shared front end -- predict's argument checks,
+// the predict closure, inputs()/outputs()/device(), close() -- drives one of
+// these per model; opening one fills in the model's signature.
+// The server a model runs on.  `kind` is how Roxal reached it -- the
+// backend, named as its source scheme ("triton") -- and the rest is how the
+// server describes itself (Triton's ServerMetadata): a server speaking the
+// same protocol may name itself otherwise.  A model run in this process has
+// none.
+struct ModelServerInfo {
+    std::string kind;
+    std::string name;
+    std::string version;
+    std::vector<std::string> extensions;
+};
+
+// A model Roxal deployed to a server itself (Model(path, server=...)).
+struct ModelDeployment {
+    std::string server;         // host:port
+    std::string name;           // what the server serves it as
+    std::string transport;      // "upload", "repository", or "reused" (already served)
+    std::string repository;     // the shared directory holding its files, if one does
+};
+
+class ModelSession {
+public:
+    virtual ~ModelSession() = default;
+
+    // As read when the model was opened.
+    virtual std::optional<ModelServerInfo> server() const { return std::nullopt; }
+
+    virtual std::optional<ModelDeployment> deployment() const { return std::nullopt; }
+
+    // Model.unload(): take a model this program deployed off its server
+    // (removing its files from the shared directory too, if asked).
+    virtual void unload(bool removeFiles) {
+        (void)removeFiles;
+        throw std::invalid_argument("Model.unload: only a model deployed with Model(path, server=...) "
+                                    "can be unloaded");
+    }
+
+    // Start one inference on inputs already checked against the model;
+    // heldValues pin the tensors until it is done.  Returns a future that
+    // resolves to the output tensor, or a list of them for several outputs.
+    virtual Value submit(const NamedInputs& inputs, std::vector<Value> heldValues) = 0;
+
+    // Model.close(), on the VM thread: work not yet started resolves to an
+    // error, and nothing waits for work in flight.
+    virtual void close() = 0;
+};
+
 struct ModelWrapper {
-#ifdef ROXAL_ENABLE_ONNX
-    std::unique_ptr<Ort::Session> session;
-#endif
-#ifdef __EMSCRIPTEN__
-    uint32_t webSession = 0;                // id in the host provider's table
-    bool webSessionOpen = false;
-#endif
-    std::vector<std::string> inputNames;
-    std::vector<std::vector<int64_t>> inputShapes;
-    std::vector<std::string> inputDtypes;
-
-    std::vector<std::string> outputNames;
-    std::vector<std::vector<int64_t>> outputShapes;
-    std::vector<std::string> outputDtypes;
-
+    std::vector<TensorSpec> inputs;
+    std::vector<TensorSpec> outputs;
     std::string device = "cpu";
     bool closed = false;
-
-    std::unique_ptr<InferenceWorker> inferenceWorker;
+    std::unique_ptr<ModelSession> session;
 };
 
 // ============================================================
@@ -411,50 +565,107 @@ static std::string shapeToString(const std::vector<int64_t>& shape)
     return s + "]";
 }
 
-// Core inference with multiple named inputs.
-// Each entry in inputTensors is (inputName, ObjTensor*).
-static Value runInferenceMulti(ModelWrapper* wrapper,
-                               const std::vector<std::pair<std::string, ObjTensor*>>& inputTensors) {
-#ifdef ROXAL_ENABLE_ONNX
-    if (wrapper->closed)
-        throw std::invalid_argument("ai.nn: Model session is closed");
+// Model(..., outputs=[names]): the outputs predict returns, in that order --
+// a subset or a reordering of the model's own.  Applied to the signature
+// before a backend binds its outputs.
+using OutputSelection = std::optional<std::vector<std::string>>;
 
-    // Validate each input
-    for (auto& [name, tensor] : inputTensors) {
-        if (!tensor->isOrtBacked())
-            throw std::runtime_error("ai.nn: input tensor '" + name + "' is not ORT-backed");
-
-        // Find the expected shape for this input name
-        for (size_t i = 0; i < wrapper->inputNames.size(); ++i) {
-            if (wrapper->inputNames[i] == name) {
-                if (!isShapeCompatible(tensor->shape(), wrapper->inputShapes[i])) {
-                    throw std::invalid_argument(
-                        "ai.nn: shape mismatch for input '" + name +
-                        "': model expects " + shapeToString(wrapper->inputShapes[i]) +
-                        " but got " + shapeToString(tensor->shape()));
-                }
-                break;
-            }
-        }
+static OutputSelection outputSelectionArg(const Value& arg)
+{
+    if (arg.isNil())
+        return std::nullopt;
+    if (!isList(arg))
+        throw std::invalid_argument("Model.init: outputs must be a list of output names");
+    ObjList* list = asList(arg);
+    std::vector<std::string> names;
+    for (int32_t i = 0; i < list->length(); ++i) {
+        Value v = list->getElement(i);
+        if (!isString(v))
+            throw std::invalid_argument("Model.init: outputs must be a list of output names");
+        names.push_back(toUTF8StdString(asStringObj(v)->s));
     }
+    if (names.empty())
+        throw std::invalid_argument("Model.init: outputs must name at least one output");
+    return names;
+}
 
+static std::string joinNames(const std::vector<TensorSpec>& specs);
+
+static void selectOutputs(std::vector<TensorSpec>& outputs, const std::vector<std::string>& names)
+{
+    std::vector<TensorSpec> selected;
+    for (const auto& name : names) {
+        auto named = [&](const TensorSpec& spec) { return spec.name == name; };
+        if (std::find_if(selected.begin(), selected.end(), named) != selected.end())
+            throw std::invalid_argument("Model.init: output '" + name + "' is named twice in outputs");
+        auto it = std::find_if(outputs.begin(), outputs.end(), named);
+        if (it == outputs.end())
+            throw std::invalid_argument("Model.init: the model has no output '" + name +
+                                        "' (its outputs: " + joinNames(outputs) + ")");
+        selected.push_back(*it);
+    }
+    outputs = std::move(selected);
+}
+
+// Zero-valued inputs for a warmup inference, which initializes the CUDA
+// context and triggers ORT graph optimization so the first real predict() is
+// fast and consistent.  None (false) when any input has a dynamic non-batch
+// dimension: a guessed size can violate model-internal constraints (e.g. a
+// detector's TopK over anchors) -- the failed kernel is harmless, but ONNX
+// Runtime logs a scary error for it.  A dynamic batch dimension becomes 1.
+// The tensors are kept in the returned list (nil: no warmup), which the
+// caller holds in a local Value -- a stack reference the collector sees --
+// for the run.
+static Value warmupInputs(const ModelWrapper& model, NamedInputs& inputs)
+{
+    if (model.inputs.empty())
+        return Value::nilVal();
+    for (const auto& spec : model.inputs)
+        for (size_t di = 1; di < spec.shape.size(); ++di)
+            if (spec.shape[di] < 0)
+                return Value::nilVal();
+    Value tensors = Value::objVal(newListObj());
+    for (const auto& spec : model.inputs) {
+        auto shape = spec.shape;
+        if (!shape.empty() && shape[0] < 0)
+            shape[0] = 1;
+        Value tensor = Value::tensorVal(shape, tensorDTypeFromString(spec.dtype));
+        asList(tensors)->append(tensor);
+        inputs.emplace_back(spec.name, asTensor(tensor));
+    }
+    return tensors;
+}
+
+#ifdef ROXAL_ENABLE_ONNX
+// What an inference runs against.  A worker job holds its own reference, so
+// it never keeps the model -- and with it the job's own worker -- alive (see
+// InferenceWorker).
+struct OrtRunTarget {
+    std::shared_ptr<Ort::Session> session;
+    std::vector<std::string> outputNames;
+    bool cuda = false;
+};
+
+// One ORT inference with named inputs, already validated against the model
+// (predict validates on the calling thread; warmup builds conforming inputs).
+static Value runOrt(const OrtRunTarget& target, const NamedInputs& inputTensors) {
     // Use IoBinding for both CPU and CUDA: it allows binding each input
     // individually by name (ORT's Session::Run requires a contiguous array
     // of Ort::Value which we can't form from separate ObjTensor objects).
-    Ort::IoBinding binding(*wrapper->session);
+    Ort::IoBinding binding(*target.session);
 
     for (auto& [name, tensor] : inputTensors)
         binding.BindInput(name.c_str(), tensor->ortValue());
 
     std::vector<Ort::Value> outputs;
 
-    if (wrapper->device == "cuda") {
+    if (target.cuda) {
         Ort::MemoryInfo cudaMemInfo("Cuda", OrtDeviceAllocator, 0, OrtMemTypeDefault);
-        for (auto& name : wrapper->outputNames)
+        for (auto& name : target.outputNames)
             binding.BindOutput(name.c_str(), cudaMemInfo);
     } else {
         Ort::MemoryInfo cpuMemInfo = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
-        for (auto& name : wrapper->outputNames)
+        for (auto& name : target.outputNames)
             binding.BindOutput(name.c_str(), cpuMemInfo);
     }
 
@@ -463,7 +674,7 @@ static Value runInferenceMulti(ModelWrapper* wrapper,
         // the job's heldValues (or the caller's stack on the sync path), so
         // the thread can be quiescent for the GC while ORT runs.
         SimpleMarkSweepGC::GCBlockedScope blocked;
-        wrapper->session->Run(Ort::RunOptions{nullptr}, binding);
+        target.session->Run(Ort::RunOptions{nullptr}, binding);
     }
     outputs = binding.GetOutputValues();
 
@@ -476,14 +687,771 @@ static Value runInferenceMulti(ModelWrapper* wrapper,
     for (auto& out : outputs)
         asList(list)->append(Value::objVal(newTensorObj(std::move(out))));
     return list;
-#elif defined(__EMSCRIPTEN__)
-    // Delegate to the host provider. Returns a FUTURE Value (unlike the
-    // native branch, which returns the result -- but this branch is only
-    // reached from init's warmup, which awaits it; predict's async path
-    // calls the bridge directly). Input bytes are copied into the request
-    // buffer by the encoder, so no lifetime coupling with the tensors.
-    if (wrapper->closed)
-        throw std::invalid_argument("ai.nn: Model session is closed");
+}
+
+// ONNX Runtime in this process.  Inferences run one at a time on the model's
+// worker thread: an ORT session must not Run concurrently.
+class OrtSession : public ModelSession {
+public:
+    explicit OrtSession(std::shared_ptr<OrtRunTarget> target)
+        : target_(std::move(target))
+    {
+        worker_.start();
+    }
+
+    Value submit(const NamedInputs& inputs, std::vector<Value> heldValues) override {
+        for (auto& [name, tensor] : inputs)
+            if (!tensor->isOrtBacked())
+                throw std::runtime_error("ai.nn: input tensor '" + name + "' is not ORT-backed");
+        // The job holds the session itself, not the model -- see InferenceWorker.
+        auto work = [target = target_, inputs]() -> Value {
+            return runOrt(*target, inputs);
+        };
+        return worker_.submit(std::move(work), std::move(heldValues));
+    }
+
+    // An inference in flight finishes on its own reference to the session.
+    void close() override {
+        worker_.retire("ai.nn: model closed");
+        target_.reset();
+    }
+
+private:
+    std::shared_ptr<OrtRunTarget> target_;
+    InferenceWorker worker_;
+};
+
+static std::unique_ptr<ModelSession> openOrtSession(const std::string& path,
+                                                    const std::string& deviceArg,
+                                                    bool doWarmup,
+                                                    const OutputSelection& selection,
+                                                    ModelWrapper& model)
+{
+    bool requestGpu;
+    if (deviceArg == "auto")
+        requestGpu = true;
+    else if (deviceArg == "cuda")
+        requestGpu = true;
+    else if (deviceArg == "cpu")
+        requestGpu = false;
+    else
+        throw std::invalid_argument("Model.init: device must be 'auto', 'cpu', or 'cuda'");
+
+    auto& ortEnv = OnnxEnvironment::instance();
+    // An explicit 'cuda' that cannot be honoured is an error, not a silent
+    // CPU session: the caller asked for the GPU by name.  ('auto' keeps the
+    // quiet fallback.)
+    if (deviceArg == "cuda" && !ortEnv.cudaAvailable())
+        throw std::invalid_argument("Model.init: device='cuda' but the CUDA execution provider "
+                                    "is not available: " + ortEnv.cudaProbeError());
+    auto opts = ortEnv.createSessionOptions(requestGpu);
+
+    std::shared_ptr<Ort::Session> session;
+    try {
+        // Loading reads and optimizes the whole model -- seconds for a large
+        // one -- and touches nothing GC-managed: collections need not wait.
+        SimpleMarkSweepGC::GCBlockedScope blocked;
+        session = std::make_shared<Ort::Session>(ortEnv.env(), path.c_str(), opts);
+    } catch (const Ort::Exception& e) {
+        throw std::invalid_argument(std::string("Model.init: failed to load '") + path + "': " + e.what());
+    }
+    model.device = (requestGpu && ortEnv.cudaAvailable()) ? "cuda" : "cpu";
+
+    Ort::AllocatorWithDefaultOptions allocator;
+    for (size_t i = 0; i < session->GetInputCount(); ++i) {
+        auto typeInfo = session->GetInputTypeInfo(i);
+        auto tensorInfo = typeInfo.GetTensorTypeAndShapeInfo();
+        model.inputs.push_back({session->GetInputNameAllocated(i, allocator).get(),
+                                tensorInfo.GetShape(),
+                                ortDtypeToString(tensorInfo.GetElementType())});
+    }
+    for (size_t i = 0; i < session->GetOutputCount(); ++i) {
+        auto typeInfo = session->GetOutputTypeInfo(i);
+        auto tensorInfo = typeInfo.GetTensorTypeAndShapeInfo();
+        model.outputs.push_back({session->GetOutputNameAllocated(i, allocator).get(),
+                                 tensorInfo.GetShape(),
+                                 ortDtypeToString(tensorInfo.GetElementType())});
+    }
+
+    // ORT computes just the outputs bound, in the order bound.
+    if (selection)
+        selectOutputs(model.outputs, *selection);
+
+    auto target = std::make_shared<OrtRunTarget>();
+    target->session = std::move(session);
+    for (const auto& spec : model.outputs)
+        target->outputNames.push_back(spec.name);
+    target->cuda = model.device == "cuda";
+
+    if (doWarmup) {
+        NamedInputs inputs;
+        const Value tensors = warmupInputs(model, inputs);
+        if (!tensors.isNil()) {
+            try {
+                runOrt(*target, inputs);
+            } catch (const std::exception&) {
+                // Warmup failure is non-fatal — the model is still usable.
+            }
+        }
+    }
+    return std::make_unique<OrtSession>(std::move(target));
+}
+#endif // ROXAL_ENABLE_ONNX
+
+#ifdef ROXAL_ENABLE_TRITON
+// ============================================================
+// Triton — models served by an NVIDIA Triton Inference Server
+// ============================================================
+// Model("triton://host[:port]/model[?version=N]"): the server runs the
+// inference, reached over gRPC (Triton's GRPCInferenceService) through a
+// TritonEndpoint shared by every model on that host:port.  Each predict is
+// its own call -- there is no queue here: the server schedules, and may batch
+// concurrent requests -- and its inputs are copied into the request when it
+// is made, so a call in flight holds no Roxal values.
+
+struct TritonSource {
+    std::string address;    // host:port
+    std::string model;
+    std::string version;    // empty: the server's choice
+};
+
+// Null for a source that is not triton://; the port defaults to 8001,
+// Triton's gRPC port.
+static std::optional<TritonSource> parseTritonSource(const std::string& path)
+{
+    static const std::string scheme = "triton://";
+    if (path.rfind(scheme, 0) != 0)
+        return std::nullopt;
+    const std::string form = "Model.init: '" + path +
+                             "' is not triton://host[:port]/model[?version=N]";
+    std::string rest = path.substr(scheme.size());
+    TritonSource source;
+    const auto query = rest.find('?');
+    if (query != std::string::npos) {
+        const std::string q = rest.substr(query + 1);
+        rest.resize(query);
+        if (q.rfind("version=", 0) != 0 || q.size() == 8)
+            throw std::invalid_argument(form);
+        source.version = q.substr(8);
+    }
+    const auto slash = rest.find('/');
+    if (slash == std::string::npos || slash == 0 || slash + 1 == rest.size()
+        || rest.find('/', slash + 1) != std::string::npos)
+        throw std::invalid_argument(form);
+    source.address = nn::normalizeAddress(rest.substr(0, slash));
+    source.model = rest.substr(slash + 1);
+    return source;
+}
+
+// Triton's datatype names, against the tensor dtypes they are (BF16, UINT32,
+// UINT64 and BYTES have no tensor dtype).
+static const std::pair<const char*, const char*> tritonDatatypes[] = {
+    {"FP16", "float16"}, {"FP32", "float32"}, {"FP64", "float64"},
+    {"INT8", "int8"}, {"INT16", "int16"}, {"INT32", "int32"}, {"INT64", "int64"},
+    {"UINT8", "uint8"}, {"UINT16", "uint16"}, {"BOOL", "bool"},
+};
+
+static std::string dtypeOfTriton(const std::string& datatype)
+{
+    for (const auto& [triton, dtype] : tritonDatatypes)
+        if (datatype == triton)
+            return dtype;
+    return "";
+}
+
+static const char* tritonOfDtype(const std::string& dtype)
+{
+    for (const auto& [triton, name] : tritonDatatypes)
+        if (dtype == name)
+            return triton;
+    return nullptr;
+}
+
+// The exception types a reply raises, looked up on a VM thread when a model
+// opens: the endpoint's thread, which builds the exceptions, does not read
+// the VM's globals.  A root for the program's lifetime (one may not be
+// created inside an RT yield section), emptied at shutdown.
+struct TritonErrorTypes {
+    mutable std::mutex mutex;
+    std::unordered_map<std::string, Value> types;
+};
+
+static void traceTritonErrorTypes(ValueVisitor& visitor, const TritonErrorTypes& t)
+{
+    std::lock_guard<std::mutex> lock(t.mutex);
+    for (const auto& [name, type] : t.types)
+        visitor.visit(type);
+}
+
+static TracedMember<TritonErrorTypes> tritonErrorTypes { &traceTritonErrorTypes };
+
+static void rememberTritonErrorTypes(VM& vm)
+{
+    std::lock_guard<std::mutex> lock(tritonErrorTypes->mutex);
+    for (const char* name : {"UnavailableError", "ProgramException", "RuntimeException"})
+        if (!tritonErrorTypes->types.count(name))
+            tritonErrorTypes->types[name] =
+                vm.loadGlobal(toUnicodeString(name)).value_or(Value::nilVal());
+}
+
+static Value tritonErrorType(const char* name)
+{
+    std::lock_guard<std::mutex> lock(tritonErrorTypes->mutex);
+    auto it = tritonErrorTypes->types.find(name);
+    return it != tritonErrorTypes->types.end() ? it->second : Value::nilVal();
+}
+
+// What a call in flight completes against: shared with the session, so a
+// model closed or released meanwhile still settles its calls.
+struct TritonCallTarget {
+    std::string where;                  // "Triton model 'm' at host:port", for messages
+    std::vector<TensorSpec> outputs;    // as predict returns them
+    std::chrono::microseconds timeout { 0 };
+    // The model's `available` signal, weakly: a call must not keep a signal
+    // -- and the Values in it -- alive past the model and its run.
+    roxal::weak_ptr<df::Signal> available;
+    std::atomic<bool> lastAvailable { true };
+};
+
+// A failed call as the exception its future resolves to.
+static Value tritonFailure(const TritonCallTarget& target, const grpc::Status& status)
+{
+    const auto code = status.error_code();
+    std::string message = "ai.nn: " + target.where + ": " + status.error_message();
+    if (code == grpc::StatusCode::DEADLINE_EXCEEDED)
+        message += " (timeout " + std::to_string(target.timeout.count() / 1000) + " ms)";
+    message += std::string(" [") + grpcStatusCodeName(code) + "]";
+    Value detail = Value::dictVal();
+    ObjDict* dict = asDict(detail);
+    dict->store(Value::stringVal(toUnicodeString("grpc_status_code")),
+                Value::intVal(static_cast<int64_t>(code)));
+    dict->store(Value::stringVal(toUnicodeString("grpc_status_name")),
+                Value::stringVal(toUnicodeString(grpcStatusCodeName(code))));
+    dict->store(Value::stringVal(toUnicodeString("grpc_status_message")),
+                Value::stringVal(toUnicodeString(status.error_message())));
+    return Value::exceptionVal(Value::stringVal(toUnicodeString(message)),
+                               tritonErrorType(grpcExceptionTypeName(code)),
+                               Value::nilVal(), detail);
+}
+
+// The outputs predict returns, from a decoded reply: matched by NAME -- a
+// server's output order is its own -- and checked against the model's
+// signature.  Each tensor adopts its output's block.
+static Value tritonOutputs(const TritonCallTarget& target,
+                           const roxal::triton::ModelInferResponse& response,
+                           const std::vector<nn::InferOutputBytes>& contents)
+{
+    if (contents.size() != static_cast<size_t>(response.outputs_size()))
+        throw std::runtime_error("the reply does not carry every output's contents");
+
+    Value list = target.outputs.size() > 1 ? Value::objVal(newListObj()) : Value::nilVal();
+    Value single;
+    for (const auto& spec : target.outputs) {
+        int index = -1;
+        for (int i = 0; i < response.outputs_size(); ++i)
+            if (response.outputs(i).name() == spec.name)
+                index = i;
+        if (index < 0)
+            throw std::runtime_error("the reply has no output '" + spec.name + "'");
+        const auto& out = response.outputs(index);
+        if (dtypeOfTriton(out.datatype()) != spec.dtype)
+            throw std::runtime_error("output '" + spec.name + "' is " + out.datatype() +
+                                     ", not the model's " + spec.dtype);
+        const std::vector<int64_t> shape(out.shape().begin(), out.shape().end());
+        const TensorDType dtype = tensorDTypeFromString(spec.dtype);
+        const auto& bytes = contents[index];
+        size_t numel = 1;
+        for (auto dim : shape)
+            numel *= static_cast<size_t>(dim < 0 ? 0 : dim);
+        if (numel * tensorDTypeSize(dtype) != bytes.size)
+            throw std::runtime_error("output '" + spec.name + "' has " + std::to_string(bytes.size) +
+                                     " bytes for shape " + shapeToString(shape));
+        Value tensor = Value::objVal(newTensorObj(shape, dtype, bytes.block, bytes.block.get()));
+        if (list.isNil())
+            single = tensor;
+        else
+            asList(list)->append(tensor);
+    }
+    return list.isNil() ? single : list;
+}
+
+// `available` follows the server: false after a call fails as unavailable,
+// true again after any reply.  Set on a change only -- every set of an
+// event-driven source evaluates its island.
+static void noteAvailability(TritonCallTarget& target, bool available)
+{
+    if (target.lastAvailable.exchange(available) == available)
+        return;
+    if (auto signal = target.available.lock())
+        signal->set(Value::boolVal(available));
+}
+
+// Raised as a typed Roxal exception (a server unreachable is an
+// UnavailableError, a model it does not have a ProgramException).
+struct TypedNnError : std::runtime_error {
+    TypedNnError(const char* type, const std::string& what)
+        : std::runtime_error(what), typeName(type) {}
+    const char* typeName;
+};
+
+// A failed call to the server's model repository (load, unload, index).  A
+// server that only loads its own models -- not started in explicit mode --
+// refuses with UNAVAILABLE, which would read as "try again later": it is
+// told apart by its message, and raised as the permanent refusal it is.
+static TypedNnError repositoryFailure(const std::string& what, const std::string& address,
+                                      const grpc::Status& status)
+{
+    const std::string message = status.error_message();
+    if (status.error_code() == grpc::StatusCode::UNAVAILABLE && message.find("not allowed") != std::string::npos)
+        return TypedNnError("ProgramException",
+                            what + ": the server at " + address + " does not load models on request "
+                            "(start it with --model-control-mode=explicit): " + message);
+    return TypedNnError(grpcExceptionTypeName(status.error_code()),
+                        what + ": " + message + " [" + grpcStatusCodeName(status.error_code()) + "]");
+}
+
+class TritonSession : public ModelSession {
+public:
+    TritonSession(std::shared_ptr<nn::TritonEndpoint> endpoint, TritonSource source,
+                  std::shared_ptr<TritonCallTarget> target, std::optional<ModelServerInfo> server,
+                  std::optional<ModelDeployment> deployment)
+        : endpoint_(std::move(endpoint)), source_(std::move(source)), target_(std::move(target)),
+          server_(std::move(server)), deployment_(std::move(deployment)) {}
+
+    std::optional<ModelServerInfo> server() const override { return server_; }
+
+    std::optional<ModelDeployment> deployment() const override { return deployment_; }
+
+    void unload(bool removeFiles) override {
+        if (!deployment_)
+            throw std::invalid_argument("Model.unload: '" + source_.model + "' was not deployed by this "
+                                        "program -- a triton:// model is its server's to manage");
+        roxal::triton::RepositoryModelUnloadRequest request;
+        request.set_model_name(deployment_->name);
+        roxal::triton::RepositoryModelUnloadResponse reply;
+        const auto status = endpoint_->call("RepositoryModelUnload", request, reply, std::chrono::seconds(60));
+        if (!status.ok())
+            throw repositoryFailure("Model.unload: '" + deployment_->name + "' at " + deployment_->server,
+                                    deployment_->server, status);
+        if (removeFiles && !deployment_->repository.empty()) {
+            SimpleMarkSweepGC::GCBlockedScope blocked;
+            std::error_code ignored;
+            std::filesystem::remove_all(std::filesystem::path(deployment_->repository) / deployment_->name,
+                                        ignored);
+        }
+    }
+
+    Value submit(const NamedInputs& inputs, std::vector<Value>) override {
+        auto promise = std::make_shared<NativePromise>();
+        Value future = promise->future();
+
+        // A server already known unreachable would refuse the call at once:
+        // fail without copying the inputs (a clocked island retries every
+        // tick).
+        if (endpoint_->unreachable()) {
+            noteAvailability(*target_, false);
+            promise->resolve(tritonFailure(*target_,
+                grpc::Status(grpc::StatusCode::UNAVAILABLE, "the server is unreachable")));
+            return future;
+        }
+
+        // Each input goes out as the tensor's own bytes, held (not copied)
+        // until sent: a write to the tensor meanwhile copies first.
+        roxal::triton::ModelInferRequest request;
+        request.set_model_name(source_.model);
+        request.set_model_version(source_.version);
+        std::vector<nn::InferInputBytes> payload;
+        for (const auto& [name, tensor] : inputs) {
+            auto* in = request.add_inputs();
+            in->set_name(name);
+            in->set_datatype(tritonOfDtype(to_string(tensor->dtype())));
+            for (auto dim : tensor->shape())
+                in->add_shape(dim);
+            payload.push_back({tensor->sharedData(),
+                               static_cast<size_t>(tensor->numel()) * tensorDTypeSize(tensor->dtype())});
+        }
+        for (const auto& spec : target_->outputs)
+            request.add_outputs()->set_name(spec.name);
+
+        auto target = target_;
+        const bool started = endpoint_->callAsync("ModelInfer",
+                                                  nn::encodeInferRequest(request, std::move(payload)),
+                                                  target_->timeout,
+            [target, promise](const grpc::Status& status, grpc::ByteBuffer& reply) {
+                // On the endpoint's thread.  The reply's bytes first, before
+                // joining the GC: copying them involves no Value.
+                roxal::triton::ModelInferResponse response;
+                std::vector<nn::InferOutputBytes> contents;
+                const bool decoded = status.ok() && nn::decodeInferResponse(reply, response, contents);
+
+                // A GC participant while the reply becomes tensors (or an
+                // exception) and the future resolves.
+                SimpleMarkSweepGC::ExternalParticipant participant(SimpleMarkSweepGC::instance());
+                Value result;
+                try {
+                    if (!status.ok())
+                        result = tritonFailure(*target, status);
+                    else if (!decoded)
+                        throw std::runtime_error("malformed inference reply");
+                    else
+                        result = tritonOutputs(*target, response, contents);
+                } catch (const std::exception& e) {
+                    result = tritonFailure(*target, grpc::Status(grpc::StatusCode::INTERNAL, e.what()));
+                }
+                noteAvailability(*target, status.ok()
+                    || classifyGrpcStatus(status.error_code()) != GrpcFailureKind::Unavailable);
+                promise->resolve(result);
+            });
+        if (!started)
+            promise->resolve(Value::exceptionVal(Value::stringVal(
+                toUnicodeString("ai.nn: inference abandoned at shutdown"))));
+        return future;
+    }
+
+    // Nothing is queued here; calls in flight finish.
+    void close() override {}
+
+private:
+    std::shared_ptr<nn::TritonEndpoint> endpoint_;
+    TritonSource source_;
+    std::shared_ptr<TritonCallTarget> target_;
+    std::optional<ModelServerInfo> server_;
+    std::optional<ModelDeployment> deployment_;
+};
+
+// Who the server at `endpoint` says it is (a blocking call, GC-blocked).
+static grpc::Status queryTritonServer(nn::TritonEndpoint& endpoint, ModelServerInfo& info)
+{
+    roxal::triton::ServerMetadataRequest request;
+    roxal::triton::ServerMetadataResponse reply;
+    auto status = endpoint.call("ServerMetadata", request, reply, std::chrono::milliseconds(5000));
+    if (status.ok()) {
+        info.kind = "triton";
+        info.name = reply.name();
+        info.version = reply.version();
+        info.extensions.assign(reply.extensions().begin(), reply.extensions().end());
+    }
+    return status;
+}
+
+static std::unique_ptr<ModelSession> openTritonSession(const TritonSource& source,
+                                                       const std::string& deviceArg,
+                                                       const OutputSelection& selection,
+                                                       std::chrono::microseconds timeout,
+                                                       const ptr<df::Signal>& available,
+                                                       ModelWrapper& model,
+                                                       std::optional<ModelDeployment> deployment = std::nullopt)
+{
+    if (deviceArg != "auto")
+        throw std::invalid_argument("Model.init: a Triton model runs where its server places it: "
+                                    "device must be 'auto'");
+    rememberTritonErrorTypes(VM::instance());
+    auto endpoint = nn::TritonEndpoint::get(source.address);
+    std::string where = "Triton model '" + source.model + "' at " + source.address;
+    auto initFailure = [&](const grpc::Status& status) {
+        return TypedNnError(grpcExceptionTypeName(status.error_code()),
+                              "Model.init: " + where + ": " + status.error_message() +
+                              " [" + grpcStatusCodeName(status.error_code()) + "]");
+    };
+    const auto deadline = std::chrono::milliseconds(5000);
+
+    // Who the server is, first.  One that cannot be reached fails here; one
+    // that will not say is left unnamed, and the model calls below report
+    // whatever else it does not do.  Named, it is named in every message.
+    std::optional<ModelServerInfo> server;
+    {
+        ModelServerInfo info;
+        auto status = queryTritonServer(*endpoint, info);
+        if (status.ok()) {
+            where += " (" + info.name + " " + info.version + ")";
+            server = std::move(info);
+        } else if (classifyGrpcStatus(status.error_code()) == GrpcFailureKind::Unavailable) {
+            throw initFailure(status);
+        }
+    }
+
+    // Metadata first: for a model the server does not have, it says so
+    // (NOT_FOUND), where readiness only says "not ready".
+    roxal::triton::ModelMetadataRequest metaRequest;
+    metaRequest.set_name(source.model);
+    metaRequest.set_version(source.version);
+    roxal::triton::ModelMetadataResponse meta;
+    auto status = endpoint->call("ModelMetadata", metaRequest, meta, deadline);
+    if (!status.ok())
+        throw initFailure(status);
+    roxal::triton::ModelReadyRequest readyRequest;
+    readyRequest.set_name(source.model);
+    readyRequest.set_version(source.version);
+    roxal::triton::ModelReadyResponse ready;
+    status = endpoint->call("ModelReady", readyRequest, ready, deadline);
+    if (!status.ok())
+        throw initFailure(status);
+    if (!ready.ready())
+        throw TypedNnError("UnavailableError", "Model.init: " + where + " is not ready");
+
+    for (const auto& t : meta.inputs())
+        model.inputs.push_back({t.name(), {t.shape().begin(), t.shape().end()},
+                                dtypeOfTriton(t.datatype())});
+    for (const auto& t : meta.outputs())
+        model.outputs.push_back({t.name(), {t.shape().begin(), t.shape().end()},
+                                 dtypeOfTriton(t.datatype())});
+    if (selection)
+        selectOutputs(model.outputs, *selection);
+    auto unsupported = [&](const std::vector<TensorSpec>& specs, const char* kind,
+                           const google::protobuf::RepeatedPtrField<
+                               roxal::triton::ModelMetadataResponse::TensorMetadata>& described) {
+        for (const auto& spec : specs)
+            if (spec.dtype.empty())
+                for (const auto& t : described)
+                    if (t.name() == spec.name)
+                        throw std::invalid_argument("Model.init: " + where + ": " + kind + " '" +
+                                                    spec.name + "' is " + t.datatype() +
+                                                    ", which no tensor dtype holds");
+    };
+    unsupported(model.inputs, "input", meta.inputs());
+    unsupported(model.outputs, "output", meta.outputs());
+    model.device = "triton";
+
+    auto target = std::make_shared<TritonCallTarget>();
+    target->where = where;
+    target->outputs = model.outputs;
+    target->timeout = timeout;
+    target->available = available;
+    return std::make_unique<TritonSession>(std::move(endpoint), source, std::move(target),
+                                           std::move(server), std::move(deployment));
+}
+
+// ---- Model(path, server=...): deploying a model file to a Triton server ----
+
+// The shared repositories scripts set (ai.nn.use_repository), by server.
+struct ScriptRepositories {
+    std::mutex mutex;
+    std::map<std::string, std::filesystem::path> byServer;
+};
+
+static ScriptRepositories& scriptRepositories()
+{
+    static ScriptRepositories repositories;
+    return repositories;
+}
+
+// The directory, as this machine sees it, that the server at `address` serves
+// as one of its model repositories -- set by the script, else by the host or
+// command line (RuntimeConfig "triton.repositories"), else by the environment
+// (ROXAL_TRITON_REPOSITORIES).  None: models are uploaded.
+static std::optional<std::filesystem::path> sharedRepositoryFor(const std::string& address)
+{
+    {
+        auto& script = scriptRepositories();
+        std::lock_guard<std::mutex> lock(script.mutex);
+        auto it = script.byServer.find(address);
+        if (it != script.byServer.end())
+            return it->second;
+    }
+    std::optional<std::string> lists[] = {
+        RuntimeConfig::get("triton.repositories"),
+        std::getenv("ROXAL_TRITON_REPOSITORIES") ? std::optional<std::string>(std::getenv("ROXAL_TRITON_REPOSITORIES"))
+                                                 : std::nullopt,
+    };
+    const char* origins[] = {"triton.repositories", "ROXAL_TRITON_REPOSITORIES"};
+    for (int i = 0; i < 2; ++i) {
+        if (!lists[i])
+            continue;
+        try {
+            const auto byServer = nn::parseRepositoryList(*lists[i]);
+            auto it = byServer.find(address);
+            if (it != byServer.end())
+                return it->second;
+        } catch (const std::invalid_argument& e) {
+            throw std::invalid_argument(std::string(origins[i]) + ": " + e.what());
+        }
+    }
+    return std::nullopt;
+}
+
+// Check, once per server and directory, that the server really serves the
+// directory: a uniquely named directory made in it must show in the server's
+// repository index.
+static void verifySharedRepository(nn::TritonEndpoint& endpoint, const std::string& address,
+                                   const std::filesystem::path& directory, const std::string& what)
+{
+    static std::mutex mutex;
+    static std::set<std::pair<std::string, std::string>> verified;
+    const auto key = std::make_pair(address, directory.string());
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (verified.count(key))
+            return;
+    }
+    const std::string notServed =
+        what + ": '" + directory.string() + "' is not one of " + address + "'s model repositories "
+        "(start the server with it mounted and passed to --model-repository, or correct "
+        "ai.nn.use_repository / triton.repositories / ROXAL_TRITON_REPOSITORIES)";
+    if (!std::filesystem::is_directory(directory))
+        throw TypedNnError("ProgramException", notServed);
+    std::random_device random;
+    const std::string probe = "roxal.probe." + std::to_string(random()) + std::to_string(random());
+    std::error_code ec;
+    std::filesystem::create_directory(directory / probe, ec);
+    if (ec)
+        throw TypedNnError("ProgramException", what + ": cannot write to '" + directory.string() + "': " +
+                                               ec.message());
+    roxal::triton::RepositoryIndexRequest request;
+    roxal::triton::RepositoryIndexResponse index;
+    const auto status = endpoint.call("RepositoryIndex", request, index, std::chrono::seconds(10));
+    std::filesystem::remove_all(directory / probe, ec);
+    if (!status.ok())
+        throw repositoryFailure(what, address, status);
+    bool seen = false;
+    for (const auto& model : index.models())
+        seen = seen || model.name() == probe;
+    if (!seen)
+        throw TypedNnError("ProgramException", notServed);
+    std::lock_guard<std::mutex> lock(mutex);
+    verified.insert(key);
+}
+
+// Servers and directories where a symlink did not resolve for the server:
+// copy from then on.
+static bool symlinksFailed(const std::pair<std::string, std::string>& key, bool note = false)
+{
+    static std::mutex mutex;
+    static std::set<std::pair<std::string, std::string>> failed;
+    std::lock_guard<std::mutex> lock(mutex);
+    if (note)
+        failed.insert(key);
+    return failed.count(key) > 0;
+}
+
+static grpc::Status loadOnServer(nn::TritonEndpoint& endpoint, const std::string& name,
+                                 const std::string& configJson, const nn::ModelFileSet* upload)
+{
+    roxal::triton::RepositoryModelLoadResponse reply;
+    // Generous: an upload of up to 2 GB, then the server loading the model.
+    return endpoint.call("RepositoryModelLoad", nn::encodeLoadRequest(name, configJson, upload), reply,
+                         std::chrono::minutes(10));
+}
+
+static std::unique_ptr<ModelSession> deployTritonModel(const std::string& path, const std::string& serverArg,
+                                                       const std::string& configJson,
+                                                       const std::string& deviceArg,
+                                                       const OutputSelection& selection,
+                                                       std::chrono::microseconds timeout,
+                                                       const ptr<df::Signal>& available,
+                                                       ModelWrapper& model)
+{
+    std::string address = serverArg.rfind("triton://", 0) == 0 ? serverArg.substr(9) : serverArg;
+    if (address.empty() || address.find('/') != std::string::npos)
+        throw std::invalid_argument("Model.init: server='" + serverArg +
+                                    "' is not host[:port] or triton://host[:port]");
+    address = nn::normalizeAddress(address);
+    rememberTritonErrorTypes(VM::instance());
+    const std::string what = "Model.init: deploying '" + path + "' to " + address;
+
+    // Which files the model is, and what it is called by their content.
+    nn::ModelFileSet files;
+    std::string name;
+    {
+        SimpleMarkSweepGC::GCBlockedScope blocked;
+        files = nn::modelFiles(path);
+        name = nn::deploymentName(files, configJson);
+    }
+
+    auto endpoint = nn::TritonEndpoint::get(address);
+    ModelServerInfo server;
+    auto status = queryTritonServer(*endpoint, server);
+    if (!status.ok())
+        throw TypedNnError(grpcExceptionTypeName(status.error_code()),
+                           what + ": " + status.error_message() + " [" +
+                           grpcStatusCodeName(status.error_code()) + "]");
+    if (std::find(server.extensions.begin(), server.extensions.end(), "model_repository") == server.extensions.end())
+        throw TypedNnError("ProgramException", what + ": the server (" + server.name + " " + server.version +
+                                               ") does not load models on request");
+
+    ModelDeployment deployment { address, name, "reused", "" };
+    const auto repository = sharedRepositoryFor(address);
+
+    // Served already (an earlier run, another program): use it as it is.
+    roxal::triton::ModelReadyRequest readyRequest;
+    readyRequest.set_name(name);
+    roxal::triton::ModelReadyResponse ready;
+    status = endpoint->call("ModelReady", readyRequest, ready, std::chrono::seconds(5));
+    if (!(status.ok() && ready.ready())) {
+        if (repository) {
+            verifySharedRepository(*endpoint, address, *repository, what);
+            const auto key = std::make_pair(address, repository->string());
+            bool symlinked = false;
+            {
+                SimpleMarkSweepGC::GCBlockedScope blocked;
+                symlinked = nn::placeInRepository(files, *repository, name, !symlinksFailed(key));
+            }
+            status = loadOnServer(*endpoint, name, configJson, nullptr);
+            if (!status.ok() && symlinked) {
+                // The server may not see the files at the paths they link to.
+                {
+                    SimpleMarkSweepGC::GCBlockedScope blocked;
+                    nn::copyOverSymlinks(*repository, name);
+                }
+                symlinksFailed(key, /*note=*/true);
+                status = loadOnServer(*endpoint, name, configJson, nullptr);
+            }
+            deployment.transport = "repository";
+        } else {
+            if (files.totalBytes > nn::maxUploadBytes)
+                throw TypedNnError("ProgramException",
+                    what + ": its files total " + std::to_string(files.totalBytes) + " bytes, more than "
+                    "one request to the server can carry (2 GB).  Share a directory the server serves as a "
+                    "model repository (ai.nn.use_repository, or ROXAL_TRITON_REPOSITORIES), or put the "
+                    "model in the server's repository yourself and load it as 'triton://" + address +
+                    "/<its name>'");
+            status = loadOnServer(*endpoint, name, configJson, &files);
+            deployment.transport = "upload";
+        }
+        if (!status.ok())
+            throw repositoryFailure(what, address, status);
+    }
+    if (repository && std::filesystem::exists(*repository / name))
+        deployment.repository = repository->string();
+
+    return openTritonSession(TritonSource { address, name, "" }, deviceArg, selection, timeout, available,
+                             model, std::move(deployment));
+}
+
+// Model(..., timeout=): how long a Triton inference may take -- a time
+// quantity (200ms) or seconds; 1 s by default.  Past it the call fails as
+// unavailable, and a node holds its last outputs.
+static std::chrono::microseconds tritonTimeoutArg(const Value& arg)
+{
+    if (arg.isNil())
+        return std::chrono::seconds(1);
+    std::optional<double> seconds;
+    if (arg.isNumber())
+        seconds = arg.isReal() ? arg.asReal() : static_cast<double>(arg.asInt());
+    else
+        seconds = sysTimeQuantitySeconds(arg, "Model.init timeout");
+    if (!seconds)
+        throw std::invalid_argument("Model.init: timeout must be a time quantity (e.g. 200ms) or seconds");
+    if (!(*seconds > 0))
+        throw std::invalid_argument("Model.init: timeout must be positive");
+    return std::chrono::microseconds(static_cast<int64_t>(*seconds * 1e6));
+}
+
+// VM shutdown: every call in flight settled, the endpoints' threads joined,
+// and then the exception types let go while the VM can still release them.
+static void shutdownTriton()
+{
+    nn::TritonEndpoint::shutdownAll();
+    std::lock_guard<std::mutex> lock(tritonErrorTypes->mutex);
+    tritonErrorTypes->types.clear();
+}
+#endif // ROXAL_ENABLE_TRITON
+
+#ifdef __EMSCRIPTEN__
+// The host provider's feeds for a set of named inputs.  The encoder copies
+// the input bytes into the request, so no lifetime coupling with the tensors.
+static std::vector<web::NnFeed> webFeeds(
+    const std::vector<std::pair<std::string, ObjTensor*>>& inputTensors)
+{
     std::vector<web::NnFeed> feeds;
     feeds.reserve(inputTensors.size());
     for (auto& [name, tensor] : inputTensors) {
@@ -495,192 +1463,240 @@ static Value runInferenceMulti(ModelWrapper* wrapper,
         f.len   = static_cast<size_t>(tensor->numel()) * tensorDTypeSize(tensor->dtype());
         feeds.push_back(std::move(f));
     }
-    return web::nnRun(wrapper->webSession, feeds, {});
-#else
-    (void)wrapper; (void)inputTensors;
-    throw std::runtime_error("ai.nn requires ONNX Runtime (build with -DROXAL_ENABLE_ONNX=ON)");
-#endif
+    return feeds;
 }
 
-// Convenience: single-tensor input (most common case)
-static Value runInference(ModelWrapper* wrapper, ObjTensor* inputTensor) {
-    if (wrapper->inputNames.empty())
-        throw std::runtime_error("ai.nn: model has no inputs");
-    return runInferenceMulti(wrapper, {{wrapper->inputNames[0], inputTensor}});
-}
+// The host's NN provider (onnxruntime-web in the browser, onnxruntime-node
+// under Electron), reached through the JS bridge.  The provider itself is
+// asynchronous, so there is no worker thread.
+class WebSession : public ModelSession {
+public:
+    explicit WebSession(uint32_t id) : id_(id) {}
 
-// Wrapper that catches std::invalid_argument from runInference and converts
-// it into a Roxal exception catchable by try/except.
-static Value safeRunInference(VM& vm, ModelWrapper* wrapper, ObjTensor* inputTensor) {
-    try {
-        return runInference(wrapper, inputTensor);
-    } catch (const std::invalid_argument& e) {
-        Value msg = Value::stringVal(toUnicodeString(e.what()));
-        vm.raiseException(Value::exceptionVal(msg));
-        return Value::nilVal();
+    // nnRun's future plugs into the same machinery the native worker's
+    // future does (FuncNode yield, resolveArgMask, resolve-on-index).  The
+    // bridge registry pins heldValues until the reply lands.
+    Value submit(const NamedInputs& inputs, std::vector<Value> heldValues) override {
+        return web::nnRun(id_, webFeeds(inputs), std::move(heldValues));
     }
-}
 
-// Multi-input wrapper: accepts a dict {name: tensor} or list [tensor, ...].
-static Value safeRunInferenceFromValue(VM& vm, ModelWrapper* wrapper, const Value& arg) {
-    try {
-        if (isTensor(arg)) {
-            return runInference(wrapper, asTensor(arg));
+    void close() override {
+        if (open_) {
+            web::nnClose(id_);
+            open_ = false;
         }
-        else if (isDict(arg)) {
-            ObjDict* dict = asDict(arg);
-            auto items = dict->items();
-            std::vector<std::pair<std::string, ObjTensor*>> inputs;
-            inputs.reserve(items.size());
-            for (auto& [key, val] : items) {
-                if (!isString(key))
-                    throw std::invalid_argument("ai.nn: predict dict keys must be strings");
-                if (!isTensor(val))
-                    throw std::invalid_argument(
-                        "ai.nn: predict dict value for '" +
-                        toUTF8StdString(asStringObj(key)->s) + "' is not a tensor");
-                inputs.emplace_back(toUTF8StdString(asStringObj(key)->s), asTensor(val));
-            }
-            return runInferenceMulti(wrapper, inputs);
-        }
-        else if (isList(arg)) {
-            ObjList* list = asList(arg);
-            if (static_cast<size_t>(list->length()) != wrapper->inputNames.size()) {
-                throw std::invalid_argument(
-                    "ai.nn: predict list has " + std::to_string(list->length()) +
-                    " elements but model expects " + std::to_string(wrapper->inputNames.size()) +
-                    " inputs");
-            }
-            std::vector<std::pair<std::string, ObjTensor*>> inputs;
-            inputs.reserve(list->length());
-            for (size_t i = 0; i < static_cast<size_t>(list->length()); ++i) {
-                Value elem = list->getElement(i);
-                if (!isTensor(elem))
-                    throw std::invalid_argument(
-                        "ai.nn: predict list element " + std::to_string(i) + " is not a tensor");
-                inputs.emplace_back(wrapper->inputNames[i], asTensor(elem));
-            }
-            return runInferenceMulti(wrapper, inputs);
-        }
-        else {
+    }
+
+private:
+    uint32_t id_;           // in the host provider's table
+    bool open_ = true;
+};
+
+static std::unique_ptr<ModelSession> openWebSession(const std::string& path,
+                                                    const std::string& deviceArg,
+                                                    bool doWarmup,
+                                                    const OutputSelection& selection,
+                                                    ModelWrapper& model)
+{
+    // The provider's reply carries no output names to select by.
+    if (selection)
+        throw std::invalid_argument("Model.init: outputs= is not supported in the web build");
+
+    // 'webgpu' is a first-class device here; 'cuda' is not a thing a browser
+    // has.
+    if (deviceArg != "auto" && deviceArg != "cpu" && deviceArg != "webgpu")
+        throw std::invalid_argument(
+            "Model.init: device must be 'auto', 'cpu', or 'webgpu' in the web build");
+
+    // The weights are read in one piece into a buffer of the file's size
+    // (growing one byte by byte peaked at about three times a model's size,
+    // and wasm memory never shrinks back), handed to the provider, and freed
+    // before the wait: only the request in flight holds them after that.
+    Value created;
+    {
+        std::ifstream in(path, std::ios::binary | std::ios::ate);
+        if (!in)
+            throw std::invalid_argument("Model.init: cannot open '" + path + "'");
+        const std::streamoff fileSize = in.tellg();
+        if (fileSize < 0)
+            throw std::invalid_argument("Model.init: cannot size '" + path + "'");
+        std::vector<uint8_t> modelBytes(static_cast<size_t>(fileSize));
+        in.seekg(0, std::ios::beg);
+        if (fileSize > 0 && !in.read(reinterpret_cast<char*>(modelBytes.data()), fileSize))
+            throw std::invalid_argument("Model.init: cannot read '" + path + "'");
+        created = web::nnCreate(std::move(modelBytes), deviceArg);
+    }
+
+    // Block until the provider compiled the model. Native init blocks the
+    // same way inside Ort::Session construction; a WebGPU shader compile can
+    // take a while on first load, hence the generous ceiling.
+    Value meta = web::nnAwaitBlocking(created, 120000);
+    if (!isDict(meta))
+        throw std::invalid_argument("Model.init: malformed provider reply");
+    ObjDict* md = asDict(meta);
+    auto metaGet = [&](const char* key) {
+        const Value k = Value::stringVal(toUnicodeString(key));
+        if (!md->contains(k))
             throw std::invalid_argument(
-                "ai.nn: predict expects a tensor, dict of tensors, or list of tensors");
-        }
-    } catch (const std::invalid_argument& e) {
-        Value msg = Value::stringVal(toUnicodeString(e.what()));
-        vm.raiseException(Value::exceptionVal(msg));
-        return Value::nilVal();
+                std::string("Model.init: provider reply missing '") + key + "'");
+        return md->at(k);
+    };
+
+    auto session = std::make_unique<WebSession>(static_cast<uint32_t>(metaGet("id").asInt()));
+    {
+        const Value dv = metaGet("device");
+        model.device = isString(dv) ? toUTF8StdString(asStringObj(dv)->s) : "wasm";
     }
+    auto fillIO = [&](const char* key, std::vector<TensorSpec>& specs) {
+        const Value lv = metaGet(key);
+        if (!isList(lv)) return;
+        ObjList* l = asList(lv);
+        for (int i = 0; i < l->length(); ++i) {
+            const Value ev = l->getElement(i);
+            if (!isDict(ev)) continue;
+            ObjDict* ed = asDict(ev);
+            auto want = [&](const char* k) {
+                return ed->at(Value::stringVal(toUnicodeString(k)));
+            };
+            TensorSpec spec;
+            const Value nv = want("name");
+            spec.name = isString(nv) ? toUTF8StdString(asStringObj(nv)->s) : "";
+            const Value sv = want("shape");
+            if (isList(sv)) {
+                ObjList* sl = asList(sv);
+                for (int d = 0; d < sl->length(); ++d) {
+                    const Value dim = sl->getElement(d);
+                    spec.shape.push_back(dim.isInt() ? dim.asInt()
+                                                     : static_cast<int64_t>(dim.asReal()));
+                }
+            }
+            const Value tv = want("dtype");
+            spec.dtype = isString(tv) ? toUTF8StdString(asStringObj(tv)->s) : "float32";
+            specs.push_back(std::move(spec));
+        }
+    };
+    fillIO("inputs",  model.inputs);
+    fillIO("outputs", model.outputs);
+
+    // The provider's run is a future; await it and ignore failure -- warmup
+    // is an optimization, not a contract.
+    if (doWarmup) {
+        NamedInputs inputs;
+        const Value tensors = warmupInputs(model, inputs);
+        if (!tensors.isNil()) {
+            try {
+                web::nnAwaitBlocking(session->submit(inputs, {}), 120000);
+            } catch (const std::exception&) {
+                // non-fatal
+            }
+        }
+    }
+    return session;
+}
+#endif
+
+static std::string joinNames(const std::vector<TensorSpec>& specs)
+{
+    std::string s;
+    for (size_t i = 0; i < specs.size(); ++i)
+        s += (i > 0 ? ", " : "") + specs[i].name;
+    return s;
 }
 
-// Async multi-input predict: validates synchronously, submits inference to worker thread.
-// Input validation (type, shape) happens on the calling thread so errors are catchable
-// by Roxal try/except. The actual ORT Session::Run happens on the worker thread.
+// The named inputs of one predict, checked against the model's: a tensor
+// (single-input models), a dict by input name, or a list in input order.
+// Every input must be given exactly once, with the model's dtype and a
+// compatible shape -- anything else is an invalid_argument, raised to the
+// script before an inference starts.  The result is in the model's input
+// order; the argument and its tensors are added to heldValues.
+static NamedInputs parsePredictInputs(const ModelWrapper& model, const Value& arg,
+                                      std::vector<Value>& heldValues)
+{
+    const auto& specs = model.inputs;
+    std::vector<ObjTensor*> bound(specs.size(), nullptr);   // per model input
+    heldValues.push_back(arg);
+
+    if (isTensor(arg)) {
+        if (specs.size() != 1)
+            throw std::invalid_argument(
+                "ai.nn: the model has " + std::to_string(specs.size()) + " inputs (" +
+                joinNames(specs) + "): pass a dict by name, or a list in that order");
+        bound[0] = asTensor(arg);
+    }
+    else if (isDict(arg)) {
+        for (auto& [key, val] : asDict(arg)->items()) {
+            if (!isString(key))
+                throw std::invalid_argument("ai.nn: predict dict keys must be strings");
+            const std::string name = toUTF8StdString(asStringObj(key)->s);
+            if (!isTensor(val))
+                throw std::invalid_argument(
+                    "ai.nn: predict dict value for '" + name + "' is not a tensor");
+            auto it = std::find_if(specs.begin(), specs.end(),
+                                   [&](const TensorSpec& spec) { return spec.name == name; });
+            if (it == specs.end())
+                throw std::invalid_argument(
+                    "ai.nn: the model has no input '" + name + "' (its inputs: " +
+                    joinNames(specs) + ")");
+            bound[it - specs.begin()] = asTensor(val);
+            heldValues.push_back(val);
+        }
+    }
+    else if (isList(arg)) {
+        ObjList* list = asList(arg);
+        if (static_cast<size_t>(list->length()) != specs.size()) {
+            throw std::invalid_argument(
+                "ai.nn: predict list has " + std::to_string(list->length()) +
+                " elements but model expects " + std::to_string(specs.size()) +
+                " inputs");
+        }
+        for (size_t i = 0; i < specs.size(); ++i) {
+            Value elem = list->getElement(i);
+            if (!isTensor(elem))
+                throw std::invalid_argument(
+                    "ai.nn: predict list element " + std::to_string(i) + " is not a tensor");
+            bound[i] = asTensor(elem);
+            heldValues.push_back(elem);
+        }
+    }
+    else {
+        throw std::invalid_argument(
+            "ai.nn: predict expects a tensor, dict of tensors, or list of tensors");
+    }
+
+    NamedInputs inputs;
+    inputs.reserve(specs.size());
+    for (size_t i = 0; i < specs.size(); ++i) {
+        const TensorSpec& spec = specs[i];
+        ObjTensor* tensor = bound[i];
+        if (!tensor)
+            throw std::invalid_argument("ai.nn: missing input '" + spec.name + "'");
+        const std::string dtype = to_string(tensor->dtype());
+        if (dtype != spec.dtype)
+            throw std::invalid_argument(
+                "ai.nn: dtype mismatch for input '" + spec.name + "': model expects " +
+                spec.dtype + " but got " + dtype);
+        if (!isShapeCompatible(tensor->shape(), spec.shape))
+            throw std::invalid_argument(
+                "ai.nn: shape mismatch for input '" + spec.name +
+                "': model expects " + shapeToString(spec.shape) +
+                " but got " + shapeToString(tensor->shape()));
+        inputs.emplace_back(spec.name, tensor);
+    }
+    return inputs;
+}
+
+// predict: checks the argument on the calling thread, so its errors are
+// catchable by Roxal try/except, and starts the inference on the model's
+// backend, returning its future.
 static Value safeRunInferenceFromValueAsync(VM& vm,
                                             const std::shared_ptr<ModelWrapper>& wrapper,
                                             const Value& arg) {
     try {
         if (wrapper->closed)
             throw std::invalid_argument("ai.nn: Model session is closed");
-#ifndef __EMSCRIPTEN__
-        // The wasm build has no worker thread; the host provider is the executor.
-        if (!wrapper->inferenceWorker)
-            throw std::runtime_error("ai.nn: Model inference worker not initialized");
-#endif
-
-        // Build inputs vector (type validation — synchronous)
-        std::vector<std::pair<std::string, ObjTensor*>> inputs;
-        std::vector<Value> heldValues;
-        heldValues.push_back(arg);  // Keep arg alive during async inference
-
-        if (isTensor(arg)) {
-            if (wrapper->inputNames.empty())
-                throw std::runtime_error("ai.nn: model has no inputs");
-            inputs.emplace_back(wrapper->inputNames[0], asTensor(arg));
-        }
-        else if (isDict(arg)) {
-            ObjDict* dict = asDict(arg);
-            auto items = dict->items();
-            inputs.reserve(items.size());
-            for (auto& [key, val] : items) {
-                if (!isString(key))
-                    throw std::invalid_argument("ai.nn: predict dict keys must be strings");
-                if (!isTensor(val))
-                    throw std::invalid_argument(
-                        "ai.nn: predict dict value for '" +
-                        toUTF8StdString(asStringObj(key)->s) + "' is not a tensor");
-                inputs.emplace_back(toUTF8StdString(asStringObj(key)->s), asTensor(val));
-                heldValues.push_back(val);
-            }
-        }
-        else if (isList(arg)) {
-            ObjList* list = asList(arg);
-            if (static_cast<size_t>(list->length()) != wrapper->inputNames.size()) {
-                throw std::invalid_argument(
-                    "ai.nn: predict list has " + std::to_string(list->length()) +
-                    " elements but model expects " + std::to_string(wrapper->inputNames.size()) +
-                    " inputs");
-            }
-            inputs.reserve(list->length());
-            for (size_t i = 0; i < static_cast<size_t>(list->length()); ++i) {
-                Value elem = list->getElement(i);
-                if (!isTensor(elem))
-                    throw std::invalid_argument(
-                        "ai.nn: predict list element " + std::to_string(i) + " is not a tensor");
-                inputs.emplace_back(wrapper->inputNames[i], asTensor(elem));
-                heldValues.push_back(elem);
-            }
-        }
-        else {
-            throw std::invalid_argument(
-                "ai.nn: predict expects a tensor, dict of tensors, or list of tensors");
-        }
-
-        // Shape validation (synchronous — so errors are catchable by try/except)
-        for (auto& [name, tensor] : inputs) {
-#ifdef ROXAL_ENABLE_ONNX
-            if (!tensor->isOrtBacked())
-                throw std::runtime_error("ai.nn: input tensor '" + name + "' is not ORT-backed");
-#endif
-            for (size_t i = 0; i < wrapper->inputNames.size(); ++i) {
-                if (wrapper->inputNames[i] == name) {
-                    if (!isShapeCompatible(tensor->shape(), wrapper->inputShapes[i])) {
-                        throw std::invalid_argument(
-                            "ai.nn: shape mismatch for input '" + name +
-                            "': model expects " + shapeToString(wrapper->inputShapes[i]) +
-                            " but got " + shapeToString(tensor->shape()));
-                    }
-                    break;
-                }
-            }
-        }
-
-#ifdef __EMSCRIPTEN__
-        // No worker thread in the wasm build: the provider itself is async.
-        // nnRun's future plugs into the same machinery the native worker's
-        // future does (FuncNode yield, resolveArgMask, resolve-on-index).
-        // The bridge registry pins heldValues until the reply lands.
-        std::vector<web::NnFeed> feeds;
-        feeds.reserve(inputs.size());
-        for (auto& [name, tensor] : inputs) {
-            web::NnFeed f;
-            f.name  = name;
-            f.dtype = to_string(tensor->dtype());
-            f.shape = tensor->shape();
-            f.data  = tensor->rawData();
-            f.len   = static_cast<size_t>(tensor->numel()) * tensorDTypeSize(tensor->dtype());
-            feeds.push_back(std::move(f));
-        }
-        return web::nnRun(wrapper->webSession, feeds, std::move(heldValues));
-#else
-        // Submit to worker thread (returns future immediately).
-        // Capture shared_ptr to keep model alive during inference.
-        auto work = [wrapper, inputs]() -> Value {
-            return runInferenceMulti(wrapper.get(), inputs);
-        };
-        return wrapper->inferenceWorker->submit(std::move(work), std::move(heldValues));
-#endif
-
+        std::vector<Value> heldValues;   // keep the inputs alive during async inference
+        auto inputs = parsePredictInputs(*wrapper, arg, heldValues);
+        return wrapper->session->submit(inputs, std::move(heldValues));
     } catch (const std::invalid_argument& e) {
         Value msg = Value::stringVal(toUnicodeString(e.what()));
         vm.raiseException(Value::exceptionVal(msg));
@@ -720,6 +1736,8 @@ void ModuleNN::registerBuiltins(VM& vm)
     link("tensor_device", [this](VM&, ArgsView a) { return nn_tensor_device_builtin(a); },
          /*defaults=*/{}, /*resolveArgMask=*/0x1);
     link("memory_info", [this](VM&, ArgsView a) { return nn_memory_info_builtin(a); });
+    link("server_info", [this](VM&, ArgsView a) { return nn_server_info_builtin(a); });
+    link("use_repository", [this](VM&, ArgsView a) { return nn_use_repository_builtin(a); });
 
     // Model object methods
     linkMethod("Model", "init", [this](VM&, ArgsView a) { return nn_model_init_builtin(a); });
@@ -733,6 +1751,9 @@ void ModuleNN::registerBuiltins(VM& vm)
     linkMethod("Model", "inputs",  [this](VM&, ArgsView a) { return nn_model_inputs_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
     linkMethod("Model", "outputs", [this](VM&, ArgsView a) { return nn_model_outputs_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
     linkMethod("Model", "device",  [this](VM&, ArgsView a) { return nn_model_device_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("Model", "server_info", [this](VM&, ArgsView a) { return nn_model_server_info_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("Model", "deployment", [this](VM&, ArgsView a) { return nn_model_deployment_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("Model", "unload", [this](VM&, ArgsView a) { return nn_model_unload_builtin(a); });
     linkMethod("Model", "close",   [this](VM&, ArgsView a) { return nn_model_close_builtin(a); });
 
     // Tokenizer object methods
@@ -760,213 +1781,64 @@ Value ModuleNN::nn_model_init_builtin(ArgsView args)
     std::string deviceArg = (args.size() >= 3 && isString(args[2]))
         ? toUTF8StdString(asStringObj(args[2])->s) : "auto";
     bool doWarmup = (args.size() < 4) || args[3].asBool();
-
-#ifdef ROXAL_ENABLE_ONNX
-    bool requestGpu;
-    if (deviceArg == "auto")
-        requestGpu = true;
-    else if (deviceArg == "cuda")
-        requestGpu = true;
-    else if (deviceArg == "cpu")
-        requestGpu = false;
-    else
-        throw std::invalid_argument("Model.init: device must be 'auto', 'cpu', or 'cuda'");
-
-    auto& ortEnv = OnnxEnvironment::instance();
-    // An explicit 'cuda' that cannot be honoured is an error, not a silent
-    // CPU session: the caller asked for the GPU by name.  ('auto' keeps the
-    // quiet fallback.)
-    if (deviceArg == "cuda" && !ortEnv.cudaAvailable())
-        throw std::invalid_argument("Model.init: device='cuda' but the CUDA execution provider "
-                                    "is not available: " + ortEnv.cudaProbeError());
-    auto opts = ortEnv.createSessionOptions(requestGpu);
-
-    auto wrapper = std::make_shared<ModelWrapper>();
-    try {
-        wrapper->session = std::make_unique<Ort::Session>(ortEnv.env(), path.c_str(), opts);
-    } catch (const Ort::Exception& e) {
-        throw std::invalid_argument(std::string("Model.init: failed to load '") + path + "': " + e.what());
-    }
-    wrapper->device = (requestGpu && ortEnv.cudaAvailable()) ? "cuda" : "cpu";
-
-    Ort::AllocatorWithDefaultOptions allocator;
-
-    // Extract input metadata
-    size_t numInputs = wrapper->session->GetInputCount();
-    for (size_t i = 0; i < numInputs; ++i) {
-        auto nameAlloc = wrapper->session->GetInputNameAllocated(i, allocator);
-        wrapper->inputNames.push_back(nameAlloc.get());
-
-        auto typeInfo = wrapper->session->GetInputTypeInfo(i);
-        auto tensorInfo = typeInfo.GetTensorTypeAndShapeInfo();
-        wrapper->inputShapes.push_back(tensorInfo.GetShape());
-        wrapper->inputDtypes.push_back(ortDtypeToString(tensorInfo.GetElementType()));
-    }
-
-    // Extract output metadata
-    size_t numOutputs = wrapper->session->GetOutputCount();
-    for (size_t i = 0; i < numOutputs; ++i) {
-        auto nameAlloc = wrapper->session->GetOutputNameAllocated(i, allocator);
-        wrapper->outputNames.push_back(nameAlloc.get());
-
-        auto typeInfo = wrapper->session->GetOutputTypeInfo(i);
-        auto tensorInfo = typeInfo.GetTensorTypeAndShapeInfo();
-        wrapper->outputShapes.push_back(tensorInfo.GetShape());
-        wrapper->outputDtypes.push_back(ortDtypeToString(tensorInfo.GetElementType()));
-    }
-
-    // Start the inference worker thread (must be before warmup since warmup
-    // is synchronous and doesn't use the worker).
-    wrapper->inferenceWorker = std::make_unique<InferenceWorker>();
-    wrapper->inferenceWorker->start();
-
-    // Auto-warmup: run one inference with zero tensors to initialize the CUDA
-    // context and trigger ORT graph optimization.  This makes the first real
-    // predict() call fast and consistent.
-    //
-    // Only attempted when every non-batch dimension is static: a dynamic
-    // spatial/sequence dim would force a guessed size, which can violate
-    // model-internal constraints (e.g. a detector's TopK over anchors) — the
-    // failed kernel is harmless but ONNX Runtime logs a scary error for it.
-    if (doWarmup && !wrapper->inputShapes.empty()) {
-        bool dynamicNonBatch = false;
-        for (const auto& shape : wrapper->inputShapes)
-            for (size_t di = 1; di < shape.size(); ++di)
-                if (shape[di] < 0) dynamicNonBatch = true;
-        if (!dynamicNonBatch) {
-            std::vector<Value> warmupTensors;
-            std::vector<std::pair<std::string, ObjTensor*>> warmupInputs;
-            warmupTensors.reserve(wrapper->inputShapes.size());
-            warmupInputs.reserve(wrapper->inputShapes.size());
-            for (size_t i = 0; i < wrapper->inputShapes.size(); ++i) {
-                auto shape = wrapper->inputShapes[i];
-                if (!shape.empty() && shape[0] < 0)
-                    shape[0] = 1;   // batch dimension
-                warmupTensors.push_back(
-                    Value::tensorVal(shape, tensorDTypeFromString(wrapper->inputDtypes[i])));
-                warmupInputs.emplace_back(wrapper->inputNames[i], asTensor(warmupTensors.back()));
-            }
-            try {
-                runInferenceMulti(wrapper.get(), warmupInputs);
-            } catch (const std::exception& e) {
-                // Warmup failure is non-fatal — the model is still usable.
-            }
-        }
-    }
-
-#elif defined(__EMSCRIPTEN__)
-    // Web build: the host provider (onnxruntime-web / onnxruntime-node) owns
-    // the session. 'webgpu' is a first-class device here; 'cuda' is not a
-    // thing a browser has.
-    if (deviceArg != "auto" && deviceArg != "cpu" && deviceArg != "webgpu")
-        throw std::invalid_argument(
-            "Model.init: device must be 'auto', 'cpu', or 'webgpu' in the web build");
-
-    auto wrapper = std::make_shared<ModelWrapper>();
-
-    // The weights are read in one piece into a buffer of the file's size
-    // (growing one byte by byte peaked at about three times a model's size,
-    // and wasm memory never shrinks back), handed to the provider, and freed
-    // before the wait: only the request in flight holds them after that.
-    Value created;
-    {
-        std::ifstream in(path, std::ios::binary | std::ios::ate);
-        if (!in)
-            throw std::invalid_argument("Model.init: cannot open '" + path + "'");
-        const std::streamoff fileSize = in.tellg();
-        if (fileSize < 0)
-            throw std::invalid_argument("Model.init: cannot size '" + path + "'");
-        std::vector<uint8_t> modelBytes(static_cast<size_t>(fileSize));
-        in.seekg(0, std::ios::beg);
-        if (fileSize > 0 && !in.read(reinterpret_cast<char*>(modelBytes.data()), fileSize))
-            throw std::invalid_argument("Model.init: cannot read '" + path + "'");
-        created = web::nnCreate(std::move(modelBytes), deviceArg);
-    }
-
-    // Block until the provider compiled the model. Native init blocks the
-    // same way inside Ort::Session construction; a WebGPU shader compile can
-    // take a while on first load, hence the generous ceiling.
-    Value meta = web::nnAwaitBlocking(created, 120000);
-    if (!isDict(meta))
-        throw std::invalid_argument("Model.init: malformed provider reply");
-    ObjDict* md = asDict(meta);
-    auto metaGet = [&](const char* key) {
-        const Value k = Value::stringVal(toUnicodeString(key));
-        if (!md->contains(k))
-            throw std::invalid_argument(
-                std::string("Model.init: provider reply missing '") + key + "'");
-        return md->at(k);
-    };
-
-    wrapper->webSession = static_cast<uint32_t>(metaGet("id").asInt());
-    wrapper->webSessionOpen = true;
-    {
-        const Value dv = metaGet("device");
-        wrapper->device = isString(dv) ? toUTF8StdString(asStringObj(dv)->s) : "wasm";
-    }
-    auto fillIO = [&](const char* key,
-                      std::vector<std::string>& names,
-                      std::vector<std::vector<int64_t>>& shapes,
-                      std::vector<std::string>& dtypes) {
-        const Value lv = metaGet(key);
-        if (!isList(lv)) return;
-        ObjList* l = asList(lv);
-        for (int i = 0; i < l->length(); ++i) {
-            const Value ev = l->getElement(i);
-            if (!isDict(ev)) continue;
-            ObjDict* ed = asDict(ev);
-            auto want = [&](const char* k) {
-                return ed->at(Value::stringVal(toUnicodeString(k)));
-            };
-            const Value nv = want("name");
-            names.push_back(isString(nv) ? toUTF8StdString(asStringObj(nv)->s) : "");
-            std::vector<int64_t> shape;
-            const Value sv = want("shape");
-            if (isList(sv)) {
-                ObjList* sl = asList(sv);
-                for (int d = 0; d < sl->length(); ++d) {
-                    const Value dim = sl->getElement(d);
-                    shape.push_back(dim.isInt() ? dim.asInt()
-                                                : static_cast<int64_t>(dim.asReal()));
-                }
-            }
-            shapes.push_back(std::move(shape));
-            const Value tv = want("dtype");
-            dtypes.push_back(isString(tv) ? toUTF8StdString(asStringObj(tv)->s) : "float32");
-        }
-    };
-    fillIO("inputs",  wrapper->inputNames,  wrapper->inputShapes,  wrapper->inputDtypes);
-    fillIO("outputs", wrapper->outputNames, wrapper->outputShapes, wrapper->outputDtypes);
-
-    // Warmup: same policy as native (skip when any non-batch dim is dynamic).
-    // runInferenceMulti returns a future in this build; await and ignore
-    // failure -- warmup is an optimization, not a contract.
-    if (doWarmup && !wrapper->inputShapes.empty()) {
-        bool dynamicNonBatch = false;
-        for (const auto& shape : wrapper->inputShapes)
-            for (size_t di = 1; di < shape.size(); ++di)
-                if (shape[di] < 0) dynamicNonBatch = true;
-        if (!dynamicNonBatch) {
-            std::vector<Value> warmupTensors;
-            std::vector<std::pair<std::string, ObjTensor*>> warmupInputs;
-            for (size_t i = 0; i < wrapper->inputShapes.size(); ++i) {
-                auto shape = wrapper->inputShapes[i];
-                if (!shape.empty() && shape[0] < 0)
-                    shape[0] = 1;
-                warmupTensors.push_back(
-                    Value::tensorVal(shape, tensorDTypeFromString(wrapper->inputDtypes[i])));
-                warmupInputs.emplace_back(wrapper->inputNames[i], asTensor(warmupTensors.back()));
-            }
-            try {
-                web::nnAwaitBlocking(runInferenceMulti(wrapper.get(), warmupInputs), 120000);
-            } catch (const std::exception&) {
-                // non-fatal
-            }
-        }
-    }
-#endif
+    const OutputSelection selection =
+        outputSelectionArg(args.size() >= 5 ? args[4] : Value::nilVal());
+    const Value timeoutArg = args.size() >= 6 ? args[5] : Value::nilVal();
+    const Value serverArg = args.size() >= 7 ? args[6] : Value::nilVal();
+    const Value configArg = args.size() >= 8 ? args[7] : Value::nilVal();
+    if (!serverArg.isNil() && !isString(serverArg))
+        throw std::invalid_argument("Model.init: server must be a string, 'host[:port]'");
+    if (!configArg.isNil() && serverArg.isNil())
+        throw std::invalid_argument("Model.init: config applies to a model deployed with server= only");
+    if (!configArg.isNil() && !isString(configArg) && !isDict(configArg))
+        throw std::invalid_argument("Model.init: config must be a dict (or its JSON text)");
 
 #if defined(ROXAL_ENABLE_ONNX) || defined(__EMSCRIPTEN__)
+    auto wrapper = std::make_shared<ModelWrapper>();
+    // Whether the model's server answers (see noteAvailability); a model run
+    // in this process is always available.
+    auto available = df::Signal::newSourceSignal(0, Value::boolVal(true), std::string("available"));
+#ifdef ROXAL_ENABLE_TRITON
+    if (!serverArg.isNil()) {
+        if (path.rfind("triton://", 0) == 0)
+            throw std::invalid_argument("Model.init: server= deploys a model file; '" + path +
+                                        "' names a model its server already has");
+        const std::string configJson = configArg.isNil() ? std::string()
+            : isString(configArg) ? toUTF8StdString(asStringObj(configArg)->s) : sysToJson(configArg);
+        try {
+            wrapper->session = deployTritonModel(path, toUTF8StdString(asStringObj(serverArg)->s), configJson,
+                                                 deviceArg, selection, tritonTimeoutArg(timeoutArg),
+                                                 available, *wrapper);
+        } catch (const TypedNnError& e) {
+            const Value type = vm().loadGlobal(toUnicodeString(e.typeName)).value_or(Value::nilVal());
+            vm().raiseException(Value::exceptionVal(Value::stringVal(toUnicodeString(e.what())), type));
+            return Value::nilVal();
+        }
+    } else if (auto source = parseTritonSource(path)) {
+        try {
+            wrapper->session = openTritonSession(*source, deviceArg, selection,
+                                                 tritonTimeoutArg(timeoutArg), available, *wrapper);
+        } catch (const TypedNnError& e) {
+            const Value type = vm().loadGlobal(toUnicodeString(e.typeName)).value_or(Value::nilVal());
+            vm().raiseException(Value::exceptionVal(Value::stringVal(toUnicodeString(e.what())), type));
+            return Value::nilVal();
+        }
+    } else
+#endif
+    {
+        if (path.rfind("triton://", 0) == 0 || !serverArg.isNil())
+            throw std::invalid_argument("Model.init: this build has no Triton support "
+                                        "(ROXAL_ENABLE_TRITON)");
+        if (!timeoutArg.isNil())
+            throw std::invalid_argument("Model.init: timeout applies to Triton models only");
+#ifdef ROXAL_ENABLE_ONNX
+        wrapper->session = openOrtSession(path, deviceArg, doWarmup, selection, *wrapper);
+#else
+        wrapper->session = openWebSession(path, deviceArg, doWarmup, selection, *wrapper);
+#endif
+    }
+    inst->setProperty("available", Value::signalVal(available));
+
     // Store wrapper as foreignPtr on the instance
     auto* sharedWrapper = new std::shared_ptr<ModelWrapper>(wrapper);
     Value fp = Value::foreignPtrVal(sharedWrapper);
@@ -1010,7 +1882,7 @@ Value ModuleNN::nn_model_init_builtin(ArgsView args)
     // list-valued signal.  The declaration decides the arity, not the use
     // site, so the two forms agree with the rest of the language (see
     // "Nodes with several outputs" in roxal-for-devs.md).
-    const size_t outputCount = wrapper->outputNames.empty() ? 1 : wrapper->outputNames.size();
+    const size_t outputCount = wrapper->outputs.empty() ? 1 : wrapper->outputs.size();
     func->funcType = makeFuncType({{"input", std::nullopt}}, {}, /*isProc=*/false,
                                   std::vector<type::BuiltinType>(outputCount, type::BuiltinType::Tensor));
 
@@ -1020,7 +1892,7 @@ Value ModuleNN::nn_model_init_builtin(ArgsView args)
 
     return Value::nilVal();
 #else
-    (void)inst; (void)path; (void)doWarmup;
+    (void)inst; (void)path; (void)doWarmup; (void)selection; (void)timeoutArg; (void)serverArg;
     throw std::runtime_error("Model.init requires ONNX Runtime (build with -DROXAL_ENABLE_ONNX=ON)");
 #endif
 }
@@ -1029,20 +1901,18 @@ Value ModuleNN::nn_model_init_builtin(ArgsView args)
 // Model.inputs() → list of {name, shape, dtype}
 // ============================================================
 
-static Value buildIODescriptorList(const std::vector<std::string>& names,
-                                   const std::vector<std::vector<int64_t>>& shapes,
-                                   const std::vector<std::string>& dtypes)
+static Value buildIODescriptorList(const std::vector<TensorSpec>& specs)
 {
     Value list = Value::objVal(newListObj());
-    for (size_t i = 0; i < names.size(); ++i) {
+    for (const auto& spec : specs) {
         Value dict = Value::objVal(newDictObj());
         asDict(dict)->store(
             Value::stringVal(toUnicodeString("name")),
-            Value::stringVal(toUnicodeString(names[i]))
+            Value::stringVal(toUnicodeString(spec.name))
         );
 
         Value shapeList = Value::objVal(newListObj());
-        for (auto dim : shapes[i])
+        for (auto dim : spec.shape)
             asList(shapeList)->append(Value::intVal(dim));
         asDict(dict)->store(
             Value::stringVal(toUnicodeString("shape")),
@@ -1051,7 +1921,7 @@ static Value buildIODescriptorList(const std::vector<std::string>& names,
 
         asDict(dict)->store(
             Value::stringVal(toUnicodeString("dtype")),
-            Value::stringVal(toUnicodeString(dtypes[i]))
+            Value::stringVal(toUnicodeString(spec.dtype))
         );
 
         asList(list)->append(dict);
@@ -1065,7 +1935,7 @@ Value ModuleNN::nn_model_inputs_builtin(ArgsView args)
         throw std::invalid_argument("Model.inputs expects receiver");
 
     ModelWrapper* wrapper = getModelWrapper(asObjectInstance(args[0]));
-    return buildIODescriptorList(wrapper->inputNames, wrapper->inputShapes, wrapper->inputDtypes);
+    return buildIODescriptorList(wrapper->inputs);
 }
 
 // ============================================================
@@ -1078,7 +1948,7 @@ Value ModuleNN::nn_model_outputs_builtin(ArgsView args)
         throw std::invalid_argument("Model.outputs expects receiver");
 
     ModelWrapper* wrapper = getModelWrapper(asObjectInstance(args[0]));
-    return buildIODescriptorList(wrapper->outputNames, wrapper->outputShapes, wrapper->outputDtypes);
+    return buildIODescriptorList(wrapper->outputs);
 }
 
 // ============================================================
@@ -1092,6 +1962,147 @@ Value ModuleNN::nn_model_device_builtin(ArgsView args)
 
     ModelWrapper* wrapper = getModelWrapper(asObjectInstance(args[0]));
     return Value::stringVal(toUnicodeString(wrapper->device));
+}
+
+// {kind, name, version, extensions}: see ModelServerInfo.
+static Value serverInfoValue(const ModelServerInfo& info)
+{
+    Value extensions = Value::listVal();
+    for (const auto& extension : info.extensions)
+        asList(extensions)->append(Value::stringVal(toUnicodeString(extension)));
+    Value dict = Value::dictVal();
+    asDict(dict)->store(Value::stringVal(toUnicodeString("kind")), Value::stringVal(toUnicodeString(info.kind)));
+    asDict(dict)->store(Value::stringVal(toUnicodeString("name")), Value::stringVal(toUnicodeString(info.name)));
+    asDict(dict)->store(Value::stringVal(toUnicodeString("version")), Value::stringVal(toUnicodeString(info.version)));
+    asDict(dict)->store(Value::stringVal(toUnicodeString("extensions")), extensions);
+    return dict;
+}
+
+// ============================================================
+// Model.server_info() → dict | nil: the server a Triton model was opened on
+// ============================================================
+
+Value ModuleNN::nn_model_server_info_builtin(ArgsView args)
+{
+    if (args.size() < 1 || !isObjectInstance(args[0]))
+        throw std::invalid_argument("Model.server_info expects receiver");
+
+    ModelWrapper* wrapper = getModelWrapper(asObjectInstance(args[0]));
+    if (!wrapper->session)
+        return Value::nilVal();
+    const auto server = wrapper->session->server();
+    return server ? serverInfoValue(*server) : Value::nilVal();
+}
+
+// ============================================================
+// Model.deployment() → dict | nil; Model.unload(remove=false)
+// ============================================================
+
+Value ModuleNN::nn_model_deployment_builtin(ArgsView args)
+{
+    if (args.size() < 1 || !isObjectInstance(args[0]))
+        throw std::invalid_argument("Model.deployment expects receiver");
+    ModelWrapper* wrapper = getModelWrapper(asObjectInstance(args[0]));
+    const auto deployment = wrapper->session ? wrapper->session->deployment() : std::nullopt;
+    if (!deployment)
+        return Value::nilVal();
+    auto str = [](const std::string& s) { return Value::stringVal(toUnicodeString(s)); };
+    Value dict = Value::dictVal();
+    asDict(dict)->store(str("server"), str(deployment->server));
+    asDict(dict)->store(str("name"), str(deployment->name));
+    asDict(dict)->store(str("transport"), str(deployment->transport));
+    asDict(dict)->store(str("repository"),
+                        deployment->repository.empty() ? Value::nilVal() : str(deployment->repository));
+    return dict;
+}
+
+Value ModuleNN::nn_model_unload_builtin(ArgsView args)
+{
+    if (args.size() < 1 || !isObjectInstance(args[0]))
+        throw std::invalid_argument("Model.unload expects receiver");
+    const bool removeFiles = args.size() >= 2 && !args[1].isNil() && args[1].asBool();
+    ModelWrapper* wrapper = getModelWrapper(asObjectInstance(args[0]));
+    if (!wrapper->session)
+        throw std::invalid_argument("Model.unload: the model is not open");
+#ifdef ROXAL_ENABLE_TRITON
+    try {
+        wrapper->session->unload(removeFiles);
+    } catch (const TypedNnError& e) {
+        const Value type = vm().loadGlobal(toUnicodeString(e.typeName)).value_or(Value::nilVal());
+        vm().raiseException(Value::exceptionVal(Value::stringVal(toUnicodeString(e.what())), type));
+        return Value::nilVal();
+    }
+#else
+    wrapper->session->unload(removeFiles);
+#endif
+    // Unloaded, it serves nothing more: closed, as close() leaves it.
+    if (!wrapper->closed) {
+        wrapper->closed = true;
+        wrapper->session->close();
+    }
+    return Value::nilVal();
+}
+
+// ============================================================
+// ai.nn.use_repository(server, directory): a shared repository, for this run
+// ============================================================
+
+Value ModuleNN::nn_use_repository_builtin(ArgsView args)
+{
+    if (args.size() < 2 || !isString(args[0]) || !(isString(args[1]) || args[1].isNil()))
+        throw std::invalid_argument("use_repository expects a server string and a directory string (or nil)");
+#ifdef ROXAL_ENABLE_TRITON
+    const std::string given = toUTF8StdString(asStringObj(args[0])->s);
+    std::string address = given.rfind("triton://", 0) == 0 ? given.substr(9) : given;
+    if (address.empty() || address.find('/') != std::string::npos)
+        throw std::invalid_argument("use_repository: '" + given + "' is not host[:port] or triton://host[:port]");
+    address = nn::normalizeAddress(address);
+    auto& script = scriptRepositories();
+    if (args[1].isNil()) {
+        std::lock_guard<std::mutex> lock(script.mutex);
+        script.byServer.erase(address);
+    } else {
+        const auto directory = nn::repositoryDirectory(toUTF8StdString(asStringObj(args[1])->s));
+        std::lock_guard<std::mutex> lock(script.mutex);
+        script.byServer[address] = directory;
+    }
+    return Value::nilVal();
+#else
+    throw std::invalid_argument("use_repository: this build has no Triton support (ROXAL_ENABLE_TRITON)");
+#endif
+}
+
+// ============================================================
+// ai.nn.server_info('host[:port]') → dict: ask a Triton server who it is
+// ============================================================
+
+Value ModuleNN::nn_server_info_builtin(ArgsView args)
+{
+    if (args.size() < 1 || !isString(args[0]))
+        throw std::invalid_argument("server_info expects an address string");
+    const std::string given = toUTF8StdString(asStringObj(args[0])->s);
+#ifdef ROXAL_ENABLE_TRITON
+    static const std::string scheme = "triton://";
+    std::string address = given.rfind(scheme, 0) == 0 ? given.substr(scheme.size()) : given;
+    if (address.empty() || address.find('/') != std::string::npos)
+        throw std::invalid_argument("server_info: '" + given +
+                                    "' is not host[:port] or triton://host[:port]");
+    address = nn::normalizeAddress(address);
+    ModelServerInfo info;
+    const auto status = queryTritonServer(*nn::TritonEndpoint::get(address), info);
+    if (!status.ok()) {
+        const Value type = vm().loadGlobal(toUnicodeString(grpcExceptionTypeName(status.error_code())))
+                               .value_or(Value::nilVal());
+        vm().raiseException(Value::exceptionVal(Value::stringVal(toUnicodeString(
+            "server_info: " + address + ": " + status.error_message() +
+            " [" + grpcStatusCodeName(status.error_code()) + "]")), type));
+        return Value::nilVal();
+    }
+    return serverInfoValue(info);
+#else
+    throw std::invalid_argument("server_info('" + given + "'): this build has no Triton support "
+                                "(ROXAL_ENABLE_TRITON)");
+#endif
 }
 
 // ============================================================
@@ -1190,19 +2201,11 @@ Value ModuleNN::nn_model_close_builtin(ArgsView args)
 
     ModelWrapper* wrapper = getModelWrapper(asObjectInstance(args[0]));
     if (!wrapper->closed) {
-        // Stop worker thread first (waits for in-flight inference to complete)
-        if (wrapper->inferenceWorker)
-            wrapper->inferenceWorker->stop();
         wrapper->closed = true;
-#ifdef ROXAL_ENABLE_ONNX
-        wrapper->session.reset();
-#endif
-#ifdef __EMSCRIPTEN__
-        if (wrapper->webSessionOpen) {
-            web::nnClose(wrapper->webSession);
-            wrapper->webSessionOpen = false;
-        }
-#endif
+        // Queued predicts resolve to an error now; nothing here waits for an
+        // inference in flight.
+        if (wrapper->session)
+            wrapper->session->close();
     }
     return Value::nilVal();
 }

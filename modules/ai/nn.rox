@@ -7,11 +7,19 @@ func memory_info(device:string='auto'):
   """Return memory info dict: \{device, total, free, used} (bytes). Device: 'auto' (GPU if available, else CPU), 'cpu', or 'cuda'."""
 
 @builtin
+proc use_repository(server:string, directory):
+  """For this run, models deployed to `server` ('host[:port]') go through `directory` -- a directory, as this machine sees it, that the server serves as one of its model repositories (e.g. a host folder mounted into its container and passed to --model-repository): no size limit, and nothing is uploaded. Files are hard-linked there if they can be, else symlinked (the server must see them at the same path), else copied. directory=nil goes back to the triton.repositories setting or ROXAL_TRITON_REPOSITORIES, if either names the server."""
+
+@builtin
+func server_info(address:string) -> dict:
+  """Ask the NVIDIA Triton server at 'host[:port]' or 'triton://host[:port]' (the port defaults to 8001) who it is: \{kind, name, version, extensions}, e.g. \{kind: 'triton', name: 'triton', version: '2.62.0', extensions: ['classification', ..., 'system_shared_memory', ...]}. `kind` is how Roxal reached the server (the 'triton://' backend); name, version and extensions are the server's own description (version 2.62.0 is NVIDIA's 25.10 container), and a server speaking the same protocol may name itself otherwise. Raises UnavailableError when the server cannot be reached. Native builds with Triton support."""
+
+@builtin
 type Model object:
 
   @builtin
-  proc init(path:string, device:string='auto', warmup:bool=true):
-    """Load an ONNX model from the given file path. Device: 'auto' (GPU if available), 'cpu', or 'cuda' (native) / 'webgpu' (web builds, where inference runs on the browser's ONNX Runtime). Set warmup=false to skip the initial warm-up inference. Warm-up is skipped automatically for models with dynamic non-batch input dims (no certainly-valid synthetic input can be built for them)."""
+  proc init(path:string, device:string='auto', warmup:bool=true, outputs=nil, timeout=nil, server=nil, config=nil):
+    """Load a model: an ONNX file path, run in this process, or 'triton://host[:port]/model[?version=N]', a model served by an NVIDIA Triton Inference Server (native builds with Triton support). Device: 'auto' (GPU if available), 'cpu', or 'cuda' (native) / 'webgpu' (web builds, where inference runs on the browser's ONNX Runtime); a Triton model takes only 'auto' (its server places it). Set warmup=false to skip the initial warm-up inference. Warm-up is skipped automatically for models with dynamic non-batch input dims (no certainly-valid synthetic input can be built for them), and for Triton models. outputs: a list of output names choosing which outputs predict returns, in that order (default: all of them, in the model's order -- for a Triton model the server's order, which need not be the ONNX file's); not supported in web builds. timeout: how long a Triton inference may take, a time quantity or seconds (default 1 s); past it the call fails with UnavailableError. The model's `available` property is a bool signal: false while its Triton server is unreachable or too slow (a dataflow node using the model keeps its last outputs meanwhile), true again once it answers; always true for a model run in this process. server: 'host[:port]' (port 8001 by default) -- run this model file on that Triton server instead of in this process: Roxal deploys it there unless the server already serves the same content (deployed names are 'roxal.<file stem>.<content hash>'), through a directory the server shares as a model repository (ai.nn.use_repository, the triton.repositories setting, or ROXAL_TRITON_REPOSITORIES) or else by upload (up to 2 GB). The server must be started with --model-control-mode=explicit. The path may be an .onnx (with any external-data files it names), .plan (TensorRT), .pt (TorchScript), OpenVINO .xml (+ .bin), or a directory of a model's files. config: with server=, a dict (or its JSON) overriding Triton's model configuration, e.g. \{max_batch_size: 8}; TorchScript models need one."""
 
   @builtin
   func predict(input):
@@ -28,6 +36,18 @@ type Model object:
   @builtin
   func device():
     """Return current execution device string: 'cpu' or 'cuda' (native), 'cpu' or 'webgpu' (web builds)."""
+
+  @builtin
+  func deployment():
+    """How this program deployed the model (Model(path, server=...)): \{server, name, transport, repository} -- transport 'upload', 'repository' (placed in a shared directory) or 'reused' (the server already served the same content); repository the shared directory holding its files, or nil. nil for any other model."""
+
+  @builtin
+  proc unload(remove=false):
+    """Take a model this program deployed (Model(path, server=...)) off its server, and close it. With remove=true, also delete its files from the shared repository directory. Other programs using the same deployment lose it too. A triton:// model is its server's to manage, and raises."""
+
+  @builtin
+  func server_info():
+    """The server a Triton model was opened on, as ai.nn.server_info() describes it (read when the model loaded); nil for a model run in this process."""
 
   @builtin
   proc close():

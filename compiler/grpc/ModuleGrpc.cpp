@@ -1,6 +1,7 @@
 #ifdef ROXAL_ENABLE_GRPC
 
 #include "ModuleGrpc.h"
+#include "GrpcStatus.h"
 #include "VM.h"
 #include "Object.h"
 #include "core/AST.h"
@@ -17,28 +18,6 @@
 #include <vector>
 
 using namespace roxal;
-
-namespace {
-bool isApplicationStatus(grpc::StatusCode code)
-{
-    switch (code) {
-        case grpc::StatusCode::INVALID_ARGUMENT:
-        case grpc::StatusCode::FAILED_PRECONDITION:
-        case grpc::StatusCode::OUT_OF_RANGE:
-        case grpc::StatusCode::PERMISSION_DENIED:
-        case grpc::StatusCode::UNAUTHENTICATED:
-        case grpc::StatusCode::ALREADY_EXISTS:
-        case grpc::StatusCode::NOT_FOUND:
-        case grpc::StatusCode::ABORTED:
-        case grpc::StatusCode::DATA_LOSS:
-        case grpc::StatusCode::RESOURCE_EXHAUSTED:
-        case grpc::StatusCode::UNKNOWN:
-            return true;
-        default:
-            return false;
-    }
-}
-}
 
 ModuleGrpc::ModuleGrpc()
     : targetAddress("127.0.0.1:50051")
@@ -444,9 +423,9 @@ void ModuleGrpc::registerServices(Value moduleVal, const std::vector<ProtoAdapte
                             resp = comm->call(method.name, reqArgs, timeout);
                         }
                     } catch (const GrpcStatusError& ge) {
-                        const bool isAppStatus = isApplicationStatus(ge.code());
-                        const char* typeName = isAppStatus ? "ProgramException" : "RuntimeException";
-                        auto exTypeOpt = vm.loadGlobal(toUnicodeString(typeName));
+                        const bool isAppStatus =
+                            classifyGrpcStatus(ge.code()) == GrpcFailureKind::Application;
+                        auto exTypeOpt = vm.loadGlobal(toUnicodeString(grpcExceptionTypeName(ge.code())));
                         Value exType = exTypeOpt.has_value() ? exTypeOpt.value() : Value::nilVal();
                         Value msg = Value::stringVal(toUnicodeString(std::string(ge.what())));
                         Value detail = Value::dictVal();

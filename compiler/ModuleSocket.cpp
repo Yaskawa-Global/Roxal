@@ -1,6 +1,7 @@
 #include "ModuleSocket.h"
 #include "VM.h"
 #include "Object.h"
+#include "SimpleMarkSweepGC.h"
 
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -66,6 +67,15 @@ void ModuleSocket::asyncWorker()
             continue;
         }
 
+        // An op's result is built and its future resolved as a GC
+        // participant: this thread allocates the result (strings, lists, a
+        // Socket object).  Only for that -- never across the blocking calls
+        // (getaddrinfo, poll), which a collection must not wait out.
+        auto settle = [](PendingSocketOp& op, auto&& result) {
+            SimpleMarkSweepGC::ExternalParticipant participant(SimpleMarkSweepGC::instance());
+            op.promise->resolve(result());
+        };
+
         // Build poll array
         std::vector<struct pollfd> fds;
         std::vector<PendingSocketOp*> ops;
@@ -83,9 +93,9 @@ void ModuleSocket::asyncWorker()
                     struct sockaddr_in* addr = (struct sockaddr_in*)result->ai_addr;
                     inet_ntop(AF_INET, &addr->sin_addr, ipstr, sizeof(ipstr));
                     freeaddrinfo(result);
-                    op.promise->set_value(Value::stringVal(toUnicodeString(ipstr)));
+                    settle(op, [&] { return Value::stringVal(toUnicodeString(ipstr)); });
                 } else {
-                    op.promise->set_value(Value::nilVal());
+                    settle(op, [] { return Value::nilVal(); });
                 }
                 continue;
             }
@@ -133,18 +143,19 @@ void ModuleSocket::asyncWorker()
                                 int port = ntohs(clientAddr.sin_port);
 
                                 // Create result: [Socket, [host, port]]
-                                Value clientSocket = const_cast<ModuleSocket*>(this)->createSocketObject(clientFd, SOCK_STREAM);
-                                Value addrList = Value::listVal();
-                                asList(addrList)->append(Value::stringVal(toUnicodeString(ipstr)));
-                                asList(addrList)->append(Value::intVal(port));
+                                settle(*op, [&] {
+                                    Value clientSocket = const_cast<ModuleSocket*>(this)->createSocketObject(clientFd, SOCK_STREAM);
+                                    Value addrList = Value::listVal();
+                                    asList(addrList)->append(Value::stringVal(toUnicodeString(ipstr)));
+                                    asList(addrList)->append(Value::intVal(port));
 
-                                Value resultList = Value::listVal();
-                                asList(resultList)->append(clientSocket);
-                                asList(resultList)->append(addrList);
-
-                                op->promise->set_value(resultList);
+                                    Value resultList = Value::listVal();
+                                    asList(resultList)->append(clientSocket);
+                                    asList(resultList)->append(addrList);
+                                    return resultList;
+                                });
                             } else {
-                                op->promise->set_value(Value::nilVal());
+                                settle(*op, [] { return Value::nilVal(); });
                             }
                             break;
                         }
@@ -153,7 +164,7 @@ void ModuleSocket::asyncWorker()
                             int error = 0;
                             socklen_t len = sizeof(error);
                             getsockopt(op->fd, SOL_SOCKET, SO_ERROR, &error, &len);
-                            op->promise->set_value(error == 0 ? Value::trueVal() : Value::falseVal());
+                            settle(*op, [&] { return error == 0 ? Value::trueVal() : Value::falseVal(); });
                             break;
                         }
 
@@ -162,12 +173,12 @@ void ModuleSocket::asyncWorker()
                             ssize_t n = recv(op->fd, buffer.data(), buffer.size(), 0);
                             if (n > 0) {
                                 std::string data(buffer.data(), n);
-                                op->promise->set_value(Value::stringVal(toUnicodeString(data)));
+                                settle(*op, [&] { return Value::stringVal(toUnicodeString(data)); });
                             } else if (n == 0) {
                                 // Connection closed
-                                op->promise->set_value(Value::stringVal(toUnicodeString("")));
+                                settle(*op, [] { return Value::stringVal(toUnicodeString("")); });
                             } else {
-                                op->promise->set_value(Value::nilVal());
+                                settle(*op, [] { return Value::nilVal(); });
                             }
                             break;
                         }
@@ -185,13 +196,15 @@ void ModuleSocket::asyncWorker()
                                 int port = ntohs(senderAddr.sin_port);
 
                                 // Return [data, host, port]
-                                Value resultList = Value::listVal();
-                                asList(resultList)->append(Value::stringVal(toUnicodeString(data)));
-                                asList(resultList)->append(Value::stringVal(toUnicodeString(ipstr)));
-                                asList(resultList)->append(Value::intVal(port));
-                                op->promise->set_value(resultList);
+                                settle(*op, [&] {
+                                    Value resultList = Value::listVal();
+                                    asList(resultList)->append(Value::stringVal(toUnicodeString(data)));
+                                    asList(resultList)->append(Value::stringVal(toUnicodeString(ipstr)));
+                                    asList(resultList)->append(Value::intVal(port));
+                                    return resultList;
+                                });
                             } else {
-                                op->promise->set_value(Value::nilVal());
+                                settle(*op, [] { return Value::nilVal(); });
                             }
                             break;
                         }
@@ -201,7 +214,7 @@ void ModuleSocket::asyncWorker()
                     }
                 } else if (fds[i].revents & (POLLERR | POLLHUP | POLLNVAL)) {
                     // Error condition
-                    ops[i]->promise->set_value(Value::nilVal());
+                    settle(*ops[i], [] { return Value::nilVal(); });
                 } else {
                     // Not ready yet, re-queue
                     std::lock_guard<std::mutex> lock(pendingMutex);
@@ -335,8 +348,8 @@ Value ModuleSocket::socket_gethostbyname_builtin(ArgsView args)
     std::string hostname = toUTF8StdString(asStringObj(args[0])->s);
 
     // Create promise and future
-    auto promise = std::make_shared<std::promise<Value>>();
-    std::shared_future<Value> future = promise->get_future().share();
+    auto promise = std::make_shared<NativePromise>();
+    Value future = promise->future();
 
     // Queue the resolve operation
     PendingSocketOp op;
@@ -349,7 +362,7 @@ Value ModuleSocket::socket_gethostbyname_builtin(ArgsView args)
         pendingOps.push_back(op);
     }
 
-    return Value::futureVal(future);
+    return future;
 }
 
 Value ModuleSocket::socket_bind_builtin(ArgsView args)
@@ -415,8 +428,8 @@ Value ModuleSocket::socket_accept_builtin(ArgsView args)
     SocketState* state = getSocketState(inst);
 
     // Create promise and future
-    auto promise = std::make_shared<std::promise<Value>>();
-    std::shared_future<Value> future = promise->get_future().share();
+    auto promise = std::make_shared<NativePromise>();
+    Value future = promise->future();
 
     // Queue the accept operation
     PendingSocketOp op;
@@ -430,7 +443,7 @@ Value ModuleSocket::socket_accept_builtin(ArgsView args)
         pendingOps.push_back(op);
     }
 
-    return Value::futureVal(future);
+    return future;
 }
 
 Value ModuleSocket::socket_connect_builtin(ArgsView args)
@@ -469,13 +482,14 @@ Value ModuleSocket::socket_connect_builtin(ArgsView args)
     if (ret == 0) {
         // Connected immediately
         state->connected = true;
-        auto promise = std::make_shared<std::promise<Value>>();
-        promise->set_value(Value::trueVal());
-        return Value::futureVal(promise->get_future().share());
+        auto promise = std::make_shared<NativePromise>();
+        Value future = promise->future();
+        promise->resolve(Value::trueVal());
+        return future;
     } else if (errno == EINPROGRESS) {
         // Connection in progress - return future
-        auto promise = std::make_shared<std::promise<Value>>();
-        std::shared_future<Value> future = promise->get_future().share();
+        auto promise = std::make_shared<NativePromise>();
+        Value future = promise->future();
 
         PendingSocketOp op;
         op.type = PendingSocketOp::Type::Connect;
@@ -488,7 +502,7 @@ Value ModuleSocket::socket_connect_builtin(ArgsView args)
             pendingOps.push_back(op);
         }
 
-        return Value::futureVal(future);
+        return future;
     } else {
         throw std::runtime_error("connect failed: " + std::string(strerror(errno)));
     }
@@ -531,8 +545,8 @@ Value ModuleSocket::socket_recv_builtin(ArgsView args)
     }
 
     // Create promise and future
-    auto promise = std::make_shared<std::promise<Value>>();
-    std::shared_future<Value> future = promise->get_future().share();
+    auto promise = std::make_shared<NativePromise>();
+    Value future = promise->future();
 
     // Queue the recv operation
     PendingSocketOp op;
@@ -547,7 +561,7 @@ Value ModuleSocket::socket_recv_builtin(ArgsView args)
         pendingOps.push_back(op);
     }
 
-    return Value::futureVal(future);
+    return future;
 }
 
 Value ModuleSocket::socket_sendto_builtin(ArgsView args)
@@ -599,8 +613,8 @@ Value ModuleSocket::socket_recvfrom_builtin(ArgsView args)
     }
 
     // Create promise and future
-    auto promise = std::make_shared<std::promise<Value>>();
-    std::shared_future<Value> future = promise->get_future().share();
+    auto promise = std::make_shared<NativePromise>();
+    Value future = promise->future();
 
     // Queue the recvfrom operation
     PendingSocketOp op;
@@ -615,7 +629,7 @@ Value ModuleSocket::socket_recvfrom_builtin(ArgsView args)
         pendingOps.push_back(op);
     }
 
-    return Value::futureVal(future);
+    return future;
 }
 
 Value ModuleSocket::socket_close_builtin(ArgsView args)

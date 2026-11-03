@@ -1,4 +1,5 @@
 #include "FileOps.h"
+#include "core/fnv1a.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -423,8 +424,6 @@ void moveByCopy(const std::string& from, const std::string& to, bool srcDir,
     }
 }
 
-constexpr uint64_t kFnvOffset = 0xcbf29ce484222325ull;
-constexpr uint64_t kFnvPrime = 0x100000001b3ull;
 
 std::string formatTag(uint64_t hash, uint64_t size)
 {
@@ -643,7 +642,7 @@ std::string fileTag(const std::string& path)
     if (::fstat(fd.get(), &st) == 0 && S_ISDIR(st.st_mode))
         failCode("EISDIR", op, path, "", "is a directory");
 
-    uint64_t hash = kFnvOffset;
+    uint64_t hash = fnv1a64Basis;
     uint64_t size = 0;
     std::vector<unsigned char> buf(64 * 1024);
     for (;;) {
@@ -655,10 +654,7 @@ std::string fileTag(const std::string& path)
         }
         if (n == 0)
             break;
-        for (ssize_t i = 0; i < n; ++i) {
-            hash ^= buf[size_t(i)];
-            hash *= kFnvPrime;
-        }
+        hash = fnv1a64(buf.data(), size_t(n), hash);
         size += uint64_t(n);
     }
     return formatTag(hash, size);
@@ -666,12 +662,7 @@ std::string fileTag(const std::string& path)
 
 std::string contentTag(std::string_view bytes)
 {
-    uint64_t hash = kFnvOffset;
-    for (unsigned char c : bytes) {
-        hash ^= c;
-        hash *= kFnvPrime;
-    }
-    return formatTag(hash, bytes.size());
+    return formatTag(fnv1a64(bytes.data(), bytes.size()), bytes.size());
 }
 
 std::string tempSiblingName(const std::string& target)

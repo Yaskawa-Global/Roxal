@@ -264,6 +264,39 @@ const char* kYieldingNode =
     "print(k)\n"
     "print(n.value > 0)\n";
 
+// A sliced body that ends by returning a future (an actor call, as predict
+// returns one): resumed on a later cycle, it must leave the future pending,
+// as a body run straight through does -- never publish the future itself.
+// Published, comparing it with the int already delivered resolved it there,
+// on the host's tick (blocking), and a failure in it threw out of tickFor and
+// aborted the process.  The clock's first value runs the body unsliced and
+// delivers 10; every later value is sliced, and the service is down for it,
+// so the node holds 10 (UnavailableError).  Best-effort, so that a late tick
+// is resumed rather than stopping the engine before a sliced body finishes.
+const char* kYieldingNodeFuture =
+    "type Svc actor:\n"
+    "  func f(x :int) -> int:\n"
+    "    if x > 1:\n"
+    "      raise UnavailableError(\"service down\")\n"
+    "    return x * 10\n"
+    "var svc = Svc()\n"
+    "func slow(x :int):\n"
+    "  var n = 0\n"
+    "  if x > 0:\n"
+    "    n = 500\n"
+    "  var s = 0\n"
+    "  for i in range(..<n):\n"
+    "    s = s + i\n"
+    "  return svc.f(x + 1)\n"
+    "var c = clock(10)\n"
+    "var out = slow(c)\n"
+    "c.run()\n"
+    "var k :int = 0\n"
+    "while k < 1000000:\n"
+    "  k = k + 1\n"
+    "print(k)\n"
+    "print(out.value)\n";
+
 // The same slow body on a 1 kHz schedule: a suspended tick outlives its
 // period, so tickFor reports Overrun and abandons it.  An abandoned body
 // must be discarded -- neither finished by the program's slices nor left
@@ -505,6 +538,8 @@ const Scenario kScenarios[] = {
     { "busy_loop",      kBusyLoop,      "200000\n",       false, false, false },
     { "wait_loop",      kWaitLoop,      "20\n",           false, false, false },
     { "yielding_node",  kYieldingNode,  "300000\ntrue\n", false, true,  false },
+    { "yielding_node_future", kYieldingNodeFuture, "1000000\n10\n", false, true, false,
+      RunState::Completed, nullptr, 0, true },
     { "overrun_orphan", kOverrunOrphan, "300000\n",       false, true,  true  },
     { "tick_after_run", kTickAfterRun,  "started\n",      true,  false, false },
     { "node_error",     kNodeError,     "",               true,  false, false,

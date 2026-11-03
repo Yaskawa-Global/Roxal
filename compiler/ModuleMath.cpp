@@ -1,4 +1,5 @@
 #include "ModuleMath.h"
+#include "core/fnv1a.h"
 #include "VM.h"
 #include "Object.h"
 #include <cmath>
@@ -108,6 +109,7 @@ void ModuleMath::registerBuiltins(VM& vm)
     link("relu", [this](VM&, ArgsView a){ return math_relu_builtin(a); });
     link("softmax", [this](VM&, ArgsView a){ return math_softmax_builtin(a); });
     link("argmax", [this](VM&, ArgsView a){ return math_argmax_builtin(a); });
+    link("fnv1a64", [this](VM&, ArgsView a){ return math_fnv1a64_builtin(a); });
     link("min", [this](VM&, ArgsView a){ return math_min_builtin(a); });
     link("max", [this](VM&, ArgsView a){ return math_max_builtin(a); });
     link("sum", [this](VM&, ArgsView a){ return math_sum_builtin(a); });
@@ -421,6 +423,29 @@ static Value argmaxAlongAxis(ObjTensor* t, int64_t axis)
     if (outShape.empty())
         return Value::intVal(static_cast<int64_t>(out[0]));
     return Value::tensorVal(outShape, out, TensorDType::Int32);
+}
+
+Value ModuleMath::math_fnv1a64_builtin(ArgsView args)
+{
+    if (args.size() < 1)
+        throw std::invalid_argument("fnv1a64 expects the data to hash");
+    std::uint64_t hash = fnv1a64Basis;
+    if (args.size() > 1 && !args[1].isNil()) {
+        if (!args[1].isIntValue())   // a hash's 64 bits are a boxed int
+            throw std::invalid_argument("fnv1a64: seed must be an int (an earlier result)");
+        hash = static_cast<std::uint64_t>(args[1].asInt());
+    }
+    const Value& data = args[0];
+    if (isString(data)) {
+        const std::string bytes = toUTF8StdString(asStringObj(data)->s);
+        hash = fnv1a64(bytes.data(), bytes.size(), hash);
+    } else if (isTensor(data)) {
+        const ObjTensor* t = asTensor(data);
+        hash = fnv1a64(t->rawData(), static_cast<std::size_t>(t->numel()) * tensorDTypeSize(t->dtype()), hash);
+    } else {
+        throw std::invalid_argument("fnv1a64 hashes a string or a tensor");
+    }
+    return Value::intVal(static_cast<std::int64_t>(hash));
 }
 
 Value ModuleMath::math_argmax_builtin(ArgsView args)

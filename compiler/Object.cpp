@@ -3882,13 +3882,31 @@ void ObjFuture::dropReferences()
 {
     future = std::shared_future<Value>();
     producer = Value::nilVal();
-    std::lock_guard<std::mutex> lk(waitMutex);
-    waiters.clear();
+    waitList->clear();
 }
 
-void ObjFuture::addWaiter(const ptr<Thread>& t)
+void ObjFuture::addWakeTarget(const std::shared_ptr<FutureWakeTarget>& target)
 {
-    std::lock_guard<std::mutex> lk(waitMutex);
+    waitList->addTarget(target);
+    if (future.valid() && future.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+        target->futureResolved();
+}
+
+void ObjFuture::wakeWaiters()
+{
+    Value resolvedValue = Value::nilVal();
+    if (future.valid() && future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        try {
+            resolvedValue = future.get();
+        } catch (...) {
+        }
+    }
+    waitList->wake(resolvedValue);
+}
+
+void FutureWaitList::addThread(const ptr<Thread>& t)
+{
+    std::lock_guard<std::mutex> lk(mutex);
     for (auto it = waiters.begin(); it != waiters.end(); ) {
         if (it->kind == ObjFutureWaiter::Kind::Thread) {
             if (auto sp = it->thread.lock()) {
@@ -3908,9 +3926,9 @@ void ObjFuture::addWaiter(const ptr<Thread>& t)
     waiters.push_back(std::move(w));
 }
 
-void ObjFuture::addCombinatorWaiter(const Value& cbWeak, uint32_t slotIndex)
+void FutureWaitList::addCombinator(const Value& cbWeak, uint32_t slotIndex)
 {
-    std::lock_guard<std::mutex> lk(waitMutex);
+    std::lock_guard<std::mutex> lk(mutex);
     ObjFutureWaiter w;
     w.kind = ObjFutureWaiter::Kind::Combinator;
     w.combinator = cbWeak;
@@ -3918,39 +3936,83 @@ void ObjFuture::addCombinatorWaiter(const Value& cbWeak, uint32_t slotIndex)
     waiters.push_back(std::move(w));
 }
 
-void ObjFuture::wakeWaiters()
+void FutureWaitList::addTarget(const std::shared_ptr<FutureWakeTarget>& target)
+{
+    std::lock_guard<std::mutex> lk(mutex);
+    for (const auto& w : waiters)
+        if (w.kind == ObjFutureWaiter::Kind::Target && w.target.lock() == target)
+            return;
+    ObjFutureWaiter w;
+    w.kind = ObjFutureWaiter::Kind::Target;
+    w.target = target;
+    waiters.push_back(std::move(w));
+}
+
+void FutureWaitList::wake(const Value& resolved)
 {
     std::vector<ptr<Thread>> threadsToWake;
     std::vector<std::pair<Value, uint32_t>> combinatorsToNotify;
-    Value resolvedValue = Value::nilVal();
-    bool haveResolved = false;
-    if (future.valid() && future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-        try {
-            resolvedValue = future.get();
-            haveResolved = true;
-        } catch (...) {
-            haveResolved = false;
-        }
-    }
+    std::vector<std::shared_ptr<FutureWakeTarget>> targetsToTell;
     {
-        std::lock_guard<std::mutex> lk(waitMutex);
+        std::lock_guard<std::mutex> lk(mutex);
         for (auto& w : waiters) {
-            if (w.kind == ObjFutureWaiter::Kind::Thread) {
-                if (auto sp = w.thread.lock())
-                    threadsToWake.push_back(sp);
-            } else {
-                Value strong = w.combinator.strongRef();
-                if (!strong.isNil() && isCombinator(strong))
-                    combinatorsToNotify.emplace_back(strong, w.slotIndex);
+            switch (w.kind) {
+                case ObjFutureWaiter::Kind::Thread:
+                    if (auto sp = w.thread.lock())
+                        threadsToWake.push_back(sp);
+                    break;
+                case ObjFutureWaiter::Kind::Combinator: {
+                    Value strong = w.combinator.strongRef();
+                    if (!strong.isNil() && isCombinator(strong))
+                        combinatorsToNotify.emplace_back(strong, w.slotIndex);
+                    break;
+                }
+                case ObjFutureWaiter::Kind::Target:
+                    if (auto sp = w.target.lock())
+                        targetsToTell.push_back(sp);
+                    break;
             }
         }
         waiters.clear();
     }
     for (auto& t : threadsToWake) t->wake();
-    for (auto& [cbVal, slot] : combinatorsToNotify) {
-        ObjCombinator* cb = asCombinator(cbVal);
-        cb->notifySlotReady(slot, haveResolved ? resolvedValue : Value::nilVal());
-    }
+    for (auto& t : targetsToTell) t->futureResolved();
+    for (auto& [cbVal, slot] : combinatorsToNotify)
+        asCombinator(cbVal)->notifySlotReady(slot, resolved);
+}
+
+void FutureWaitList::clear()
+{
+    std::lock_guard<std::mutex> lk(mutex);
+    waiters.clear();
+}
+
+NativePromise::NativePromise()
+    : shared_(promise_.get_future().share()),
+      waitList_(std::make_shared<FutureWaitList>())
+{
+}
+
+Value NativePromise::future(ptr<type::Type> promisedType)
+{
+    return Value::objVal(newFutureObj(shared_, std::move(promisedType), waitList_));
+}
+
+void NativePromise::resolve(const Value& value)
+{
+    // A thread the GC does not know -- not a VM thread, not already a
+    // participant -- joins it while Values change hands: the combinators
+    // woken below allocate their results.
+    std::optional<SimpleMarkSweepGC::ExternalParticipant> participant;
+    if (!VM::thread && !SimpleMarkSweepGC::currentThreadIsExternalParticipant())
+        participant.emplace(SimpleMarkSweepGC::instance());
+    promise_.set_value(value);
+    waitList_->wake(value);
+    // Let go of the result while still inside the GC: a producer drops this
+    // object later, wherever it likes, and with the future already dropped
+    // this end would be the value's last holder.
+    { std::promise<Value> spent(std::move(promise_)); }
+    shared_ = std::shared_future<Value>();
 }
 
 //
@@ -5411,6 +5473,22 @@ ObjTensor::ObjTensor(Ort::Value&& ortValue)
     computeStrides();
 }
 
+ObjTensor::ObjTensor(const std::vector<int64_t>& shape, TensorDType dtype,
+                     std::shared_ptr<void> owner, void* data)
+    : shape_(shape), dtype_(dtype)
+{
+    type = ObjType::Tensor;
+    computeStrides();
+    const size_t bytes = static_cast<size_t>(numel()) * tensorDTypeSize(dtype);
+    auto memInfo = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
+    Ort::Value view = Ort::Value::CreateTensor(memInfo, data, bytes, shape_.data(), shape_.size(),
+                                               tensorDTypeToOrt(dtype));
+    // The value only views the memory: its storage's deleter releases the
+    // owner once the value is gone.
+    ort_value_ = std::shared_ptr<Ort::Value>(new Ort::Value(std::move(view)),
+                                             [owner = std::move(owner)](Ort::Value* v) { delete v; });
+}
+
 const Ort::Value& ObjTensor::ortValue() const
 {
     if (!ort_value_)
@@ -5443,7 +5521,18 @@ void ObjTensor::ensureOrtUnique()
         std::memcpy(newVal.GetTensorMutableRawData(),
                      ort_value_->GetTensorData<void>(), byteCount);
         ort_value_ = std::make_shared<Ort::Value>(std::move(newVal));
+    } else {
+        // Unique -- but the sharer that just let go may have been another
+        // thread reading the bytes (sharedData()): its release must be seen
+        // before this thread writes them.
+        std::atomic_thread_fence(std::memory_order_acquire);
     }
+}
+
+std::shared_ptr<const void> ObjTensor::sharedData() const
+{
+    ensureCpu();
+    return std::shared_ptr<const void>(ort_value_, ort_value_->GetTensorData<void>());
 }
 
 bool ObjTensor::isOnGpu() const
@@ -6205,6 +6294,17 @@ unique_ptr<ObjTensor, UnreleasedObj> roxal::newTensorObj(Ort::Value&& ortValue)
     return newObj<ObjTensor>(__func__, __FILE__, __LINE__, std::move(ortValue));
     #else
     return newObj<ObjTensor>(std::move(ortValue));
+    #endif
+}
+
+unique_ptr<ObjTensor, UnreleasedObj> roxal::newTensorObj(const std::vector<int64_t>& shape,
+                                                          TensorDType dtype,
+                                                          std::shared_ptr<void> owner, void* data)
+{
+    #ifdef DEBUG_BUILD
+    return newObj<ObjTensor>(__func__, __FILE__, __LINE__, shape, dtype, std::move(owner), data);
+    #else
+    return newObj<ObjTensor>(shape, dtype, std::move(owner), data);
     #endif
 }
 #endif
