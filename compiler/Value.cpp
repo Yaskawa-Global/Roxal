@@ -979,10 +979,17 @@ bool Value::equals(const Value& rhs, bool strict) const
     else if (isString(*this))
         return objsEqual(*this, rhs); // compares strings intelligently (e.g. using immutability & hash)
 
-    // Handle mixed numeric type comparisons (including boxed primitives)
-    else if (isNumber() || rhs.isNumber() ||
-             type() == ValueType::Int || rhs.type() == ValueType::Int ||
-             type() == ValueType::Real || rhs.type() == ValueType::Real) {
+    // Mixed numeric comparisons -- only when BOTH sides are numbers (byte, int,
+    // real; inline or heap-boxed: isNumber() goes through type(), which sees
+    // through the box).  A number compared with anything else -- a string, a
+    // bool, a list -- falls through to the different-kinds result below and is
+    // simply unequal, in either mode: equality never converts across kinds (the
+    // non-strict string->number parsing happens at conversion sites, not in
+    // operators, matching '<' and '+').  An "either side" test here sent such
+    // pairs into asInt()/asReal(), which threw -- breaking '5 == "x"' and, via
+    // the change check in MonitoredValue::assign, any module variable or member
+    // that went from holding a number to holding something else.
+    else if (isNumber() && rhs.isNumber()) {
         ValueType compType(binaryOpType(*this, rhs));
         switch(compType) {
             case ValueType::Int:  return asInt() == rhs.asInt();
