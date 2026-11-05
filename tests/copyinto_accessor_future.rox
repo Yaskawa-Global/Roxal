@@ -1,0 +1,17 @@
+// `<-` through an accessor on a receiver that is still a future: the
+// retained receiver is awaited before the setter is looked up.
+type Box object:
+  var store :list = [0, 0]
+  var items :list :
+    get:
+      return clone(store)
+    set:
+      print("setter {value}")
+      store = value
+type Worker actor:
+  func get_box() -> Box:
+    return Box()
+var w = Worker()
+var f = w.get_box()
+f.items <- [5, 6]
+print(f.store)

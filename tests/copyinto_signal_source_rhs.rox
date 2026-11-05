@@ -1,0 +1,19 @@
+// `a <- b` with b a plain source: b.set() reaches a and b's earlier consumers;
+// a is now driven, so setting it is an error.
+var b = signal(10, 0)
+b.run()
+var twice = b * 2
+var a = signal(10, 0)
+a.run()
+var plus = a + 1
+a <- b
+wait(ms=200)
+b.set(5)
+wait(ms=400)
+print("a={a.value} b={b.value} twice={twice.value} plus={plus.value}")
+try:
+  a.set(9)
+  print("not reached")
+except e:
+  print("set refused")
+print("a={a.value}")

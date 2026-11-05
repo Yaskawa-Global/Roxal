@@ -1114,13 +1114,14 @@ protected:
     static thread_local OutputRoute currentOutputRoute_;
     static thread_local std::string* debugEvalCapture_;   // DebugEvaluationScope
 
-    // Dataflow thread flag: when true, module var reads return const refs
-    // and module var writes raise a runtime error.
-    static thread_local bool onDataflowThread_;
+    // Set while this thread runs a dataflow node body (FuncNode's
+    // DataflowBodyGuard): module var reads return const refs, module var
+    // writes and signal writes raise a runtime error.
+    static thread_local bool inDataflowBody_;
 
 public:
-    static bool onDataflowThread() { return onDataflowThread_; }
-    static void setOnDataflowThread(bool v) { onDataflowThread_ = v; }
+    static bool inDataflowBody() { return inDataflowBody_; }
+    static void setInDataflowBody(bool v) { inDataflowBody_ = v; }
     Value getConditionalInterruptClosure() const { return conditionalInterruptClosure; } // ObjClosure
     Value getCombinatorRelayFunction() const { return combinatorRelayFunction; } // ObjFunction
     ObjModuleType* replModuleType() const;

@@ -1,0 +1,15 @@
+// Wiring replaces the target's history with the source's: a sample the
+// target wrote before the wire -- even one newer than anything the source
+// has, when the source hasn't changed since -- no longer decides its value.
+var a = signal(10, 0, "a")
+var b = signal(10, 5, "b")
+var seen = []
+when a changes as e:
+  seen.append(e.value)
+a.run()
+b.run()
+a.set(99)
+wait(ms=250)
+a <- b
+wait(ms=350)
+print("a={a.value} b={b.value} seen={seen}")

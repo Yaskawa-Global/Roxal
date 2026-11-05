@@ -517,6 +517,8 @@ Chunk::size_type Chunk::disassembleInstruction(size_type offset)
         }
         case OpCode::CopyInto:
             return simpleInstruction("COPY_INTO", offset);
+        case OpCode::SetPropAccessor:
+            return constantInstruction("SET_PROP_ACCESSOR", offset, doubleByteArg);
         case OpCode::MakeConst:
             return simpleInstruction("MAKE_CONST", offset);
         case OpCode::MoveLocal:

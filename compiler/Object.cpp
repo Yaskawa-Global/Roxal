@@ -6343,6 +6343,26 @@ ObjSignal::~ObjSignal()
     }
 }
 
+// The one way a script writes a signal's value: `sig.set(v)` and `sig <- v`
+// both come here, so the checks and the error texts are the same.
+void roxal::setSignalChecked(ObjSignal* objSignal, const Value& v)
+{
+    auto sig = objSignal->signal;
+    if (!sig)
+        throw std::runtime_error("cannot set an unbound signal");
+    // Writability is the signal's own property, not its reference's: an
+    // input, a node output or a wired signal is driven by something else.
+    if (!sig->isSourceSignal())
+        throw std::runtime_error("cannot set '" + sig->name() +
+                                 "': not a source signal (an input, or driven by a wire)");
+    // A node body is a pure function of its inputs; module variables are
+    // frozen inside one, and a signal write is the same kind of side effect.
+    if (VM::inDataflowBody())
+        throw std::runtime_error("cannot set '" + sig->name() +
+                                 "' from inside a dataflow node body");
+    sig->set(v);
+}
+
 void ObjSignal::trace(ValueVisitor& visitor) const
 {
     visitor.visit(changeEventType);

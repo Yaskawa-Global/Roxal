@@ -1,0 +1,52 @@
+// After `lhs <- rhs`, everything that held EITHER side before keeps following:
+// nodes built on the lhs, nodes built on a named rhs, `when` handlers on the
+// rhs, and nodes built on both sides of a source-to-source wire.
+
+// A1: holders of the left side (a dict entry sharing it, a node, a handler)
+var a = signal(10, false)
+var d = {"beacon": a}
+var m = not a
+var saw = false
+when a changes as e:
+  saw = e.value
+a.run()
+var src = signal(10, false)
+src.run()
+wait(ms=200)
+a <- (src and true)
+wait(ms=200)
+src.set(true)
+wait(ms=400)
+print("A1 a={a.value} d.beacon={d.beacon.value} saw={saw} m={m.value}")
+src.set(false)
+wait(ms=400)
+print("A1 a={a.value} d.beacon={d.beacon.value} saw={saw} m={m.value}")
+
+// A2: holders of a named right side
+var src2 = signal(10, false)
+src2.run()
+var e2 = src2 and true
+var f2 = not e2
+var e_saw = false
+when e2 changes as ev:
+  e_saw = ev.value
+var a2 = signal(10, false)
+a2.run()
+a2 <- e2
+wait(ms=200)
+src2.set(true)
+wait(ms=400)
+print("A2 a2={a2.value} e2={e2.value} e_saw={e_saw} f2={f2.value}")
+
+// A3: source on the right, nodes built earlier on both sides
+var b3 = signal(10, false)
+b3.run()
+var g3 = not b3
+var a3 = signal(10, false)
+a3.run()
+var h3 = not a3
+a3 <- b3
+wait(ms=200)
+b3.set(true)
+wait(ms=400)
+print("A3 a3={a3.value} b3={b3.value} g3={g3.value} h3={h3.value}")

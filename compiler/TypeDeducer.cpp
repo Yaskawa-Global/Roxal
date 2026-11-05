@@ -803,7 +803,10 @@ std::any TypeDeducer::visit(ptr<ast::Assignment> ast)
         if (info.has_value() && info->explicitType && info->type != nullptr && ast->rhs->type.has_value()) {
             auto lhsType = info->type->builtin;
             auto rhsType = ast->rhs->type.value()->builtin;
-            if (!type::convertibleTo(rhsType, lhsType, currentStrict())) {
+            // `sig <- v` sets the signal when v is a value and wires it when
+            // v is a signal: the right side is never converted to a signal.
+            bool signalCopyInto = ast->op == ast::Assignment::CopyInto && lhsType == BuiltinType::Signal;
+            if (!signalCopyInto && !type::convertibleTo(rhsType, lhsType, currentStrict())) {
                 throw std::logic_error(linePos(ast) + " - unable to convert " + to_string(rhsType) + " to " + to_string(lhsType) + (currentStrict()?" in strict mode":""));
             }
         }

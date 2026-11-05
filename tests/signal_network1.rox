@@ -29,14 +29,14 @@ print(typeof(out0)) // signal
 print(typeof(out))  // signal
 
 c.tick()
-wait(us=110000)
+wait(us=150000)
 print(real(out0))
 print(vector(out))
 
 c.tick()
-wait(us=110000)
+wait(us=150000)
 print(vector(out))
 
 c.tick()
-wait(us=110000)
+wait(us=150000)
 print(vector(out))

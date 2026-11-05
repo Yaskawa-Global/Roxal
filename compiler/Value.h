@@ -411,11 +411,21 @@ public:
     /// @brief Unboxes the value from an object if it is boxed.
     void unbox();
 
-    bool isWeak() const { return (val.load(std::memory_order_relaxed) & WeakMask) != 0; }
+    // The weak and const flags live in bits 49 and 48, which belong to the
+    // type tag of a primitive (Decimal/Enum/Type carry bit 49; Int and Byte
+    // carry bit 48) and to the mantissa of a real.  So both predicates are
+    // only meaningful on an object value, and are false for anything else.
+    bool isWeak() const {
+        uint64_t v = val.load(std::memory_order_relaxed);
+        return (v & WeakMask) != 0 && (v & (SignBit | QNAN)) == (SignBit | QNAN);
+    }
     Value weakRef() const;
     Value strongRef() const;
 
-    bool isConst() const { return (val.load(std::memory_order_relaxed) & ConstMask) != 0; }
+    bool isConst() const {
+        uint64_t v = val.load(std::memory_order_relaxed);
+        return (v & ConstMask) != 0 && (v & (SignBit | QNAN)) == (SignBit | QNAN);
+    }
     Value constRef() const;
     Value mutableRef() const;
 

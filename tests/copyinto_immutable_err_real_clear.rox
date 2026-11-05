@@ -1,0 +1,4 @@
+// mantissa bit 48 clear: accepted today (r silently becomes 9)
+var r = 3.0 * 1.0
+r <- 9.0
+print(r)

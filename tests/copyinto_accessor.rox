@@ -1,0 +1,24 @@
+// `<-` through a property with a getter and a setter: the getter's value is
+// a temporary, so the mutated result is handed to the setter.  A plain
+// property and a dict entry are mutated in place with no write-back.
+type Box object:
+  var store :list = [0, 0]
+  var items :list :
+    get:
+      return clone(store)
+    set:
+      print("setter called with {value}")
+      store = value
+var b = Box()
+b.items <- [5, 6]
+print(b.store)
+
+type Plain object:
+  var l :list = [1]
+var p = Plain()
+p.l <- [2, 3]
+print(p.l)
+
+var d = {"l": [1]}
+d.l <- [4]
+print(d.l)

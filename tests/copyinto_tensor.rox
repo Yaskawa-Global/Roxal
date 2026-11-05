@@ -1,0 +1,7 @@
+// `<-` on a tensor copies in place, like vector and matrix: a second holder
+// of the same tensor sees the new contents.
+var t = tensor([3], [1.0, 2.0, 3.0])
+var holder = {"t": t}
+t <- tensor([3], [4.0, 5.0, 6.0])
+print("{holder.t[0]} {holder.t[1]} {holder.t[2]}")
+print(holder.t is t)

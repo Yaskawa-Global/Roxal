@@ -65,10 +65,33 @@ public:
         m_srcName = name; m_srcLine = line; m_srcCol = col;
     }
 
-    // The x[-1] delayed-signal relation (see indexedSignal)
+    // The derived-signal relation: this signal carries `base`'s samples at
+    // `index` periods of delay.  A negative index is `x[-1]` (see
+    // indexedSignal): pulled from the base's history at the start of each
+    // island evaluation.  Index 0 is the wire `lhs <- rhs` (see deriveFrom):
+    // pushed by the base's own setValueAt, so the sample arrives in the
+    // same tick with the same timestamp.
     bool derived() const { return isDerived; }
     ptr<Signal> derivedBase() const { return baseSignal.lock(); }
     int derivedIndex() const { return baseIndex; }
+    bool zeroDelayDerived() const { return isDerived && baseIndex == 0; }
+
+    // Make THIS (an undriven source) derived from `base` at `index`.  It
+    // stops being a source; everything that holds it keeps holding it.
+    // Does not seed any sample and does not check for cycles: that is
+    // DataflowEngine::copyInto's job.
+    void deriveFrom(const ptr<Signal>& base, int index);
+
+    // The live signals derived from this one (any index).  They keep this
+    // signal in the network: a base with a dependent is in use even when
+    // no wrapper or node holds it.
+    std::vector<ptr<Signal>> dependents() const;
+    void removeDependent(const ptr<Signal>& dependent);
+
+    // The tail of setValueAt, for a sample stored by other means (a wire's
+    // seeding replaces the whole history): change callbacks when `changed`,
+    // the push to zero-delay dependents, and the engine notification.
+    void publishSample(TimePoint t, const Value& stored, bool changed);
 
     // Observe value changes.  The returned handle cancels on destruction, so a
     // callback outliving its subscriber has to be spelled out with detach();
@@ -242,7 +265,13 @@ private:
 
     bool isDerived = false; // true if this signal represents another signal delayed
     weak_ptr<Signal> baseSignal;  // base signal for derived signals
-    int baseIndex = 0;       // index relative to base signal (negative)
+    int baseIndex = 0;       // index relative to base signal (0 or negative)
+
+    // Back-link from a base to the signals derived from it (weak: a
+    // dependent's lifetime is its holders' business).  Read by setValueAt on
+    // whatever thread writes the base, so it is guarded by m_valuesMutex.
+    std::vector<weak_ptr<Signal>> m_dependents;
+    void addDependent(const ptr<Signal>& dependent);
 
     bool m_internal = false;
 

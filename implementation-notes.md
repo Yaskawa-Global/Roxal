@@ -1259,12 +1259,53 @@ a whole multiple of the grid, so a declared rate is always honoured exactly.
 Periods are collected from ALL periodic signals, not only sources. For a
 derived signal that is normally a no-op -- a node's output takes the maximum
 frequency of its inputs, so its period is already in the set -- but `<-` makes
-its left side derived (`copyInto` adopts the right side's `isSource`), which
-orphans the signal carrying an island's declared rate. Before this, an island
-of pure feedback loops contributed no period at all and ran at whatever grid
-the rest of the program imposed, while `freq()` still reported the rate that
-was asked for. Covered by `tests/signal_feedback_rate`; the unaffected
-connected-sources case is pinned by `tests/signal_island_rates`.
+its left side derived (it stops being a source), so an island of pure feedback
+loops has no source at all. Before this, such an island contributed no period
+and ran at whatever grid the rest of the program imposed, while `freq()` still
+reported the rate that was asked for. Covered by `tests/signal_feedback_rate`;
+the unaffected connected-sources case is pinned by `tests/signal_island_rates`.
+
+**Wiring is a derived signal.** `lhs <- rhs` (`DataflowEngine::copyInto`)
+makes lhs *derived* from rhs with index 0 -- the same `isDerived` /
+`baseSignal` / `baseIndex` machinery as `x[-1]`, which `Signal::indexedSignal`
+creates. The two differ only in when the derived signal is refreshed: a
+negative index is pulled from the base's history at the start of each island
+evaluation (`refreshDerivedSignals`), which is what makes it a delay; index 0
+is pushed by the base's own `setValueAt`, so lhs carries the sample in the
+same tick with the same timestamp. Neither side is replaced, retired or
+re-pointed: lhs keeps its `df::Signal` (an embedding host holding it, nodes
+built on it, `when` handlers all keep working) and rhs keeps being its node's
+output. A derived rhs collapses -- lhs derives from rhs's base at rhs's index
+-- so derivations never chain and fan-out (`a <- x; b <- x; c <- a`) is just
+several dependents of one base.
+
+The pieces that make that work:
+
+- `Signal::m_dependents`, a weak back-link from a base to the signals derived
+  from it (`addDependent`, `dependents()`), maintained by `deriveFrom` and
+  `indexedSignal`.
+- The island walk (`computeNetworkIslands`) follows base -> dependents as
+  well as derived -> base, so a wired signal's consumers land in the base's
+  island; `precomputeExecutionOrders` resolves a zero-delay-derived input to
+  its base (`zeroDelaySource`) so they run after the base's producer.
+- Lifetime: a signal with a live dependent is never pruned (`removeSignal`),
+  forced or not. That is what keeps the anonymous right side of
+  `out <- (a and b)` -- and its node -- alive once the statement's temporary
+  wrapper dies, and what keeps `x` alive while `x[-1]` is held.
+- `copyInto` refuses a zero-delay cycle at the statement
+  (`zeroDelayUpstreamReaches`: lhs, or anything following it at zero delay,
+  is upstream of rhs's producer through index-0 ports and derivations);
+  the topological sort at cache build is the backstop.
+- The script side (`roxal::copyInto`, `Value.cpp`) only calls the engine.
+  A non-signal right side sets the signal through `setSignalChecked`, the
+  one path `.set()` uses too: it names the signal in its error, refuses a
+  driven signal, and refuses a write from inside a node body
+  (`VM::inDataflowBody`, set by `FuncNode`'s `DataflowBodyGuard`).
+
+A signal is never const: `Value::constRef()` leaves a signal alone, so
+transitive const stops at it and every signal operation works through a
+const container or parameter. Whether a signal can be written is the
+signal's own property (an undriven source), not its reference's.
 
 Note that the grid is global, so every periodic signal anywhere in the program
 participates -- including module-internal ones such as `math._vecSignal`

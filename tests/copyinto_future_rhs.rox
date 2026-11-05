@@ -1,0 +1,10 @@
+// A future on the right of `<-` is awaited before the copy, as a native
+// call's argument would be.
+type W actor:
+  func get_list() -> list:
+    return [7, 8]
+var w = W()
+var l = [1, 2]
+var alias = l
+l <- w.get_list()
+print(alias)

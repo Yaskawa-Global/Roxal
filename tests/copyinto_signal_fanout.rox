@@ -1,0 +1,28 @@
+// One right side may be wired to several left sides, and a wired signal may
+// itself be wired on: every target follows, with its own nodes and handlers,
+// and a wire to an already-wired signal collapses onto the real producer.
+import inspect
+var alarm_src = signal(10, false, "alarm_src")
+alarm_src.run()
+var alarm = alarm_src and true
+var beacon = signal(10, false, "beacon")
+var horn = signal(10, false, "horn")
+var horn2 = signal(10, false, "horn2")
+var nb = not beacon
+var nh = not horn
+var nh2 = not horn2
+var seen = []
+when horn changes as e:
+  seen = seen + [e.value]
+beacon <- alarm
+horn <- alarm
+horn2 <- beacon
+wait(ms=200)
+alarm_src.set(true)
+wait(ms=300)
+print("beacon={beacon.value} horn={horn.value} horn2={horn2.value} nb={nb.value} nh={nh.value} nh2={nh2.value} seen={seen}")
+alarm_src.set(false)
+wait(ms=300)
+print("beacon={beacon.value} horn={horn.value} horn2={horn2.value} nb={nb.value} nh={nh.value} nh2={nh2.value} seen={seen}")
+var hi = horn2.info()
+print("{hi['derived']} {hi['base_index']} {hi['base'].name != 'beacon'} {hi['base'].name == beacon.info()['base'].name}")

@@ -1,0 +1,4 @@
+A1 a=true d.beacon=true saw=true m=false
+A1 a=false d.beacon=false saw=false m=true
+A2 a2=true e2=true e_saw=true f2=false
+A3 a3=true b3=true g3=false h3=false

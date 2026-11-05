@@ -1,0 +1,17 @@
+// The right side of a wire may be an expression nobody else holds; the wire
+// keeps it (and its node) alive across garbage collection.
+var a = signal(10, false)
+var b = signal(10, true)
+a.run()
+b.run()
+var out = signal(10, false)
+out <- (a and b)
+gc()
+wait(ms=200)
+a.set(true)
+wait(ms=300)
+print("out={out.value}")
+gc()
+a.set(false)
+wait(ms=300)
+print("out={out.value}")

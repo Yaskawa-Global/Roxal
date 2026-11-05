@@ -174,6 +174,24 @@ l[0] = 11 // change l
 print(l2) // [1,2,3]  (still same, list l content was changed, not l2's)
 ```
 
+Copy-into always updates the LHS *in place*; it never rebinds the name. So:
+
+- the LHS must be something that can change: a list, dict, vector, matrix, tensor, orient or signal.
+  Copying into an int, real, bool, nil, string (strings are immutable) or enum is an error.
+- a future on the RHS (an actor call) is awaited first.
+- `d.x <- v` and `l[i] <- v` mutate the value held in the entry and write nothing back, so they
+  work through a `const` container. The exception is a property with a getter and a setter: its
+  getter returns a temporary, so the mutated result is handed to the setter.
+- on a **signal**, a value on the RHS *sets* it, exactly like `.set()`, and a signal on the RHS
+  *wires* it (see the dataflow chapter). Both are refused on a signal that is not an undriven
+  source (an input, or one already driven by a wire), and from inside a dataflow node body.
+
+```php
+var s = signal(10, 0)
+s <- 5          // s.set(5)
+s <- other      // s now follows the signal `other`
+```
+
 ### Parameters & Calls
 
 Function parameters can optionally have their type explicitly supplied.  Similarly for the return type. They can also have default values (like C++).  Calls can mix positional and named arguments (positional first)
@@ -1626,6 +1644,14 @@ func latch(d :signal, en :signal) -> signal:
   q <- hold(d, en, q[-1])     // q[-1] is q one period ago
   return q
 ```
+
+`q <- expr` makes `q` *follow* `expr`'s signal from then on: `q` carries the
+same values in the same tick, and both stay live. Nothing already attached to
+either side -- nodes built on `q` or on `expr`, `when` handlers, handles held
+elsewhere -- is replaced. One signal can be wired to several targets, and a
+wired signal is itself driven, so it can't be set or wired again. A wire that
+feeds a node's input from the node's own output without a delay (`q <- f(q)`)
+is refused at the statement: put the feedback through `q[-1]`.
 
 Both sides of a `<-` must have the same frequency. See `examples/circuit.rox`
 for a worked example: a 74LS-series counter, latch and seven-segment decoder

@@ -1,0 +1,1 @@
+'q <- .*' would create a zero-delay cycle; delay the feedback with \[-1\]

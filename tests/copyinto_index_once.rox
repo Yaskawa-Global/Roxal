@@ -1,0 +1,17 @@
+// The container and the index expressions of an indexed `<-` are evaluated
+// exactly once.
+var calls = 0
+var ls = [[1, 2], [3, 4]]
+func idx() -> int:
+  calls = calls + 1
+  return 0
+ls[idx()] <- [9, 9]
+print("{ls} {calls}")
+
+var keys = 0
+var d = {"k": [0]}
+func key() -> string:
+  keys = keys + 1
+  return "k"
+d[key()] <- [7]
+print("{d} {keys}")

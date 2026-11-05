@@ -1,0 +1,3 @@
+beacon=true horn=true horn2=true nb=false nh=false nh2=false seen=[true]
+beacon=false horn=false horn2=false nb=true nh=true nh2=true seen=[true, false]
+true 0 true true

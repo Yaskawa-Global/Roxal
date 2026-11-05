@@ -1,0 +1,3 @@
+var m = {"s": "a" + "b"}
+m.s <- "zz"
+print(m)

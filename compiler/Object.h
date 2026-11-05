@@ -1417,6 +1417,11 @@ inline ObjSignal* asSignal(const Value& v) { return static_cast<ObjSignal*>(v.as
 unique_ptr<ObjSignal, UnreleasedObj> newSignalObj(ptr<df::Signal> s, bool borrowed = false);
 std::string objSignalToString(const ObjSignal* os);
 
+// Write a signal's value from a script (`sig.set(v)`, `sig <- v`): refused,
+// with the signal's name, when the signal is not an undriven source or the
+// caller is inside a dataflow node body.
+void setSignalChecked(ObjSignal* sig, const Value& v);
+
 
 // A lightweight property-change observer that a MonitoredValue slot can hold INSTEAD
 // of a full dataflow ObjSignal, so C++ can be notified of a property change without

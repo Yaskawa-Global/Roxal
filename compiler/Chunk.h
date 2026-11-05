@@ -107,6 +107,7 @@ enum class OpCode {
     EndExcept,
     Throw,
     CopyInto,
+    SetPropAccessor, // [inst, value] -> [value]; stores only through a __set_ accessor (copy-into write-back)
     MakeConst,
     MoveLocal,      // like GetLocal but nils the source slot (ownership transfer)
     MoveModuleVar,  // like GetModuleVar but nils the source variable

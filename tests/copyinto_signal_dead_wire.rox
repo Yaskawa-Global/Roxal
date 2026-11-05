@@ -1,0 +1,27 @@
+// When a wire's target dies, the source it kept alive -- and the producer
+// graph behind it -- is pruned too, instead of accumulating.
+import inspect
+func make():
+  var c = clock(10, "dead_clock")
+  var a = signal(10, 0, "dead_target")
+  a <- c + 1
+make()
+gc()
+wait(ms=100)
+var names = []
+for s in inspect.signals(include_internal=true):
+  names.append(s.name)
+print("clock gone: {not ('dead_clock' in names)}, target gone: {not ('dead_target' in names)}")
+
+// ... but a held source survives its wire's death
+var kept = signal(10, 7, "kept")
+func wire_to_kept():
+  var t = signal(10, 0, "kept_target")
+  t <- kept
+wire_to_kept()
+gc()
+wait(ms=100)
+names = []
+for s in inspect.signals(include_internal=true):
+  names.append(s.name)
+print("kept present: {'kept' in names}, kept value: {kept.value}")

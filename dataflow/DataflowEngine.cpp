@@ -217,6 +217,12 @@ void DataflowEngine::removeSignal(const ptr<Signal>& signal, bool force)
     if (used && !force)
         return;
 
+    // A signal with a live derived signal (`x[-1]`, or a wire `y <- x`) is
+    // in use whatever holds it: the dependent is pulled from, or pushed by,
+    // this one.  Never pruned, forced or not.
+    if (!signal->dependents().empty())
+        return;
+
     // A signal a func produces is never pruned on its own, even when its
     // last wrapper dies unconsumed: the func keeps every output port or
     // goes as a unit.  A multi-output lift whose second target was a dead
@@ -232,7 +238,8 @@ void DataflowEngine::removeSignal(const ptr<Signal>& signal, bool force)
         if (!producers.empty()) {
             for (const auto& f : producers)
                 for (const auto& op : f->m_outputs)
-                    if (wrapperRefCount(op.signal) > 0 || consumerCount(op.signal) > 0)
+                    if (wrapperRefCount(op.signal) > 0 || consumerCount(op.signal) > 0
+                        || !op.signal->dependents().empty())
                         return;
             for (const auto& f : producers)
                 removeFunc(f);
@@ -249,6 +256,17 @@ void DataflowEngine::removeSignal(const ptr<Signal>& signal, bool force)
 
     // Remove from signalConsumers mapping
     signalConsumers.erase(signal);
+
+    // A derived signal was keeping its base (and so the base's producer
+    // graph) alive.  Now that it is gone, the base is reconsidered: a wire
+    // whose target died must not leave `c + 1` and its clock behind.
+    if (signal->isDerived) {
+        if (auto base = signal->baseSignal.lock()) {
+            base->removeDependent(signal);
+            if (base->dependents().empty() && wrapperRefCount(base) == 0 && consumerCount(base) == 0)
+                removeSignal(base, true);
+        }
+    }
 
     // Remove references from funcs and mark any funcs with no outputs
     std::vector<ptr<FuncNode>> funcsToRemove;
@@ -314,6 +332,46 @@ void DataflowEngine::removeFunc(ptr<FuncNode> func)
 }
 
 
+ptr<Signal> DataflowEngine::zeroDelaySource(ptr<Signal> signal)
+{
+    while (signal && signal->zeroDelayDerived()) {
+        auto base = signal->baseSignal.lock();
+        if (!base)
+            break;
+        signal = base;
+    }
+    return signal;
+}
+
+bool DataflowEngine::zeroDelayUpstreamReaches(const ptr<Signal>& from,
+                                              const std::set<ptr<Signal>>& targets) const
+{
+    std::set<ptr<Signal>> visited;
+    std::deque<ptr<Signal>> queue { from };
+    while (!queue.empty()) {
+        auto signal = queue.front();
+        queue.pop_front();
+        if (!signal || !visited.insert(signal).second)
+            continue;
+        if (targets.count(signal))
+            return true;
+        if (signal->zeroDelayDerived())
+            queue.push_back(signal->baseSignal.lock());
+        for (const auto& kv : funcs) {
+            const auto& func = kv.second;
+            bool produces = false;
+            for (const auto& op : func->m_outputs)
+                if (op.signal == signal) { produces = true; break; }
+            if (!produces)
+                continue;
+            for (const auto& ip : func->m_inputs)
+                if (ip.index == 0)
+                    queue.push_back(ip.signal);
+        }
+    }
+    return false;
+}
+
 void DataflowEngine::copyInto(const ptr<Signal>& lhs, const ptr<Signal>& rhs)
 {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
@@ -321,87 +379,74 @@ void DataflowEngine::copyInto(const ptr<Signal>& lhs, const ptr<Signal>& rhs)
     if (!lhs || !rhs)
         throw std::runtime_error("both sides of '<-' must be valid signals");
 
+    if (lhs == rhs)
+        throw std::runtime_error("cannot wire '" + lhs->name() + "' to itself");
+
     if (lhs->frequency() != rhs->frequency())
         throw std::runtime_error(roxal::format("both sides of '<-' must have the same frequency (%g Hz vs %g Hz)",
                                                lhs->frequency(), rhs->frequency()));
 
     if (!lhs->isSourceSignal())
-        throw std::runtime_error("left side of '<-' is already driven; it must be an undriven source signal");
+        throw std::runtime_error("left side of '<-' ('" + lhs->name() +
+                                 "') is already driven; it must be an undriven source signal");
 
-    // Copy attributes from rhs to lhs
-    lhs->isSource = rhs->isSource;
-    lhs->isClock = rhs->isClock;
-    lhs->clockCount = rhs->clockCount;
-    lhs->m_maxHistoryPeriods = rhs->m_maxHistoryPeriods;
-    lhs->running = rhs->running;
-    lhs->tickPending = rhs->tickPending;
-    lhs->m_eventDriven = rhs->m_eventDriven;
-
-    // Direct manipulation of the signals' values maps must be serialized with
-    // concurrent producers (e.g. the DDS reader-signal thread). Snapshot under
-    // the locks, operate on the snapshots, and never hold the locks across
-    // setValueAt (it notifies callbacks/the engine after its own locking).
-    std::map<TimePoint, Value> previousValues, rhsValues;
-    {
-        std::scoped_lock sigLock(lhs->m_valuesMutex, rhs->m_valuesMutex);
-        previousValues = lhs->values;
-        rhsValues = rhs->values;
-        lhs->values = rhs->values;
-    }
-    // Move (not copy) rhs's observers: rhs is being retired, and its subscribers'
-    // handles keep working because they reference the slot, not the list.
-    lhs->adoptValueChangedFrom(rhs->m_changeNotifier);
-
-    lhs->isDerived = rhs->isDerived;
-    lhs->baseSignal = rhs->baseSignal;
-    lhs->baseIndex = rhs->baseIndex;
-
-    // Update any derived signals that referenced lhs so they now reference rhs
-    for (auto& sig : signals) {
-        if (!sig->isDerived)
-            continue;
-
-        auto base = sig->baseSignal.lock();
-        if (base == lhs)
-            sig->baseSignal = rhs;
-    }
-
-    // Update any functions that use rhs as an input to use lhs instead
-    for (const auto& kv : funcs) {
-        auto& func = kv.second;
-        for (auto& inputPort : func->m_inputs) {
-            if (inputPort.signal == rhs)
-                func->reassignInput(inputPort.name, lhs);
+    // A derived right side collapses: lhs follows rhs's base at rhs's index,
+    // so a derivation never chains and every push list sits on a signal
+    // that is actually written.  `a <- b[-2]` makes a the (pulled) two-period
+    // delay of b; `horn <- beacon` with beacon wired to alarm makes horn
+    // follow alarm.
+    ptr<Signal> base = rhs;
+    int index = 0;
+    if (rhs->isDerived) {
+        if (auto b = rhs->baseSignal.lock()) {
+            base = b;
+            index = rhs->baseIndex;
         }
     }
+    if (base == lhs)
+        throw std::runtime_error("cannot wire '" + lhs->name() + "' to a delay of itself");
 
+    // lhs (and whatever already follows it at zero delay) must not feed
+    // base's producer within the tick: that loop would never settle.  A
+    // delayed loop (`q <- f(q[-1])`) is the normal feedback pattern.
+    if (index == 0) {
+        std::set<ptr<Signal>> targets { lhs };
+        for (const auto& dep : lhs->dependents())
+            if (dep->baseIndex == 0)
+                targets.insert(dep);
+        if (zeroDelayUpstreamReaches(base, targets))
+            throw std::runtime_error("'" + lhs->name() + " <- " + rhs->name() +
+                                     "' would create a zero-delay cycle; delay the feedback with [-1]");
+    }
+
+    // Snapshot rhs's history under its lock; never hold a values lock across
+    // setValueAt (it notifies callbacks and the engine after its own locking).
+    std::map<TimePoint, Value> rhsValues;
+    {
+        std::lock_guard<std::recursive_mutex> sigLock(rhs->m_valuesMutex);
+        rhsValues = rhs->values;
+    }
+
+    lhs->deriveFrom(base, index);
+
+    // Seed lhs with rhs's history, REPLACING its own: lhs now carries rhs's
+    // samples, and a sample lhs wrote before the wire (possibly newer than
+    // anything rhs has, when rhs is a source that hasn't changed since)
+    // would otherwise keep deciding lhs's value until rhs next writes.  A
+    // right side that has no concrete sample yet (an unevaluated node)
+    // leaves lhs's own initial value.  Subscribers of lhs are told of the
+    // switch like any other change.
     bool rhsHasConcreteSample = std::any_of(
         rhsValues.begin(), rhsValues.end(),
-        [](const std::pair<const TimePoint, Value>& sample) {
-            return !sample.second.isNil();
-        });
-
-    // Explicit iterator guard rather than `empty() || begin()->...`: GCC 13's
-    // -Wstringop-overflow can't see the short-circuit and reports a bogus
-    // read past the map object for the empty case (observed in the
-    // roxal-internal/FC build of this file).
-    bool earliestSampleIsNil = true;
-    if (auto firstSample = rhsValues.begin(); firstSample != rhsValues.end())
-        earliestSampleIsNil = firstSample->second.isNil();
-
+        [](const std::pair<const TimePoint, Value>& sample) { return !sample.second.isNil(); });
     if (rhsHasConcreteSample) {
-        for (const auto& kv : rhsValues)
-            lhs->setValueAt(kv.first, kv.second);
-
-        if (earliestSampleIsNil && !previousValues.empty()) {
-            auto fallback = previousValues.begin();
-            std::lock_guard<std::recursive_mutex> lock(rhs->m_valuesMutex);
-            rhs->values[fallback->first] = fallback->second;
+        Value before = lhs->lastValue();
+        {
+            std::lock_guard<std::recursive_mutex> sigLock(lhs->m_valuesMutex);
+            lhs->values = rhsValues;
         }
-    } else if (!previousValues.empty()) {
-        std::scoped_lock sigLock(lhs->m_valuesMutex, rhs->m_valuesMutex);
-        lhs->values = previousValues;
-        rhs->values = previousValues;
+        auto latest = rhsValues.rbegin();
+        lhs->publishSample(latest->first, latest->second, before != latest->second);
     }
 
     m_networkModified = true;
@@ -983,6 +1028,8 @@ void DataflowEngine::refreshDerivedSignals(const NetworkIsland& island, TimePoin
     for (const auto& signal : island.signals) {
         if (!signal->isDerived)
             continue;
+        if (signal->baseIndex == 0)
+            continue;   // a wire: pushed by the base's own write, not pulled here
 
         auto src = signal->baseSignal.lock();
         if (!src)
@@ -1473,18 +1520,21 @@ DataflowEngine::TickResult DataflowEngine::evaluateIsland(
     size_t startPeriodIndex,
     size_t startFuncIndex)
 {
-    if (island.funcs.empty())
-        return TickResult::Complete;
-
     // Debugger gate: island evaluation is the single funnel for all
     // evaluation paths (run-tick, tickFor, event-driven, background) --
     // count it active so a forming stop cannot commit mid-evaluation, and
     // defer this thread's parking until the bounded work completes.
     DebugGateWorkScope debugWork(debugGate);
 
-    // Only refresh derived signals on first entry (not resume)
+    // Only refresh derived signals on first entry (not resume).  This comes
+    // before the no-nodes exit: an island of a clock and its delays
+    // (`c[-2]`, or a wire `a <- c[-2]`) has no function node, but the
+    // delays still advance with the clock.
     if (startPeriodIndex == 0 && startFuncIndex == 0)
         refreshDerivedSignals(island, evaluationTime);
+
+    if (island.funcs.empty())
+        return TickResult::Complete;
 
     // Convert executionOrders map to a vector for indexed access
     std::vector<std::pair<TimeDuration, std::vector<ptr<FuncNode>>>> orderedPeriods(
@@ -2334,6 +2384,10 @@ void DataflowEngine::computeNetworkIslands()
                     if (base)
                         enqueueSignal(signalQueue, base);
                 }
+                // ... and the other way: a wired signal's consumers run in
+                // its base's island, after the base's producer.
+                for (const auto& dep : currentSignal->dependents())
+                    enqueueSignal(signalQueue, dep);
 
                 continue;
             }
@@ -2418,12 +2472,15 @@ void DataflowEngine::precomputeExecutionOrders(NetworkIsland& island)
         // Build edges in the dependency graph
         for (const auto& func : funcsInGroup) {
             for (const auto& input : func->m_inputs) {
-                // Find if the input stream is produced by another func in this group
+                // Find if the input stream is produced by another func in this
+                // group.  A wired input (`in <- out`) is produced by whoever
+                // writes its base.
+                auto inputSource = zeroDelaySource(input.signal);
                 for (const auto& potentialProducer : funcsInGroup) {
                     if (potentialProducer == func) continue; // Skip self
 
                     for (const auto& output : potentialProducer->m_outputs) {
-                        if((output.signal == input.signal) && (input.index == 0)) {
+                        if((output.signal == inputSource) && (input.index == 0)) {
                             // There is a dependency: func depends on potentialProducer
                             depGraph[func].insert(potentialProducer);
                         }
@@ -2734,12 +2791,12 @@ void DataflowEngine::buildNetworkCacheData()
         //  * A derived signal's period is normally inherited from its inputs
         //    (a node's output takes the max frequency of its inputs), so
         //    including it is a no-op -- its period is already in the set.
-        //  * But `<-` makes its left side derived (copyInto adopts the right
-        //    side's isSource), which ORPHANS the signal that carried the
-        //    island's declared rate.  An island of pure feedback loops then
-        //    has no source at all, contributes nothing, and lands on whatever
-        //    grid the rest of the program happens to impose -- while freq()
-        //    still reports the rate that was asked for.
+        //  * But a wire (`lhs <- rhs`) turns its left side into a derived
+        //    signal (copyInto: it stops being a source), so an island made
+        //    of feedback loops -- every signal in it wired or derived -- has
+        //    no source at all.  It would then contribute nothing and land on
+        //    whatever grid the rest of the program happens to impose, while
+        //    freq() still reports the rate that was asked for.
         //
         // Because the grid is the GCD of every declared period, each one
         // divides it exactly, so every node can be gated to run at precisely

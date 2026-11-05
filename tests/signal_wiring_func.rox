@@ -28,6 +28,6 @@ print(typeof(orOut))
 var i = 0
 while i < 5:
   c.tick()
-  wait(us=120000)
+  wait(us=150000)
   print("c={int(c)} even={bool(even)} big={bool(big)} and={bool(andOut)} or={bool(orOut)}")
   i = i + 1

@@ -1,0 +1,5 @@
+// `<- value` on a signal that is not an undriven source is refused, naming it.
+var c = clock(10, "c")
+var doubled = c * 2
+doubled <- 5
+print("not reached")

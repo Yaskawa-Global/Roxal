@@ -1,0 +1,13 @@
+// `a <- b[-2]` makes a the two-period delay of b itself (no chain through the
+// b[-2] view); b[-2] keeps serving the consumer built on it, and a delay of a works on top.
+var c = clock(10)
+var b = c + 0
+var d2 = b[-2]
+var g = d2 + 100
+var a = signal(10, 0)
+a <- b[-2]
+var a1 = a[-1]
+c.run()
+wait(ms=650)
+var bv = b.value
+print("b>=5 {bv >= 5} d2=b-2 {d2.value == bv - 2} g=d2+100 {g.value == d2.value + 100} a=b-2 {a.value == bv - 2} a1=b-3 {a1.value == bv - 3}")

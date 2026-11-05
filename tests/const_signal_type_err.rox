@@ -1,3 +1,0 @@
-// var x: const signal is also not allowed
-import sys
-var s: const signal = signal(1, range(0..10))

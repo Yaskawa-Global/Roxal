@@ -173,16 +173,30 @@ var b = move(a)     # COMPILE ERROR: Cannot move const variable
 | Object | Prevents property mutation |
 | Actor | Prevents internal state (private property) mutation |
 | Event | **Implicitly const** (see below) |
-| Signal | `const Signal` disallowed |
+| Signal | Never const: `const` on a signal-typed name only prevents rebinding |
 | Vector/Matrix/Tensor | Prevents element mutation |
 
-### Signal Restriction
+### Signals Are Never Const
 
-Signals cannot be const - they exist to change over time:
+Signals exist to change over time, so const never applies to one -- not
+directly, not transitively through a const container, object or parameter.
+`const` on a signal-typed name only means the name can't be rebound:
 
 ```roxal
-const s: Signal = ...  # ERROR: const Signal is not allowed
+const s :signal = signal(10, 0)   # OK: s can't be rebound ...
+s.set(5)                          # ... but the signal is written as usual
+s <- other                        # ... and wired as usual
+
+const d = {"x": signal(10, 0)}
+d.x.set(1)                        # OK: const stops at the signal
+d.x <- 2                          # OK
 ```
+
+Whether a signal can be written is decided by the signal itself: only an
+undriven source signal can be set or wired. An input, a node output, or a
+signal already driven by a wire refuses both (`cannot set 'name': not a
+source signal`). A read-only view of a signal is a derived signal, not a
+const reference.
 
 ---
 
@@ -371,4 +385,4 @@ print(typeof(o.m.l)) // <type object Leaf>
 6. **Actor params** → Implicitly const (use `mutable` + `move()` for ownership transfer)
 7. **Actor returns** → Default mutable (deep-clone). `-> const T` freezes. Sole-owner optimization skips clone.
 8. **Events** → Implicitly const (immutable snapshots)
-9. **Signals** → Cannot be const
+9. **Signals** → Never const; `const` on a signal name only prevents rebinding

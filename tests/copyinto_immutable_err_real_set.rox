@@ -1,0 +1,4 @@
+// mantissa bit 48 set: refused today, but as "Cannot mutate const"
+var q = 1.0625 * 1.0
+q <- 9.0
+print(q)

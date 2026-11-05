@@ -5,7 +5,7 @@
 
 var c = clock(10)
 c.tick()
-wait(us=120000)
+wait(us=150000)
 
 // rendering samples -> plain string values
 var viaConcat = "c=" + c
@@ -31,7 +31,7 @@ print(typeof(cmp))
 // a sampled string is a snapshot: it does not follow later ticks,
 // while the lifted arithmetic signal does
 c.tick()
-wait(us=120000)
+wait(us=150000)
 print(viaConcat)
 print("c={c}")
 print(int(sum))

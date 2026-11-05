@@ -112,7 +112,7 @@ using namespace roxal;
 thread_local TimePoint VM::nativeCallDeadline_ { TimePoint::max() };
 thread_local ustring VM::nativeCallContext_;
 thread_local std::string VM::nativeCallOverrun_;
-thread_local bool VM::onDataflowThread_ { false };
+thread_local bool VM::inDataflowBody_ { false };
 thread_local OutputRoute VM::currentOutputRoute_ {};
 thread_local std::string* VM::debugEvalCapture_ { nullptr };
 
@@ -9985,6 +9985,13 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                 break;
             }
             case OpCode::CopyInto: {
+                // A future on the right (`sig <- actor.f()`) is awaited
+                // first, as a native call's argument would be.
+                {
+                    auto s = tryAwaitFuture(peek(0));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
                 Value rhs = pop();
                 Value lhs = pop();
                 if (lhs.isConst()) {
@@ -9998,6 +10005,44 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                     return errorReturn;
                 }
                 push(lhs);
+                break;
+            }
+            case OpCode::SetPropAccessor: {
+                // The write-back of `inst.prop <- rhs`.  Stack: [inst, value],
+                // where value is what GET_PROP[_CHECK] produced, now mutated
+                // in place.  A plain property or dict entry already holds it,
+                // so nothing is stored (a const container is not touched);
+                // only a property with a setter is handed the result, because
+                // its getter's value was a temporary.
+                // The retained receiver may still be a future: GET_PROP_CHECK
+                // awaited the DUP'd copy, not this slot.
+                {
+                    auto s = tryAwaitFuture(peek(1));
+                    if (s == FutureStatus::Pending) goto postInstructionDispatch;
+                    if (s == FutureStatus::Error) return errorReturn;
+                }
+                ObjString* name = readString();
+                Value& inst { peek(1) };
+                if (isObjectInstance(inst)) {
+                    ObjObjectType* t = asObjectType(asObjectInstance(inst)->instanceType);
+                    ustring setterName = ustring("__set_") + name->s;
+                    Value setterNameValue = Value::stringVal(setterName);
+                    ObjString* setterNameStr = asStringObj(setterNameValue);
+                    if (t->methods.find(setterNameStr->hash) != t->methods.end()) {
+                        if (inst.isConst()) {
+                            runtimeError("Cannot mutate const: assignment to '%s'", toUTF8StdString(name->s).c_str());
+                            return errorReturn;
+                        }
+                        CallSpec callSpec{1};   // __set_<prop>(value), inst as receiver
+                        if (!invoke(setterNameStr, callSpec))
+                            return errorReturn;
+                        frame = thread->frames.end()-1;
+                        break;
+                    }
+                }
+                Value value = pop();
+                pop();
+                push(value);
                 break;
             }
             case OpCode::JumpIfFalse: ROX_LBL(JumpIfFalse) {
@@ -10549,7 +10594,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                 auto optValue { vars.load(name->hash) };
                 if (optValue.has_value()) {
                     Value value = optValue.value();
-                    if (onDataflowThread_ && value.isObj())
+                    if (inDataflowBody_ && value.isObj())
                         value = value.constRef();
                     push(value);
                 }
@@ -10561,7 +10606,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
             }
             case OpCode::MoveModuleVar: {
                 ObjString* name = readString();
-                if (onDataflowThread_) {
+                if (inDataflowBody_) {
                     runtimeError("Cannot modify module variable '" + name->toStdString() + "' from dataflow function");
                     return errorReturn;
                 }
@@ -10612,7 +10657,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
             }
             case OpCode::SetModuleVar: ROX_LBL(SetModuleVar) {
                 ObjString* name = readString();
-                if (onDataflowThread_) {
+                if (inDataflowBody_) {
                     runtimeError("Cannot modify module variable '" + name->toStdString() + "' from dataflow function");
                     return errorReturn;
                 }
@@ -10632,7 +10677,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
             }
             case OpCode::SetNewModuleVar: {
                 ObjString* name = readString();
-                if (onDataflowThread_) {
+                if (inDataflowBody_) {
                     runtimeError("Cannot modify module variable '" + name->toStdString() + "' from dataflow function");
                     return errorReturn;
                 }
@@ -15806,12 +15851,7 @@ Value VM::signal_set_builtin(ArgsView args)
     if (args.size() != 2 || !isSignal(args[0]))
         throw std::invalid_argument("signal.set expects single value argument");
 
-    ObjSignal* objSignal = asSignal(args[0]);
-    auto sig = objSignal->signal;
-    if (!sig->isSourceSignal())
-        throw std::runtime_error("signal.set not supported for non-source signal");
-
-    sig->set(args[1]);
+    setSignalChecked(asSignal(args[0]), args[1]);
     return Value::nilVal();
 }
 

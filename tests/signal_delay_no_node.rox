@@ -1,0 +1,11 @@
+// A delayed view in an island with no function nodes -- a clock and its
+// delays only -- still refreshes every tick, and so does a delayed wire
+// taken straight from the clock.
+var c = clock(10)
+var d = c[-2]
+var a = signal(10, 0)
+a <- c[-2]
+c.run()
+wait(ms=650)
+var cv = c.value
+print("c>=4 {cv >= 4} d=c-2 {d.value == cv - 2} a=c-2 {a.value == cv - 2}")

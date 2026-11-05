@@ -279,14 +279,83 @@ void Signal::setValueAt(TimePoint t, const Value& v)
     // can be arbitrarily heavy (event scheduling, DDS writes) and the engine
     // takes its own m_mutex -- holding m_valuesMutex across that would invert
     // the engine-then-signal lock order the tick path uses.
-    if (notifyChange)
+    publishSample(t, stored, notifyChange);
+}
+
+void Signal::publishSample(TimePoint t, const Value& stored, bool changed)
+{
+    auto engine = DataflowEngine::instance();
+
+    if (changed)
         invokeValueChangedCallbacks(t, stored);
+
+    // A wired signal (`dep <- this`) carries this sample too, now: before
+    // the engine is told about the update, so that an event-driven island
+    // evaluated from here already sees it.  A dependent is never a source,
+    // so its own setValueAt can't re-enter the event path; and a derived
+    // signal is never itself a base at zero delay (copyInto collapses the
+    // derivation), so this recursion is one level deep.
+    for (const auto& dep : dependents()) {
+        if (dep->baseIndex != 0)
+            continue;   // pulled from history at tick start (refreshDerivedSignals)
+        dep->setValueAt(t, stored);
+        if (!m_eventDriven)
+            engine->updateSignalConsumerInputAvailability(dep, t);
+    }
 
     if (m_eventDriven) {
         engine->updateSignalConsumerInputAvailability(ptr_from_this(), t);
         if (isSource && !isDerived)
             engine->processEventDrivenSignalUpdate(ptr_from_this(), t);
     }
+}
+
+void Signal::removeDependent(const ptr<Signal>& dependent)
+{
+    std::lock_guard<std::recursive_mutex> lock(m_valuesMutex);
+    m_dependents.erase(std::remove_if(m_dependents.begin(), m_dependents.end(),
+                                      [&](const weak_ptr<Signal>& w) {
+                                          auto s = w.lock();
+                                          return !s || s == dependent;
+                                      }),
+                       m_dependents.end());
+}
+
+void Signal::addDependent(const ptr<Signal>& dependent)
+{
+    std::lock_guard<std::recursive_mutex> lock(m_valuesMutex);
+    m_dependents.erase(std::remove_if(m_dependents.begin(), m_dependents.end(),
+                                      [](const weak_ptr<Signal>& w) { return w.expired(); }),
+                       m_dependents.end());
+    m_dependents.push_back(dependent);
+}
+
+std::vector<ptr<Signal>> Signal::dependents() const
+{
+    std::vector<ptr<Signal>> live;
+    std::lock_guard<std::recursive_mutex> lock(m_valuesMutex);
+    for (const auto& w : m_dependents)
+        if (auto s = w.lock())
+            live.push_back(s);
+    return live;
+}
+
+void Signal::deriveFrom(const ptr<Signal>& base, int index)
+{
+    isSource = false;
+    isClock = false;
+    running = false;
+    tickPending = false;
+    isDerived = true;
+    baseSignal = base;
+    baseIndex = index;
+    m_eventDriven = base->m_eventDriven;
+    if (index < 0) {
+        // Pulled from the base's history: both sides must keep enough of it.
+        setMaxHistoryPeriods(std::max(m_maxHistoryPeriods, -index + 1));
+        base->setMaxHistoryPeriods(std::max(base->m_maxHistoryPeriods, -index + 1));
+    }
+    base->addDependent(ptr_from_this());
 }
 
 void Signal::set(const Value& v)
@@ -421,7 +490,11 @@ ptr<Signal> Signal::indexedSignal(int index)
     newSig->m_eventDriven = m_eventDriven;
     newSig->setInternal(isInternal());
     newSig->setMaxHistoryPeriods(std::max(m_maxHistoryPeriods, -index + 1));
+    // The base keeps enough history for the deepest delay taken from it
+    // (buildSignalConsumers only does this for port latencies).
+    setMaxHistoryPeriods(std::max(m_maxHistoryPeriods, -index + 1));
     newSig->setSrcOrigin(m_srcName, m_srcLine, m_srcCol);  // inherits the base's origin
+    addDependent(newSig);
     DataflowEngine::instance()->addSignal(newSig);
 
     return newSig;

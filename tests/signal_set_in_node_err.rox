@@ -1,0 +1,11 @@
+// A dataflow node body may not set a signal (a side effect on the network).
+var side = signal(10, 0, "side")
+side.run()
+func f(v :int) -> int:
+  side.set(v * 100)
+  return v
+var c = clock(10)
+var g = f(c)
+c.run()
+wait(ms=400)
+print("not reached: {side.value}")

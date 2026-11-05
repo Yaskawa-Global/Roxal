@@ -1,0 +1,3 @@
+var n = nil
+n <- 5
+print(n)

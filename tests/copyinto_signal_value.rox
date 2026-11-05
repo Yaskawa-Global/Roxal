@@ -1,0 +1,32 @@
+// A value on the right of `<-` sets the signal, exactly like .set(): through a
+// plain variable, a dict member, a list element, a typed signal variable, and
+// with a future on the right (awaited first).
+var s = signal(10, 0, "s")
+s <- 5
+print(s.value)
+
+var d = {"x": signal(10, false, "dx")}
+d.x <- true
+print(d.x.value)
+
+var l = [signal(10, "a", "l0")]
+l[0] <- "b"
+print(l[0].value)
+
+var t :signal = signal(10, 0, "t")
+t <- 7
+print(t.value)
+
+type W actor:
+  func get() -> int:
+    return 42
+var w = W()
+s <- w.get()
+print(s.value)
+
+// a list payload is frozen on store, as with .set()
+var lst = signal(10, [1], "lst")
+var payload = [1, 2]
+lst <- payload
+payload.append(3)
+print(lst.value)

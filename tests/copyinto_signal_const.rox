@@ -1,0 +1,25 @@
+// A signal held in a const dict or object: .set(), `<- value` and wiring all
+// work through the const path, and the container still holds the same signal.
+var s = signal(10, 0, "s")
+var t = signal(10, 0, "t")
+const d = {"x": s}
+type Holder object:
+  var sig :signal = nil
+const h = Holder(sig=t)
+
+d.x.set(1)
+h.sig.set(2)
+print("{s.value} {t.value}")
+
+d.x <- 11
+h.sig <- 22
+print("{s.value} {t.value}")
+
+var src = signal(10, 0, "src")
+src.run()
+d.x <- (src + 100)
+h.sig <- (src + 200)
+wait(ms=200)
+src.set(5)
+wait(ms=300)
+print("{s.value} {t.value} {d.x is s} {h.sig is t}")

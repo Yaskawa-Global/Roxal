@@ -85,7 +85,7 @@ static unsigned long currentProcessId()
     return static_cast<unsigned long>(::getpid());
 #endif
 }
-constexpr std::uint32_t ModuleCacheVersion = 65;   // 65: annotated declarations' line = their own line, not the @ line (64: one module per file, dependencies by reference)
+constexpr std::uint32_t ModuleCacheVersion = 66;   // 66: SetPropAccessor opcode, copy-into no longer stores back (65: annotated declarations' line = their own line, not the @ line)
 
 std::filesystem::path moduleCachePathFor(const std::filesystem::path& sourcePath) {
     if (sourcePath.empty())
@@ -2622,9 +2622,6 @@ std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
 
             declareVariable(target.name, targetType);
             if (target.isTypeConst) {
-                if (targetType.has_value() && std::holds_alternative<BuiltinType>(*targetType)
-                    && std::get<BuiltinType>(*targetType) == BuiltinType::Signal)
-                    error("const signal is not allowed.");
                 if (!atModuleScope)
                     asFuncScope(funcScope())->locals.back().isTypeConst = true;
                 else
@@ -2710,11 +2707,9 @@ std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
         }
 
         // Runtime const path: reference types or non-const-foldable expressions
-        // Creates a frozen snapshot via MakeConst opcode
-        if (declType.has_value() && std::holds_alternative<BuiltinType>(*declType)
-            && std::get<BuiltinType>(*declType) == BuiltinType::Signal)
-            error("const signal is not allowed.");
-
+        // Creates a frozen snapshot via MakeConst opcode.  (A signal is never
+        // const -- constRef() leaves it alone -- so `const s :signal` only
+        // means the name can't be rebound.)
         uint16_t var { 0 };
         if (asFuncScope(funcScope())->scopeDepth == 0) {
             // Module scope: register as const (prevents reassignment at runtime)
@@ -2758,9 +2753,6 @@ std::any RoxalCompiler::visit(ptr<ast::VarDecl> ast)
 
     declareVariable(ast->name, declType);
     if (ast->isTypeConst) {
-        if (declType.has_value() && std::holds_alternative<BuiltinType>(*declType)
-            && std::get<BuiltinType>(*declType) == BuiltinType::Signal)
-            error("const signal is not allowed.");
         if (asFuncScope(funcScope())->scopeDepth > 0)
             asFuncScope(funcScope())->locals.back().isTypeConst = true;
         else
@@ -4417,11 +4409,6 @@ std::any RoxalCompiler::visit(ptr<ast::Parameter> ast)
 {
     SourceNodeScope sourceScope(*this, ast);
 
-    // Signals cannot be const (they exist to change over time)
-    if (ast->isConst && ast->type.has_value() && std::holds_alternative<BuiltinType>(*ast->type)
-        && std::get<BuiltinType>(*ast->type) == BuiltinType::Signal)
-        error("const signal is not allowed.");
-
     // TODO: handle optional type
 
     declareVariable(ast->name);
@@ -4684,7 +4671,11 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             auto vtype = localVarType(name);
             if (!vtype.has_value())
                 vtype = moduleVarType(name);
-            if (vtype.has_value()) {
+            // A signal-typed variable takes any right side: a signal wires,
+            // a value sets (copyInto decides at run time), so no conversion.
+            bool signalTyped = vtype.has_value() && std::holds_alternative<BuiltinType>(*vtype)
+                               && std::get<BuiltinType>(*vtype) == BuiltinType::Signal;
+            if (vtype.has_value() && !signalTyped) {
                 if (std::holds_alternative<BuiltinType>(*vtype))
                     emitBytes(asFuncScope(funcScope())->strict ? OpCode::ToTypeStrict : OpCode::ToType,
                               uint8_t(builtinToValueType(std::get<BuiltinType>(*vtype))));
@@ -4694,8 +4685,9 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
                 }
             }
 
+            // Copy-into updates the value in place (or sets a signal), so
+            // there is nothing to store back: the variable still holds it.
             emitByte(OpCode::CopyInto);
-            namedVariable(name, /*assign=*/true); // store result back
         }
         else if (isa<UnaryOp>(ast->lhs) && as<UnaryOp>(ast->lhs)->op==UnaryOp::Accessor) {
             auto accessor = as<UnaryOp>(ast->lhs);
@@ -4706,7 +4698,6 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             uint16_t propName = identifierConstant(accessor->member.value());
 
             OpCode getOp = OpCode::GetPropCheck;
-            OpCode setOp = OpCode::SetPropCheck;
             if (isa<Variable>(accessor->arg) && as<Variable>(accessor->arg)->name == "this" && inTypeScope()) {
                 auto typeScopePtr = asTypeScope(typeScope());
                 auto itMem = typeScopePtr->propertyNames.find(accessor->member.value());
@@ -4717,17 +4708,20 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
                     if (info.isConst)
                         error("Cannot assign to constant '"+toUTF8StdString(accessor->member.value())+"'");
                     getOp = OpCode::GetProp;
-                    setOp = OpCode::SetProp;
                 }
             }
 
-            emitByte(OpCode::Dup);             // keep instance for SetProp
-            emitOpArgsBytes(getOp, propName);  // push current property value
+            emitByte(OpCode::Dup);             // keep instance for the accessor write-back
+            emitOpArgsBytes(getOp, propName);  // push current property value (a getter is called)
 
             emitRhs();
 
-            emitByte(OpCode::CopyInto);        // mutate property value
-            emitOpArgsBytes(setOp, propName);  // store back
+            emitByte(OpCode::CopyInto);        // mutate the value in place
+            // A plain property or dict entry already holds the mutated value,
+            // so nothing is written (and a const container isn't touched).
+            // Only a property with a setter gets the result handed back to
+            // it: the getter's value was a temporary.
+            emitOpArgsBytes(OpCode::SetPropAccessor, propName);
         }
         else if (isa<Index>(ast->lhs)) {
             auto index { as<Index>(ast->lhs) };
@@ -4740,14 +4734,9 @@ std::any RoxalCompiler::visit(ptr<ast::Assignment> ast)
             emitBytes(OpCode::Index, uint8_t(index->args.size()));
 
             emitRhs();
-            emitByte(OpCode::CopyInto);          // mutate element
-
-            // set element back
-            index->indexable->accept(*this);
-            for(auto& arg : index->args)
-                arg->accept(*this);
-            debug_assert_msg(index->args.size() <= 255, "Indexing with more than 255 arguments is not supported");
-            emitBytes(OpCode::SetIndex, uint8_t(index->args.size()));
+            // The element is mutated in place; no store back, so the
+            // container and the index expressions are evaluated once.
+            emitByte(OpCode::CopyInto);
         }
         else {
             error("LHS of copy into must be a variable, property accessor or indexing");
@@ -7617,7 +7606,7 @@ Value RoxalCompiler::applyConstType(Value value, std::optional<VarTypeSpec> type
         auto builtin = std::get<type::BuiltinType>(*type);
         ValueType vt = builtinToValueType(builtin);
         if (vt == ValueType::Signal)
-            error("const signal is not allowed.");
+            error("a constant cannot be converted to a signal.");
         try {
             return toType(vt, value, strictContext);
         } catch (const std::exception& e) {

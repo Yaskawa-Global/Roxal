@@ -1,0 +1,12 @@
+// A wire that feeds a node's zero-delay input from the node's own output is
+// refused at the statement; the delayed form is the feedback pattern.
+func f(x :bool) -> bool:
+  return not x
+var ok = signal(10, false)
+ok.run()
+ok <- f(ok[-1])
+print("delayed loop ok")
+var q = signal(10, false, "q")
+q.run()
+q <- f(q)
+print("not reached")

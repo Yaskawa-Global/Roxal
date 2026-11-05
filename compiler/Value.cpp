@@ -1288,6 +1288,12 @@ Value Value::constRef() const
         return *this; // primitives are already immutable
     if (isConst())
         return *this; // already const
+    // A signal is never const: it exists to change over time, and whether
+    // it can be written is the signal's own business (only an undriven
+    // source can be set or wired).  Transitive const stops here, so every
+    // signal operation works through a const dict, object or parameter.
+    if (isSignal(*this))
+        return *this;
     // Copy first, so the copy acquires whichever counter this value holds
     // (strong, or weak for a weak reference), then flip the const bit on the
     // copy: the bit does not take part in reference counting. Building the
@@ -2854,10 +2860,11 @@ Value roxal::mod(Value l, Value r)
 
 void roxal::copyInto(Value& lhs, const Value& rhs)
 {
-    if (!lhs.isObj()) {
-        lhs = rhs;
-        return;
-    }
+    // Copy-into updates its left side in place; it is never an assignment.
+    // So a value that cannot change -- a primitive, or a string (immutable
+    // and interned: equal strings share one object) -- cannot be copied into.
+    if (!lhs.isObj() || isString(lhs))
+        throw std::invalid_argument("cannot copy into an immutable " + to_string(lhs.type()));
 
     switch (objType(lhs)) {
         case ObjType::List:
@@ -2886,38 +2893,28 @@ void roxal::copyInto(Value& lhs, const Value& rhs)
             asOrient(lhs)->set(asOrient(rhs));
             break;
         case ObjType::Signal:
-            if (!isSignal(rhs))
-                throw std::invalid_argument("copy into signal requires signal RHS");
-            {
-                auto lhsSig = asSignal(lhs);
-                auto rhsSig = asSignal(rhs);
-
-                auto eng = df::DataflowEngine::instance();
-
-                eng->copyInto(lhsSig->signal, rhsSig->signal);
-
-                auto oldSignal = lhsSig->signal;
-                if (oldSignal != rhsSig->signal) {
-                    if (oldSignal)
-                        eng->unregisterSignalWrapper(oldSignal);
-
-                    if (rhsSig->signal)
-                        eng->registerSignalWrapper(rhsSig->signal);
-
-                    lhsSig->signal = rhsSig->signal;
-
-                    if (!lhsSig->changeEventType.isNil())
-                        lhsSig->ensureChangeEventType();
-                }
+            if (!isSignal(rhs)) {
+                // A value on the right sets the signal, exactly as .set() does.
+                setSignalChecked(asSignal(lhs), rhs);
+                break;
             }
+            {
+                // The engine makes the left df::Signal follow the right one;
+                // both wrappers keep their signals (nothing is re-pointed).
+                df::DataflowEngine::instance()->copyInto(asSignal(lhs)->signal,
+                                                         asSignal(rhs)->signal);
+            }
+            break;
+        case ObjType::Tensor:
+            if (!isTensor(rhs))
+                throw std::invalid_argument("copy into tensor requires tensor RHS");
+            asTensor(lhs)->set(asTensor(rhs));
             break;
         case ObjType::Instance:
         case ObjType::Actor:
             throw std::runtime_error("copy into not supported for user-defined types");
         default:
-            // Immutable or unsupported types - behave like normal assignment
-            lhs = rhs;
-            break;
+            throw std::invalid_argument("cannot copy into an immutable " + to_string(lhs.type()));
     }
 }
 

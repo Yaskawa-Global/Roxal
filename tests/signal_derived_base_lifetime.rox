@@ -1,0 +1,14 @@
+// A signal with a derived signal (x[-1]) stays in the network after its last
+// handle is dropped and collected: the delay keeps refreshing.
+var c = clock(10)
+var d = nil
+func mk():
+  var x = c + 0
+  d = x[-1]
+mk()
+gc()
+c.run()
+wait(ms=450)
+var v1 = d.value
+wait(ms=300)
+print(d.value > v1)

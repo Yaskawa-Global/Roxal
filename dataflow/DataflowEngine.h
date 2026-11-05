@@ -272,11 +272,25 @@ public:
     void removeSignal(const ptr<Signal>& signal, bool force = false);
     void removeFunc(ptr<FuncNode> func);
 
-    // copy the attributes of the rhs signal into the lhs (lhs <- rhs)
-    //  * lhs must be a source signal (not listed as the output of any producing funcs)
-    //  * all funcs that have rhs as an input, will afterward have lhs as an input instead
-    //  * lhs & rhs must have the same frequency
+    // The wire `lhs <- rhs`: lhs becomes a zero-delay derived view of rhs
+    // (Signal::deriveFrom), or -- when rhs is itself derived -- of rhs's base
+    // at rhs's index, so derivations never chain.  Neither side is replaced,
+    // retired or re-pointed: everything that held either keeps working, and
+    // lhs carries rhs's samples from then on, pushed in the same tick.
+    //  * lhs must be an undriven source signal at rhs's frequency
+    //  * a zero-delay cycle (lhs feeding rhs's producer without a [-n]) is
+    //    refused here, at the statement
     void copyInto(const ptr<Signal>& lhs, const ptr<Signal>& rhs);
+
+    // The signal actually written for `signal`: itself, or the base of its
+    // zero-delay derivation.
+    static ptr<Signal> zeroDelaySource(ptr<Signal> signal);
+
+    // True if a sample written to `from` reaches one of `targets` in the
+    // same tick, walking upstream through zero-delay input ports and
+    // zero-delay derivations.  Caller holds m_mutex.
+    bool zeroDelayUpstreamReaches(const ptr<Signal>& from,
+                                  const std::set<ptr<Signal>>& targets) const;
 
     // internal reference count for a signal held by the engine
     size_t signalRefCount(const ptr<Signal>& signal) const;

@@ -1,0 +1,6 @@
+// An element read through a const container is itself const, so copy-into
+// (an in-place mutation) is refused.  (A signal is the exception: see
+// copyinto_signal_const.)
+const cd = {"l": [1]}
+cd.l <- [5]
+print("not reached")
