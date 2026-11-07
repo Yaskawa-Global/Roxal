@@ -1174,6 +1174,17 @@ void DataflowEngine::rtLintIslands()
 }
 
 
+void DataflowEngine::claimHostDriven()
+{
+    // The latch tickFor() sets on its first call, lint included; the wake
+    // lets a run() already waiting out a tick gap see it and drop to
+    // servicing events.
+    if (!m_hostDriven.exchange(true, std::memory_order_relaxed))
+        m_rtLintPending.store(true, std::memory_order_relaxed);
+    wakeDrain();
+}
+
+
 DataflowEngine::TickResult DataflowEngine::tickFor(TimeDuration budget)
 {
     // Debugger admission: increment-then-recheck, held across the whole

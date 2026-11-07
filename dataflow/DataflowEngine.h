@@ -143,6 +143,16 @@ public:
     //          tick() warns and carries on), Error on failure.
     TickResult tickFor(TimeDuration budget);
 
+    // Claim the periodic schedule for tickFor() before the host's first
+    // tick: run() then never ticks periodic islands itself and only services
+    // events, as after the first tickFor().  For a host whose loop starts
+    // late (FC's RT cycle starts after its robot bootstrap): unclaimed, run()
+    // drives the clocked signals the bootstrap creates, and under the Strict
+    // scheme one late tick during that busy startup throws and ends run()
+    // for the rest of the process -- event delivery with it.  Call it before
+    // the first periodic source exists.  Never undone, like the latch.
+    void claimHostDriven();
+
     // Check if there's pending work from a yielded tick
     bool hasYieldedWork() const { return m_yieldState.active; }
 
@@ -378,8 +388,9 @@ private:
     // script when this reads false (VM::restartDataflowEngineIfStopped).
     std::atomic<bool> m_runLoopActive{false};
 
-    // Latched true on the first tickFor() call: an embedding host (e.g. an
-    // RT control loop) has taken ownership of the PERIODIC schedule.  From
+    // Latched true on the first tickFor() call, or earlier by
+    // claimHostDriven(): an embedding host (e.g. an RT control loop) has
+    // taken ownership of the PERIODIC schedule.  From
     // then on the engine's own run() loop stops ticking periodic
     // islands (they'd race the host's tickFor on the same islands) and
     // reduce to servicing the event-update queue -- the actor thread stays

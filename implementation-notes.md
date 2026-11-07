@@ -1370,7 +1370,10 @@ themselves).
 Scheduling: the engine either drives periodic islands itself (`run()`), or an
 embedding RT host drives them in budget slices via `tickFor(budget)` (the
 first `tickFor` call latches host-driven mode; the engine thread then reduces
-to servicing event-driven islands and background work). Each signal has an
+to servicing event-driven islands and background work). A host whose loop
+starts after it has created clocked signals claims the mode up front with
+`claimHostDriven()`, so `run()` never self-ticks in between — under the Strict
+scheme a late tick there would end `run()`, and event delivery with it. Each signal has an
 **execution domain** — `rt` (default) or `background`, declared via
 `signal(freq, init, name, domain)` or the chainable `sig.domain("background")`
 method. An island is background if ANY of its signals declares it; background
