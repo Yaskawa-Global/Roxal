@@ -1,0 +1,7 @@
+readback false
+glitch ons=0 offs=0 value=false
+readback true
+set ons=1 offs=0 value=true
+node false
+node after set true
+done

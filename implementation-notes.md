@@ -1307,6 +1307,32 @@ transitive const stops at it and every signal operation works through a
 const container or parameter. Whether a signal can be written is the
 signal's own property (an undriven source), not its reference's.
 
+**Clocked sources are sampled** (`clocked-signal-sampling.md`). `Signal::set`
+on a clocked source stages the value (`m_staged`, under `m_valuesMutex`,
+GC-traced); the signal's `tick()` publishes it with `setValueAt(t)` at the
+boundary, which is the one place change detection and callbacks run for it,
+and the tick paths mark availability as for any source. Nothing staged means
+no sample (the history zero-order-holds). `lastValue()` returns a staged
+value first, so a writer reads its command back deterministically; `valueAt`
+sees only published samples. `setValueAt` is the engine's raw publish (node
+outputs, wires, derived refresh, ticks); a host feeds a clocked signal by
+making it a source and calling `set()` before the tick -- a clocked
+non-source is never ticked, so `set()` on one is a logic error, and a
+clocked non-source written with `setValueAt` never updates its consumers'
+availability (`updateSignalConsumerInputAvailability` is engine-private).
+`setScriptWritable(false)` marks a host-fed input: still a source the engine
+ticks, but `setSignalChecked` and `copyInto` refuse it by name. Event-driven
+signals are unchanged: `set()` publishes at once, every write is an event.
+The former `set()` wrote at `tickStart + period` and ran the change check at
+write time against the previous boundary, so a write and its undo within one
+period fired a phantom change (and reached C++ subscribers) for a value that
+never stood at a boundary.  Because a sampled source publishes only when
+ticked, it must stay on the schedule while anything holds it: an unforced
+`removeSignal` (from `removeFunc`, for a dead node's inputs) now leaves a
+signal with a live wrapper in place -- it used to prune any signal no node
+used, which silently stopped a clock, and under sampling left a source
+reading its staged write back forever (`tests/signal_source_outlives_node`).
+
 Note that the grid is global, so every periodic signal anywhere in the program
 participates -- including module-internal ones such as `math._vecSignal`
 (`modules/math.rox`, 20 Hz), which is present in every program because `math`

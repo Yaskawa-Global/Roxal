@@ -124,11 +124,32 @@ public:
     double frequency() const { return m_frequency; }
     void setFrequency(double freq);
 
-    // Get and set value at a specific time point
+    // Get and set value at a specific time point.  setValueAt is the raw
+    // publish: the engine's own writes at an evaluation time (node outputs,
+    // wires, derived signals, a source's tick).  Hosts and scripts write
+    // through set().
     std::optional<Value> valueIfAvailableAt(TimePoint t) const;
     Value valueAt(TimePoint t) const;
     void setValueAt(TimePoint t, const Value& v);
+
+    // Write a value.  Event-driven: published at once, every write is a
+    // change.  CLOCKED source: the value is STAGED and the signal's next
+    // tick publishes it as the sample at that boundary -- the last write
+    // before the boundary wins, earlier ones are invisible, and the change
+    // callbacks fire once, at the tick, only if the published sample
+    // differs from the previous one.  lastValue() reads a staged value
+    // back before it is published.  A clocked signal that is not a source
+    // is never ticked, so set() on one is a logic error.
+    // (clocked-signal-sampling.md)
     void set(const Value& v);
+    bool hasStagedValue() const;
+
+    // Script writability is separate from being a source: a host-fed input
+    // (e.g. a fieldbus input port) is a clocked source the ENGINE ticks and
+    // the host stages with set(), but `.set` / `<-` from a script and the
+    // left side of a wire are refused by name.  Default true.
+    bool scriptWritable() const { return m_scriptWritable; }
+    void setScriptWritable(bool writable) { m_scriptWritable = writable; }
 
     // Release the buffered time->Value history.  Called during VM/engine
     // teardown (DataflowEngine::clear) to drop Object-backed Values (e.g.
@@ -139,7 +160,8 @@ public:
     // stopped before clear()).
     void clearValues();
 
-    // For source signals: generate next value
+    // For source signals: publish the next value at t -- a clock's count,
+    // or the value set() staged since the last tick (nothing when none was).
     void tick(TimePoint t);
 
     // Advance the clock by one tick on the next period boundary
@@ -232,6 +254,12 @@ protected:
     // where both are held: engine m_mutex first, then this. Never hold this
     // across change callbacks or DataflowEngine calls.
     mutable std::recursive_mutex m_valuesMutex;
+
+    // A clocked source's pending write (set() since the last tick), under
+    // m_valuesMutex; tick() publishes and clears it.  GC-traced like
+    // `values`.
+    std::optional<Value> m_staged;
+    bool m_scriptWritable = true;
 
     double m_frequency; // Frequency in Hz
     TimeDuration m_period;

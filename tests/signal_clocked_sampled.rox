@@ -1,0 +1,43 @@
+# A clocked source is SAMPLED (clocked-signal-sampling.md): `<-` / set()
+# stage a value, and the signal's next tick publishes it.  Writes within
+# one period replace each other, change handlers see only the published
+# sample, `.value` reads the latest write back at once, and a node over the
+# source re-evaluates after every publish.
+
+var s = signal(20, false)        # 50 ms period
+var ons = 0
+var offs = 0
+when s becomes true:
+    ons = ons + 1
+when s becomes false:
+    offs = offs + 1
+
+# A write and its undo within one period: no sample, no event.
+s <- true
+s <- false
+var v :bool = s.value
+print("readback {v}")            # the latest write
+wait(ms=150)
+v = s.value
+print("glitch ons={ons} offs={offs} value={v}")
+
+# One write: one event, at the boundary.
+s <- true
+v = s.value
+print("readback {v}")
+wait(ms=150)
+v = s.value
+print("set ons={ons} offs={offs} value={v}")
+
+# A node over the source follows each published value.
+func inverted(x :bool) -> bool:
+    return not x
+var n = inverted(s)
+wait(ms=150)
+v = n.value
+print("node {v}")
+s <- false
+wait(ms=150)
+v = n.value
+print("node after set {v}")
+print("done")

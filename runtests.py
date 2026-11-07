@@ -448,7 +448,7 @@ ffi_tests = [
     'ffi1', 'ffi_addfloats', 'ffi_struct_out', 'ffi_inttypes', 'ffi_strlen', 'ffi_relative',
     'ffi_toupper', 'ffi_primptr', 'ffi_voidptr_struct', 'cstruct1', 'cstruct2', 'cstruct3',
     'cstruct_byval', 'cstruct_array',
-    'ffi_int64', 'ffi_ptr_return', 'ffi_free', 'ffi_tensor', 'ffi_tensor_mismatch_err', 'df_lift_module_ref', 'df_lift_unused_target', 'df_hold_unavailable', 'df_hold_clocked',
+    'ffi_int64', 'ffi_ptr_return', 'ffi_free', 'ffi_tensor', 'ffi_tensor_mismatch_err', 'df_lift_module_ref', 'df_lift_unused_target', 'df_hold_unavailable', 'df_hold_clocked', 'signal_clocked_sampled', 'signal_source_outlives_node',
     'ffi_nullptr', 'ffi_blocking',
     'ffi_ptrptr_slot', 'ffi_ptrptr_nil_err',
     'nested_cstruct', 'nested_cstruct_ptr', 'nested_cstruct_byval', 'nested_cstruct_align',

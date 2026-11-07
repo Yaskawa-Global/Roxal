@@ -1,0 +1,27 @@
+# A source a script still holds stays on the tick schedule when a node over
+# it dies: the throwaway comparison `s == nil` lifts a node nobody keeps,
+# and its collection must not prune `s` from the engine -- a sampled source
+# publishes only when ticked, so a pruned one would read its staged write
+# back forever and never fire a change.
+
+
+var s = signal(20, 0)
+var n :int = 0
+when s changes:
+    n = n + 1
+
+func inc(x :int) -> int:
+    return x + 1
+
+var isnil :bool = bool(s == nil)      # a lifted comparison, dropped at once
+inc(s)                                 # a lifted node, dropped at once
+gc()
+wait(ms=150)                           # the reclaimer drops the dead nodes
+
+s <- 1
+wait(ms=150)
+print("after 1: n={n}")
+s <- 2
+wait(ms=150)
+print("after 2: n={n}")
+print("done")

@@ -1,1 +1,1 @@
-cannot set '.*': not a source signal \(an input, or driven by a wire\)
+cannot set '.*': not a source signal \(a node output, or driven by a wire\)

@@ -217,6 +217,16 @@ void DataflowEngine::removeSignal(const ptr<Signal>& signal, bool force)
     if (used && !force)
         return;
 
+    // Held by a script value (an ObjSignal wrapper): in use whatever the
+    // graph says.  Pruning a wrapped SOURCE here -- as removeFunc did for the
+    // inputs of a dead node, e.g. the throwaway `sig == nil` comparison --
+    // silently took it off the tick schedule: a clock stopped counting, and
+    // a sampled source (set() staged, tick publishes) never published again
+    // while `.value` still read the staged write.  Its last wrapper's
+    // destructor is what prunes it, forced.
+    if (!force && wrapperRefCount(signal) > 0)
+        return;
+
     // A signal with a live derived signal (`x[-1]`, or a wire `y <- x`) is
     // in use whatever holds it: the dependent is pulled from, or pushed by,
     // this one.  Never pruned, forced or not.
@@ -389,6 +399,10 @@ void DataflowEngine::copyInto(const ptr<Signal>& lhs, const ptr<Signal>& rhs)
     if (!lhs->isSourceSignal())
         throw std::runtime_error("left side of '<-' ('" + lhs->name() +
                                  "') is already driven; it must be an undriven source signal");
+
+    if (!lhs->scriptWritable())
+        throw std::runtime_error("left side of '<-' ('" + lhs->name() +
+                                 "') is an input (fed by the controller); it cannot be wired");
 
     // A derived right side collapses: lhs follows rhs's base at rhs's index,
     // so a derivation never chains and every push list sits on a signal

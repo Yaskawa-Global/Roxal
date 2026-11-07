@@ -142,6 +142,7 @@ void Signal::clearValues()
 {
     std::lock_guard<std::recursive_mutex> lock(m_valuesMutex);
     values.clear();
+    m_staged.reset();
 }
 
 void Signal::trace(roxal::ValueVisitor& visitor) const
@@ -152,6 +153,8 @@ void Signal::trace(roxal::ValueVisitor& visitor) const
     for (const auto& entry : values) {
         visitor.visit(entry.second);
     }
+    if (m_staged)
+        visitor.visit(*m_staged);
 }
 
 
@@ -350,6 +353,10 @@ void Signal::deriveFrom(const ptr<Signal>& base, int index)
     baseSignal = base;
     baseIndex = index;
     m_eventDriven = base->m_eventDriven;
+    {   // no longer ticked: a write staged before the wire is dropped
+        std::lock_guard<std::recursive_mutex> lock(m_valuesMutex);
+        m_staged.reset();
+    }
     if (index < 0) {
         // Pulled from the base's history: both sides must keep enough of it.
         setMaxHistoryPeriods(std::max(m_maxHistoryPeriods, -index + 1));
@@ -366,15 +373,24 @@ void Signal::set(const Value& v)
         return;
     }
 
-    TimePoint t = DataflowEngine::instance()->tickStart();
+    // A clocked source is sampled: stage the write, and let the signal's
+    // next tick publish it (clocked-signal-sampling.md).  Writes before the
+    // boundary replace each other; nothing is published or notified here,
+    // from whatever thread the writer is on.  (The former write at
+    // tickStart + period could land on a tick the engine had already
+    // processed, and its write-time change check fired for a value that
+    // never stood at a boundary.)
+    if (!isSource)
+        throw std::logic_error("set on clocked signal '" + m_name +
+                               "': not a source, so never ticked");
+    std::lock_guard<std::recursive_mutex> lock(m_valuesMutex);
+    m_staged = snapshotForSignal(v);
+}
 
-    // Update the value at the next tick boundary for this signal. This avoids
-    // races with the dataflow engine thread which may already be processing the
-    // current tick when set() is called from another thread.
-    TimePoint nextTick = t + m_period;
-
-    setValueAt(nextTick, v);
-    DataflowEngine::instance()->updateSignalConsumerInputAvailability(ptr_from_this(), nextTick);
+bool Signal::hasStagedValue() const
+{
+    std::lock_guard<std::recursive_mutex> lock(m_valuesMutex);
+    return m_staged.has_value();
 }
 
 
@@ -390,7 +406,19 @@ void Signal::tick(TimePoint t)
             val = lastValue();
         }
         setValueAt(t, val);
+        return;
     }
+
+    // Publish what set() staged since the last tick; the sample at t is the
+    // last write of the period.  Nothing staged: the history holds, no
+    // sample, no change -- the caller still marks availability at t.
+    std::optional<Value> staged;
+    {
+        std::lock_guard<std::recursive_mutex> lock(m_valuesMutex);
+        staged.swap(m_staged);
+    }
+    if (staged)
+        setValueAt(t, *staged);
 }
 
 
@@ -409,6 +437,12 @@ void Signal::evaluate(TimePoint t)
 Value Signal::lastValue() const
 {
     std::lock_guard<std::recursive_mutex> lock(m_valuesMutex);
+    // The latest write: a staged value a clocked source has not published
+    // yet reads back to its writer at once (and deterministically, whether
+    // or not a tick ran in between).  Samplers go through valueAt and see
+    // only published samples.
+    if (m_staged)
+        return *m_staged;
     if (values.empty())
         throw std::runtime_error("Signal has no values.");
     return values.rbegin()->second;

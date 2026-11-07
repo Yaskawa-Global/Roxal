@@ -460,6 +460,22 @@ const char* kHostSetEvent =
     "  n = n + 1\n"
     "print(r.value)\n";
 
+// The same over a CLOCKED source the host feeds (a fieldbus input port in
+// FC): the host stages a value with set() before its tick, the tick
+// publishes it and marks it available, and the node over it re-evaluates
+// for every published value -- not only once, at lift
+// (clocked-signal-sampling.md, defect 2).
+const char* kHostFedInput =
+    "func inc(x :int) -> int:\n"
+    "  return x + 1\n"
+    "var e = signal(500, 0, 'host_in')\n"
+    "var r = inc(e)\n"
+    "var n = 0\n"
+    "while r.value < 11 and n < 400:\n"
+    "  wait(ms=5)\n"
+    "  n = n + 1\n"
+    "print(r.value)\n";
+
 // A collection requested from the driver during the reclaim of the one before.
 // A request from a yield section wakes nobody itself.  Threads parked for the
 // first collection are held by its reclaim fence while the driver runs on, and
@@ -557,6 +573,8 @@ const Scenario kScenarios[] = {
       RunState::Completed, nullptr, 7, false, false, 1 },
     { "host_set_event", kHostSetEvent,  "11\n",           false, false, false,
       RunState::Completed, nullptr, 0, false, false, 0, true },
+    { "host_fed_input", kHostFedInput,  "11\n",           false, false, false,
+      RunState::Completed, nullptr, 0, false, false, 0, true },
     { "own_body_after_run", kOwnBodyAfterRun, "200000\n", true,  false, false,
       RunState::Completed, nullptr, 0, false, false, 0, false, false, true },
     { "stored_output_after_run", kOwnBodyAfterRun, "200000\n", true, false, false,
@@ -617,7 +635,14 @@ int runScenario(const Scenario& scenario)
                     if (s->name() == "host_in") { hostIn = s; break; }
                 if (!hostIn)
                     return;   // the program has not created it yet
+                hostIn->setScriptWritable(false);   // the host's input, as FC's ports are
             }
+            // Clocked (host_fed_input): a write is staged until the signal's
+            // tick publishes it, so wait for that tick before the next value
+            // -- every value then stands at a boundary.  Event-driven: never
+            // staged, one write per cycle.
+            if (hostIn->hasStagedValue())
+                return;
             hostIn->set(Value::intVal(++hostSets));
         });
     ptr<df::Signal> heldOutput;

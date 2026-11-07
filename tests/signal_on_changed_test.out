@@ -1,5 +1,4 @@
 Test 1: Handler with event parameter
-s1 changed to: 42
 s1 changed to: 100
 
 Test 2: Handler without event parameter

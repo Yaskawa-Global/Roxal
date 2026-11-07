@@ -9,6 +9,8 @@ func handler1(evt):
 
 s1.on_changed(handler1)
 
+// A clocked source is sampled: two writes within one period publish only
+// the last one at the boundary, so the handler sees 100 and never 42.
 s1.set(42)
 s1.set(100)
 s1.tick()

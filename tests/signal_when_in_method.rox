@@ -22,4 +22,5 @@ b.onClicked(handleClicked)
 
 b.clickTest()
 
-wait(ms=200)
+# the 2 Hz signal publishes the write at its next boundary: up to 500 ms away
+wait(ms=700)

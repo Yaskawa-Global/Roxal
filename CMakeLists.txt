@@ -960,7 +960,7 @@ if(NOT EMSCRIPTEN)
     foreach(scenario busy_loop wait_loop yielding_node yielding_node_future overrun_orphan tick_after_run
                      node_error node_exit best_effort_late
                      background_node_error network_change_mid_tick
-                     lift_collects node_exit_sliced host_set_event
+                     lift_collects node_exit_sliced host_set_event host_fed_input
                      own_body_after_run stored_output_after_run
                      node_throws native_node_throws stored_native_node_throws
                      gc_during_reclaim)

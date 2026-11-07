@@ -1515,6 +1515,18 @@ wait(500ms)  // don't exit until after next tick & handler runs
 print('done')
 ```
 
+**A clocked source is sampled.** `set()` / `<-` on a signal with a frequency
+*stages* the value; the signal's next tick publishes it as the sample at that
+boundary. Writes within one period replace each other (the last one wins and
+earlier ones are invisible to nodes, samplers and handlers), and `changes` /
+`becomes` fire once, at the boundary, only if the published sample differs
+from the previous one: with `s` false, `s <- true; s <- false` within a period
+publishes one false sample and fires nothing. `.value` reads the latest write
+back at once, so a script always sees its own command. An event-driven signal
+(frequency 0) publishes every `set()` immediately, as before. A signal the
+controller feeds (an input port) is a clocked source the engine ticks; `.set`
+and `<-` on it are refused by name.
+
 **Signals and value-semantics types (tensor, vector, matrix).** `set()` stores
 a copy-on-write snapshot, exactly like assignment: the setter keeping its
 reference and mutating in place never alters what samplers observe, and a

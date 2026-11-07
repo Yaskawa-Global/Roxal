@@ -6354,7 +6354,12 @@ void roxal::setSignalChecked(ObjSignal* objSignal, const Value& v)
     // input, a node output or a wired signal is driven by something else.
     if (!sig->isSourceSignal())
         throw std::runtime_error("cannot set '" + sig->name() +
-                                 "': not a source signal (an input, or driven by a wire)");
+                                 "': not a source signal (a node output, or driven by a wire)");
+    // A host-fed input is a source the engine ticks, but only the host
+    // writes it (Signal::setScriptWritable).
+    if (!sig->scriptWritable())
+        throw std::runtime_error("cannot set '" + sig->name() +
+                                 "': an input (fed by the controller)");
     // A node body is a pure function of its inputs; module variables are
     // frozen inside one, and a signal write is the same kind of side effect.
     if (VM::inDataflowBody())
