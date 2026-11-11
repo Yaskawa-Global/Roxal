@@ -5,7 +5,10 @@
 #include <string>
 #include <algorithm>
 #include <cmath>
+#include <csetjmp>
+#include <cstdlib>
 #include <cstring>
+#include <vector>
 #include <filesystem>
 
 #include <png.h>
@@ -70,39 +73,119 @@ struct PixelsOut {
 }
 
 // ============================================================
-// PNG I/O
+// Image codecs
 // ============================================================
+// PNG and JPEG are encoded to and decoded from memory; files are read or
+// written whole around that.  A codec's error -- a corrupt or truncated
+// image -- is raised as an exception: libpng and libjpeg report errors by
+// longjmp, back into the function that set the jump, so every buffer that
+// must outlive the jump is declared before it.
 
-static Value readPNG(const std::string& path, int requestedChannels)
+static std::vector<uint8_t> readFileBytes(const std::string& path, const char* what)
 {
     FILE* fp = fopen(path.c_str(), "rb");
     if (!fp)
-        throw std::runtime_error("media.Image: cannot open '" + path + "'");
+        throw std::runtime_error(std::string(what) + ": cannot open '" + path + "'");
+    std::vector<uint8_t> bytes;
+    uint8_t chunk[65536];
+    size_t n;
+    while ((n = fread(chunk, 1, sizeof chunk, fp)) > 0)
+        bytes.insert(bytes.end(), chunk, chunk + n);
+    const bool failed = ferror(fp) != 0;
+    fclose(fp);
+    if (failed)
+        throw std::runtime_error(std::string(what) + ": cannot read '" + path + "'");
+    return bytes;
+}
 
-    png_byte header[8];
-    if (fread(header, 1, 8, fp) != 8 || png_sig_cmp(header, 0, 8)) {
-        fclose(fp);
-        throw std::runtime_error("media.Image: '" + path + "' is not a valid PNG file");
-    }
+static void writeFileBytes(const std::string& path, const std::vector<uint8_t>& bytes)
+{
+    FILE* fp = fopen(path.c_str(), "wb");
+    if (!fp)
+        throw std::runtime_error("Image.write: cannot create '" + path + "'");
+    const bool ok = bytes.empty() || fwrite(bytes.data(), 1, bytes.size(), fp) == bytes.size();
+    const bool closed = fclose(fp) == 0;
+    if (!ok || !closed)
+        throw std::runtime_error("Image.write: cannot write '" + path + "'");
+}
+
+static bool isPNG(const uint8_t* data, size_t size)
+{
+    return size >= 8 && png_sig_cmp(const_cast<png_bytep>(data), 0, 8) == 0;
+}
+
+static bool isJPEG(const uint8_t* data, size_t size)
+{
+    return size >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF;
+}
+
+// [H, W, C] uint8 pixels, checked for encoding.
+static void encodableImage(const ObjTensor* tensor, const char* what, const char* format,
+                           int& height, int& width, int& channels)
+{
+    if (tensor->rank() != 3)
+        throw std::invalid_argument(std::string(what) + ": tensor must be 3D [H, W, C]");
+    if (tensor->dtype() != TensorDType::UInt8)
+        throw std::invalid_argument(std::string(what) + ": " + format +
+                                    " requires uint8 tensor (use to_uint8() first)");
+    height = static_cast<int>(tensor->shape()[0]);
+    width = static_cast<int>(tensor->shape()[1]);
+    channels = static_cast<int>(tensor->shape()[2]);
+}
+
+// ---- PNG ----
+
+namespace {
+struct PngSource {
+    const uint8_t* data;
+    size_t size;
+    size_t at;
+};
+}
+
+static void pngReadMemory(png_structp png, png_bytep out, png_size_t n)
+{
+    auto* src = static_cast<PngSource*>(png_get_io_ptr(png));
+    if (src->size - src->at < n)
+        png_error(png, "truncated");
+    std::memcpy(out, src->data + src->at, n);
+    src->at += n;
+}
+
+static void pngWriteMemory(png_structp png, png_bytep data, png_size_t n)
+{
+    auto* out = static_cast<std::vector<uint8_t>*>(png_get_io_ptr(png));
+    out->insert(out->end(), data, data + n);
+}
+
+static void pngFlushMemory(png_structp) {}
+
+static Value decodePNG(const uint8_t* data, size_t size, int requestedChannels, const std::string& what)
+{
+    if (!isPNG(data, size))
+        throw std::runtime_error("media.Image: " + what + " is not a valid PNG image");
+
+    PngSource source { data, size, 8 };
+    std::vector<uint8_t> imgBuf;
+    std::vector<png_bytep> rowPtrs;
+    int width = 0, height = 0, channels = 0;
 
     png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
-    if (!png) { fclose(fp); throw std::runtime_error("media.Image: png_create_read_struct failed"); }
-
+    if (!png) throw std::runtime_error("media.Image: png_create_read_struct failed");
     png_infop info = png_create_info_struct(png);
-    if (!info) { png_destroy_read_struct(&png, nullptr, nullptr); fclose(fp); throw std::runtime_error("media.Image: png_create_info_struct failed"); }
+    if (!info) { png_destroy_read_struct(&png, nullptr, nullptr); throw std::runtime_error("media.Image: png_create_info_struct failed"); }
 
     if (setjmp(png_jmpbuf(png))) {
         png_destroy_read_struct(&png, &info, nullptr);
-        fclose(fp);
-        throw std::runtime_error("media.Image: error reading PNG '" + path + "'");
+        throw std::runtime_error("media.Image: error decoding PNG " + what);
     }
 
-    png_init_io(png, fp);
+    png_set_read_fn(png, &source, &pngReadMemory);
     png_set_sig_bytes(png, 8);
     png_read_info(png, info);
 
-    int width = png_get_image_width(png, info);
-    int height = png_get_image_height(png, info);
+    width = png_get_image_width(png, info);
+    height = png_get_image_height(png, info);
     png_byte colorType = png_get_color_type(png, info);
     png_byte bitDepth = png_get_bit_depth(png, info);
 
@@ -137,38 +220,28 @@ static Value readPNG(const std::string& path, int requestedChannels)
 
     png_read_update_info(png, info);
 
-    int channels = png_get_channels(png, info);
+    channels = png_get_channels(png, info);
     size_t rowBytes = png_get_rowbytes(png, info);
 
-    // Read into temporary buffer first
-    std::vector<uint8_t> imgBuf(height * rowBytes);
-    std::vector<png_bytep> rowPtrs(height);
+    imgBuf.resize(static_cast<size_t>(height) * rowBytes);
+    rowPtrs.resize(height);
     for (int y = 0; y < height; ++y)
         rowPtrs[y] = imgBuf.data() + y * rowBytes;
 
     png_read_image(png, rowPtrs.data());
     png_read_end(png, nullptr);
     png_destroy_read_struct(&png, &info, nullptr);
-    fclose(fp);
 
-    // Create tensor and copy data in
     std::vector<int64_t> shape = {height, width, channels};
     auto tensor = newTensorObj(shape, TensorDType::UInt8);
-    copyBytesToTensor(tensor.get(), imgBuf.data(), height * width * channels);
-
+    copyBytesToTensor(tensor.get(), imgBuf.data(), static_cast<int64_t>(height) * width * channels);
     return Value::objVal(std::move(tensor));
 }
 
-static void writePNG(const std::string& path, ObjTensor* tensor)
+static std::vector<uint8_t> encodePNG(ObjTensor* tensor, const char* what)
 {
-    if (tensor->rank() != 3)
-        throw std::invalid_argument("Image.write: tensor must be 3D [H, W, C]");
-    if (tensor->dtype() != TensorDType::UInt8)
-        throw std::invalid_argument("Image.write: PNG requires uint8 tensor (use to_uint8() first)");
-
-    int height = static_cast<int>(tensor->shape()[0]);
-    int width = static_cast<int>(tensor->shape()[1]);
-    int channels = static_cast<int>(tensor->shape()[2]);
+    int height, width, channels;
+    encodableImage(tensor, what, "PNG", height, width, channels);
 
     int pngColorType;
     switch (channels) {
@@ -176,62 +249,81 @@ static void writePNG(const std::string& path, ObjTensor* tensor)
         case 2: pngColorType = PNG_COLOR_TYPE_GRAY_ALPHA; break;
         case 3: pngColorType = PNG_COLOR_TYPE_RGB; break;
         case 4: pngColorType = PNG_COLOR_TYPE_RGBA; break;
-        default: throw std::invalid_argument("Image.write: unsupported channel count " + std::to_string(channels));
+        default: throw std::invalid_argument(std::string(what) + ": unsupported channel count " +
+                                             std::to_string(channels));
     }
 
     // Copy tensor data to a contiguous byte buffer
-    int64_t totalBytes = static_cast<int64_t>(height) * width * channels;
+    const int64_t totalBytes = static_cast<int64_t>(height) * width * channels;
     std::vector<uint8_t> imgBuf(totalBytes);
     copyTensorToBytes(tensor, imgBuf.data(), totalBytes);
-
-    FILE* fp = fopen(path.c_str(), "wb");
-    if (!fp)
-        throw std::runtime_error("Image.write: cannot create '" + path + "'");
+    std::vector<const png_byte*> rowPtrs(height);
+    const size_t rowBytes = static_cast<size_t>(width) * channels;
+    for (int y = 0; y < height; ++y)
+        rowPtrs[y] = imgBuf.data() + y * rowBytes;
+    std::vector<uint8_t> out;
 
     png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
-    if (!png) { fclose(fp); throw std::runtime_error("Image.write: png_create_write_struct failed"); }
-
+    if (!png) throw std::runtime_error(std::string(what) + ": png_create_write_struct failed");
     png_infop info = png_create_info_struct(png);
-    if (!info) { png_destroy_write_struct(&png, nullptr); fclose(fp); throw std::runtime_error("Image.write: png_create_info_struct failed"); }
+    if (!info) { png_destroy_write_struct(&png, nullptr); throw std::runtime_error(std::string(what) + ": png_create_info_struct failed"); }
 
     if (setjmp(png_jmpbuf(png))) {
         png_destroy_write_struct(&png, &info);
-        fclose(fp);
-        throw std::runtime_error("Image.write: error writing PNG '" + path + "'");
+        throw std::runtime_error(std::string(what) + ": error encoding PNG");
     }
 
-    png_init_io(png, fp);
+    png_set_write_fn(png, &out, &pngWriteMemory, &pngFlushMemory);
     png_set_IHDR(png, info, width, height, 8, pngColorType,
                  PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
     png_write_info(png, info);
-
-    size_t rowBytes = width * channels;
-    std::vector<const png_byte*> rowPtrs(height);
-    for (int y = 0; y < height; ++y)
-        rowPtrs[y] = imgBuf.data() + y * rowBytes;
-
     png_write_image(png, const_cast<png_bytepp>(rowPtrs.data()));
     png_write_end(png, nullptr);
-
     png_destroy_write_struct(&png, &info);
-    fclose(fp);
+    return out;
 }
 
-// ============================================================
-// JPEG I/O
-// ============================================================
+// ---- JPEG ----
 
-static Value readJPEG(const std::string& path, int requestedChannels)
+namespace {
+// libjpeg's default error handler exits the process: this one jumps back
+// instead, with the message.
+struct JpegError {
+    jpeg_error_mgr mgr;
+    jmp_buf jump;
+    char message[JMSG_LENGTH_MAX];
+};
+}
+
+static void jpegErrorExit(j_common_ptr cinfo)
 {
-    FILE* fp = fopen(path.c_str(), "rb");
-    if (!fp)
-        throw std::runtime_error("media.Image: cannot open '" + path + "'");
+    auto* err = reinterpret_cast<JpegError*>(cinfo->err);
+    (*cinfo->err->format_message)(cinfo, err->message);
+    longjmp(err->jump, 1);
+}
 
-    struct jpeg_decompress_struct cinfo;
-    struct jpeg_error_mgr jerr;
-    cinfo.err = jpeg_std_error(&jerr);
+static void jpegOutputMessage(j_common_ptr) {}   // warnings: not on stderr
+
+static Value decodeJPEG(const uint8_t* data, size_t size, int requestedChannels, const std::string& what)
+{
+    if (!isJPEG(data, size))
+        throw std::runtime_error("media.Image: " + what + " is not a valid JPEG image");
+
+    std::vector<uint8_t> imgBuf;
+    std::vector<uint8_t> rowBuf;
+    int width = 0, height = 0, outChannels = 0;
+
+    jpeg_decompress_struct cinfo;
+    JpegError jerr;
+    cinfo.err = jpeg_std_error(&jerr.mgr);
+    jerr.mgr.error_exit = &jpegErrorExit;
+    jerr.mgr.output_message = &jpegOutputMessage;
+    if (setjmp(jerr.jump)) {
+        jpeg_destroy_decompress(&cinfo);
+        throw std::runtime_error("media.Image: error decoding JPEG " + what + ": " + jerr.message);
+    }
     jpeg_create_decompress(&cinfo);
-    jpeg_stdio_src(&cinfo, fp);
+    jpeg_mem_src(&cinfo, const_cast<unsigned char*>(data), static_cast<unsigned long>(size));
     jpeg_read_header(&cinfo, TRUE);
 
     if (requestedChannels == 1)
@@ -241,23 +333,22 @@ static Value readJPEG(const std::string& path, int requestedChannels)
 
     jpeg_start_decompress(&cinfo);
 
-    int width = cinfo.output_width;
-    int height = cinfo.output_height;
-    int jpegChannels = cinfo.output_components;
+    width = cinfo.output_width;
+    height = cinfo.output_height;
+    const int jpegChannels = cinfo.output_components;
 
-    int outChannels = (requestedChannels == 4) ? 4 : jpegChannels;
+    outChannels = (requestedChannels == 4) ? 4 : jpegChannels;
     if (requestedChannels > 0 && requestedChannels != 4)
         outChannels = requestedChannels;
 
-    // Read into temporary buffer
-    std::vector<uint8_t> imgBuf(height * width * outChannels);
+    imgBuf.resize(static_cast<size_t>(height) * width * outChannels);
 
     if (requestedChannels == 4) {
-        std::vector<uint8_t> rowBuf(width * jpegChannels);
+        rowBuf.resize(static_cast<size_t>(width) * jpegChannels);
         for (int y = 0; y < height; ++y) {
             uint8_t* rowPtr = rowBuf.data();
             jpeg_read_scanlines(&cinfo, &rowPtr, 1);
-            uint8_t* dst = imgBuf.data() + y * width * 4;
+            uint8_t* dst = imgBuf.data() + static_cast<size_t>(y) * width * 4;
             for (int x = 0; x < width; ++x) {
                 dst[x * 4 + 0] = rowBuf[x * 3 + 0];
                 dst[x * 4 + 1] = rowBuf[x * 3 + 1];
@@ -267,54 +358,51 @@ static Value readJPEG(const std::string& path, int requestedChannels)
         }
     } else {
         for (int y = 0; y < height; ++y) {
-            uint8_t* rowPtr = imgBuf.data() + y * width * outChannels;
+            uint8_t* rowPtr = imgBuf.data() + static_cast<size_t>(y) * width * outChannels;
             jpeg_read_scanlines(&cinfo, &rowPtr, 1);
         }
     }
 
     jpeg_finish_decompress(&cinfo);
     jpeg_destroy_decompress(&cinfo);
-    fclose(fp);
 
     std::vector<int64_t> shape = {height, width, outChannels};
     auto tensor = newTensorObj(shape, TensorDType::UInt8);
-    copyBytesToTensor(tensor.get(), imgBuf.data(), height * width * outChannels);
-
+    copyBytesToTensor(tensor.get(), imgBuf.data(), static_cast<int64_t>(height) * width * outChannels);
     return Value::objVal(std::move(tensor));
 }
 
-static void writeJPEG(const std::string& path, ObjTensor* tensor, int quality)
+static std::vector<uint8_t> encodeJPEG(ObjTensor* tensor, int quality, const char* what)
 {
-    if (tensor->rank() != 3)
-        throw std::invalid_argument("Image.write: tensor must be 3D [H, W, C]");
-    if (tensor->dtype() != TensorDType::UInt8)
-        throw std::invalid_argument("Image.write: JPEG requires uint8 tensor (use to_uint8() first)");
-
-    int height = static_cast<int>(tensor->shape()[0]);
-    int width = static_cast<int>(tensor->shape()[1]);
-    int channels = static_cast<int>(tensor->shape()[2]);
-
+    int height, width, channels;
+    encodableImage(tensor, what, "JPEG", height, width, channels);
     if (channels == 2 || channels == 4)
-        throw std::invalid_argument("Image.write: JPEG does not support alpha channel (" +
+        throw std::invalid_argument(std::string(what) + ": JPEG does not support alpha channel (" +
                                     std::to_string(channels) + " channels)");
     if (channels != 1 && channels != 3)
-        throw std::invalid_argument("Image.write: JPEG requires 1 or 3 channels, got " +
+        throw std::invalid_argument(std::string(what) + ": JPEG requires 1 or 3 channels, got " +
                                     std::to_string(channels));
+    if (quality < 1 || quality > 100)
+        throw std::invalid_argument(std::string(what) + ": quality must be 1-100");
 
-    // Copy tensor data to contiguous byte buffer
-    int64_t totalBytes = static_cast<int64_t>(height) * width * channels;
+    const int64_t totalBytes = static_cast<int64_t>(height) * width * channels;
     std::vector<uint8_t> imgBuf(totalBytes);
     copyTensorToBytes(tensor, imgBuf.data(), totalBytes);
+    unsigned char* mem = nullptr;
+    unsigned long memSize = 0;
 
-    FILE* fp = fopen(path.c_str(), "wb");
-    if (!fp)
-        throw std::runtime_error("Image.write: cannot create '" + path + "'");
-
-    struct jpeg_compress_struct cinfo;
-    struct jpeg_error_mgr jerr;
-    cinfo.err = jpeg_std_error(&jerr);
+    jpeg_compress_struct cinfo;
+    JpegError jerr;
+    cinfo.err = jpeg_std_error(&jerr.mgr);
+    jerr.mgr.error_exit = &jpegErrorExit;
+    jerr.mgr.output_message = &jpegOutputMessage;
+    if (setjmp(jerr.jump)) {
+        jpeg_destroy_compress(&cinfo);
+        free(mem);
+        throw std::runtime_error(std::string(what) + ": error encoding JPEG: " + jerr.message);
+    }
     jpeg_create_compress(&cinfo);
-    jpeg_stdio_dest(&cinfo, fp);
+    jpeg_mem_dest(&cinfo, &mem, &memSize);
 
     cinfo.image_width = width;
     cinfo.image_height = height;
@@ -326,13 +414,15 @@ static void writeJPEG(const std::string& path, ObjTensor* tensor, int quality)
     jpeg_start_compress(&cinfo, TRUE);
 
     for (int y = 0; y < height; ++y) {
-        const uint8_t* rowPtr = imgBuf.data() + y * width * channels;
+        const uint8_t* rowPtr = imgBuf.data() + static_cast<size_t>(y) * width * channels;
         jpeg_write_scanlines(&cinfo, const_cast<JSAMPARRAY>(&rowPtr), 1);
     }
 
     jpeg_finish_compress(&cinfo);
+    std::vector<uint8_t> out(mem, mem + memSize);
     jpeg_destroy_compress(&cinfo);
-    fclose(fp);
+    free(mem);
+    return out;
 }
 
 // ============================================================
@@ -356,6 +446,7 @@ void ModuleMedia::registerBuiltins(VM& vm)
 
     linkMethod("Image", "init",            [this](VM&, ArgsView a) { return image_init_builtin(a); });
     linkMethod("Image", "write",           [this](VM&, ArgsView a) { return image_write_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
+    linkMethod("Image", "encode",          [this](VM&, ArgsView a) { return image_encode_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
     linkMethod("Image", "width",           [this](VM&, ArgsView a) { return image_width_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
     linkMethod("Image", "height",          [this](VM&, ArgsView a) { return image_height_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
     linkMethod("Image", "channels",        [this](VM&, ArgsView a) { return image_channels_builtin(a); }, {}, 0, /*noMutateSelf=*/true);
@@ -399,8 +490,35 @@ static void setImageData(ArgsView args, Value tensorVal)
     asObjectInstance(args[0])->setProperty("data", tensorVal);
 }
 
+// The bytes of an encoded image given as a packed byte list (or a list of
+// bytes) or a 1-D uint8 tensor.
+static std::vector<uint8_t> encodedBytesArg(const Value& v, const char* what)
+{
+    if (isTensor(v)) {
+        ObjTensor* t = asTensor(v);
+        if (t->dtype() != TensorDType::UInt8 || t->rank() != 1)
+            throw std::invalid_argument(std::string(what) + ": bytes must be a list of bytes or a 1-D uint8 tensor");
+        const auto* data = static_cast<const uint8_t*>(t->rawData());
+        return std::vector<uint8_t>(data, data + t->numel());
+    }
+    if (!isList(v))
+        throw std::invalid_argument(std::string(what) + ": bytes must be a list of bytes or a 1-D uint8 tensor");
+    ObjList* list = asList(v);
+    if (const auto* packed = list->packedBytes())
+        return *packed;
+    std::vector<uint8_t> bytes;
+    bytes.reserve(list->length());
+    for (int32_t i = 0; i < list->length(); ++i) {
+        const Value b = list->getElement(i);
+        if (!b.isByte())
+            throw std::invalid_argument(std::string(what) + ": bytes must be a list of bytes or a 1-D uint8 tensor");
+        bytes.push_back(b.asByte());
+    }
+    return bytes;
+}
+
 // ============================================================
-// Image.init(path, tensor, channels)
+// Image.init(path, tensor, channels, bytes)
 // ============================================================
 
 Value ModuleMedia::image_init_builtin(ArgsView args)
@@ -423,8 +541,24 @@ Value ModuleMedia::image_init_builtin(ArgsView args)
     if (args.size() >= 4 && !args[3].isNil())
         requestedChannels = static_cast<int>(toType(ValueType::Int, args[3], false).asInt());
 
-    if (!path.empty() && hasTensor)
-        throw std::invalid_argument("Image.init: provide either path or tensor, not both");
+    // Get encoded bytes argument (args[4])
+    const bool hasBytes = args.size() >= 5 && !args[4].isNil();
+
+    if ((!path.empty()) + hasTensor + hasBytes > 1)
+        throw std::invalid_argument("Image.init: provide one of path, tensor or bytes");
+
+    if (hasBytes) {
+        const std::vector<uint8_t> bytes = encodedBytesArg(args[4], "Image.init");
+        Value tensorVal;
+        if (isPNG(bytes.data(), bytes.size()))
+            tensorVal = decodePNG(bytes.data(), bytes.size(), requestedChannels, "bytes");
+        else if (isJPEG(bytes.data(), bytes.size()))
+            tensorVal = decodeJPEG(bytes.data(), bytes.size(), requestedChannels, "bytes");
+        else
+            throw std::invalid_argument("Image.init: bytes are not a PNG or JPEG image");
+        inst->setProperty("data", tensorVal);
+        return Value::nilVal();
+    }
 
     if (hasTensor) {
         ObjTensor* t = asTensor(args[2]);
@@ -436,15 +570,17 @@ Value ModuleMedia::image_init_builtin(ArgsView args)
     }
 
     if (path.empty())
-        throw std::invalid_argument("Image.init: provide a file path or tensor");
+        throw std::invalid_argument("Image.init: provide a file path, tensor or bytes");
 
     std::string ext = toLower(std::filesystem::path(path).extension().string());
 
     Value tensorVal;
     if (ext == ".png") {
-        tensorVal = readPNG(path, requestedChannels);
+        const auto bytes = readFileBytes(path, "media.Image");
+        tensorVal = decodePNG(bytes.data(), bytes.size(), requestedChannels, "'" + path + "'");
     } else if (ext == ".jpg" || ext == ".jpeg") {
-        tensorVal = readJPEG(path, requestedChannels);
+        const auto bytes = readFileBytes(path, "media.Image");
+        tensorVal = decodeJPEG(bytes.data(), bytes.size(), requestedChannels, "'" + path + "'");
     } else {
         throw std::invalid_argument("Image.init: unsupported format '" + ext +
                                     "' (supported: .png, .jpg, .jpeg)");
@@ -474,15 +610,39 @@ Value ModuleMedia::image_write_builtin(ArgsView args)
     std::string ext = toLower(std::filesystem::path(path).extension().string());
 
     if (ext == ".png") {
-        writePNG(path, tensor);
+        writeFileBytes(path, encodePNG(tensor, "Image.write"));
     } else if (ext == ".jpg" || ext == ".jpeg") {
-        writeJPEG(path, tensor, quality);
+        writeFileBytes(path, encodeJPEG(tensor, quality, "Image.write"));
     } else {
         throw std::invalid_argument("Image.write: unsupported format '" + ext +
                                     "' (supported: .png, .jpg, .jpeg)");
     }
 
     return Value::boolVal(true);
+}
+
+// ============================================================
+// Image.encode(format, quality) -> list (packed bytes)
+// ============================================================
+
+Value ModuleMedia::image_encode_builtin(ArgsView args)
+{
+    ObjTensor* tensor = getImageTensor(args, "encode");
+    std::string format = "jpeg";
+    if (args.size() >= 2 && !args[1].isNil()) {
+        if (!isString(args[1]))
+            throw std::invalid_argument("Image.encode: format must be 'jpeg' or 'png'");
+        format = toLower(toUTF8StdString(asStringObj(args[1])->s));
+    }
+    int quality = 95;
+    if (args.size() >= 3 && !args[2].isNil())
+        quality = static_cast<int>(toType(ValueType::Int, args[2], false).asInt());
+
+    if (format == "jpeg" || format == "jpg")
+        return Value::listVal(encodeJPEG(tensor, quality, "Image.encode"));
+    if (format == "png")
+        return Value::listVal(encodePNG(tensor, "Image.encode"));
+    throw std::invalid_argument("Image.encode: format must be 'jpeg' or 'png', not '" + format + "'");
 }
 
 // ============================================================

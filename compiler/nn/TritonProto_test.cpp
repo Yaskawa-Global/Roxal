@@ -4,8 +4,9 @@
 // survives a serialize/parse round trip.  Then the inference messages as
 // ai.nn writes and reads them, with the tensor bytes outside protobuf
 // (TritonInfer): what protobuf parses from them, and that an input is sent
-// from its own memory, uncopied.
+// from its own memory, uncopied.  And the BYTES element codec (BytesElements).
 
+#include "BytesElements.h"
 #include "TritonInfer.h"
 #include "triton_inference.pb.h"
 
@@ -186,6 +187,42 @@ void checkDecode()
           && response.outputs_size() == 0 && contents.empty(), "an empty reply is every field's default");
 }
 
+// BYTES contents: each element a 4-byte little-endian length, then its bytes.
+void checkBytesCodec()
+{
+    using namespace roxal::nn;
+    std::string out;
+    appendBytesElement(out, "hi", 2);
+    appendBytesElement(out, "", 0);
+    appendBytesElement(out, "\xff\x00z", 3);
+    check(out == std::string("\x02\x00\x00\x00hi\x00\x00\x00\x00\x03\x00\x00\x00\xff\x00z", 17),
+          "BYTES elements encode as length-prefixed");
+    std::vector<std::pair<size_t, size_t>> elements;
+    check(splitBytesElements(out.data(), out.size(), elements) && elements.size() == 3
+          && elements[0] == std::make_pair<size_t, size_t>(4, 2) && elements[1].second == 0
+          && out.substr(elements[2].first, elements[2].second) == std::string("\xff\x00z", 3),
+          "BYTES elements split back");
+    elements.clear();
+    check(splitBytesElements(out.data(), 0, elements) && elements.empty(), "no contents are no elements");
+    elements.clear();
+    check(!splitBytesElements(out.data(), 3, elements), "a length cut short is malformed");
+    elements.clear();
+    check(!splitBytesElements(out.data(), 5, elements), "a length past the end is malformed");
+}
+
+void checkUtf8()
+{
+    using roxal::nn::isValidUtf8;
+    auto valid = [](const std::string& s) { return isValidUtf8(s.data(), s.size()); };
+    check(valid("") && valid("plain ascii") && valid("caf\xc3\xa9") && valid("\xe2\x82\xac")
+          && valid("\xf0\x9f\x98\x80") && valid(std::string("nul\0inside", 10)),
+          "well-formed UTF-8 is valid");
+    check(!valid("\xc3") && !valid("\xe2\x82") && !valid("\x80") && !valid("\xff"),
+          "truncated sequences and stray bytes are not");
+    check(!valid("\xc0\xaf") && !valid("\xe0\x80\xaf"), "overlong forms are not");
+    check(!valid("\xed\xa0\x80") && !valid("\xf4\x90\x80\x80"), "surrogates and past U+10FFFF are not");
+}
+
 } // namespace
 
 int main()
@@ -238,6 +275,36 @@ int main()
     expectField(ModelReadyRequest::descriptor(), "version", 2);
     expectField(ModelReadyResponse::descriptor(), "ready", 1);
     expectField(InferParameter::descriptor(), "int64_param", 2);
+    expectField(InferParameter::descriptor(), "bool_param", 1);
+    expectField(InferParameter::descriptor(), "string_param", 3);
+    expectField(ModelInferResponse::descriptor(), "parameters", 4);
+
+    // Streaming and model configuration (grpc_service.proto, model_config.proto).
+    expectField(ModelStreamInferResponse::descriptor(), "error_message", 1);
+    expectField(ModelStreamInferResponse::descriptor(), "infer_response", 2);
+    expectField(ModelConfigRequest::descriptor(), "name", 1);
+    expectField(ModelConfigRequest::descriptor(), "version", 2);
+    expectField(ModelConfigResponse::descriptor(), "config", 1);
+    const auto* config = ModelConfig::descriptor();
+    expectField(config, "name", 1);
+    expectField(config, "platform", 2);
+    expectField(config, "max_batch_size", 4);
+    expectField(config, "input", 5);
+    expectField(config, "output", 6);
+    expectField(config, "backend", 17);
+    expectField(config, "model_transaction_policy", 19);
+    const auto* modelInput = ModelInput::descriptor();
+    expectField(modelInput, "name", 1);
+    expectField(modelInput, "data_type", 2);
+    expectField(modelInput, "dims", 4);
+    expectField(modelInput, "optional", 8);
+    const auto* modelOutput = ModelOutput::descriptor();
+    expectField(modelOutput, "name", 1);
+    expectField(modelOutput, "data_type", 2);
+    expectField(modelOutput, "dims", 3);
+    expectField(ModelTransactionPolicy::descriptor(), "decoupled", 1);
+    check(TYPE_BOOL == 1 && TYPE_UINT8 == 2 && TYPE_UINT32 == 4 && TYPE_INT32 == 8 && TYPE_FP32 == 11
+          && TYPE_STRING == 13 && TYPE_BF16 == 14, "DataType values are Triton's");
 
     // A request as the backend builds one: raw bytes per input, a deadline
     // for the server, the outputs wanted by name.
@@ -266,6 +333,8 @@ int main()
 
     checkEncode();
     checkDecode();
+    checkBytesCodec();
+    checkUtf8();
 
     if (failures == 0)
         std::cout << "triton proto: ok\n";

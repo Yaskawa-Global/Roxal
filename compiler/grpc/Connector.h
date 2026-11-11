@@ -12,6 +12,7 @@
 #include <mutex>
 #include <functional>
 
+#include "core/CallbackRegistry.h"
 #include "ArgsView.h"
 #include "GrpcStatus.h"
 #include "GCRoots.h"
@@ -67,6 +68,9 @@ struct ActiveStreamState {
 
     // Output signal (for server streaming)
     Value outputSignal;  // allowed-raw: traced via traceActiveStreams
+
+    // The output signal being stopped cancels the call (see callStreaming)
+    roxal::Subscription stopSubscription;
 
     // Cleanup callbacks registered with signals
     std::vector<std::function<void()>> cleanupCallbacks;

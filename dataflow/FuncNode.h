@@ -8,6 +8,7 @@
 #include <map>
 #include <optional>
 #include <functional>
+#include <atomic>
 #include <memory>
 
 namespace roxal::type {
@@ -56,6 +57,29 @@ struct FuncYieldState {
     // The body's module, held from the start of a body until it is over --
     // running or suspended, and no longer (see conditionallyExecute).
     roxal::Value bodyModule;
+
+    // A body whose result -- directly, or once its futures resolved -- is a
+    // SIGNAL (a streaming call: ai.nn predict on a decoupled model, a gRPC
+    // server stream): the node forwards that signal's values onto its ports
+    // rather than publishing the signal itself, until it stops running.  One
+    // per forwarded signal: a port's own, or one whose list values are split
+    // across every port (port -1).  The evaluation stays active meanwhile,
+    // like a pending future.  What a change of the node's inputs does then
+    // depends on what is forwarded (FuncNode::newInputEndsForwarding): a
+    // plain signal is dropped and the node evaluates again; a call's stream
+    // (Signal::markCallStream) is let finish, the evaluation held (rerunTime)
+    // until it ends -- unless the node's on_input policy is Restart, which
+    // cancels the call.
+    struct Forward {
+        roxal::Value inner;                         // the signal forwarded
+        int port = 0;
+        roxal::Subscription changed;                // wake the engine on a write
+        roxal::Subscription stopped;                // ... and on the stop
+        std::shared_ptr<std::atomic<uint64_t>> writes;   // counted by `changed`
+        uint64_t seen = 0;                          // writes already published
+        bool ended = false;
+    };
+    std::vector<Forward> forwards;
 };
 
 class FuncNode
@@ -104,6 +128,22 @@ public:
     Names inputNames() const { return m_inputNames; }
     Names outputNames() const { return m_outputNames.empty() ? Names{"result"} : m_outputNames; }
     bool isPure() const { return true; }
+
+    // What a change of the node's inputs does while the node is forwarding a
+    // call's stream (a streaming call its body returned -- see
+    // FuncYieldState::Forward).  A script sets it through the `on_input`
+    // property of any of the node's output signals.
+    enum class OnInput : uint8_t {
+        Finish,     // it waits: the call runs to its end, and the node then
+                    // evaluates on its latest inputs (the default)
+        Restart     // it takes over: the call is cancelled, and the node
+                    // evaluates on the new inputs at once
+    };
+
+    // Read by the evaluating thread when an input changes, so a policy set
+    // any time before that applies -- the node may already be forwarding.
+    OnInput onInput() const { return m_onInput.load(std::memory_order_acquire); }
+    void setOnInput(OnInput policy) { m_onInput.store(policy, std::memory_order_release); }
 
     // Core execution method
     virtual Values operator()(const Values& inputValues);
@@ -210,16 +250,29 @@ protected:
     FuncExecResult conditionallyExecute(TimePoint time, TimePoint deadline = TimePoint::max());
 
     // Resume a previously yielded execution
-    // Returns Yielded if still not complete, Completed if finished
-    FuncExecResult resumeExecution(TimePoint deadline);
+    // Returns Yielded if still not complete, Completed if finished.  `at`:
+    // the evaluation time asking (a tick's), at which a forwarded signal's
+    // newer value is published; none: the current time.
+    FuncExecResult resumeExecution(TimePoint deadline, std::optional<TimePoint> at = std::nullopt);
 
     // Check if this func has yielded work pending
     bool hasYieldedWork() const { return m_funcYieldState.active; }
 
-    // Yielded on futures from an async native body (ai.nn predict): the
-    // engine polls the node (resumeExecution) rather than a VM thread.
+    // Yielded on futures from an async native body (ai.nn predict), or
+    // forwarding a signal its body returned: the engine polls the node
+    // (resumeExecution) rather than a VM thread.
     bool hasPendingFutureYield() const
-    { return m_funcYieldState.active && !m_funcYieldState.pendingOutputFutures.empty(); }
+    { return m_funcYieldState.active && (!m_funcYieldState.pendingOutputFutures.empty()
+                                         || !m_funcYieldState.forwards.empty()); }
+
+    // When the node last published its outputs (a forwarded value can come
+    // well after the evaluation that started it).
+    std::optional<TimePoint> lastDeliveryTime() const { return m_lastDelivery; }
+
+    // Stop forwarding (the node is going): the subscriptions go, and a call
+    // stream the node owns (see Signal::markCallStream) is stopped, which
+    // cancels its call.  Not under the engine's mutex: stopping notifies.
+    void detachForwards(bool stopOwned);
 
     // What such a yield waits on: its body's outputs, some of them futures.
     const Values& pendingFutureOutputs() const { return m_funcYieldState.pendingOutputFutures; }
@@ -285,6 +338,38 @@ private:
     // pending (a future-based yield, see hasPendingFutureYield).  Whether the
     // body ran straight through or was resumed after a deadline yield.
     FuncExecResult finishEvaluation(TimePoint time, const Values& inputValues, const Values& outputValues);
+
+    // Signals among a finished evaluation's outputs: start forwarding them
+    // (see FuncYieldState::Forward), publishing what they hold now and the
+    // other ports' values.  False if there are none.
+    bool startForwarding(TimePoint time, const Values& inputValues, const Values& outputValues);
+
+    // A forwarding evaluation, polled: publish what is new, and finish once
+    // every forwarded signal has stopped (running a held rerun then).
+    FuncExecResult pollForwards(TimePoint deadline, std::optional<TimePoint> at);
+
+    // Publish forwarded signals' newer values (all of them: `initial`) --
+    // with the given non-signal port values the first time.  True if
+    // anything was published.
+    bool publishForwards(std::optional<TimePoint> at, const Values* initialValues = nullptr);
+
+    // Whether changed inputs end the forwarding in progress, the node
+    // evaluating on them at once: always for plain signals (there is nothing
+    // to wait for: the node is a function of its inputs), and for a call's
+    // stream still running only under OnInput::Restart.
+    bool newInputEndsForwarding() const;
+
+    // End the forwarding in progress, unfinished: the subscriptions go and a
+    // call stream the node owns is stopped (its call cancelled).
+    void endForwarding();
+
+    // The node's input values as of `time` (each port's latency and default
+    // applied).  Throws if an input has no value to give.
+    Values gatherInputs(TimePoint time) const;
+
+    std::optional<TimePoint> m_lastDelivery;
+
+    std::atomic<OnInput> m_onInput { OnInput::Finish };
 };
 
 }

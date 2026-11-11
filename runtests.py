@@ -171,7 +171,7 @@ tests = [
     'signal_and', 'signal_or', 'signal_not', 'signal_band', 'signal_bor', 'signal_bxor', 'signal_bnot',
     'signal_func_nocall', 'signal_func_exec', 'signal_index', 'signal_when_stmt', 'signal_when_threads', 'when_expression', 'signal_when_in_method', 'signal_when_becomes', 'signal_on_changed_test',
     'module_var_when_changed', 'module_var_when_changed_string', 'module_var_when_becomes', 'object_member_when_changed', 'when_obj_becomes', 'when_accessor_var_changes',
-    'test_signal_value_property', 'test_signal_name_property', 'signal_named_param', 'construct_by_signal', 'signal_run_stop', 'signal_source', 'signal_default_err', 'signal_network1',
+    'test_signal_value_property', 'test_signal_name_property', 'signal_named_param', 'construct_by_signal', 'signal_run_stop', 'signal_running_stop', 'signal_on_input_property', 'df_lift_returns_signal', 'df_free_signal_not_network_change', 'sys_base64', 'signal_source', 'signal_default_err', 'signal_network1',
     'signal_islands', 'signal_domain', 'signal_tensor_isolation', 'signal_tensor_const',
     'multi_return', 'multi_return_arity_err', 'multi_return_nonlist_err', 'multi_return_literal_err', 'test_multi_return_syntax',
     'signal_multi_output', 'signal_wiring_func', 'signal_wiring_mixed_err', 'signal_branch_err', 'signal_sampling',
@@ -346,7 +346,7 @@ tests = [
     'builtin_object_methods', 'math_counter_signal', 'print_flush', 'print_channels',
     'print_channel_invalid', 'sys_paths',
     'sys_platform', 'sys_defined',
-    'grpc_message_types', 'grpc_service_actor', 'grpc_int64_values', 'grpc_runtime_error', 'grpc_streaming', 'grpc_args',
+    'grpc_message_types', 'grpc_service_actor', 'grpc_int64_values', 'grpc_runtime_error', 'grpc_streaming', 'grpc_stream_lift', 'grpc_stream_on_input', 'grpc_args',
     'rt_execution',
     'operator_conv_string', 'operator_conv_string_rettype', 'return_type_conv', 'return_type_conv_upcast',
     'operator_conv_string_inherit',
@@ -386,8 +386,8 @@ tests = [
     'actor_member_modvar_collision'
 ]
 
-grpc_tests = ['grpc_message_types', 'grpc_service_actor', 'grpc_int64_values', 'grpc_runtime_error', 'grpc_streaming', 'grpc_args']
-grpc_server_tests = ['grpc_int64_values', 'grpc_streaming', 'grpc_args']
+grpc_tests = ['grpc_message_types', 'grpc_service_actor', 'grpc_int64_values', 'grpc_runtime_error', 'grpc_streaming', 'grpc_stream_lift', 'grpc_stream_on_input', 'grpc_args']
+grpc_server_tests = ['grpc_int64_values', 'grpc_streaming', 'grpc_stream_lift', 'grpc_stream_on_input', 'grpc_args']
 fileio_tests = [
     'fileio_basic', 'fileio_binary', 'fileio_read_binary', 'fileio_write_binary',
     'fileio_actor_write', 'fileio_delete', 'fileio_extra', 'fileio_packed',
@@ -456,12 +456,12 @@ ffi_tests = [
 ]
 nn_tests = ['nn_mnist', 'nn_signal', 'nn_chain', 'nn_signal_chain', 'nn_dynamic', 'nn_multi_io', 'nn_multi_output_lift', 'nn_event_async_lift', 'nn_async', 'nn_tokenizer', 'nn_fail_raises', 'nn_fail_lift', 'nn_fail_lift_clocked', 'nn_close_queued', 'nn_release_inflight', 'nn_input_checks', 'nn_outputs_select', 'nn_combinators', 'nn_await_latency']
 nn_lfs_tests = ['nn_dfine', 'nn_exit_inflight']  # require LFS model files (only run with --all)
-triton_tests = ['triton_basic', 'triton_hold', 'triton_exit_inflight', 'triton_deploy']  # against the Triton mock
-triton_real_tests = ['triton_real_models']  # against a real server (only with --triton-url)
+triton_tests = ['triton_basic', 'triton_hold', 'triton_exit_inflight', 'triton_deploy', 'triton_bytes', 'triton_optional', 'triton_stream', 'triton_stream_lift', 'triton_stream_restart', 'triton_stream_restart_clocked', 'triton_future_exception_value']  # against the Triton mock
+triton_real_tests = ['triton_real_models', 'triton_real_text']  # against a real server (only with --triton-url)
 # against a real server in explicit mode, sharing a repository (with --triton-url and --triton-repository)
-triton_real_deploy_tests = ['triton_real_deploy']
+triton_real_deploy_tests = ['triton_real_deploy', 'triton_real_deploy_python']
 media_tests = ['media_read_write', 'media_manipulate', 'media_convert',
-               'media_pixel_ops',
+               'media_pixel_ops', 'media_encode',
                # audio: run with ROXAL_AUDIO_BACKEND=null (no hardware needed)
                'media_audio_basic', 'media_audio_play', 'media_audio_record',
                'media_audio_err_none', 'media_audio_err_rate',
@@ -601,6 +601,7 @@ doom_tests = ['doom_wad', 'doom_gfx', 'doom_render', 'doom_game', 'doom_sound', 
 # implementation doesn't yet allow these tests to pass (do not add to this list without human consent)
 # name-resolution-issues.md: these encode the CORRECT behaviour for known bugs
 failing_tests = [
+    'triton_future_exception_value',   # property of a future resolved to an exception exits instead of raising
 ]
 assert(set(failing_tests).issubset(set(tests) | set(long_running_tests)))
 

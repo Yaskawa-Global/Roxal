@@ -1,0 +1,11 @@
+true
+["HÉLLO"]
+["A", "BC"]
+["Abc"]
+["X!", "Y!"]
+["go 0", "go 1", "go 2", "go 3"]
+false
+false
+true
+lift 2
+done

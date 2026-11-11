@@ -1,0 +1,19 @@
+import roxal_examples.*
+
+// A lifted function returning a server-streaming call (a future that
+// resolves to a signal): the node's port carries each message, and the
+// node's next evaluation waits until the stream ends.
+var svc = EverythingService("__GRPC_TEST_ADDR__")
+
+func messages(n):
+    return svc.ServerStream(count=n)
+
+var count = signal(0, 4)
+var latest = messages(count)
+var values = []
+when latest changes as e:
+    values.append(e.value.value)
+wait(ms=1500)
+// Server sends value = index*10; the first message initializes the port
+print(latest.value.value)
+print(len(values) >= 2)

@@ -13,7 +13,7 @@ Features:
   - Safety - transitive const (via MVCC) & GC-based memory management
   - First class functions (closures)
   - Builtin library support for DDS (ROS interop) & gRPC (no codegen required)
-  - Builtin library support for AI model inference (via ONNX Runtime)
+  - Builtin library support for AI model inference (via ONNX Runtime, or NVIDIA Triton servers -- see examples/triton)
   - Distribuited Compute (instantiate actors remotely)
   - VM integratable into Real-time control loops via runFor(deadline)
   - Bundled OpenCV 5 & Qt 6 bindings

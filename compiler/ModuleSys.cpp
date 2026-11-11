@@ -1488,6 +1488,22 @@ void ModuleSys::registerBuiltins(VM& vm)
                 Value::stringVal(toUnicodeString("little")),
                 Value::trueVal()},
                0x1);
+        addSys("base64_encode",
+               [this](VM& vm, ArgsView a){ return base64_encode_builtin(vm,a); },
+               makeFuncType({
+                    {"data", std::nullopt},
+                    {"url_safe", type::BuiltinType::Bool}
+               }, {Value::nilVal(), Value::falseVal()}),
+               {Value::nilVal(), Value::falseVal()},
+               0x1);
+        addSys("base64_decode",
+               [this](VM& vm, ArgsView a){ return base64_decode_builtin(vm,a); },
+               makeFuncType({
+                    {"text", type::BuiltinType::String},
+                    {"url_safe", type::BuiltinType::Bool}
+               }, {Value::nilVal(), Value::falseVal()}),
+               {Value::nilVal(), Value::falseVal()},
+               0x1);
         addSys("bits_to_bytes",
                [this](VM& vm, ArgsView a){ return bits_to_bytes_builtin(vm,a); },
                makeFuncType({
@@ -5159,6 +5175,116 @@ uint64_t unpackBytes(ObjList* lst, int offset, int width, bool bigEndian, const 
 }
 
 } // anonymous namespace
+
+// ---- base64 (RFC 4648), standard or URL-safe alphabet, padded ----
+
+static const char* base64Alphabet(bool urlSafe)
+{
+    return urlSafe ? "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+                   : "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+}
+
+Value ModuleSys::base64_encode_builtin(VM& vm, ArgsView args)
+{
+    (void)vm;
+    if (args.size() < 1)
+        throw std::invalid_argument("base64_encode expects data (a list of bytes, or a string)");
+    const bool urlSafe = args.size() >= 2 && !args[1].isNil() && args[1].asBool();
+
+    // The bytes: a string's UTF-8, a list of bytes, or a uint8 tensor's.
+    std::vector<uint8_t> bytes;
+    const Value& v = args[0];
+    if (isString(v)) {
+        const std::string utf8 = toUTF8StdString(asStringObj(v)->s);
+        bytes.assign(utf8.begin(), utf8.end());
+    } else if (isList(v)) {
+        ObjList* list = asList(v);
+        if (const auto* packed = list->packedBytes()) {
+            bytes = *packed;
+        } else {
+            bytes.reserve(list->length());
+            for (int32_t i = 0; i < list->length(); ++i) {
+                const Value b = list->getElement(i);
+                if (!b.isByte())
+                    throw std::invalid_argument("base64_encode: element " + std::to_string(i) +
+                                                " of the list is not a byte");
+                bytes.push_back(b.asByte());
+            }
+        }
+    } else if (isTensor(v) && asTensor(v)->dtype() == TensorDType::UInt8) {
+        const auto* data = static_cast<const uint8_t*>(asTensor(v)->rawData());
+        bytes.assign(data, data + asTensor(v)->numel());
+    } else {
+        throw std::invalid_argument("base64_encode expects a list of bytes, a string, or a uint8 tensor");
+    }
+
+    const char* alphabet = base64Alphabet(urlSafe);
+    std::string out;
+    out.reserve((bytes.size() + 2) / 3 * 4);
+    size_t i = 0;
+    for (; i + 3 <= bytes.size(); i += 3) {
+        const uint32_t n = uint32_t(bytes[i]) << 16 | uint32_t(bytes[i + 1]) << 8 | bytes[i + 2];
+        out += alphabet[n >> 18];
+        out += alphabet[(n >> 12) & 63];
+        out += alphabet[(n >> 6) & 63];
+        out += alphabet[n & 63];
+    }
+    if (i < bytes.size()) {
+        uint32_t n = uint32_t(bytes[i]) << 16;
+        if (i + 1 < bytes.size())
+            n |= uint32_t(bytes[i + 1]) << 8;
+        out += alphabet[n >> 18];
+        out += alphabet[(n >> 12) & 63];
+        out += i + 1 < bytes.size() ? alphabet[(n >> 6) & 63] : '=';
+        out += '=';
+    }
+    return Value::stringVal(toUnicodeString(out));
+}
+
+Value ModuleSys::base64_decode_builtin(VM& vm, ArgsView args)
+{
+    (void)vm;
+    if (args.size() < 1 || !isString(args[0]))
+        throw std::invalid_argument("base64_decode expects a string");
+    const bool urlSafe = args.size() >= 2 && !args[1].isNil() && args[1].asBool();
+    const std::string text = toUTF8StdString(asStringObj(args[0])->s);
+
+    int8_t value[256];
+    std::fill(std::begin(value), std::end(value), int8_t(-1));
+    const char* alphabet = base64Alphabet(urlSafe);
+    for (int k = 0; k < 64; ++k)
+        value[static_cast<uint8_t>(alphabet[k])] = static_cast<int8_t>(k);
+
+    // Whitespace (line breaks in MIME-style text) is skipped; padding is
+    // optional, but nothing may follow it.
+    std::vector<uint8_t> out;
+    out.reserve(text.size() / 4 * 3);
+    uint32_t acc = 0;
+    int bits = 0;
+    size_t padding = 0;
+    for (size_t i = 0; i < text.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(text[i]);
+        if (c == ' ' || c == '\n' || c == '\r' || c == '\t')
+            continue;
+        if (c == '=') {
+            ++padding;
+            continue;
+        }
+        if (padding > 0 || value[c] < 0)
+            throw std::invalid_argument("base64_decode: '" + std::string(1, static_cast<char>(c)) +
+                                        "' at position " + std::to_string(i) + " is not " +
+                                        (urlSafe ? "URL-safe " : "") + "base64");
+        acc = (acc << 6) | static_cast<uint32_t>(value[c]);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<uint8_t>(acc >> bits));
+        }
+    }
+    if (bits >= 6 || padding > 2 || (acc & ((1u << bits) - 1)) != 0)
+        throw std::invalid_argument("base64_decode: the text is not complete base64");
+    return Value::listVal(std::move(out));
+}
 
 Value ModuleSys::to_bytes_builtin(VM& vm, ArgsView args)
 {

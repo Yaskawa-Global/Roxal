@@ -4,12 +4,16 @@ type Image object:
   var data   // tensor [H, W, C], dtype uint8 or float32
 
   @builtin
-  proc init(path:string='', source=nil, channels:int=0):
-    """Create Image from file path or source tensor. channels: 0=auto, 1=gray, 3=RGB, 4=RGBA."""
+  proc init(path:string='', source=nil, channels:int=0, bytes=nil):
+    """Create Image from a file path, a source tensor, or bytes: an encoded PNG or JPEG image (a list of bytes, e.g. from encode(), or a 1-D uint8 tensor), its format told by its first bytes. channels: 0=auto, 1=gray, 3=RGB, 4=RGBA."""
 
   @builtin
   proc write(path:string, quality:int=95):
     """Write to PNG or JPEG (detected from extension). quality applies to JPEG (1-100)."""
+
+  @builtin
+  func encode(format:string='jpeg', quality:int=95) -> list:
+    """The image encoded in memory as 'jpeg' (quality 1-100) or 'png': a list of bytes. Needs uint8 pixels (to_uint8() first); JPEG takes 1 or 3 channels."""
 
   @builtin
   func width() -> int:

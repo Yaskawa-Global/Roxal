@@ -1,0 +1,65 @@
+# on_input = 'restart' on a node forwarding a streaming call: a new input
+# cancels the call in flight and the node evaluates on it at once, rather
+# than waiting for the stream to end (the default: see triton_stream_lift).
+# countdown: text_input BYTES [1]; optional n, gap_ms INT32 [1]
+#            -> text_output BYTES [1] ("<text> <i>"), gap_ms before each
+import ai.nn
+
+var control = ai.nn.Model("triton://__TRITON_ADDR__/__control")
+func cancelledStreams() -> int:
+    var mode = tensor(1, dtype='int32')
+    mode[0] = 7
+    return int(control.predict(mode)[0])
+
+func int1(v :int) -> tensor:
+    var t = tensor(1, dtype='int32')
+    t[0] = v
+    return t
+
+var m = ai.nn.Model("triton://__TRITON_ADDR__/countdown", outputs=['text_output'])
+
+func ask(text):
+    return m.predict({'text_input': text, 'n': int1(4), 'gap_ms': int1(300)})
+
+cancelledStreams()      # (counted from here)
+
+# Mid-stream: the new prompt takes over.
+var prompt = signal(0, "a")
+var answer = ask(prompt)
+print(answer.on_input)
+answer.on_input = 'restart'
+var seen = []
+when answer changes as e:
+    seen.append(e.value)
+wait(ms=450)
+print(answer.value)
+prompt.set("b")         # "a 1" was 150 ms away: a's call is cancelled
+wait(ms=1500)
+print(seen)
+print(cancelledStreams())
+
+# Before the first response there is no stream to cancel yet: it is stopped
+# as it arrives, and nothing of it shows.  (The first value a port gets
+# initializes it: "d 0" is not a change.)
+var prompt2 = signal(0, "c")
+var answer2 = ask(prompt2)
+answer2.on_input = 'restart'
+var seen2 = []
+when answer2 changes as e:
+    seen2.append(e.value)
+wait(ms=100)
+prompt2.set("d")        # "c 0" is still 200 ms away
+wait(ms=1900)
+print(answer2.value)
+print(seen2)
+print(cancelledStreams())
+
+# The model's own predict, lifted: set on the node's output just the same.
+var prompt3 = signal(0, "e")
+var direct = m.predict(prompt3)
+direct.on_input = 'restart'
+wait(ms=100)
+prompt3.set("f")        # default n and gap: 3 responses, 10 ms apart
+wait(ms=400)
+print(direct.value)
+print("done")

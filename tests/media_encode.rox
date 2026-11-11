@@ -1,0 +1,53 @@
+// Images encoded to and decoded from memory: encode() gives a list of bytes,
+// Image(bytes=...) reads PNG or JPEG back, by its first bytes.
+import media
+import math
+
+var t = tensor(shape=[4, 6, 3], dtype='uint8')
+for y in range(0..<4):
+    for x in range(0..<6):
+        t[y, x, 0] = 40 * y
+        t[y, x, 1] = 40 * x
+        t[y, x, 2] = 100
+var img = media.Image(source=t)
+
+var png = img.encode('png')
+print(typeof(png))
+print(png[0..3])
+var back = media.Image(bytes=png)
+print(back.data.shape())
+print(back.data.to_bytes() == t.to_bytes())
+
+var jpg = img.encode('jpeg', quality=90)
+print(jpg[0..2])
+var j = media.Image(bytes=jpg)
+print(j.data.shape())
+print(math.abs(real(j.data[2, 3, 2]) - 100.0) < 12)
+
+// a uint8 tensor of the bytes works too, and channels= converts
+var bytesTensor = tensor(shape=[len(png)], dtype='uint8', bytes=png)
+print(media.Image(bytes=bytesTensor, channels=1).data.shape())
+
+func rejects(expected :string, bytes) -> bool:
+    try:
+        var bad = media.Image(bytes=bytes)
+        return bad is nil
+    except e:
+        if expected in string(e):
+            return true
+        print(e)
+        return false
+print(rejects("not a PNG or JPEG", [byte(1), byte(2), byte(3)]))
+print(rejects("error decoding JPEG", jpg[0..20]))
+print(rejects("error decoding PNG", png[0..30]))
+try:
+    var g = img.encode('gif')
+    print(g)
+except e:
+    print("format must be 'jpeg' or 'png'" in string(e))
+try:
+    var both = media.Image(path="x.png", bytes=png)
+    print(both)
+except e:
+    print("one of path, tensor or bytes" in string(e))
+print("done")

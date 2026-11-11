@@ -1,0 +1,13 @@
+{
+  "model": "Qwen/Qwen3-VL-2B-Instruct",
+  "revision": "89644892e4d85e24eaac8bacfd4f463576704203",
+  "dtype": "half",
+  "gpu_memory_utilization": 0.6,
+  "max_model_len": 4096,
+  "max_num_seqs": 2,
+  "enforce_eager": true,
+  "limit_mm_per_prompt": {"image": 1, "video": 0},
+  "mm_processor_kwargs": {"max_pixels": 1003520},
+  "attention_backend": "TRITON_ATTN",
+  "mm_encoder_attn_backend": "TORCH_SDPA"
+}

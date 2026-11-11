@@ -1,0 +1,3 @@
+# Written by extract-libero-frames.sh (weights live outside the repository,
+# in the directory download-models.sh fills).
+data/

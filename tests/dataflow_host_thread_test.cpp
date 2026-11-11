@@ -264,6 +264,32 @@ const char* kYieldingNode =
     "print(k)\n"
     "print(n.value > 0)\n";
 
+// A clocked node whose body suspends across cycles, while the program's
+// slices create and drop signals nothing is wired to (a streaming call makes
+// one per call).  Those are not changes of the network: the node's tick must
+// resume and finish.  Taken for changes, every suspended tick is stale --
+// abandoned and started over, ticking the clock again -- so the clock runs
+// away from a node that never completes.  (On best_effort_late's schedule:
+// every tick is late, and resumed all the same, so that lateness abandons
+// nothing here.)
+const char* kFreeSignalsMidTick =
+    "func slow(x :int) -> int:\n"
+    "  var s = 0\n"
+    "  for i in range(..<4000):\n"
+    "    s = s + i\n"
+    "  return x\n"
+    "var c = clock(1000)\n"
+    "var out = slow(c)\n"
+    "c.run()\n"
+    "var made :int = 0\n"
+    "while made < 100000:\n"
+    "  var free = signal(0, made)\n"
+    "  made = made + 1\n"
+    "c.stop()\n"
+    "print(made)\n"
+    "print(out.value > 0)\n"
+    "print(c.value - out.value <= 1)\n";
+
 // A sliced body that ends by returning a future (an actor call, as predict
 // returns one): resumed on a later cycle, it must leave the future pending,
 // as a body run straight through does -- never publish the future itself.
@@ -292,6 +318,28 @@ const char* kYieldingNodeFuture =
     "var out = slow(c)\n"
     "c.run()\n"
     "var k :int = 0\n"
+    "while k < 1000000:\n"
+    "  k = k + 1\n"
+    "print(k)\n"
+    "print(out.value)\n";
+
+// A clocked node whose body returns a running signal: the host's ticks
+// forward the signal's values onto the node's output -- not the signal
+// itself -- while the program's slices write it.  (The clock is the node's
+// input, so each tick runs the body again and follows what it returns: the
+// same plain signal.)
+const char* kForwardedStream =
+    "var feed = signal(0, 1)\n"
+    "feed.run()\n"
+    "func relay(x :int):\n"
+    "  return feed\n"
+    "var c = clock(10)\n"
+    "var out = relay(c)\n"
+    "c.run()\n"
+    "var k :int = 0\n"
+    "while k < 300000:\n"
+    "  k = k + 1\n"
+    "feed.set(5)\n"
     "while k < 1000000:\n"
     "  k = k + 1\n"
     "print(k)\n"
@@ -554,8 +602,11 @@ const Scenario kScenarios[] = {
     { "busy_loop",      kBusyLoop,      "200000\n",       false, false, false },
     { "wait_loop",      kWaitLoop,      "20\n",           false, false, false },
     { "yielding_node",  kYieldingNode,  "300000\ntrue\n", false, true,  false },
+    { "free_signals_mid_tick", kFreeSignalsMidTick, "100000\ntrue\ntrue\n", false, true, false,
+      RunState::Completed, nullptr, 0, true },
     { "yielding_node_future", kYieldingNodeFuture, "1000000\n10\n", false, true, false,
       RunState::Completed, nullptr, 0, true },
+    { "forwarded_stream", kForwardedStream, "1000000\n5\n", false, false, false },
     { "overrun_orphan", kOverrunOrphan, "300000\n",       false, true,  true  },
     { "tick_after_run", kTickAfterRun,  "started\n",      true,  false, false },
     { "node_error",     kNodeError,     "",               true,  false, false,

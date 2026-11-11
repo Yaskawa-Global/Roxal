@@ -8812,7 +8812,12 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                                 return errorReturn;
                             }
                             Value value { peek(0) };
-                            (this->*(propInfo.setter))(inst, value);
+                            if (!setBuiltinProperty(propInfo, inst, value)) {
+                                // rejected: raised as a catchable exception
+                                if (hasRuntimeError() || thread->deferredFatal.active) return errorReturn;
+                                if (!thread->frames.empty()) frame = thread->frames.end()-1;
+                                goto postInstructionDispatch;
+                            }
                             popN(2);
                             push(value);
                             break;
@@ -9014,7 +9019,12 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                                 return errorReturn;
                             }
                             Value value { peek(0) };
-                            (this->*(propInfo.setter))(inst, value);
+                            if (!setBuiltinProperty(propInfo, inst, value)) {
+                                // rejected: raised as a catchable exception
+                                if (hasRuntimeError() || thread->deferredFatal.active) return errorReturn;
+                                if (!thread->frames.empty()) frame = thread->frames.end()-1;
+                                goto postInstructionDispatch;
+                            }
                             popN(2);
                             push(value);
                             break;
@@ -14061,8 +14071,11 @@ void VM::defineBuiltinProperties()
 
     // Signal properties
     defineBuiltinProperty(ValueType::Signal, "value", &VM::signal_value_getter);
+    defineBuiltinProperty(ValueType::Signal, "running", &VM::signal_running_getter);
     defineBuiltinProperty(ValueType::Signal, "name", &VM::signal_name_getter,
                          &VM::signal_name_setter);
+    defineBuiltinProperty(ValueType::Signal, "on_input", &VM::signal_on_input_getter,
+                         &VM::signal_on_input_setter);
     defineBuiltinProperty(ValueType::Object, "stackTrace", &VM::exception_stacktrace_getter);
     defineBuiltinProperty(ValueType::Object, "stackTraceString", &VM::exception_stacktrace_string_getter);
     defineBuiltinProperty(ValueType::Object, "detail", &VM::exception_detail_getter);
@@ -14104,6 +14117,80 @@ Value VM::signal_value_getter(Value& receiver)
 
     ObjSignal* objSignal = asSignal(receiver);
     return objSignal->signal->lastValue();
+}
+
+Value VM::signal_running_getter(Value& receiver)
+{
+#ifdef DEBUG_BUILD
+    if (!isSignal(receiver))
+        throw std::invalid_argument("signal.running property called on non-signal value");
+#endif
+
+    return Value::boolVal(asSignal(receiver)->signal->isRunning());
+}
+
+// Run a builtin property's setter.  One that rejects the assignment throws:
+// that becomes a catchable Roxal exception, and false is returned.  Raised
+// AFTER the catch block, which only records the message -- see
+// finishDeferredNativeCall for why (a wasm backend miscompile of handlers
+// that run the unwinder).
+bool VM::setBuiltinProperty(const BuiltinPropertyInfo& info, Value& receiver, const Value& value)
+{
+    bool rejected = false;
+    std::string thrown;
+    try {
+        (this->*(info.setter))(receiver, value);
+    } catch (std::exception& e) {
+        rejected = true;
+        thrown = e.what();
+    }
+    if (rejected)
+        raiseException(Value::exceptionVal(Value::stringVal(toUnicodeString(thrown))));
+    return !rejected;
+}
+
+// signal.on_input: what a change of inputs does to the function node this
+// signal is an output of, while the node is forwarding a streaming call --
+// 'finish' (the call runs to its end first; the default) or 'restart' (the
+// call is cancelled).  See df::FuncNode::OnInput.  nil for a signal that is
+// no node's output, which has no such policy; assigning one is an error.
+Value VM::signal_on_input_getter(Value& receiver)
+{
+#ifdef DEBUG_BUILD
+    if (!isSignal(receiver))
+        throw std::invalid_argument("signal.on_input property called on non-signal value");
+#endif
+
+    auto producers = df::DataflowEngine::instance()->producersOfSignal(asSignal(receiver)->signal);
+    if (producers.empty())
+        return Value::nilVal();
+    const bool restart = producers.front().first->onInput() == df::FuncNode::OnInput::Restart;
+    return Value::stringVal(toUnicodeString(restart ? "restart" : "finish"));
+}
+
+void VM::signal_on_input_setter(Value& receiver, Value value)
+{
+#ifdef DEBUG_BUILD
+    if (!isSignal(receiver))
+        throw std::invalid_argument("signal.on_input property called on non-signal value");
+#endif
+
+    auto sig = asSignal(receiver)->signal;
+    std::string policy;
+    if (isString(value))
+        policy = toUTF8StdString(asStringObj(value)->s);
+    if (policy != "finish" && policy != "restart")
+        throw std::invalid_argument("signal.on_input must be 'finish' or 'restart'");
+
+    // A node's policy, set through any of its outputs.
+    auto producers = df::DataflowEngine::instance()->producersOfSignal(sig);
+    if (producers.empty())
+        throw std::invalid_argument(
+            "signal.on_input: signal '" + sig->name() + "' is not the output of a function node "
+            "(set it on the signal a call such as `var out = f(sig)` gives)");
+    for (auto& producer : producers)
+        producer.first->setOnInput(policy == "restart" ? df::FuncNode::OnInput::Restart
+                                                       : df::FuncNode::OnInput::Finish);
 }
 
 Value VM::signal_name_getter(Value& receiver)

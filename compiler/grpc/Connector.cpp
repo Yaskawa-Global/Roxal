@@ -132,6 +132,10 @@ Value ACUCommunicator::callStreaming(const std::string& methodName,
     if (serverStreaming) {
         // Create an event-driven signal (freq=0) for async message arrival
         outputSig = df::Signal::newSourceSignal(0.0, Value::nilVal(), methodName + "_response");
+        // A call's stream: a dataflow node forwarding the signal owns it --
+        // it stops it (cancelling the call, below) when the node goes or
+        // restarts.
+        outputSig->markCallStream();
         outputSig->run();  // Start in running state
         state->outputSignal = Value::signalVal(outputSig);
     }
@@ -139,6 +143,10 @@ Value ACUCommunicator::callStreaming(const std::string& methodName,
     // Callback for receiving server messages
     auto onServerMessage = [this, state, outputSig](const std::string& msgData) {
         if (outputSig) {
+            // Stopped (the call is being cancelled): a message already on its
+            // way is not delivered.
+            if (!outputSig->isRunning())
+                return;
             // Parse the response and update the signal
             Value parsed = m_adapter->generateRoxalResponse(state->methodName, msgData);
             outputSig->set(parsed);
@@ -196,6 +204,19 @@ Value ACUCommunicator::callStreaming(const std::string& methodName,
 
     if (!state->handle) {
         throw std::runtime_error("Failed to start gRPC stream for " + methodName);
+    }
+
+    // Stopping the signal -- a script's sig.stop(), or the dataflow node
+    // forwarding it going away or restarting -- cancels the call.  (The
+    // stream's own end stops the signal too; cancelling a finished call does
+    // nothing.)  The observer holds the handle weakly: it lives in the
+    // signal, which the handle's callbacks hold.
+    if (outputSig) {
+        std::weak_ptr<StreamHandle> weakHandle = state->handle;
+        state->stopSubscription = outputSig->subscribeStopped([weakHandle] {
+            if (auto handle = weakHandle.lock())
+                ClientCall::CancelStream(handle);
+        });
     }
 
     // Store active stream

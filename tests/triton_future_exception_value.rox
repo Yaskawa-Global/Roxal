@@ -1,0 +1,15 @@
+# KNOWN BUG (listed in failing_tests): reading a property of a future that
+# resolved to an exception, inside try, must raise that exception into the
+# except clause.  It currently ends the program (exit 1, no message).
+# `r is nil` and `wait(for=r)` raise it correctly.
+# reject: every inference fails INVALID_ARGUMENT (scripts/triton_mock_server.py)
+import ai.nn
+
+var x = tensor(1, 4, dtype='float32')
+var reject = ai.nn.Model("triton://__TRITON_ADDR__/reject")
+try:
+    var r = reject.predict(x)
+    print(r.value)
+except e :ProgramException:
+    print("caught: ProgramException")
+print("after")

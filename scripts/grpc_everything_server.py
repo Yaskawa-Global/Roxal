@@ -13,6 +13,7 @@ import sys
 import tempfile
 import subprocess
 import shutil
+import threading
 import time
 from concurrent import futures
 
@@ -114,6 +115,9 @@ def serve(proto_path: str, address: str):
     with tempfile.TemporaryDirectory() as td:
         pb2, pb2_grpc = compile_proto(proto_path, td)
 
+        stream_lock = threading.Lock()
+        active_streams = [0]
+
         class EverythingService(pb2_grpc.EverythingServiceServicer):
             def Echo(self, request, context):
                 response = pb2.EchoResponse()
@@ -130,6 +134,12 @@ def serve(proto_path: str, address: str):
             def Status(self, request, context):
                 response = pb2.StatusResponse()
                 prefix = request.message or ""
+                if prefix == "__active_streams":
+                    # For tests of cancellation: how many ServerStream calls
+                    # are still open (neither finished nor cancelled).
+                    with stream_lock:
+                        response.status = f"active_streams:{active_streams[0]}"
+                    return response
                 if prefix:
                     response.status = f"status:{prefix}"
                 else:
@@ -142,7 +152,20 @@ def serve(proto_path: str, address: str):
             def ServerStream(self, request, context):
                 """Stream back 'count' responses with incrementing values."""
                 count = max(1, request.count)
+                # Counted as open until the call terminates, whichever way
+                # (see Status "__active_streams"); a cancelled call's loop
+                # ends at its next step.
+                with stream_lock:
+                    active_streams[0] += 1
+
+                def on_done():
+                    with stream_lock:
+                        active_streams[0] -= 1
+                context.add_callback(on_done)
+
                 for i in range(count):
+                    if not context.is_active():
+                        return
                     response = pb2.StreamResponse(
                         index=i,
                         value=i * 10,

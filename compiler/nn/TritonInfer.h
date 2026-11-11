@@ -19,6 +19,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace roxal::nn {
@@ -46,5 +47,12 @@ struct InferOutputBytes {
 // into `response`.  False when the reply is malformed.
 bool decodeInferResponse(grpc::ByteBuffer& reply, roxal::triton::ModelInferResponse& response,
                          std::vector<InferOutputBytes>& contents);
+
+// One message of a ModelStreamInfer stream (a ModelStreamInferResponse): its
+// error_message into `error` (empty when there is none), and its
+// infer_response as decodeInferResponse decodes one.  False when malformed.
+bool decodeStreamInferResponse(grpc::ByteBuffer& message, std::string& error,
+                               roxal::triton::ModelInferResponse& response,
+                               std::vector<InferOutputBytes>& contents);
 
 } // namespace roxal::nn

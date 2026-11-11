@@ -1,0 +1,18 @@
+// .running reflects run()/stop() on source signals; a derived signal never runs
+var s = signal(10, 0)
+print(s.running)
+s.run()
+print(s.running)
+s.stop()
+print(s.running)
+s.stop()
+print(s.running)
+
+var c = clock(10)
+c.run()
+print(c.running)
+c.stop()
+print(c.running)
+
+var d = s + 1
+print(d.running)

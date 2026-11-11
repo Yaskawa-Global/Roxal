@@ -1,0 +1,47 @@
+# Against a real Triton server (runtests --triton-url HOST:PORT, serving the
+# repository scripts/triton-test-repo.sh builds): text in and out, an
+# optional input, and a decoupled model's stream of responses -- what the
+# examples in examples/triton rely on, from Python-backend models.
+import ai.nn
+
+# text_echo: text BYTES [-1], optional suffix BYTES [1] -> upper BYTES [-1]
+var echo = ai.nn.Model("triton://__TRITON_ADDR__/text_echo")
+print(echo.inputs()[1]['optional'])
+print(echo.predict("héllo"))
+print(echo.predict({'text': ["a", "bc"]}))     # a batch, by name
+print(echo.predict(["a", "bc"]))               # with two inputs, a list is positional: text, suffix
+print(echo.predict({'text': ["x", "y"], 'suffix': "!"}))
+
+# text_stream: decoupled; text BYTES [1], optional n INT32 [1] -> n responses
+# piece BYTES [1] "<text> <i>", 50 ms apart
+var stream = ai.nn.Model("triton://__TRITON_ADDR__/text_stream", timeout=5s)
+var n = tensor(1, dtype='int32')
+n[0] = 4
+var pieces = stream.predict({'text': "go", 'n': n})
+wait(for=pieces)
+var seen = [pieces.value]
+when pieces changes as e:
+    seen.append(e.value)
+var waited = 0
+while pieces.running and waited < 100:
+    wait(ms=50)
+    waited = waited + 1
+print(seen)
+print(pieces.running)
+
+# Stopped part way: the call is cancelled, and nothing more arrives.
+n[0] = 200
+var long = stream.predict({'text': "long", 'n': n})
+wait(for=long)
+long.stop()
+var last = long.value
+wait(ms=300)
+print(long.running)
+print(long.value == last)
+
+# Lifted: the port carries each response.
+var prompt = signal(0, "lift")
+var lifted = stream.predict(prompt)
+wait(ms=600)
+print(lifted.value)
+print("done")

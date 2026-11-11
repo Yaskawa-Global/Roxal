@@ -282,6 +282,12 @@ public:
     void removeSignal(const ptr<Signal>& signal, bool force = false);
     void removeFunc(ptr<FuncNode> func);
 
+    // What rouses the engine to poll the nodes waiting on async work (see
+    // m_asyncYields) -- a future resolving, or a signal a node forwards being
+    // written or stopped.  Safe to call from any thread, and after the
+    // engine is gone.
+    std::shared_ptr<roxal::FutureWakeTarget> asyncYieldWakeTarget() const;
+
     // The wire `lhs <- rhs`: lhs becomes a zero-delay derived view of rhs
     // (Signal::deriveFrom), or -- when rhs is itself derived -- of rhs's base
     // at rhs's index, so derivations never chain.  Neither side is replaced,
@@ -542,7 +548,27 @@ private:
         TimePoint bgNextDue { TimePoint::zero() };
     };
 
+    // The NETWORK: what the engine evaluates, and when -- cached, and rebuilt
+    // (buildNetworkCacheData) whenever it is modified.  A rebuild restarts the
+    // tick grid and makes a tick suspended across it stale.  Signals that are
+    // not part of the network (inNetwork) are not in here.
     std::vector<NetworkIsland> m_networkIslands;
+
+    // Whether a signal is part of the network: on the tick grid (it has a
+    // period), derived from another signal or the base of one, or an input
+    // or output of a function node.  One that is none of these -- an
+    // event-driven source nothing is wired to: a streaming call's stream, a
+    // script's signal used only through `when` or .value -- is registered
+    // (`signals`) but forms no island, and its coming and going is not a
+    // change of the network.  It becomes part of it only through something
+    // that is one: a node taking it as an input, a derivation, a wire.
+    // m_mutex held.
+    bool inNetwork(const ptr<Signal>& signal) const;
+
+    // For introspection: the network's islands and, each as an island of its
+    // own, the registered signals that are not part of it -- in the order a
+    // walk of `signals` meets them.  m_mutex held.
+    std::vector<NetworkIsland> islandsWithFreeSignals() const;
 
     // Async nodes in event-driven islands.  A node whose body returned
     // futures (ai.nn predict) yields; on a clocked island the next tick

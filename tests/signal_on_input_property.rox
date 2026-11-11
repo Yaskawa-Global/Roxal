@@ -1,0 +1,46 @@
+# signal.on_input: what a change of inputs does to a function node while it
+# is forwarding a streaming call -- 'finish' (the default) or 'restart'.  It
+# is the node's setting, reached through any of its outputs; a signal that
+# is no node's output has none.
+
+func twice(x):
+    return x * 2
+
+func split(x) -> [int, int]:
+    return [x, x + 1]
+
+var s = signal(0, 1)
+var out = twice(s)
+print(out.on_input)
+out.on_input = 'restart'
+print(out.on_input)
+out.on_input = 'finish'
+print(out.on_input)
+
+# One node, several outputs: one setting.
+var [lo, hi] = split(s)
+hi.on_input = 'restart'
+print(lo.on_input)
+
+# Not a node's output.
+print(s.on_input)
+try:
+    s.on_input = 'restart'
+except e:
+    print("not a node's output: " + string("is not the output of a function node" in string(e)))
+
+# Not a policy.
+try:
+    out.on_input = 'later'
+except e:
+    print(e)
+try:
+    out.on_input = 3
+except e:
+    print(e)
+
+# The node itself is unaffected.
+s.set(5)
+wait(ms=100)
+print(out.value)
+print("done")

@@ -1,0 +1,40 @@
+# A lifted function that returns a streaming call -- a future resolving to
+# a signal -- delivers each of its values on the node's port.  An input that
+# changes while the stream runs is held, and answered once it ends.
+# countdown: text_input BYTES [1]; optional n, gap_ms INT32 [1]
+#            -> text_output BYTES [1] ("<text> <i>")
+import ai.nn
+
+func int1(v :int) -> tensor:
+    var t = tensor(1, dtype='int32')
+    t[0] = v
+    return t
+
+var m = ai.nn.Model("triton://__TRITON_ADDR__/countdown", outputs=['text_output'])
+
+func ask(text):
+    return m.predict({'text_input': text, 'n': int1(3), 'gap_ms': int1(120)})
+
+var prompt = signal(0, "a")
+var answer = ask(prompt)
+# (A node's first output initializes its port, as for any node: "a 0" is
+# its value, not a change.)
+var seen = []
+when answer changes as e:
+    seen.append(e.value)
+wait(ms=150)
+print(answer.value)
+prompt.set("b")
+wait(ms=1200)
+print(seen)
+
+# The model's own predict, lifted, forwards the same way -- for two outputs,
+# each response's list split across the two ports.
+var direct = m.predict(prompt)
+var both = ai.nn.Model("triton://__TRITON_ADDR__/countdown")
+var [txt, step] = both.predict(prompt)
+wait(ms=400)
+print(direct.value)
+print(txt.value)
+print(step.value[0])
+print("done")

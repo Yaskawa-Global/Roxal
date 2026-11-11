@@ -1,0 +1,74 @@
+# A decoupled (streaming) model -- here the mock's countdown, which answers
+# with n responses, gap_ms apart, then its final flag, as Triton's vLLM
+# backend does.  predict's future resolves, with the first response, to ONE
+# signal that each response sets; it stops after the last.  Stopping it
+# cancels the call.
+# countdown: text_input BYTES [1]; optional n, gap_ms, fail_at INT32 [1]
+#            -> text_output BYTES [1] ("<text> <i>"), step INT32 [1]
+import ai.nn
+
+var control = ai.nn.Model("triton://__TRITON_ADDR__/__control")
+func cancelledStreams() -> int:
+    var mode = tensor(1, dtype='int32')
+    mode[0] = 7
+    return int(control.predict(mode)[0])
+
+func int1(v :int) -> tensor:
+    var t = tensor(1, dtype='int32')
+    t[0] = v
+    return t
+
+var m = ai.nn.Model("triton://__TRITON_ADDR__/countdown", outputs=['text_output'])
+print(m.inputs()[1]['optional'])
+
+# Every response, in order.
+var replies = m.predict({'text_input': "go", 'n': int1(4), 'gap_ms': int1(150)})
+wait(for=replies)
+print(replies.value)
+print(replies.running)
+var seen = []
+when replies changes as e:
+    seen.append(e.value)
+wait(ms=900)
+print(seen)
+print(replies.running)
+print(replies.value)
+
+# Both outputs: each response is the list a unary predict would return.
+var both = ai.nn.Model("triton://__TRITON_ADDR__/countdown")
+var r2 = both.predict({'text_input': "x", 'n': int1(2)})
+wait(ms=300)
+print(r2.value[0])
+print(r2.value[1][0])
+
+# Stopping the signal cancels the call.
+var long = m.predict({'text_input': "long", 'n': int1(100), 'gap_ms': int1(50)})
+wait(for=long)
+long.stop()
+wait(ms=400)
+print(long.running)
+print(cancelledStreams())
+
+# No response within the timeout: the future fails as unavailable.
+var slow = ai.nn.Model("triton://__TRITON_ADDR__/countdown", outputs=['text_output'], timeout=200ms)
+try:
+    var r3 = slow.predict({'text_input': "slow", 'n': int1(1), 'gap_ms': int1(1500)})
+    wait(for=r3)
+    print(r3.value)
+except e :UnavailableError:
+    print("timed out: UnavailableError")
+
+# A failure before any response is the future's.
+try:
+    var r4 = m.predict({'text_input': "f", 'fail_at': int1(0)})
+    wait(for=r4)
+    print(r4.value)
+except e:
+    print("failed at step 0" in string(e))
+
+# One after the first response stops the signal, keeping what came.
+var r5 = m.predict({'text_input': "mid", 'n': int1(5), 'fail_at': int1(2), 'gap_ms': int1(30)})
+wait(ms=400)
+print(r5.value)
+print(r5.running)
+print("done")

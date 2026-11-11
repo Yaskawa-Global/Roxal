@@ -1,0 +1,14 @@
+# Against a real Triton server in explicit mode (runtests --triton-url
+# HOST:PORT --triton-repository DIR): a Python model deployed from its
+# directory with nothing but its backend named -- its model.py declares the
+# inputs and outputs -- as examples/triton deploys SmolVLA.
+import ai.nn
+
+var hello = ai.nn.Model("../scripts/triton-test-models/py_auto", server="__TRITON_ADDR__", config={'backend': 'python'})
+for d in hello.inputs():
+    print(d['name'] + " " + d['dtype'])
+var r = hello.predict("Roxal")
+print(r[0])
+print(r[1][0])
+hello.unload()
+print("done")

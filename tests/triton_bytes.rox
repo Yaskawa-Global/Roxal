@@ -1,0 +1,74 @@
+# Triton BYTES tensors (here the mock, scripts/triton_mock_server.py):
+# strings, byte lists and uint8 tensors in; strings -- or, with binary=, byte
+# lists -- out.  A bytes output is one string when declared to hold one
+# element, else a list of them.
+# echo_bytes: text BYTES [-1] -> echo BYTES [-1], first BYTES [1], count INT32 [1]
+import ai.nn
+
+var m = ai.nn.Model("triton://__TRITON_ADDR__/echo_bytes")
+print(m.inputs()[0]['dtype'])
+print(m.inputs()[0]['optional'])
+print(m.outputs()[0]['dtype'])
+
+# One string: a batch of one.
+var r = m.predict("héllo")
+print(r[0])
+print(r[1])
+print(r[2][0])
+
+# A batch.
+var r2 = m.predict(["a", "bc", ""])
+print(r2[0])
+print(r2[1])
+print(r2[2][0])
+
+# A byte list or a 1-D uint8 tensor is one element; so is the empty list.
+var raw = to_bytes("ok")
+print(m.predict(raw)[1])
+var t = tensor(shape=[2], dtype='uint8', bytes=to_bytes("hi"))
+print(m.predict(t)[1])
+print(m.predict([raw, t, "x"])[0])
+print(m.predict([])[2][0])
+
+# Not valid UTF-8: the call fails naming the output, unless it is binary.
+var bad = [byte(255), byte(0), byte(65)]
+try:
+    var r3 = m.predict(bad)
+    print(r3[1])
+except e:
+    print("not valid UTF-8" in string(e) and "binary=['echo']" in string(e))
+var b = ai.nn.Model("triton://__TRITON_ADDR__/echo_bytes", binary=['first', 'echo'])
+var r4 = b.predict(bad)
+print(r4[1])
+print(r4[0])
+
+# Wrong kinds of value are refused before anything is sent.
+try:
+    var r5 = m.predict([1, 2.5])
+    print(r5)
+except e:
+    print("element 0 is not a string" in string(e))
+try:
+    var r6 = m.predict(tensor(2, 2, dtype='uint8'))
+    print(r6)
+except e:
+    print("takes a string" in string(e))
+func refused(binary, expected :string) -> bool:
+    try:
+        var mm = ai.nn.Model("triton://__TRITON_ADDR__/echo_bytes", binary=binary)
+        return mm is nil
+    except e:
+        return expected in string(e)
+print(refused(['count'], "which is int32, not bytes"))
+print(refused(['nope'], "not one of the outputs"))
+
+# Lifted, the ports carry strings and lists.
+var words = signal(0, "one")
+var [echo, first, count] = m.predict(words)
+wait(ms=300)
+print(first.value)
+print(echo.value)
+words.set("two")
+wait(ms=300)
+print(first.value)
+print("done")

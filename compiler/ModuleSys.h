@@ -49,6 +49,8 @@ public:
     Value serialize_builtin(VM& vm, ArgsView args);
     Value deserialize_builtin(VM& vm, ArgsView args);
     Value to_bytes_builtin(VM& vm, ArgsView args);
+    Value base64_encode_builtin(VM& vm, ArgsView args);
+    Value base64_decode_builtin(VM& vm, ArgsView args);
     Value from_bytes_builtin(VM& vm, ArgsView args);
     Value bits_to_bytes_builtin(VM& vm, ArgsView args);
     Value bytes_to_bits_builtin(VM& vm, ArgsView args);

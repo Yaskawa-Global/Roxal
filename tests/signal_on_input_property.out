@@ -1,0 +1,10 @@
+finish
+restart
+finish
+restart
+nil
+not a node's output: true
+signal.on_input must be 'finish' or 'restart'
+signal.on_input must be 'finish' or 'restart'
+10
+done

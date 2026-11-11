@@ -1,0 +1,59 @@
+# Qwen3-VL-2B in a dataflow network: a signal of questions about an image
+# feeds the model; the node's output carries each answer.  A question asked
+# while the model is still answering the last one waits for it to finish,
+# then is answered next -- the node holds it.
+#
+# Setup (once): examples/triton/README.md.  Same model as vlm_describe.rox.
+#
+# Usage:
+#   roxal examples/triton/vlm_signal.rox [image.jpg|.png] [host:port]
+
+import ai.nn
+import media
+import math
+
+var image_path = source_dir() + "/../test_cat_pic.jpg"
+var server = "localhost:18001"
+if len(args) > 0:
+    image_path = args[0]
+if len(args) > 1:
+    server = args[1]
+
+var config = {'backend': 'vllm', 'instance_group': [{'kind': 'KIND_MODEL'}]}
+var vlm = ai.nn.Model(source_dir() + "/models/qwen3_vl", server=server, config=config, outputs=['text_output'], timeout=120s)
+
+var img = media.Image(image_path, channels=3)
+if img.width() > 1024 or img.height() > 1024:
+    var scale = 1024.0 / math.max([img.width(), img.height()])
+    img.resize(int(img.width() * scale), int(img.height() * scale))
+var image = base64_encode(img.encode('jpeg', quality=90))
+
+var exclude = tensor(1, dtype='bool')
+exclude[0] = 1
+var sampling = to_json({'temperature': 0.7, 'top_p': 0.8, 'top_k': 20, 'max_tokens': 128}, indent=false)
+
+# Not streamed: each answer arrives whole, in one response.  (Streamed, the
+# node's output would carry each newest piece of text.)
+func ask(question :string):
+    if question == "":
+        return nil
+    var text = "<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>" + question + "<|im_end|>\n<|im_start|>assistant\n"
+    return vlm.predict({'text_input': text, 'image': image, 'exclude_input_in_output': exclude, 'sampling_parameters': sampling})
+
+var question = signal(0, "")
+var answer = ask(question)          # a node, from here on
+var answered = 0
+when answer changes as e:
+    answered = answered + 1
+    print("A" + string(answered) + ": " + e.value[0], flush=true)
+
+var questions = ["What animal is in this image?", "What colour is it?", "Where is it?"]
+for q in questions:
+    print("Q: " + q, flush=true)
+    question.set(q)
+    wait(ms=200)                    # asked before the last answer is in
+
+var waited = 0
+while answered < len(questions) and waited < 300:
+    wait(ms=200)
+    waited = waited + 1

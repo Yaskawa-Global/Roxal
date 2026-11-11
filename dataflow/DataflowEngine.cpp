@@ -128,11 +128,32 @@ void DataflowEngine::markNetworkModified()
 }
 
 
+bool DataflowEngine::inNetwork(const ptr<Signal>& signal) const
+{
+    if (signal->period() != TimeDuration::zero() || signal->isDerived
+        || !signal->dependents().empty())
+        return true;
+    for (const auto& kv : funcs) {
+        const auto& func = kv.second;
+        for (const auto& ip : func->m_inputs)
+            if (ip.signal == signal) return true;
+        for (const auto& op : func->m_outputs)
+            if (op.signal == signal) return true;
+    }
+    return false;
+}
+
 void DataflowEngine::addSignal(ptr<Signal> signal)
 {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     signals.push_back(signal);
-    m_networkModified = true;
+    // A source nothing is wired to yet, and not on the tick grid, changes
+    // nothing the engine evaluates (see inNetwork).  Any other signal is
+    // made to be part of the network -- a node's output is created just
+    // before the node takes it as a port, possibly on a node already
+    // registered -- and counts from the start.
+    if (!signal->isSourceSignal() || inNetwork(signal))
+        m_networkModified = true;
 }
 
 void DataflowEngine::addFunc(ptr<FuncNode> func)
@@ -201,6 +222,10 @@ size_t DataflowEngine::signalRefCount(const ptr<Signal>& signal) const
 void DataflowEngine::removeSignal(const ptr<Signal>& signal, bool force)
 {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
+
+    // Decided before anything is unhooked below: removing a signal that was
+    // never part of the network is not a change of it (see inNetwork).
+    const bool wasInNetwork = inNetwork(signal);
 
     // Check if any function still references this signal
     bool used = false;
@@ -299,11 +324,21 @@ void DataflowEngine::removeSignal(const ptr<Signal>& signal, bool force)
     for (auto& f : funcsToRemove)
         removeFunc(f);
 
-    m_networkModified = true;
+    if (wasInNetwork)
+        m_networkModified = true;
+}
+
+std::shared_ptr<roxal::FutureWakeTarget> DataflowEngine::asyncYieldWakeTarget() const
+{
+    return m_asyncYieldWake;
 }
 
 void DataflowEngine::removeFunc(ptr<FuncNode> func)
 {
+    // A call stream the node was forwarding, and owned, ends with it: its
+    // call is cancelled (see FuncNode::detachForwards).
+    func->detachForwards(/*stopOwned=*/true);
+
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
 
     m_asyncYields.erase(std::remove_if(m_asyncYields.begin(), m_asyncYields.end(),
@@ -2229,13 +2264,15 @@ bool DataflowEngine::serviceAsyncYields()
             continue;
         }
 
-        // Delivered at y.time: finish the island downstream of the node, at
-        // that time.
+        // Delivered -- at y.time, or for a forwarded signal's later value
+        // when it was published: finish the island downstream of the node,
+        // at that time.
         const bool found = inEventIsland();
+        const TimePoint deliveredAt = y.func->lastDeliveryTime().value_or(y.time);
         {
             std::lock_guard<std::recursive_mutex> lock(m_mutex);
             for (const auto& output : y.func->m_outputs)
-                updateSignalConsumerInputAvailability(output.signal, y.time);
+                updateSignalConsumerInputAvailability(output.signal, deliveredAt);
         }
         // The rerun (if any) may have yielded anew: keep polling it, from
         // its own evaluation time, unless the island is now clocked.
@@ -2247,7 +2284,7 @@ bool DataflowEngine::serviceAsyncYields()
         size_t periodIndex = 0, funcIndex = 0;
         if (found && island.tickPeriod == TimeDuration::zero()
             && locateInIsland(island, y.func, periodIndex, funcIndex))
-            evaluateIsland(island, y.time, TimePoint::max(), periodIndex, funcIndex + 1);
+            evaluateIsland(island, deliveredAt, TimePoint::max(), periodIndex, funcIndex + 1);
     }
     return didWork;
 }
@@ -2445,6 +2482,14 @@ void DataflowEngine::computeNetworkIslands()
         funcQueue.clear();
         enqueueSignal(signalQueue, signal);
         processQueues(island, signalQueue, funcQueue);
+
+        // A signal that stands alone -- nothing consumes, produces or
+        // derives from it -- and is not on the tick grid is not part of the
+        // network: registered only, no island (inNetwork's test, read off
+        // the island the walk gave).
+        if (island.funcs.empty() && island.signals.size() == 1
+            && island.signals.front()->period() == TimeDuration::zero())
+            continue;
 
         if (!island.signals.empty() || !island.funcs.empty())
             m_networkIslands.push_back(std::move(island));
@@ -3032,6 +3077,34 @@ DataflowEngine::FuncSnapshot snapshotFunc(const ptr<FuncNode>& func)
 // Locking recipe (same as islandDebugSnapshot, proven from script-thread
 // NativeFns via sys._df_islands): rebuild the network cache if dirty, then
 // copy under m_mutex — no m_evalMutex, no Value reads, no parking under lock.
+std::vector<DataflowEngine::NetworkIsland> DataflowEngine::islandsWithFreeSignals() const
+{
+    std::map<const Signal*, size_t> islandOf;
+    for (size_t i = 0; i < m_networkIslands.size(); ++i)
+        for (const auto& s : m_networkIslands[i].signals)
+            islandOf.emplace(s.get(), i);
+
+    std::vector<NetworkIsland> result;
+    std::vector<bool> listed(m_networkIslands.size(), false);
+    for (const auto& s : signals) {
+        auto it = islandOf.find(s.get());
+        if (it == islandOf.end()) {
+            // not part of the network (see inNetwork): on its own
+            NetworkIsland alone;
+            alone.signals.push_back(s);
+            alone.background = s->domain() == Signal::Domain::Background;
+            result.push_back(std::move(alone));
+        } else if (!listed[it->second]) {
+            listed[it->second] = true;
+            result.push_back(m_networkIslands[it->second]);
+        }
+    }
+    for (size_t i = 0; i < m_networkIslands.size(); ++i)
+        if (!listed[i])
+            result.push_back(m_networkIslands[i]);
+    return result;
+}
+
 std::optional<DataflowEngine::NetworkSnapshot> DataflowEngine::subnetworkContaining(const ptr<Signal>& signal)
 {
     if (m_networkModified)
@@ -3039,7 +3112,7 @@ std::optional<DataflowEngine::NetworkSnapshot> DataflowEngine::subnetworkContain
 
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
 
-    for (const auto& island : m_networkIslands) {
+    for (const auto& island : islandsWithFreeSignals()) {
         bool found = false;
         for (const auto& s : island.signals)
             if (s == signal) { found = true; break; }
@@ -3065,9 +3138,10 @@ std::vector<DataflowEngine::NetworkSnapshot> DataflowEngine::allSubnetworks()
 
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
 
+    const std::vector<NetworkIsland> islands = islandsWithFreeSignals();
     std::vector<NetworkSnapshot> result;
-    result.reserve(m_networkIslands.size());
-    for (const auto& island : m_networkIslands) {
+    result.reserve(islands.size());
+    for (const auto& island : islands) {
         NetworkSnapshot ns;
         ns.tickPeriod = island.tickPeriod;
         ns.background = island.background;
@@ -3102,10 +3176,11 @@ std::vector<DataflowEngine::IslandDebugInfo> DataflowEngine::islandDebugSnapshot
 
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
 
+    const std::vector<NetworkIsland> islands = islandsWithFreeSignals();
     std::vector<IslandDebugInfo> result;
-    result.reserve(m_networkIslands.size());
+    result.reserve(islands.size());
 
-    for (const auto& island : m_networkIslands) {
+    for (const auto& island : islands) {
         IslandDebugInfo info;
         info.tickPeriod = island.tickPeriod;
         info.eventDrivenOnly = true;

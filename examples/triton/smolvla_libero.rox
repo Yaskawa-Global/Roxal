@@ -1,0 +1,65 @@
+# SmolVLA -- a vision-language-action policy -- served by NVIDIA Triton (a
+# Python model running Hugging Face LeRobot) and deployed by this script.
+# For a few recorded frames of a LIBERO demonstration it predicts the robot's
+# next 50 actions from the two camera images, the robot's state and the task,
+# and compares them with the actions the demonstration went on to take.
+#
+# Setup (once): examples/triton/README.md -- build the server image, download
+# the weights, start the server -- then extract the frames:
+#   examples/triton/extract-libero-frames.sh
+#
+# Usage:
+#   roxal examples/triton/smolvla_libero.rox [host:port]
+
+import ai.nn
+import media
+import math
+import fileio
+
+var server = "localhost:18001"
+if len(args) > 0:
+    server = args[0]
+var data = source_dir() + "/data/libero"
+if not fileio.dir_exists(data):
+    print("No frames in " + data + ": run examples/triton/extract-libero-frames.sh first")
+    exit(1)
+
+# A Python model: the directory's model.py declares its inputs and outputs
+# (from the checkpoint's own config) when the server loads it.
+var config = {'backend': 'python', 'instance_group': [{'kind': 'KIND_GPU'}], 'parameters': {'checkpoint': {'string_value': 'HuggingFaceVLA/smolvla_libero'}}}
+var policy = ai.nn.Model(source_dir() + "/models/smolvla", server=server, config=config, timeout=60s)
+for d in policy.inputs():
+    print("input  " + d['name'] + " " + d['dtype'] + " " + string(d['shape']))
+for d in policy.outputs():
+    print("output " + d['name'] + " " + d['dtype'] + " " + string(d['shape']))
+
+func row(t :tensor, s :int) -> list:
+    var values = []
+    for k in range(0..<t.shape()[1]):
+        values.append(math.round(t[s, k] * 1000.0) / 1000.0)
+    return values
+
+func floats(values :list) -> tensor:
+    var t = tensor(len(values), dtype='float32')
+    for i in range(0..<len(values)):
+        t[i] = values[i]
+    return t
+
+for frame in fileio.list_dir(data):
+    var dir = data + "/" + frame
+    var sample = from_json(fileio.read_file(dir + "/sample.json"))
+    var recorded = sample['actions']
+
+    var actions = policy.predict({'image': media.Image(dir + "/image.png", channels=3).data, 'image2': media.Image(dir + "/image2.png", channels=3).data, 'state': floats(sample['state']), 'task': sample['task']})
+
+    # How far the predicted chunk is from what was recorded, over the steps
+    # both have.
+    var steps = int(math.min([len(recorded), actions.shape()[0]]))
+    var err = 0.0
+    for s in range(0..<steps):
+        for k in range(0..<len(recorded[s])):
+            err = err + math.abs(actions[s, k] - recorded[s][k])
+    print(frame + ": " + sample['task'])
+    print("  first action predicted " + string(row(actions, 0)))
+    print("               recorded  " + string(recorded[0]))
+    print("  mean |error| over " + string(steps) + " steps: " + string(err / (steps * len(recorded[0]))))

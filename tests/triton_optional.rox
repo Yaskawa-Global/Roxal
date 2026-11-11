@@ -1,0 +1,34 @@
+# Optional inputs (from the model's configuration -- here the mock's):
+# a dict may leave them out, a single value binds the sole required input,
+# and a list gives every input or just the required ones.
+# optional_in: prompt BYTES [1], optional scale FP32 [1], tag BYTES [1]
+#              -> described BYTES [1]
+import ai.nn
+
+var m = ai.nn.Model("triton://__TRITON_ADDR__/optional_in")
+for d in m.inputs():
+    print(d['name'] + " " + string(d['optional']))
+
+var scale = tensor(1, dtype='float32')
+scale[0] = 2.5
+print(m.predict("hi"))
+print(m.predict({'prompt': "hi", 'tag': "t"}))
+print(m.predict({'prompt': "hi", 'scale': scale}))
+print(m.predict(["hi", scale, "t"]))
+print(m.predict(["hi"]))
+try:
+    var r = m.predict({'tag': "t"})
+    print(r)
+except e:
+    print("missing input 'prompt'" in string(e))
+try:
+    var r2 = m.predict(["hi", scale])
+    print(r2)
+except e:
+    print("1 of them required" in string(e))
+
+# A model whose inputs are all required is unchanged: a single value is its
+# only input.
+var echo = ai.nn.Model("triton://__TRITON_ADDR__/echo_bytes")
+print(echo.predict("solo")[1])
+print("done")

@@ -597,7 +597,7 @@ if(ROXAL_COMPUTE_SERVER)
     list(APPEND COMPILER_SOURCES compiler/ComputeServer.cpp)
 endif()
 if(ROXAL_ENABLE_AI_NN)
-    list(APPEND COMPILER_SOURCES compiler/ModuleNN.cpp)
+    list(APPEND COMPILER_SOURCES compiler/ModuleNN.cpp compiler/nn/BytesElements.cpp)
 endif()
 if(ROXAL_ENABLE_TRITON)
     # The Triton protocol's messages, generated at build time by the protoc
@@ -858,7 +858,8 @@ endif()
 # the inference messages ai.nn writes and reads with tensor bytes outside them.
 if(ROXAL_ENABLE_TRITON)
     add_executable(roxal_triton_proto_test
-        compiler/nn/TritonProto_test.cpp compiler/nn/TritonInfer.cpp ${ROXAL_TRITON_PROTO_SRCS})
+        compiler/nn/TritonProto_test.cpp compiler/nn/TritonInfer.cpp compiler/nn/BytesElements.cpp
+        ${ROXAL_TRITON_PROTO_SRCS})
     target_include_directories(roxal_triton_proto_test PRIVATE compiler/nn)
     if(ROXAL_GRPC_FROM_SOURCE)
         target_link_libraries(roxal_triton_proto_test PRIVATE gRPC::grpc++ protobuf::libprotobuf)
@@ -957,7 +958,7 @@ if(NOT EMSCRIPTEN)
     # singleton, so scenarios sharing one would evaluate each other's nodes.
     add_executable(roxal_dataflow_host_thread_test tests/dataflow_host_thread_test.cpp)
     target_link_libraries(roxal_dataflow_host_thread_test PRIVATE roxalcore)
-    foreach(scenario busy_loop wait_loop yielding_node yielding_node_future overrun_orphan tick_after_run
+    foreach(scenario busy_loop wait_loop yielding_node free_signals_mid_tick yielding_node_future forwarded_stream overrun_orphan tick_after_run
                      node_error node_exit best_effort_late
                      background_node_error network_change_mid_tick
                      lift_collects node_exit_sliced host_set_event host_fed_input

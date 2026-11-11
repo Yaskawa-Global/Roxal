@@ -4,6 +4,7 @@
 #include "Object.h"
 #include "GCRoots.h"
 #include "core/json5.h"
+#include "nn/BytesElements.h"
 #include <stdexcept>
 #include <memory>
 #include <thread>
@@ -453,11 +454,38 @@ std::function<void()> ModuleNN::shutdownCompleteAction()
 struct TensorSpec {
     std::string name;
     std::vector<int64_t> shape;     // -1: a dynamic dimension
-    std::string dtype;              // a TensorDType name ("float32", ...)
+    // A TensorDType name ("float32", ...); "bytes" for a Triton BYTES tensor,
+    // whose elements are strings or byte lists in Roxal; "" for a datatype
+    // ai.nn has no value for (Triton BF16, UINT32, UINT64).
+    std::string dtype;
+    bool optional = false;          // an input the model can do without
+    bool binary = false;            // a bytes output returned as byte lists (Model(binary=))
+
+    bool isBytes() const { return dtype == "bytes"; }
+
+    // Exactly one element by declaration ([] or [1], [1, 1], ...): such a
+    // bytes output is a single string, any other a list of them.
+    bool singleElement() const {
+        for (auto dim : shape)
+            if (dim != 1)
+                return false;
+        return true;
+    }
 };
 
-// Named input tensors, in the model's input order.
-using NamedInputs = std::vector<std::pair<std::string, ObjTensor*>>;
+// One input of a predict, checked against the model: a tensor, or -- for a
+// bytes input -- its elements already encoded (TritonInfer's BYTES layout)
+// with the shape they fill.
+struct NamedInput {
+    std::string name;
+    ObjTensor* tensor = nullptr;
+    std::shared_ptr<const std::string> bytes;
+    std::vector<int64_t> shape;
+};
+
+// The inputs of a predict, in the model's input order (an optional input not
+// given is absent).
+using NamedInputs = std::vector<NamedInput>;
 
 // A model's backend.  The shared front end -- predict's argument checks,
 // the predict closure, inputs()/outputs()/device(), close() -- drives one of
@@ -513,6 +541,9 @@ struct ModelWrapper {
     std::vector<TensorSpec> inputs;
     std::vector<TensorSpec> outputs;
     std::string device = "cpu";
+    // A Triton model that answers on a stream (its transaction policy is
+    // decoupled): predict's future resolves to a signal of its responses.
+    bool decoupled = false;
     bool closed = false;
     std::unique_ptr<ModelSession> session;
 };
@@ -607,6 +638,42 @@ static void selectOutputs(std::vector<TensorSpec>& outputs, const std::vector<st
     outputs = std::move(selected);
 }
 
+// Model(..., binary=[names]): bytes outputs predict returns as byte lists
+// rather than strings (whose UTF-8 is checked).  Names must be among the
+// outputs predict returns.
+static std::vector<std::string> binaryOutputsArg(const Value& arg)
+{
+    std::vector<std::string> names;
+    if (arg.isNil())
+        return names;
+    if (!isList(arg))
+        throw std::invalid_argument("Model.init: binary must be a list of output names");
+    ObjList* list = asList(arg);
+    for (int32_t i = 0; i < list->length(); ++i) {
+        Value v = list->getElement(i);
+        if (!isString(v))
+            throw std::invalid_argument("Model.init: binary must be a list of output names");
+        names.push_back(toUTF8StdString(asStringObj(v)->s));
+    }
+    return names;
+}
+
+static void markBinaryOutputs(std::vector<TensorSpec>& outputs, const std::vector<std::string>& names)
+{
+    for (const auto& name : names) {
+        auto it = std::find_if(outputs.begin(), outputs.end(),
+                               [&](const TensorSpec& spec) { return spec.name == name; });
+        if (it == outputs.end())
+            throw std::invalid_argument("Model.init: binary names '" + name + "', which is not one of the "
+                                        "outputs predict returns (" + joinNames(outputs) + ")");
+        if (!it->isBytes())
+            throw std::invalid_argument("Model.init: binary names output '" + name + "', which is " +
+                                        (it->dtype.empty() ? std::string("not bytes") : it->dtype) +
+                                        ", not bytes");
+        it->binary = true;
+    }
+}
+
 // Zero-valued inputs for a warmup inference, which initializes the CUDA
 // context and triggers ORT graph optimization so the first real predict() is
 // fast and consistent.  None (false) when any input has a dynamic non-batch
@@ -620,10 +687,13 @@ static Value warmupInputs(const ModelWrapper& model, NamedInputs& inputs)
 {
     if (model.inputs.empty())
         return Value::nilVal();
-    for (const auto& spec : model.inputs)
+    for (const auto& spec : model.inputs) {
+        if (spec.isBytes() || spec.dtype.empty())
+            return Value::nilVal();
         for (size_t di = 1; di < spec.shape.size(); ++di)
             if (spec.shape[di] < 0)
                 return Value::nilVal();
+    }
     Value tensors = Value::objVal(newListObj());
     for (const auto& spec : model.inputs) {
         auto shape = spec.shape;
@@ -631,7 +701,7 @@ static Value warmupInputs(const ModelWrapper& model, NamedInputs& inputs)
             shape[0] = 1;
         Value tensor = Value::tensorVal(shape, tensorDTypeFromString(spec.dtype));
         asList(tensors)->append(tensor);
-        inputs.emplace_back(spec.name, asTensor(tensor));
+        inputs.push_back({spec.name, asTensor(tensor), nullptr, {}});
     }
     return tensors;
 }
@@ -654,8 +724,8 @@ static Value runOrt(const OrtRunTarget& target, const NamedInputs& inputTensors)
     // of Ort::Value which we can't form from separate ObjTensor objects).
     Ort::IoBinding binding(*target.session);
 
-    for (auto& [name, tensor] : inputTensors)
-        binding.BindInput(name.c_str(), tensor->ortValue());
+    for (const auto& input : inputTensors)
+        binding.BindInput(input.name.c_str(), input.tensor->ortValue());
 
     std::vector<Ort::Value> outputs;
 
@@ -700,9 +770,9 @@ public:
     }
 
     Value submit(const NamedInputs& inputs, std::vector<Value> heldValues) override {
-        for (auto& [name, tensor] : inputs)
-            if (!tensor->isOrtBacked())
-                throw std::runtime_error("ai.nn: input tensor '" + name + "' is not ORT-backed");
+        for (const auto& input : inputs)
+            if (!input.tensor->isOrtBacked())
+                throw std::runtime_error("ai.nn: input tensor '" + input.name + "' is not ORT-backed");
         // The job holds the session itself, not the model -- see InferenceWorker.
         auto work = [target = target_, inputs]() -> Value {
             return runOrt(*target, inputs);
@@ -843,12 +913,14 @@ static std::optional<TritonSource> parseTritonSource(const std::string& path)
     return source;
 }
 
-// Triton's datatype names, against the tensor dtypes they are (BF16, UINT32,
-// UINT64 and BYTES have no tensor dtype).
+// Triton's datatype names, against the dtypes ai.nn gives them: a tensor
+// dtype, or "bytes" -- BYTES elements are strings or byte lists in Roxal.
+// BF16, UINT32 and UINT64 have none.
 static const std::pair<const char*, const char*> tritonDatatypes[] = {
     {"FP16", "float16"}, {"FP32", "float32"}, {"FP64", "float64"},
     {"INT8", "int8"}, {"INT16", "int16"}, {"INT32", "int32"}, {"INT64", "int64"},
     {"UINT8", "uint8"}, {"UINT16", "uint16"}, {"BOOL", "bool"},
+    {"BYTES", "bytes"},
 };
 
 static std::string dtypeOfTriton(const std::string& datatype)
@@ -901,12 +973,60 @@ static Value tritonErrorType(const char* name)
     return it != tritonErrorTypes->types.end() ? it->second : Value::nilVal();
 }
 
+// The signals of decoupled models' streams in flight, rooted until each
+// stream ends: the endpoint's thread sets them, and the script may have
+// dropped its own reference.  A root for the program's lifetime, emptied at
+// shutdown.
+struct TritonStreamRoots {
+    mutable std::mutex mutex;
+    uint64_t next = 0;
+    std::unordered_map<uint64_t, Value> signals;
+};
+
+static void traceTritonStreamRoots(ValueVisitor& visitor, const TritonStreamRoots& roots)
+{
+    std::lock_guard<std::mutex> lock(roots.mutex);
+    for (const auto& [id, signal] : roots.signals)
+        visitor.visit(signal);
+}
+
+static TracedMember<TritonStreamRoots> tritonStreamRoots { &traceTritonStreamRoots };
+
+static uint64_t rootStreamSignal(const Value& signal)
+{
+    std::lock_guard<std::mutex> lock(tritonStreamRoots->mutex);
+    const uint64_t id = ++tritonStreamRoots->next;
+    tritonStreamRoots->signals.emplace(id, signal);
+    return id;
+}
+
+static Value rootedStreamSignal(uint64_t id)
+{
+    std::lock_guard<std::mutex> lock(tritonStreamRoots->mutex);
+    auto it = tritonStreamRoots->signals.find(id);
+    return it != tritonStreamRoots->signals.end() ? it->second : Value::nilVal();
+}
+
+static void unrootStreamSignal(uint64_t id)
+{
+    Value released;     // let go after the lock
+    std::lock_guard<std::mutex> lock(tritonStreamRoots->mutex);
+    auto it = tritonStreamRoots->signals.find(id);
+    if (it != tritonStreamRoots->signals.end()) {
+        released = it->second;
+        tritonStreamRoots->signals.erase(it);
+    }
+}
+
 // What a call in flight completes against: shared with the session, so a
 // model closed or released meanwhile still settles its calls.
 struct TritonCallTarget {
     std::string where;                  // "Triton model 'm' at host:port", for messages
     std::vector<TensorSpec> outputs;    // as predict returns them
+    // A unary call's deadline; for a decoupled model, the longest wait for
+    // its next response (the first included).
     std::chrono::microseconds timeout { 0 };
+    bool decoupled = false;
     // The model's `available` signal, weakly: a call must not keep a signal
     // -- and the Values in it -- alive past the model and its run.
     roxal::weak_ptr<df::Signal> available;
@@ -934,18 +1054,29 @@ static Value tritonFailure(const TritonCallTarget& target, const grpc::Status& s
                                Value::nilVal(), detail);
 }
 
-// The outputs predict returns, from a decoded reply: matched by NAME -- a
+// One output of a reply, checked against the model's signature but not yet
+// a Value: a tensor's block, or a bytes output's elements within it.
+struct DecodedOutput {
+    const TensorSpec* spec = nullptr;
+    std::vector<int64_t> shape;
+    nn::InferOutputBytes bytes;
+    std::vector<std::pair<size_t, size_t>> elements;    // a bytes output's (offset, size)
+};
+
+// A reply's outputs, in the order predict returns them: matched by NAME -- a
 // server's output order is its own -- and checked against the model's
-// signature.  Each tensor adopts its output's block.
-static Value tritonOutputs(const TritonCallTarget& target,
-                           const roxal::triton::ModelInferResponse& response,
-                           const std::vector<nn::InferOutputBytes>& contents)
+// signature.  No Values: this runs before the endpoint's thread joins the
+// GC, so a collection never waits on it.  Throws runtime_error naming what
+// is wrong.
+static std::vector<DecodedOutput> decodeTritonOutputs(const TritonCallTarget& target,
+                                                      const roxal::triton::ModelInferResponse& response,
+                                                      const std::vector<nn::InferOutputBytes>& contents)
 {
     if (contents.size() != static_cast<size_t>(response.outputs_size()))
         throw std::runtime_error("the reply does not carry every output's contents");
 
-    Value list = target.outputs.size() > 1 ? Value::objVal(newListObj()) : Value::nilVal();
-    Value single;
+    std::vector<DecodedOutput> decoded;
+    decoded.reserve(target.outputs.size());
     for (const auto& spec : target.outputs) {
         int index = -1;
         for (int i = 0; i < response.outputs_size(); ++i)
@@ -957,20 +1088,73 @@ static Value tritonOutputs(const TritonCallTarget& target,
         if (dtypeOfTriton(out.datatype()) != spec.dtype)
             throw std::runtime_error("output '" + spec.name + "' is " + out.datatype() +
                                      ", not the model's " + spec.dtype);
-        const std::vector<int64_t> shape(out.shape().begin(), out.shape().end());
-        const TensorDType dtype = tensorDTypeFromString(spec.dtype);
-        const auto& bytes = contents[index];
+        DecodedOutput d;
+        d.spec = &spec;
+        d.shape.assign(out.shape().begin(), out.shape().end());
+        d.bytes = contents[index];
         size_t numel = 1;
-        for (auto dim : shape)
+        for (auto dim : d.shape)
             numel *= static_cast<size_t>(dim < 0 ? 0 : dim);
-        if (numel * tensorDTypeSize(dtype) != bytes.size)
-            throw std::runtime_error("output '" + spec.name + "' has " + std::to_string(bytes.size) +
-                                     " bytes for shape " + shapeToString(shape));
-        Value tensor = Value::objVal(newTensorObj(shape, dtype, bytes.block, bytes.block.get()));
+        if (spec.isBytes()) {
+            if (!nn::splitBytesElements(d.bytes.block.get(), d.bytes.size, d.elements))
+                throw std::runtime_error("output '" + spec.name + "' is not well-formed BYTES");
+            if (d.elements.size() != numel)
+                throw std::runtime_error("output '" + spec.name + "' has " + std::to_string(d.elements.size()) +
+                                         " elements for shape " + shapeToString(d.shape));
+            if (spec.singleElement() && d.elements.size() != 1)
+                throw std::runtime_error("output '" + spec.name + "' is declared " + shapeToString(spec.shape) +
+                                         " but has " + std::to_string(d.elements.size()) + " elements");
+            if (!spec.binary) {
+                const auto* base = static_cast<const char*>(d.bytes.block.get());
+                for (size_t i = 0; i < d.elements.size(); ++i)
+                    if (!nn::isValidUtf8(base + d.elements[i].first, d.elements[i].second))
+                        throw std::runtime_error("output '" + spec.name + "' element " + std::to_string(i) +
+                                                 " is not valid UTF-8 (pass binary=['" + spec.name +
+                                                 "'] to Model() for its bytes)");
+            }
+        } else {
+            const TensorDType dtype = tensorDTypeFromString(spec.dtype);
+            if (numel * tensorDTypeSize(dtype) != d.bytes.size)
+                throw std::runtime_error("output '" + spec.name + "' has " + std::to_string(d.bytes.size) +
+                                         " bytes for shape " + shapeToString(d.shape));
+        }
+        decoded.push_back(std::move(d));
+    }
+    return decoded;
+}
+
+// The Values predict returns for decoded outputs: one, or a list of them for
+// several.  A tensor adopts its output's block; a bytes output is a string,
+// or a list of them -- byte lists for a binary one -- by its declared shape.
+// Inside the endpoint thread's GC participation.
+static Value tritonOutputValues(const std::vector<DecodedOutput>& decoded)
+{
+    Value list = decoded.size() > 1 ? Value::objVal(newListObj()) : Value::nilVal();
+    Value single;
+    for (const auto& d : decoded) {
+        Value value;
+        if (d.spec->isBytes()) {
+            const auto* base = static_cast<const char*>(d.bytes.block.get());
+            auto element = [&](const std::pair<size_t, size_t>& e) {
+                if (d.spec->binary)
+                    return Value::listVal(std::vector<uint8_t>(base + e.first, base + e.first + e.second));
+                return Value::stringVal(toUnicodeString(std::string(base + e.first, e.second)));
+            };
+            if (d.spec->singleElement()) {
+                value = element(d.elements.front());
+            } else {
+                value = Value::listVal();
+                for (const auto& e : d.elements)
+                    asList(value)->append(element(e));
+            }
+        } else {
+            value = Value::objVal(newTensorObj(d.shape, tensorDTypeFromString(d.spec->dtype),
+                                               d.bytes.block, d.bytes.block.get()));
+        }
         if (list.isNil())
-            single = tensor;
+            single = value;
         else
-            asList(list)->append(tensor);
+            asList(list)->append(value);
     }
     return list.isNil() ? single : list;
 }
@@ -1042,6 +1226,8 @@ public:
     }
 
     Value submit(const NamedInputs& inputs, std::vector<Value>) override {
+        if (target_->decoupled)
+            return submitStream(inputs);
         auto promise = std::make_shared<NativePromise>();
         Value future = promise->future();
 
@@ -1055,36 +1241,31 @@ public:
             return future;
         }
 
-        // Each input goes out as the tensor's own bytes, held (not copied)
-        // until sent: a write to the tensor meanwhile copies first.
         roxal::triton::ModelInferRequest request;
-        request.set_model_name(source_.model);
-        request.set_model_version(source_.version);
         std::vector<nn::InferInputBytes> payload;
-        for (const auto& [name, tensor] : inputs) {
-            auto* in = request.add_inputs();
-            in->set_name(name);
-            in->set_datatype(tritonOfDtype(to_string(tensor->dtype())));
-            for (auto dim : tensor->shape())
-                in->add_shape(dim);
-            payload.push_back({tensor->sharedData(),
-                               static_cast<size_t>(tensor->numel()) * tensorDTypeSize(tensor->dtype())});
-        }
-        for (const auto& spec : target_->outputs)
-            request.add_outputs()->set_name(spec.name);
+        inferRequest(inputs, request, payload);
 
         auto target = target_;
         const bool started = endpoint_->callAsync("ModelInfer",
                                                   nn::encodeInferRequest(request, std::move(payload)),
                                                   target_->timeout,
             [target, promise](const grpc::Status& status, grpc::ByteBuffer& reply) {
-                // On the endpoint's thread.  The reply's bytes first, before
-                // joining the GC: copying them involves no Value.
+                // On the endpoint's thread.  The reply's bytes first, and
+                // checked, before joining the GC: that involves no Value.
                 roxal::triton::ModelInferResponse response;
                 std::vector<nn::InferOutputBytes> contents;
                 const bool decoded = status.ok() && nn::decodeInferResponse(reply, response, contents);
+                std::vector<DecodedOutput> outputs;
+                std::string invalid;
+                if (decoded) {
+                    try {
+                        outputs = decodeTritonOutputs(*target, response, contents);
+                    } catch (const std::exception& e) {
+                        invalid = e.what();
+                    }
+                }
 
-                // A GC participant while the reply becomes tensors (or an
+                // A GC participant while the reply becomes Values (or an
                 // exception) and the future resolves.
                 SimpleMarkSweepGC::ExternalParticipant participant(SimpleMarkSweepGC::instance());
                 Value result;
@@ -1093,8 +1274,10 @@ public:
                         result = tritonFailure(*target, status);
                     else if (!decoded)
                         throw std::runtime_error("malformed inference reply");
+                    else if (!invalid.empty())
+                        throw std::runtime_error(invalid);
                     else
-                        result = tritonOutputs(*target, response, contents);
+                        result = tritonOutputValues(outputs);
                 } catch (const std::exception& e) {
                     result = tritonFailure(*target, grpc::Status(grpc::StatusCode::INTERNAL, e.what()));
                 }
@@ -1108,15 +1291,215 @@ public:
         return future;
     }
 
-    // Nothing is queued here; calls in flight finish.
-    void close() override {}
+    // Nothing is queued here; calls in flight finish, streams are cancelled.
+    void close() override {
+        std::vector<std::shared_ptr<nn::TritonEndpoint::Stream>> open;
+        {
+            std::lock_guard<std::mutex> lock(streamsMutex_);
+            for (auto& weak : streams_)
+                if (auto stream = weak.lock())
+                    open.push_back(std::move(stream));
+            streams_.clear();
+        }
+        for (auto& stream : open)
+            stream->cancel();
+    }
 
 private:
+    // A decoupled model's call, over ModelStreamInfer: the future resolves
+    // with the first response, to a signal each response then sets -- to
+    // what a unary predict would return -- until the final one stops it.
+    // Stopping the signal cancels the call.  A failure before any response
+    // is the future's; one after it stops the signal, with a warning.
+    struct StreamState {
+        std::shared_ptr<NativePromise> promise;
+        ptr<df::Signal> signal;
+        uint64_t root = 0;                  // the signal's Value, rooted
+        std::shared_ptr<nn::TritonEndpoint::Stream> stream;
+        roxal::Subscription stopped;        // the script stopping the signal
+        std::atomic<bool> stoppedByScript { false };
+        bool resolved = false;              // endpoint thread only
+        bool final = false;
+    };
+
+    Value submitStream(const NamedInputs& inputs) {
+        auto promise = std::make_shared<NativePromise>();
+        Value future = promise->future();
+        if (endpoint_->unreachable()) {
+            noteAvailability(*target_, false);
+            promise->resolve(tritonFailure(*target_,
+                grpc::Status(grpc::StatusCode::UNAVAILABLE, "the server is unreachable")));
+            return future;
+        }
+
+        roxal::triton::ModelInferRequest request;
+        std::vector<nn::InferInputBytes> payload;
+        inferRequest(inputs, request, payload);
+        // The final flag comes on a response of its own: the last one with
+        // outputs may not know it is the last.
+        (*request.mutable_parameters())["triton_enable_empty_final_response"].set_bool_param(true);
+
+        auto state = std::make_shared<StreamState>();
+        state->promise = promise;
+        state->signal = df::Signal::newSourceSignal(0, Value::nilVal(), source_.model + ".stream");
+        state->signal->markCallStream();
+        state->signal->run();
+        state->root = rootStreamSignal(Value::signalVal(state->signal));
+        std::weak_ptr<StreamState> weak = state;
+        state->stopped = state->signal->subscribeStopped([weak] {
+            if (auto s = weak.lock()) {
+                s->stoppedByScript.store(true);
+                if (auto stream = std::atomic_load(&s->stream))
+                    stream->cancel();
+            }
+        });
+
+        auto target = target_;
+        nn::TritonEndpoint::StreamCallbacks callbacks;
+        callbacks.onMessage = [target, state](grpc::ByteBuffer& message) {
+            // The message's bytes first, and checked, before joining the GC.
+            std::string error;
+            roxal::triton::ModelInferResponse response;
+            std::vector<nn::InferOutputBytes> contents;
+            const bool decoded = nn::decodeStreamInferResponse(message, error, response, contents);
+            const auto& params = response.parameters();
+            const auto finalFlag = params.find("triton_final_response");
+            const bool final = decoded && finalFlag != params.end() && finalFlag->second.bool_param();
+            std::vector<DecodedOutput> outputs;
+            std::string invalid = !decoded ? std::string("malformed stream response") : error;
+            if (invalid.empty() && response.outputs_size() > 0) {
+                try {
+                    outputs = decodeTritonOutputs(*target, response, contents);
+                } catch (const std::exception& e) {
+                    invalid = e.what();
+                }
+            }
+
+            SimpleMarkSweepGC::ExternalParticipant participant(SimpleMarkSweepGC::instance());
+            if (!invalid.empty()) {
+                failStream(*target, *state, grpc::Status(grpc::StatusCode::INTERNAL, invalid));
+                return false;
+            }
+            noteAvailability(*target, true);
+            if (!outputs.empty()) {
+                try {
+                    state->signal->set(tritonOutputValues(outputs));
+                } catch (const std::exception& e) {
+                    failStream(*target, *state, grpc::Status(grpc::StatusCode::INTERNAL, e.what()));
+                    return false;
+                }
+                if (!state->resolved) {
+                    state->resolved = true;
+                    state->promise->resolve(rootedStreamSignal(state->root));
+                }
+            }
+            if (final) {
+                state->final = true;
+                endStream(*state);
+            }
+            return true;
+        };
+        callbacks.onEnd = [target, state](const grpc::Status& status) {
+            SimpleMarkSweepGC::ExternalParticipant participant(SimpleMarkSweepGC::instance());
+            // Cancelled is this side's doing (the script stopped the signal,
+            // the model closed, the program ended): no warning for it, but a
+            // future still waiting fails with it.
+            const bool cancelled = state->stoppedByScript.load()
+                || status.error_code() == grpc::StatusCode::CANCELLED;
+            if (!state->final && !status.ok() && (!state->resolved || !cancelled))
+                failStream(*target, *state, status);
+            noteAvailability(*target, status.ok() || state->final || state->stoppedByScript.load()
+                || classifyGrpcStatus(status.error_code()) != GrpcFailureKind::Unavailable);
+            if (!state->resolved) {
+                state->resolved = true;
+                state->promise->resolve(rootedStreamSignal(state->root));
+            }
+            endStream(*state);
+            unrootStreamSignal(state->root);
+        };
+
+        auto stream = endpoint_->startStream("ModelStreamInfer",
+                                             nn::encodeInferRequest(request, std::move(payload)),
+                                             target_->timeout, std::move(callbacks));
+        if (!stream) {
+            state->stopped.cancel();
+            state->signal->stop();
+            unrootStreamSignal(state->root);
+            promise->resolve(Value::exceptionVal(Value::stringVal(
+                toUnicodeString("ai.nn: inference abandoned at shutdown"))));
+            return future;
+        }
+        std::atomic_store(&state->stream, stream);
+        if (state->stoppedByScript.load())      // stopped before the stream was known
+            stream->cancel();
+        {
+            std::lock_guard<std::mutex> lock(streamsMutex_);
+            streams_.erase(std::remove_if(streams_.begin(), streams_.end(),
+                                          [](const auto& w) { return w.expired(); }),
+                           streams_.end());
+            streams_.push_back(stream);
+        }
+        return future;
+    }
+
+    // The stream failed: before any response, its future resolves to the
+    // failure; after, its signal stops (endStream) and the failure is
+    // reported once.  Inside the GC participation.
+    static void failStream(const TritonCallTarget& target, StreamState& state, const grpc::Status& status) {
+        if (!state.resolved) {
+            state.resolved = true;
+            state.promise->resolve(tritonFailure(target, status));
+        } else if (!state.final) {
+            VM::emitDiagnostic("ai.nn: " + target.where + ": the stream of responses ended early: " +
+                               status.error_message() + " [" + grpcStatusCodeName(status.error_code()) + "]",
+                               OutputSeverity::Warning, "ai.nn");
+        }
+        state.final = true;
+    }
+
+    // No more responses: the signal stops (not cancelling anything).
+    static void endStream(StreamState& state) {
+        state.stopped.cancel();
+        if (state.signal->isRunning())
+            state.signal->stop();
+    }
+
+    // The request for `inputs`.  Each input's bytes are held, not copied,
+    // until sent: a tensor's own buffer (a write to the tensor meanwhile
+    // copies first), or a bytes input's encoded elements.
+    void inferRequest(const NamedInputs& inputs, roxal::triton::ModelInferRequest& request,
+                      std::vector<nn::InferInputBytes>& payload) const {
+        request.set_model_name(source_.model);
+        request.set_model_version(source_.version);
+        for (const auto& input : inputs) {
+            auto* in = request.add_inputs();
+            in->set_name(input.name);
+            if (input.bytes) {
+                in->set_datatype("BYTES");
+                for (auto dim : input.shape)
+                    in->add_shape(dim);
+                payload.push_back({std::shared_ptr<const void>(input.bytes, input.bytes->data()),
+                                   input.bytes->size()});
+            } else {
+                ObjTensor* tensor = input.tensor;
+                in->set_datatype(tritonOfDtype(to_string(tensor->dtype())));
+                for (auto dim : tensor->shape())
+                    in->add_shape(dim);
+                payload.push_back({tensor->sharedData(),
+                                   static_cast<size_t>(tensor->numel()) * tensorDTypeSize(tensor->dtype())});
+            }
+        }
+        for (const auto& spec : target_->outputs)
+            request.add_outputs()->set_name(spec.name);
+    }
+
     std::shared_ptr<nn::TritonEndpoint> endpoint_;
     TritonSource source_;
     std::shared_ptr<TritonCallTarget> target_;
     std::optional<ModelServerInfo> server_;
     std::optional<ModelDeployment> deployment_;
+    std::mutex streamsMutex_;
+    std::vector<std::weak_ptr<nn::TritonEndpoint::Stream>> streams_;   // to cancel at close()
 };
 
 // Who the server at `endpoint` says it is (a blocking call, GC-blocked).
@@ -1137,7 +1520,8 @@ static grpc::Status queryTritonServer(nn::TritonEndpoint& endpoint, ModelServerI
 static std::unique_ptr<ModelSession> openTritonSession(const TritonSource& source,
                                                        const std::string& deviceArg,
                                                        const OutputSelection& selection,
-                                                       std::chrono::microseconds timeout,
+                                                       const std::vector<std::string>& binary,
+                                                       std::optional<std::chrono::microseconds> timeout,
                                                        const ptr<df::Signal>& available,
                                                        ModelWrapper& model,
                                                        std::optional<ModelDeployment> deployment = std::nullopt)
@@ -1195,13 +1579,38 @@ static std::unique_ptr<ModelSession> openTritonSession(const TritonSource& sourc
     for (const auto& t : meta.outputs())
         model.outputs.push_back({t.name(), {t.shape().begin(), t.shape().end()},
                                  dtypeOfTriton(t.datatype())});
+
+    // The model's configuration says what the metadata doesn't: which inputs
+    // are optional, and whether it answers on a stream.  A server that can't
+    // be reached fails here; one that won't say (a KServe server without
+    // Triton's extension) leaves every input required and the model unary.
+    {
+        roxal::triton::ModelConfigRequest configRequest;
+        configRequest.set_name(source.model);
+        configRequest.set_version(source.version);
+        roxal::triton::ModelConfigResponse configReply;
+        status = endpoint->call("ModelConfig", configRequest, configReply, deadline);
+        if (status.ok()) {
+            for (const auto& in : configReply.config().input())
+                if (in.optional())
+                    for (auto& spec : model.inputs)
+                        if (spec.name == in.name())
+                            spec.optional = true;
+            model.decoupled = configReply.config().model_transaction_policy().decoupled();
+        } else if (classifyGrpcStatus(status.error_code()) == GrpcFailureKind::Unavailable) {
+            throw initFailure(status);
+        }
+    }
     if (selection)
         selectOutputs(model.outputs, *selection);
+    markBinaryOutputs(model.outputs, binary);
+    // A datatype ai.nn has no value for is refused -- unless the input is
+    // optional (a script just can't give it) or the output isn't selected.
     auto unsupported = [&](const std::vector<TensorSpec>& specs, const char* kind,
                            const google::protobuf::RepeatedPtrField<
                                roxal::triton::ModelMetadataResponse::TensorMetadata>& described) {
         for (const auto& spec : specs)
-            if (spec.dtype.empty())
+            if (spec.dtype.empty() && !spec.optional)
                 for (const auto& t : described)
                     if (t.name() == spec.name)
                         throw std::invalid_argument("Model.init: " + where + ": " + kind + " '" +
@@ -1215,7 +1624,9 @@ static std::unique_ptr<ModelSession> openTritonSession(const TritonSource& sourc
     auto target = std::make_shared<TritonCallTarget>();
     target->where = where;
     target->outputs = model.outputs;
-    target->timeout = timeout;
+    target->decoupled = model.decoupled;
+    target->timeout = timeout.value_or(model.decoupled ? std::chrono::microseconds(std::chrono::seconds(30))
+                                                       : std::chrono::microseconds(std::chrono::seconds(1)));
     target->available = available;
     return std::make_unique<TritonSession>(std::move(endpoint), source, std::move(target),
                                            std::move(server), std::move(deployment));
@@ -1336,7 +1747,8 @@ static std::unique_ptr<ModelSession> deployTritonModel(const std::string& path, 
                                                        const std::string& configJson,
                                                        const std::string& deviceArg,
                                                        const OutputSelection& selection,
-                                                       std::chrono::microseconds timeout,
+                                                       const std::vector<std::string>& binary,
+                                                       std::optional<std::chrono::microseconds> timeout,
                                                        const ptr<df::Signal>& available,
                                                        ModelWrapper& model)
 {
@@ -1413,17 +1825,19 @@ static std::unique_ptr<ModelSession> deployTritonModel(const std::string& path, 
     if (repository && std::filesystem::exists(*repository / name))
         deployment.repository = repository->string();
 
-    return openTritonSession(TritonSource { address, name, "" }, deviceArg, selection, timeout, available,
-                             model, std::move(deployment));
+    return openTritonSession(TritonSource { address, name, "" }, deviceArg, selection, binary, timeout,
+                             available, model, std::move(deployment));
 }
 
 // Model(..., timeout=): how long a Triton inference may take -- a time
-// quantity (200ms) or seconds; 1 s by default.  Past it the call fails as
-// unavailable, and a node holds its last outputs.
-static std::chrono::microseconds tritonTimeoutArg(const Value& arg)
+// quantity (200ms) or seconds; by default 1 s, or for a decoupled model 30 s
+// between its responses (the first included: an LLM's first token waits on
+// the server's queue).  Past it the call fails as unavailable, and a node
+// holds its last outputs.  None: the default, which depends on the model.
+static std::optional<std::chrono::microseconds> tritonTimeoutArg(const Value& arg)
 {
     if (arg.isNil())
-        return std::chrono::seconds(1);
+        return std::nullopt;
     std::optional<double> seconds;
     if (arg.isNumber())
         seconds = arg.isReal() ? arg.asReal() : static_cast<double>(arg.asInt());
@@ -1441,6 +1855,10 @@ static std::chrono::microseconds tritonTimeoutArg(const Value& arg)
 static void shutdownTriton()
 {
     nn::TritonEndpoint::shutdownAll();
+    {
+        std::lock_guard<std::mutex> lock(tritonStreamRoots->mutex);
+        tritonStreamRoots->signals.clear();
+    }
     std::lock_guard<std::mutex> lock(tritonErrorTypes->mutex);
     tritonErrorTypes->types.clear();
 }
@@ -1449,14 +1867,14 @@ static void shutdownTriton()
 #ifdef __EMSCRIPTEN__
 // The host provider's feeds for a set of named inputs.  The encoder copies
 // the input bytes into the request, so no lifetime coupling with the tensors.
-static std::vector<web::NnFeed> webFeeds(
-    const std::vector<std::pair<std::string, ObjTensor*>>& inputTensors)
+static std::vector<web::NnFeed> webFeeds(const NamedInputs& inputTensors)
 {
     std::vector<web::NnFeed> feeds;
     feeds.reserve(inputTensors.size());
-    for (auto& [name, tensor] : inputTensors) {
+    for (const auto& input : inputTensors) {
+        ObjTensor* tensor = input.tensor;
         web::NnFeed f;
-        f.name  = name;
+        f.name  = input.name;
         f.dtype = to_string(tensor->dtype());
         f.shape = tensor->shape();
         f.data  = tensor->rawData();
@@ -1603,73 +2021,205 @@ static std::string joinNames(const std::vector<TensorSpec>& specs)
     return s;
 }
 
-// The named inputs of one predict, checked against the model's: a tensor
-// (single-input models), a dict by input name, or a list in input order.
-// Every input must be given exactly once, with the model's dtype and a
-// compatible shape -- anything else is an invalid_argument, raised to the
-// script before an inference starts.  The result is in the model's input
-// order; the argument and its tensors are added to heldValues.
+// ---- bytes inputs ----
+// A bytes element is a string (sent as its UTF-8), a list of bytes, or a 1-D
+// uint8 tensor; a list of elements is a batch.  A list of bytes -- `[]`
+// included -- is ONE element: that is decided by what the list holds, not by
+// how it is stored.
+
+static bool isByteList(const Value& v)
+{
+    if (!isList(v))
+        return false;
+    ObjList* list = asList(v);
+    if (list->isPackedBytes())
+        return true;
+    for (int32_t i = 0; i < list->length(); ++i)
+        if (!list->getElement(i).isByte())
+            return false;
+    return true;
+}
+
+static bool isBytesElement(const Value& v)
+{
+    if (isString(v) || isByteList(v))
+        return true;
+    if (isTensor(v)) {
+        ObjTensor* t = asTensor(v);
+        return t->dtype() == TensorDType::UInt8 && t->shape().size() == 1;
+    }
+    return false;
+}
+
+static void appendBytesElementValue(std::string& out, const Value& v)
+{
+    if (isString(v)) {
+        const std::string utf8 = toUTF8StdString(asStringObj(v)->s);
+        nn::appendBytesElement(out, utf8.data(), utf8.size());
+    } else if (isTensor(v)) {
+        ObjTensor* t = asTensor(v);
+        nn::appendBytesElement(out, t->rawData(), static_cast<size_t>(t->numel()));
+    } else {
+        ObjList* list = asList(v);
+        if (const auto* packed = list->packedBytes()) {
+            nn::appendBytesElement(out, packed->data(), packed->size());
+        } else {
+            std::vector<uint8_t> bytes;
+            bytes.reserve(list->length());
+            for (int32_t i = 0; i < list->length(); ++i)
+                bytes.push_back(list->getElement(i).asByte());
+            nn::appendBytesElement(out, bytes.data(), bytes.size());
+        }
+    }
+}
+
+// The shape `count` elements fill for a bytes input declared `declared`:
+// the first dynamic dimension takes up what the fixed ones don't, any other
+// is 1.
+static std::vector<int64_t> bytesInputShape(const TensorSpec& spec, size_t count)
+{
+    std::vector<int64_t> shape = spec.shape;
+    size_t fixed = 1;
+    int dynamic = -1;
+    for (size_t i = 0; i < shape.size(); ++i) {
+        if (shape[i] >= 0)
+            fixed *= static_cast<size_t>(shape[i]);
+        else if (dynamic < 0)
+            dynamic = static_cast<int>(i);
+        else
+            shape[i] = 1;
+    }
+    const std::string given = std::to_string(count) + (count == 1 ? " element" : " elements");
+    if (dynamic < 0) {
+        if (count != fixed)
+            throw std::invalid_argument("ai.nn: input '" + spec.name + "' is declared " +
+                                        shapeToString(spec.shape) + " but was given " + given);
+    } else {
+        if (fixed == 0 || count % fixed != 0)
+            throw std::invalid_argument("ai.nn: input '" + spec.name + "' is declared " +
+                                        shapeToString(spec.shape) + ": " + given + " do not fill it");
+        shape[dynamic] = static_cast<int64_t>(count / fixed);
+    }
+    return shape;
+}
+
+// A bytes input's value -- one element, or a list of them -- encoded.
+static NamedInput bindBytesInput(const TensorSpec& spec, const Value& v)
+{
+    auto buffer = std::make_shared<std::string>();
+    size_t count = 0;
+    if (isBytesElement(v)) {
+        appendBytesElementValue(*buffer, v);
+        count = 1;
+    } else if (isList(v)) {
+        ObjList* list = asList(v);
+        for (int32_t i = 0; i < list->length(); ++i) {
+            const Value element = list->getElement(i);
+            if (!isBytesElement(element))
+                throw std::invalid_argument("ai.nn: input '" + spec.name + "': element " + std::to_string(i) +
+                                            " is not a string, a list of bytes, or a 1-D uint8 tensor");
+            appendBytesElementValue(*buffer, element);
+        }
+        count = static_cast<size_t>(list->length());
+    } else {
+        throw std::invalid_argument("ai.nn: input '" + spec.name + "' takes a string, a list of bytes, "
+                                    "a 1-D uint8 tensor, or a list of those");
+    }
+    return {spec.name, nullptr, std::move(buffer), bytesInputShape(spec, count)};
+}
+
+// The named inputs of one predict, checked against the model's:
+//   - a dict by input name -- optional inputs may be left out;
+//   - a list in input order: every input, or just the required ones;
+//   - any other value: the model's sole required input.
+// A list given to a model whose one input is bytes is that input's value (a
+// batch), not a list of inputs.  Each input given must have the
+// model's dtype and a compatible shape -- anything else is an
+// invalid_argument, raised to the script before an inference starts.  The
+// result is in the model's input order; the argument and what it holds are
+// added to heldValues.
 static NamedInputs parsePredictInputs(const ModelWrapper& model, const Value& arg,
                                       std::vector<Value>& heldValues)
 {
     const auto& specs = model.inputs;
-    std::vector<ObjTensor*> bound(specs.size(), nullptr);   // per model input
+    std::vector<std::optional<Value>> bound(specs.size());   // per model input
     heldValues.push_back(arg);
 
-    if (isTensor(arg)) {
-        if (specs.size() != 1)
-            throw std::invalid_argument(
-                "ai.nn: the model has " + std::to_string(specs.size()) + " inputs (" +
-                joinNames(specs) + "): pass a dict by name, or a list in that order");
-        bound[0] = asTensor(arg);
-    }
-    else if (isDict(arg)) {
+    std::vector<size_t> required;
+    for (size_t i = 0; i < specs.size(); ++i)
+        if (!specs[i].optional)
+            required.push_back(i);
+    // A model with one input, a bytes one, takes a list as that input's
+    // value: a batch.  (With optional inputs too, a list is positional.)
+    const bool soleBytesInput = specs.size() == 1 && specs[0].isBytes();
+    auto inputsDescription = [&] {
+        std::string s = std::to_string(specs.size()) + " inputs (" + joinNames(specs) + ")";
+        if (required.size() != specs.size())
+            s += ", " + std::to_string(required.size()) + " of them required";
+        return s;
+    };
+
+    if (isDict(arg)) {
         for (auto& [key, val] : asDict(arg)->items()) {
             if (!isString(key))
                 throw std::invalid_argument("ai.nn: predict dict keys must be strings");
             const std::string name = toUTF8StdString(asStringObj(key)->s);
-            if (!isTensor(val))
-                throw std::invalid_argument(
-                    "ai.nn: predict dict value for '" + name + "' is not a tensor");
             auto it = std::find_if(specs.begin(), specs.end(),
                                    [&](const TensorSpec& spec) { return spec.name == name; });
             if (it == specs.end())
                 throw std::invalid_argument(
                     "ai.nn: the model has no input '" + name + "' (its inputs: " +
                     joinNames(specs) + ")");
-            bound[it - specs.begin()] = asTensor(val);
+            bound[it - specs.begin()] = val;
             heldValues.push_back(val);
         }
     }
-    else if (isList(arg)) {
+    else if (isList(arg) && !soleBytesInput) {
         ObjList* list = asList(arg);
-        if (static_cast<size_t>(list->length()) != specs.size()) {
-            throw std::invalid_argument(
-                "ai.nn: predict list has " + std::to_string(list->length()) +
-                " elements but model expects " + std::to_string(specs.size()) +
-                " inputs");
+        const size_t n = static_cast<size_t>(list->length());
+        std::vector<size_t> positions;
+        if (n == specs.size()) {
+            for (size_t i = 0; i < specs.size(); ++i)
+                positions.push_back(i);
+        } else if (n == required.size()) {
+            positions = required;
+        } else {
+            throw std::invalid_argument("ai.nn: predict list has " + std::to_string(n) +
+                                        " elements but the model has " + inputsDescription());
         }
-        for (size_t i = 0; i < specs.size(); ++i) {
-            Value elem = list->getElement(i);
-            if (!isTensor(elem))
-                throw std::invalid_argument(
-                    "ai.nn: predict list element " + std::to_string(i) + " is not a tensor");
-            bound[i] = asTensor(elem);
+        for (size_t k = 0; k < n; ++k) {
+            Value elem = list->getElement(static_cast<int32_t>(k));
+            bound[positions[k]] = elem;
             heldValues.push_back(elem);
         }
     }
     else {
-        throw std::invalid_argument(
-            "ai.nn: predict expects a tensor, dict of tensors, or list of tensors");
+        if (required.size() != 1)
+            throw std::invalid_argument(
+                "ai.nn: the model has " + inputsDescription() +
+                ": pass a dict by name, or a list in that order");
+        bound[required[0]] = arg;
     }
 
     NamedInputs inputs;
     inputs.reserve(specs.size());
     for (size_t i = 0; i < specs.size(); ++i) {
         const TensorSpec& spec = specs[i];
-        ObjTensor* tensor = bound[i];
-        if (!tensor)
+        if (!bound[i]) {
+            if (spec.optional)
+                continue;
             throw std::invalid_argument("ai.nn: missing input '" + spec.name + "'");
+        }
+        const Value& value = *bound[i];
+        if (spec.dtype.empty())
+            throw std::invalid_argument("ai.nn: input '" + spec.name + "' has a datatype ai.nn cannot send");
+        if (spec.isBytes()) {
+            inputs.push_back(bindBytesInput(spec, value));
+            continue;
+        }
+        if (!isTensor(value))
+            throw std::invalid_argument("ai.nn: input '" + spec.name + "' is not a tensor");
+        ObjTensor* tensor = asTensor(value);
         const std::string dtype = to_string(tensor->dtype());
         if (dtype != spec.dtype)
             throw std::invalid_argument(
@@ -1680,7 +2230,7 @@ static NamedInputs parsePredictInputs(const ModelWrapper& model, const Value& ar
                 "ai.nn: shape mismatch for input '" + spec.name +
                 "': model expects " + shapeToString(spec.shape) +
                 " but got " + shapeToString(tensor->shape()));
-        inputs.emplace_back(spec.name, tensor);
+        inputs.push_back({spec.name, tensor, nullptr, {}});
     }
     return inputs;
 }
@@ -1786,6 +2336,8 @@ Value ModuleNN::nn_model_init_builtin(ArgsView args)
     const Value timeoutArg = args.size() >= 6 ? args[5] : Value::nilVal();
     const Value serverArg = args.size() >= 7 ? args[6] : Value::nilVal();
     const Value configArg = args.size() >= 8 ? args[7] : Value::nilVal();
+    const Value binaryArg = args.size() >= 9 ? args[8] : Value::nilVal();
+    const std::vector<std::string> binary = binaryOutputsArg(binaryArg);
     if (!serverArg.isNil() && !isString(serverArg))
         throw std::invalid_argument("Model.init: server must be a string, 'host[:port]'");
     if (!configArg.isNil() && serverArg.isNil())
@@ -1807,7 +2359,7 @@ Value ModuleNN::nn_model_init_builtin(ArgsView args)
             : isString(configArg) ? toUTF8StdString(asStringObj(configArg)->s) : sysToJson(configArg);
         try {
             wrapper->session = deployTritonModel(path, toUTF8StdString(asStringObj(serverArg)->s), configJson,
-                                                 deviceArg, selection, tritonTimeoutArg(timeoutArg),
+                                                 deviceArg, selection, binary, tritonTimeoutArg(timeoutArg),
                                                  available, *wrapper);
         } catch (const TypedNnError& e) {
             const Value type = vm().loadGlobal(toUnicodeString(e.typeName)).value_or(Value::nilVal());
@@ -1816,7 +2368,7 @@ Value ModuleNN::nn_model_init_builtin(ArgsView args)
         }
     } else if (auto source = parseTritonSource(path)) {
         try {
-            wrapper->session = openTritonSession(*source, deviceArg, selection,
+            wrapper->session = openTritonSession(*source, deviceArg, selection, binary,
                                                  tritonTimeoutArg(timeoutArg), available, *wrapper);
         } catch (const TypedNnError& e) {
             const Value type = vm().loadGlobal(toUnicodeString(e.typeName)).value_or(Value::nilVal());
@@ -1831,6 +2383,8 @@ Value ModuleNN::nn_model_init_builtin(ArgsView args)
                                         "(ROXAL_ENABLE_TRITON)");
         if (!timeoutArg.isNil())
             throw std::invalid_argument("Model.init: timeout applies to Triton models only");
+        if (!binary.empty())
+            throw std::invalid_argument("Model.init: binary applies to Triton models' bytes outputs only");
 #ifdef ROXAL_ENABLE_ONNX
         wrapper->session = openOrtSession(path, deviceArg, doWarmup, selection, *wrapper);
 #else
@@ -1869,22 +2423,29 @@ Value ModuleNN::nn_model_init_builtin(ArgsView args)
     func->upvalueCount = 0;
     func->builtinInfo = make_ptr<BuiltinFuncInfo>(predictFn, std::vector<Value>{}, 0x1);
     func->doc = toUnicodeString(
-        "Run inference. Input may be a tensor, a dict {name: tensor}, or a list "
-        "of tensors. Returns output tensor (or list if multiple outputs). "
+        "Run inference. Input may be a tensor (or a string, for a model taking text), "
+        "a dict {name: value}, or a list in input order. Returns the output (or a list "
+        "if several): a tensor, or a string / list for a bytes output. "
         "Also works with signals for reactive dataflow: a signal input yields "
         "a derived signal per model output.");
-    // The signature: one untyped input, and one tensor return PER MODEL
-    // OUTPUT.  An ONNX graph fixes its output count, and it is known here, so
-    // predict carries the same '-> [tensor, ..]' declaration a Roxal func
-    // would write by hand: a plain call returns the outputs as a list (as it
-    // always did), and a lifted call mints one output signal per model output
-    // -- 'var [logits, boxes] = model.predict(sig)' -- instead of a single
+    // The signature: one untyped input, and one return PER MODEL OUTPUT -- a
+    // tensor, or for a bytes output a string (one element by declaration) or
+    // a list.  A model fixes its outputs, and they are known here, so predict
+    // carries the same '-> [tensor, ..]' declaration a Roxal func would write
+    // by hand: a plain call returns the outputs as a list (as it always did),
+    // and a lifted call mints one output signal per model output -- 'var
+    // [logits, boxes] = model.predict(sig)' -- instead of a single
     // list-valued signal.  The declaration decides the arity, not the use
-    // site, so the two forms agree with the rest of the language (see
-    // "Nodes with several outputs" in roxal-for-devs.md).
-    const size_t outputCount = wrapper->outputs.empty() ? 1 : wrapper->outputs.size();
-    func->funcType = makeFuncType({{"input", std::nullopt}}, {}, /*isProc=*/false,
-                                  std::vector<type::BuiltinType>(outputCount, type::BuiltinType::Tensor));
+    // site, so the two forms agree with the rest of the language (see "Nodes
+    // with several outputs" in roxal-for-devs.md).
+    std::vector<type::BuiltinType> returnTypes;
+    for (const auto& spec : wrapper->outputs)
+        returnTypes.push_back(!spec.isBytes() ? type::BuiltinType::Tensor
+                              : (spec.singleElement() && !spec.binary) ? type::BuiltinType::String
+                              : type::BuiltinType::List);
+    if (returnTypes.empty())
+        returnTypes.push_back(type::BuiltinType::Tensor);
+    func->funcType = makeFuncType({{"input", std::nullopt}}, {}, /*isProc=*/false, returnTypes);
 
     Value funcVal = Value::objVal(std::move(funcObj));
     Value closureVal = Value::objVal(newClosureObj(funcVal));
@@ -1898,10 +2459,10 @@ Value ModuleNN::nn_model_init_builtin(ArgsView args)
 }
 
 // ============================================================
-// Model.inputs() → list of {name, shape, dtype}
+// Model.inputs() → list of {name, shape, dtype, optional}
 // ============================================================
 
-static Value buildIODescriptorList(const std::vector<TensorSpec>& specs)
+static Value buildIODescriptorList(const std::vector<TensorSpec>& specs, bool areInputs)
 {
     Value list = Value::objVal(newListObj());
     for (const auto& spec : specs) {
@@ -1924,6 +2485,9 @@ static Value buildIODescriptorList(const std::vector<TensorSpec>& specs)
             Value::stringVal(toUnicodeString(spec.dtype))
         );
 
+        if (areInputs)
+            asDict(dict)->store(Value::stringVal(toUnicodeString("optional")), Value::boolVal(spec.optional));
+
         asList(list)->append(dict);
     }
     return list;
@@ -1935,7 +2499,7 @@ Value ModuleNN::nn_model_inputs_builtin(ArgsView args)
         throw std::invalid_argument("Model.inputs expects receiver");
 
     ModelWrapper* wrapper = getModelWrapper(asObjectInstance(args[0]));
-    return buildIODescriptorList(wrapper->inputs);
+    return buildIODescriptorList(wrapper->inputs, /*areInputs=*/true);
 }
 
 // ============================================================
@@ -1948,7 +2512,7 @@ Value ModuleNN::nn_model_outputs_builtin(ArgsView args)
         throw std::invalid_argument("Model.outputs expects receiver");
 
     ModelWrapper* wrapper = getModelWrapper(asObjectInstance(args[0]));
-    return buildIODescriptorList(wrapper->outputs);
+    return buildIODescriptorList(wrapper->outputs, /*areInputs=*/false);
 }
 
 // ============================================================

@@ -215,6 +215,8 @@ void FuncNode::trace(roxal::ValueVisitor& visitor) const
         visitValue(v);
     for (const auto& v : m_funcYieldState.pendingOutputFutures)
         visitValue(v);
+    for (const auto& f : m_funcYieldState.forwards)
+        visitValue(f.inner);
     visitValue(m_funcYieldState.bodyModule);
     // Per-output default values (returned by initialValueForOutput) are
     // retained Values too.
@@ -494,53 +496,8 @@ bool FuncNode::inputsAvailableAt(TimePoint time) const
     return true;
 }
 
-FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline)
+Values FuncNode::gatherInputs(TimePoint time) const
 {
-    using roxal::VM;
-    using roxal::Value;
-    using roxal::ExecutionStatus;
-    using roxal::asClosure;
-    using roxal::isFuture;
-
-    // A pending future-based yield (an async native body such as ai.nn
-    // predict, evaluated earlier at lift time, on a tick, or for an event):
-    // poll it first.  Still pending: remember that a newer evaluation was
-    // asked for, so the node runs again on its current inputs once the
-    // futures resolve (see resumeExecution) instead of dropping this
-    // update behind the in-flight one.  Resolved: deliver, then -- unless
-    // the rerun already covered it -- fall through and evaluate afresh at
-    // this newer time.  A held evaluation (see resumeExecution) is settled
-    // the same way, but delivered nothing.
-    bool delivered = false;   // a pending evaluation completed in this call
-    if (hasPendingFutureYield()) {
-        const TimePoint yieldedAt = m_funcYieldState.executionTime;
-        auto result = resumeExecution(deadline);
-        if (result != FuncExecResult::Completed && result != FuncExecResult::Held) {
-            if (result == FuncExecResult::Yielded && time > yieldedAt
-                && (!m_funcYieldState.rerunTime || time > *m_funcYieldState.rerunTime))
-                m_funcYieldState.rerunTime = time;
-            return result;
-        }
-        if (m_funcYieldState.active) {
-            // the rerun yielded anew
-            if (time > m_funcYieldState.executionTime
-                && (!m_funcYieldState.rerunTime || time > *m_funcYieldState.rerunTime))
-                m_funcYieldState.rerunTime = time;
-            return FuncExecResult::Yielded;
-        }
-        if (time <= yieldedAt)
-            return result == FuncExecResult::Held ? FuncExecResult::NotExecuted : result;
-        delivered = result == FuncExecResult::Completed;
-    }
-
-    if (!m_operatorSignalsCalled && !inputNames().empty())
-        throw std::runtime_error("FuncNode '"+name()+"' not all inputs connected");
-
-    #ifdef DEBUG_BUILD
-    if (!inputsAvailableAt(time))
-        throw std::runtime_error("FuncNode '"+name()+"' inputs not available at time "+time.humanString());
-    #endif
-
     Values inputValues;
     for (const auto& input : m_inputs) {
         TimeDuration latency = input.signal->period() * -input.index;
@@ -578,6 +535,77 @@ FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline
             }
         }
     }
+    return inputValues;
+}
+
+FuncExecResult FuncNode::conditionallyExecute(TimePoint time, TimePoint deadline)
+{
+    using roxal::VM;
+    using roxal::Value;
+    using roxal::ExecutionStatus;
+    using roxal::asClosure;
+    using roxal::isFuture;
+
+    // A pending future-based yield (an async native body such as ai.nn
+    // predict, evaluated earlier at lift time, on a tick, or for an event):
+    // poll it first.  Still pending: remember that a newer evaluation was
+    // asked for, so the node runs again on its current inputs once the
+    // futures resolve (see resumeExecution) instead of dropping this
+    // update behind the in-flight one.  Resolved: deliver, then -- unless
+    // the rerun already covered it -- fall through and evaluate afresh at
+    // this newer time.  A held evaluation (see resumeExecution) is settled
+    // the same way, but delivered nothing.
+    //
+    // Forwarding a stream (see FuncYieldState::Forward) is such a yield too,
+    // but changed inputs may end it rather than wait behind it: the node
+    // then evaluates on them here, as if nothing were pending.  Checked
+    // before the poll, and again after one that found the futures resolved
+    // to a stream -- forwarded only from then on.
+    std::optional<Values> gathered;
+    auto takeOverForwarding = [&] {
+        if (m_funcYieldState.forwards.empty() || time <= m_funcYieldState.executionTime
+            || !newInputEndsForwarding())
+            return false;
+        if (!gathered)
+            gathered = gatherInputs(time);
+        if (*gathered == m_funcYieldState.inputValues)
+            return false;
+        endForwarding();
+        return true;
+    };
+    takeOverForwarding();
+
+    bool delivered = false;   // a pending evaluation completed in this call
+    if (hasPendingFutureYield()) {
+        const TimePoint yieldedAt = m_funcYieldState.executionTime;
+        auto result = resumeExecution(deadline, time);
+        if (result != FuncExecResult::Completed && result != FuncExecResult::Held) {
+            if (result == FuncExecResult::Yielded && time > yieldedAt
+                && (!m_funcYieldState.rerunTime || time > *m_funcYieldState.rerunTime))
+                m_funcYieldState.rerunTime = time;
+            return result;
+        }
+        if (m_funcYieldState.active && !takeOverForwarding()) {
+            // the rerun yielded anew, or a stream is forwarded and stays
+            if (time > m_funcYieldState.executionTime
+                && (!m_funcYieldState.rerunTime || time > *m_funcYieldState.rerunTime))
+                m_funcYieldState.rerunTime = time;
+            return FuncExecResult::Yielded;
+        }
+        if (time <= yieldedAt)
+            return result == FuncExecResult::Held ? FuncExecResult::NotExecuted : result;
+        delivered = result == FuncExecResult::Completed;
+    }
+
+    if (!m_operatorSignalsCalled && !inputNames().empty())
+        throw std::runtime_error("FuncNode '"+name()+"' not all inputs connected");
+
+    #ifdef DEBUG_BUILD
+    if (!inputsAvailableAt(time))
+        throw std::runtime_error("FuncNode '"+name()+"' inputs not available at time "+time.humanString());
+    #endif
+
+    Values inputValues = gathered ? std::move(*gathered) : gatherInputs(time);
 
     // FIXME: if not pure, don't execute every time, just on our expected period (GCD)
     // NB: don't compare inputs if unnecessary (expensive)
@@ -684,6 +712,11 @@ FuncExecResult FuncNode::finishEvaluation(TimePoint time, const Values& inputVal
         return FuncExecResult::Yielded;
     }
 
+    // A signal: its values are forwarded onto the ports, the node pending
+    // until it stops -- unless it already has (a snapshot, published now).
+    if (startForwarding(time, inputValues, outputValues))
+        return m_funcYieldState.active ? FuncExecResult::Yielded : FuncExecResult::Completed;
+
     if (outputValues.size() != m_outputs.size())
         throw std::runtime_error("FuncNode '"+name()+"' returned "+std::to_string(outputValues.size())+" values, expected "+std::to_string(m_outputs.size())+" values");
 
@@ -697,13 +730,200 @@ FuncExecResult FuncNode::finishEvaluation(TimePoint time, const Values& inputVal
         output.signal->setValueAt(time, outputValues[index]);
         index++;
     }
+    m_lastDelivery = time;
 
     m_failureReported = false;
     m_holdReported = false;
     return FuncExecResult::Completed;
 }
 
-FuncExecResult FuncNode::resumeExecution(TimePoint deadline)
+bool FuncNode::startForwarding(TimePoint time, const Values& inputValues, const Values& outputValues)
+{
+    using roxal::isSignal;
+    using roxal::asSignal;
+
+    std::vector<FuncYieldState::Forward> forwards;
+    if (m_outputs.size() > 1 && outputValues.size() == 1 && isSignal(outputValues[0])) {
+        // One signal for several ports: its values are lists, split per port.
+        forwards.push_back({outputValues[0], -1});
+    } else {
+        for (size_t i = 0; i < outputValues.size(); ++i)
+            if (isSignal(outputValues[i]))
+                forwards.push_back({outputValues[i], static_cast<int>(i)});
+        if (forwards.empty())
+            return false;
+        if (outputValues.size() != m_outputs.size())
+            throw std::runtime_error("FuncNode '"+name()+"' returned "+std::to_string(outputValues.size())+" values, expected "+std::to_string(m_outputs.size())+" values");
+    }
+
+    // Each write and the stop wake the engine, which polls the node (on a
+    // clocked island its ticks do).  The callbacks hold no Values.
+    auto wake = DataflowEngine::instance()->asyncYieldWakeTarget();
+    for (auto& f : forwards) {
+        auto sig = asSignal(f.inner)->signal;
+        f.writes = std::make_shared<std::atomic<uint64_t>>(0);
+        f.changed = sig->subscribeValueChanged(
+            [writes = f.writes, wake](TimePoint, ptr<Signal>, const roxal::Value&) {
+                writes->fetch_add(1, std::memory_order_acq_rel);
+                wake->futureResolved();
+            });
+        f.stopped = sig->subscribeStopped([wake] { wake->futureResolved(); });
+    }
+
+    auto& st = m_funcYieldState;
+    st.active = true;
+    st.inputValues = inputValues;
+    st.executionTime = time;
+    st.executionThread = nullptr;
+    st.pendingOutputFutures.clear();
+    st.forwards = std::move(forwards);
+    previousInputValues = inputValues;
+
+    publishForwards(time, &outputValues);
+
+    bool running = false;
+    for (const auto& f : st.forwards)
+        running = running || !f.ended;
+    if (!running) {
+        detachForwards(false);
+        st.forwards.clear();
+        st.active = false;
+    }
+    return true;
+}
+
+bool FuncNode::publishForwards(std::optional<TimePoint> at, const Values* initialValues)
+{
+    using roxal::isSignal;
+    using roxal::asSignal;
+    auto& st = m_funcYieldState;
+
+    // At the asking evaluation's time (a tick's), else now -- never before
+    // the evaluation, nor before what was published last.
+    TimePoint t = at ? *at : TimePoint::currentTime();
+    if (t < st.executionTime)
+        t = st.executionTime;
+    if (m_lastDelivery && t < *m_lastDelivery)
+        t = *m_lastDelivery;
+
+    Values outs = previousOutputValues;
+    if (outs.size() != m_outputs.size()) {
+        outs.clear();
+        for (size_t i = 0; i < m_outputs.size(); ++i)
+            outs.push_back(initialValueForOutput(i));
+    }
+    bool changed = false;
+    if (initialValues && initialValues->size() == m_outputs.size()) {
+        for (size_t i = 0; i < initialValues->size(); ++i)
+            if (!isSignal((*initialValues)[i])) {
+                outs[i] = (*initialValues)[i];
+                changed = true;
+            }
+    }
+
+    for (auto& f : st.forwards) {
+        if (f.ended)
+            continue;
+        auto sig = asSignal(f.inner)->signal;
+        // Running first: a producer writes its last value before it stops,
+        // so a value read after seeing it stopped is the last one.
+        const bool running = sig->isRunning();
+        const uint64_t writes = f.writes->load(std::memory_order_acquire);
+        const roxal::Value value = sig->lastValue();
+        const bool fresh = initialValues ? !value.isNil() : writes != f.seen;
+        f.seen = writes;
+        if (!running)
+            f.ended = true;
+        if (!fresh)
+            continue;
+        if (f.port >= 0) {
+            outs[f.port] = value;
+        } else {
+            Values split = distributeReturnValue(value);
+            if (split.size() != m_outputs.size()) {
+                reportBodyFailure("FuncNode '" + name() + "' forwarded " + std::to_string(split.size())
+                                  + " values, expected " + std::to_string(m_outputs.size()));
+                for (auto& g : st.forwards)
+                    g.ended = true;
+                continue;
+            }
+            outs = std::move(split);
+        }
+        changed = true;
+    }
+    if (!changed)
+        return false;
+
+    previousOutputValues = outs;
+    invokeExecutionCallbacks(t, st.inputValues, outs);
+    for (size_t i = 0; i < m_outputs.size(); ++i)
+        m_outputs[i].signal->setValueAt(t, outs[i]);
+    m_lastDelivery = t;
+    m_failureReported = false;
+    m_holdReported = false;
+    return true;
+}
+
+FuncExecResult FuncNode::pollForwards(TimePoint deadline, std::optional<TimePoint> at)
+{
+    auto& st = m_funcYieldState;
+    const bool delivered = publishForwards(at);
+    for (const auto& f : st.forwards)
+        if (!f.ended)
+            return delivered ? FuncExecResult::Completed : FuncExecResult::Yielded;
+
+    // Every forwarded signal has stopped: the evaluation is over.  One asked
+    // for meanwhile runs now, on the current inputs (held until here).
+    const TimePoint time = st.executionTime;
+    const std::optional<TimePoint> rerun = st.rerunTime;
+    detachForwards(false);
+    st.forwards.clear();
+    st.active = false;
+    st.rerunTime.reset();
+    if (rerun && *rerun > time
+        && conditionallyExecute(*rerun, deadline) == FuncExecResult::Error)
+        return FuncExecResult::Error;
+    return FuncExecResult::Completed;
+}
+
+void FuncNode::detachForwards(bool stopOwned)
+{
+    std::vector<ptr<Signal>> owned;
+    for (auto& f : m_funcYieldState.forwards) {
+        f.changed.cancel();
+        f.stopped.cancel();
+        if (stopOwned && roxal::isSignal(f.inner)) {
+            auto sig = roxal::asSignal(f.inner)->signal;
+            if (sig->isCallStream() && sig->isRunning())
+                owned.push_back(sig);
+        }
+    }
+    for (auto& sig : owned)
+        sig->stop();
+}
+
+bool FuncNode::newInputEndsForwarding() const
+{
+    if (onInput() == OnInput::Restart)
+        return true;
+    // A call in flight is let finish.  (One that has stopped but was not
+    // polled since still has its last value to publish: the poll does that,
+    // and the evaluation follows it.)
+    for (const auto& f : m_funcYieldState.forwards)
+        if (!f.ended && roxal::asSignal(f.inner)->signal->isCallStream())
+            return false;
+    return true;
+}
+
+void FuncNode::endForwarding()
+{
+    detachForwards(/*stopOwned=*/true);
+    m_funcYieldState.forwards.clear();
+    m_funcYieldState.active = false;
+    m_funcYieldState.rerunTime.reset();
+}
+
+FuncExecResult FuncNode::resumeExecution(TimePoint deadline, std::optional<TimePoint> at)
 {
     using roxal::VM;
     using roxal::Value;
@@ -714,6 +934,10 @@ FuncExecResult FuncNode::resumeExecution(TimePoint deadline)
     if (!m_funcYieldState.active) {
         return FuncExecResult::Error;
     }
+
+    // Case 0: forwarding a signal the body returned
+    if (!m_funcYieldState.forwards.empty())
+        return pollForwards(deadline, at);
 
     // Case 1: Future-based yield (async native fn like predict)
     if (!m_funcYieldState.pendingOutputFutures.empty()) {
@@ -786,20 +1010,54 @@ FuncExecResult FuncNode::resumeExecution(TimePoint deadline)
             return FuncExecResult::Held;
         }
 
-        if (outputValues.size() != m_outputs.size())
-            throw std::runtime_error("FuncNode '"+name()+"' returned "+std::to_string(outputValues.size())+" values, expected "+std::to_string(m_outputs.size())+" values");
-
-        previousOutputValues = outputValues;
-        previousInputValues = inputValues;
-        invokeExecutionCallbacks(time, inputValues, outputValues);
-
-        int index = 0;
-        for (const auto& output : m_outputs) {
-            output.signal->setValueAt(time, outputValues[index]);
-            index++;
+        // OnInput::Restart, and the inputs changed while the call was still
+        // starting (its future can't be cancelled): the stream is stopped as
+        // it arrives, nothing of it published, and the evaluation waiting
+        // behind it runs instead, below.
+        const bool waiting = rerun && *rerun > time;
+        bool superseded = false;
+        if (waiting && onInput() == OnInput::Restart) {
+            std::vector<ptr<Signal>> streams;
+            for (const auto& v : outputValues)
+                if (roxal::isSignal(v) && roxal::asSignal(v)->signal->isCallStream()
+                    && roxal::asSignal(v)->signal->isRunning())
+                    streams.push_back(roxal::asSignal(v)->signal);
+            if (!streams.empty() && gatherInputs(*rerun) != inputValues) {
+                for (auto& stream : streams)
+                    stream->stop();
+                superseded = true;
+            }
         }
-        m_failureReported = false;
-        m_holdReported = false;
+
+        // A future that resolved to a signal (a streaming call): forward it.
+        // The evaluation goes on -- unless it was a snapshot, published and
+        // done.  One asked for meanwhile is held until a call's stream ends;
+        // behind plain signals it runs now, below, and takes over if its
+        // inputs differ (see conditionallyExecute).
+        if (superseded) {
+            // nothing to publish
+        } else if (startForwarding(time, inputValues, outputValues)) {
+            if (m_funcYieldState.active && !(waiting && newInputEndsForwarding())) {
+                m_funcYieldState.rerunTime = rerun;
+                return FuncExecResult::Completed;
+            }
+        } else {
+            if (outputValues.size() != m_outputs.size())
+                throw std::runtime_error("FuncNode '"+name()+"' returned "+std::to_string(outputValues.size())+" values, expected "+std::to_string(m_outputs.size())+" values");
+
+            previousOutputValues = outputValues;
+            previousInputValues = inputValues;
+            invokeExecutionCallbacks(time, inputValues, outputValues);
+
+            int index = 0;
+            for (const auto& output : m_outputs) {
+                output.signal->setValueAt(time, outputValues[index]);
+                index++;
+            }
+            m_lastDelivery = time;
+            m_failureReported = false;
+            m_holdReported = false;
+        }
 
         // An evaluation requested while the futures were pending: run it
         // now on the current inputs (the pure gate skips it when they are

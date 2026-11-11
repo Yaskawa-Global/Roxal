@@ -1,0 +1,53 @@
+import roxal_examples.*
+
+// A server stream is a call: stopping its signal cancels it, and a dataflow
+// node forwarding it lets it finish before evaluating on new inputs -- or,
+// with on_input = 'restart', cancels it for them.
+// ServerStream(count=n): n messages, value = index*10, 100 ms apart.
+var svc = EverythingService("__GRPC_TEST_ADDR__")
+
+func openStreams():
+    return svc.Status(message="__active_streams")    // on the server: neither finished nor cancelled
+
+var idle = openStreams()
+
+// Stopping the signal cancels the call.
+var long = svc.ServerStream(count=50)
+wait(for=long)
+wait(ms=250)
+print(openStreams() != idle)
+long.stop()
+wait(ms=300)
+print(long.running)
+print(openStreams() == idle)
+var last = long.value.value
+wait(ms=300)
+print(long.value.value == last)
+
+func messages(n):
+    return svc.ServerStream(count=n)
+
+// A new input waits for the call in flight (the default, 'finish').
+var count = signal(0, 6)
+var latest = messages(count)
+print(latest.on_input)
+var values = []
+when latest changes as e:
+    values.append(e.value.value)
+wait(ms=250)
+count.set(2)                // held: 0..50 first, then 0, 10
+wait(ms=1300)
+print(50 in values)
+print(latest.value.value)
+
+// 'restart': the new input cancels it.
+var count2 = signal(0, 50)
+var following = messages(count2)
+following.on_input = 'restart'
+wait(ms=350)
+print(openStreams() != idle)
+count2.set(2)               // the 50-message call is cancelled; then 0, 10
+wait(ms=900)
+print(following.value.value)
+print(openStreams() == idle)
+print("done")

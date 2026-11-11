@@ -93,8 +93,9 @@ public:
     // Signal that client is done writing (half-close)
     void CloseClientStream(std::shared_ptr<StreamHandle> handle);
 
-    // Cancel an active stream
-    void CancelStream(std::shared_ptr<StreamHandle> handle);
+    // Cancel an active stream.  Safe from any thread, and on a stream that
+    // has already ended.
+    static void CancelStream(std::shared_ptr<StreamHandle> handle);
 
 private:
     std::shared_ptr<grpc::Channel> m_channel;

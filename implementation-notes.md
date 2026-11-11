@@ -1164,6 +1164,101 @@ one resolves, finishes the island downstream of it from the node's position.
 The tick path's own resume record (`m_yieldState`) never holds a future-yield
 node -- two resumers of one node would make the second see no yield state.
 
+**Forwarding nodes (signal results).** A body whose result -- directly, or
+once its futures resolve -- is a signal (a streaming call: a gRPC server
+stream, `predict` on a decoupled Triton model) puts the signal's VALUES on its
+ports, never the signal (`FuncNode::startForwarding`).
+- **The same yield as a future:** `FuncYieldState::forwards` keeps the
+  evaluation active, `hasPendingFutureYield()` counts it, so the paths above
+  poll it unchanged (`resumeExecution` -> `pollForwards`).  Each forwarded
+  signal's writes and its stop wake the engine
+  (`DataflowEngine::asyncYieldWakeTarget`), through subscriptions that hold no
+  Values; a write counter tells a poll whether there is a newer value.
+- **When:** at the asking evaluation's time (a tick's), else now -- never
+  before the evaluation or the last publication (`m_lastDelivery`, which
+  `serviceAsyncYields` evaluates downstream at).  Values written between two
+  polls are coalesced, as with any signal sampled.
+- **New inputs** (`conditionallyExecute`, before it polls): what an
+  evaluation asked for at a later time does depends on what is forwarded
+  (`newInputEndsForwarding`).
+  - *A call stream still running* (`Signal::markCallStream`: a Triton
+    decoupled predict, a gRPC server stream): **held**.  The evaluation is
+    recorded as `rerunTime` and runs once every forwarded signal has stopped
+    -- a camera feeding a language model must not cancel each answer it
+    starts.
+  - *The same, on a node whose policy is `FuncNode::OnInput::Restart`*:
+    if the inputs gathered at that time differ from the forwarding
+    evaluation's, `endForwarding()` stops the stream (cancelling the call)
+    and the node evaluates on them there and then.
+  - *Plain signals only*: always the latter -- the node is a function of its
+    inputs and nothing is in flight to protect; the signals are just let go
+    (not stopped: the node doesn't own them).
+  - A stream arriving through a future (Triton's) can't be cancelled before
+    it exists.  Under Restart, `resumeExecution` stops it as it arrives if a
+    waiting evaluation's inputs differ -- unpublished -- and runs that
+    evaluation instead.
+  - A signal that isn't running is published once (a snapshot) and the
+    evaluation ends.
+- **The policy** is per node (`m_onInput`, atomic: set from a VM thread, read
+  by the evaluating one when an input change arrives, so it applies to a
+  forwarding already under way).  Scripts reach it as the `on_input` property
+  of any output signal (`VM::signal_on_input_setter` ->
+  `DataflowEngine::producersOfSignal`); on a signal no node produces it reads
+  nil and assigning it raises.  It lives on the node, not on the function or
+  the stream: the function stays usable both ways, and a library call lifted
+  directly needs no wrapper.  A producer-stamped default on the stream (a
+  binding that knows its streams never end) would slot in between the node's
+  setting and the built-in default; nothing needs one yet.
+- **Ownership:** a call stream is the node's: when the node is removed
+  (`removeFunc` -> `detachForwards(true)`) or restarts, it is stopped, which
+  cancels its call -- both producers subscribe to their signal's stop
+  (`Signal::subscribeStopped`): ModuleNN cancels the Triton stream,
+  `ACUCommunicator::callStreaming` calls `ClientCall::CancelStream`.  A gRPC
+  message already on its way when the signal stops is dropped.
+- **A call's stream is not part of the network.**  Each streaming call
+  creates, and later drops, an engine-registered signal; nothing is wired
+  to it (the node reads it through subscriptions), so its coming and going
+  is not a network change -- see *What counts as a network change* below.
+- **Roll-out:** no existing test lifted a body returning a signal (checked by
+  logging every forwarding start across the full suite before relying on it).
+- **Tests:** `df_lift_returns_signal` (plain signals: followed, switched),
+  `signal_on_input_property`, `grpc_stream_lift`, `grpc_stream_on_input`
+  (hold, restart, stop cancels -- checked on the server), `triton_stream_lift`,
+  `triton_stream_restart` (mid-stream and before the first response),
+  `triton_stream_restart_clocked`, `RoxalDataflowHostThread_forwarded_stream`.
+
+**What counts as a network change.** The network is what the engine
+evaluates, and when: its islands, their execution orders and the tick grid,
+cached and rebuilt (`buildNetworkCacheData`) whenever `m_networkModified` is
+set.  A rebuild is disruptive by design -- it restarts the tick grid and
+bumps the network generation, which makes a tick suspended across it stale
+(`tickFor` abandons it and starts over, ticking its clocks again) -- so only
+real changes may cause one.
+- **Part of the network** (`DataflowEngine::inNetwork`): a signal with a
+  period (it is on the tick grid), a derived signal or the base of one, an
+  input or output of a function node.
+- **Not part of it:** an event-driven source nothing is wired to -- a
+  streaming call's stream, a script's signal used only through `when` or
+  `.value`, a signal a node body makes and returns.  It is registered
+  (`signals`: traced, listed, pruned as before) but forms no island, and
+  adding or removing it leaves `m_networkModified` alone.  Its `set()` finds
+  no island to evaluate, which is all it ever did.
+- **Becoming part of it** always goes through something that is a change: a
+  node taking it as an input (`addFunc`), a derivation (`addSignal` of the
+  derived signal), a wire (`copyInto`).
+- **Introspection** (`subnetworkContaining`, `allSubnetworks`,
+  `islandDebugSnapshot`) still reports such a signal as an island of its own,
+  in the order a walk of `signals` meets it (`islandsWithFreeSignals`).
+- **Why it matters:** a program whose wiring never changes after start-up
+  could still "change the network" many times a second -- a clocked node
+  making streaming calls, a `signal()` made in a node body.  On the engine's
+  own schedule each one delayed the next tick (a clock at 2 Hz with a signal
+  made every 10 ms ticked once in 1.7 s); under `tickFor` each one abandoned
+  the suspended tick, so the clock ran away from a node that never finished.
+- **Tests:** `df_free_signal_not_network_change` (all three run modes),
+  `RoxalDataflowHostThread_free_signals_mid_tick`.  Real changes mid-tick
+  are still `RoxalDataflowHostThread_network_change_mid_tick`.
+
 **Tensor equality and change detection.** `ObjTensor::equals` (what `==`
 and a signal's set() change check use) compares identity, then memcmp; on a
 mismatch integer dtypes are unequal outright (any eps below 1), and float
@@ -1427,7 +1522,9 @@ A `Model` is a front end over one `ModelSession`, the backend.
 
 - **The front end:** the signature (`TensorSpec`s for inputs and outputs),
   device, the `closed` flag, predict's argument checks (`parsePredictInputs`:
-  every input exactly once, with the model's dtype and a compatible shape),
+  every required input exactly once -- optional ones may be left out -- with
+  the model's dtype and a compatible shape; a bytes input's elements encoded
+  there, on the calling thread, as `NamedInput::bytes`),
   the per-instance `predict` closure, `outputs=` selection (`selectOutputs`
   reorders/subsets the signature before a backend binds its outputs), and
   the per-model `available` source signal.
@@ -1458,8 +1555,9 @@ A `Model` is a front end over one `ModelSession`, the backend.
     window.
   - Abandoned jobs drop their held inputs before the error Values are
     allocated.
-- **Roots.** The worker registry, `NnBridge`'s pending table and the Triton
-  error-type cache are program-lifetime `TracedMember`s. A root may not be
+- **Roots.** The worker registry, `NnBridge`'s pending table, the Triton
+  error-type cache and the signals of Triton streams in flight
+  (`tritonStreamRoots`) are program-lifetime `TracedMember`s. A root may not be
   created inside an RT yield section, and a host-driven run (`driveFor`)
   executes `Model.init` inside one. For the same reason the warmup tensors are
   held in a Roxal list in a local `Value` rather than a rooted `std::vector`.
@@ -1478,8 +1576,10 @@ A `Model` is a front end over one `ModelSession`, the backend.
     `grpc_cpp_plugin` is involved.
   - Message size limits are raised past gRPC's 4 MB default.
 - **`Model.init`** asks who the server is (`ServerMetadata`), then for the
-  model's metadata, then readiness. These are blocking calls inside a
-  `GCBlockedScope`.
+  model's metadata, then readiness, then its configuration (`ModelConfig`:
+  which inputs are optional, whether the model is decoupled; a server that
+  won't say leaves every input required and the model unary). These are
+  blocking calls inside a `GCBlockedScope`.
   - Only an unreachable server fails the first call; one that will not say
     is left unnamed.
   - A named server's identity goes into the model's `where`, so every message
@@ -1514,12 +1614,45 @@ A `Model` is a front end over one `ModelSession`, the backend.
   storage deleter frees the block).
   - This decode runs on the endpoint thread *before* the `ExternalParticipant`
     window opens, so a collection never waits on a multi-megabyte copy.
-  - Inside the window the outputs are matched **by name**, since Triton's
-    autofill lists them in its own order, not the ONNX graph's, and their
-    dtypes and byte counts are checked.
+  - The outputs are matched **by name**, since Triton's autofill lists them
+    in its own order, not the ONNX graph's, and their dtypes and byte counts
+    checked -- for a BYTES output, its elements split (each a 4-byte
+    little-endian length, then the bytes: `compiler/nn/BytesElements`) and
+    their UTF-8 checked -- also before the window (`decodeTritonOutputs`).
+    Only the Values -- tensors adopting their blocks, strings, byte lists --
+    are made inside it (`tritonOutputValues`).
   - It sets `available` on transitions only (every set of an event-driven
     source evaluates its island) through a weak reference, and resolves the
     promise.
+- **Bytes.** A BYTES tensor is no tensor dtype: its `TensorSpec` dtype is
+  `"bytes"`.  An output is a string (a list of them unless declared to hold
+  exactly one element; byte lists with `binary=`), by its declaration, never
+  by a reply -- predict's declared return types (`String`/`List`/`Tensor` per
+  output) set a lifted node's port types, and must not change with a reply.
+- **Decoupled models** answer on `ModelStreamInfer`, a bidirectional stream:
+  Triton refuses unary `ModelInfer` for them.
+  - `TritonEndpoint::startStream` writes the one request with `WriteLast`
+    (half-closing), reads until the server ends the stream, then `Finish`es.
+    Its completion-queue tags are `Op`s (a unary call is one; a stream owns
+    five), and a stream is freed once nothing of it is queued.  A
+    `grpc::Alarm`, re-armed from the last message, enforces `timeout` as the
+    gap between responses (DEADLINE_EXCEEDED, so `UnavailableError`).
+    `stop()` cancels every stream and waits for them to wind down before
+    shutting the queue down: a cancelled stream still queues its last Read
+    and its Finish.
+  - Each request sets `triton_enable_empty_final_response`, so the final flag
+    (`triton_final_response`) can come on a response of its own.
+  - The session's signal (a source signal, `markCallStream()`: a forwarding
+    node owns it; a change is a change of value, as for any signal, so a
+    response equal to the one before it notifies nothing) is rooted until
+    the stream ends.  Each message is decoded before the GC window and set inside it;
+    the future resolves with the first response (or to the failure).  The
+    final flag stops the signal; stopping it from the script cancels the
+    call (`Signal::subscribeStopped`).  A failure after the first response
+    can't be raised: it stops the signal and warns once, unless it is a
+    cancellation of this side's own.
+  - Checked against a real 25.10 server: Triton finishes a request's
+    responses after the client has half-closed.
 - **Failure mapping.** `compiler/grpc/GrpcStatus` classifies a failure for
   both ai.nn and the grpc module:
   - `UNAVAILABLE` and `DEADLINE_EXCEEDED` become `UnavailableError`.
@@ -1550,8 +1683,9 @@ are only ever added, never renumbered.
   case is handled where it arises:
   - Output order: ai.nn binds outputs by name.
   - Dynamic dimensions: checked as shapes.
-  - Datatypes ai.nn has no tensor dtype for (BF16, UINT32/64, BYTES): an
-    init error naming the tensor.
+  - Datatypes ai.nn has no value for (BF16, UINT32/64): an init error naming
+    the tensor -- unless it is an optional input or an output `outputs=`
+    leaves out.
   - A server that does not speak the protocol at all: its gRPC error,
     raised at `Model.init`.
 

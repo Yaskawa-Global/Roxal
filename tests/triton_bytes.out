@@ -1,0 +1,24 @@
+bytes
+false
+bytes
+["héllo"]
+héllo
+1
+["a", "bc", ""]
+a
+3
+ok
+hi
+["ok", "hi", "x"]
+1
+true
+[255, 0, 65]
+[[255, 0, 65]]
+true
+true
+true
+true
+one
+["one"]
+two
+done

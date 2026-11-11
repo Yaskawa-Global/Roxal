@@ -1274,6 +1274,10 @@ public:
     // Builtin properties: builtin value type -> property name hash -> BuiltinPropertyInfo
     std::unordered_map<ValueType, std::unordered_map<int32_t, BuiltinPropertyInfo>> builtinProperties;
 
+    // Assign through a builtin property's setter.  False if the setter
+    // rejected the value (it throws), raised as a catchable exception.
+    bool setBuiltinProperty(const BuiltinPropertyInfo& info, Value& receiver, const Value& value);
+
     void defineBuiltinProperties();
     void defineBuiltinProperty(ValueType type, const std::string& name, NativePropertyGetter getter, NativePropertySetter setter = nullptr);
 
@@ -1403,6 +1407,8 @@ public:
     Value signal_name_getter(Value& receiver);
     void  signal_name_setter(Value& receiver, Value value);
     Value signal_running_getter(Value& receiver);
+    Value signal_on_input_getter(Value& receiver);
+    void  signal_on_input_setter(Value& receiver, Value value);
     Value exception_stacktrace_getter(Value& receiver);
     Value exception_stacktrace_string_getter(Value& receiver);
     Value exception_detail_getter(Value& receiver);

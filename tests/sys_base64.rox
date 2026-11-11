@@ -1,0 +1,39 @@
+// base64 (RFC 4648): bytes, strings (their UTF-8) and uint8 tensors in;
+// padded text out; decoding gives a list of bytes back.
+print(base64_encode(""))
+print(base64_encode("f"))
+print(base64_encode("fo"))
+print(base64_encode("foo"))
+print(base64_encode("foob"))
+print(base64_encode("fooba"))
+print(base64_encode("foobar"))
+print(base64_encode("héllo"))
+print(base64_encode([byte(251), byte(255), byte(191)]))
+print(base64_encode([byte(251), byte(255), byte(191)], url_safe=true))
+var t = tensor(shape=[3], dtype='uint8', bytes=to_bytes("abc"))
+print(base64_encode(t))
+
+print(from_bytes(base64_decode("Zm9vYmFy"), dtype=string))
+print(from_bytes(base64_decode("aMOpbGxv"), dtype=string))
+print(base64_decode("+/+/"))
+print(base64_decode("-_-_", url_safe=true))
+print(len(base64_decode("")))
+print(from_bytes(base64_decode("Zm9vYg"), dtype=string))       // padding optional
+print(from_bytes(base64_decode("Zm9v\nYmFy"), dtype=string))   // whitespace skipped
+
+// a round trip of every byte value
+var all = []
+for i in range(0..<256):
+    all.append(byte(i))
+print(base64_decode(base64_encode(all)) == all)
+
+func rejects(text :string, expected :string) -> bool:
+    try:
+        var b = base64_decode(text)
+        return b is nil
+    except e:
+        return expected in string(e)
+print(rejects("Zm9v!", "is not base64"))
+print(rejects("Zm9vY", "not complete"))
+print(rejects("Zm==9v", "is not base64"))
+print(rejects("-_", "is not base64"))

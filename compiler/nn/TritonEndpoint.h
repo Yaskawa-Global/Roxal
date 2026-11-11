@@ -1,7 +1,8 @@
 #pragma once
 
 // One NVIDIA Triton Inference Server, as ai.nn's Triton backend reaches it:
-// the gRPC channel, and the thread on which asynchronous calls complete.
+// the gRPC channel, and the thread on which asynchronous calls -- and the
+// streams of a decoupled model's responses -- complete.
 // Every model on the same host:port shares one endpoint.  It knows nothing of
 // Roxal values -- the session above it turns replies into tensors.
 
@@ -13,6 +14,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <grpcpp/channel.h>
 #include <grpcpp/completion_queue.h>
@@ -35,9 +37,9 @@ public:
     // shutdownAll().
     static std::shared_ptr<TritonEndpoint> get(const std::string& address);
 
-    // VM shutdown, before any object is freed: every call in flight is
-    // cancelled and its Done runs (with CANCELLED) before this returns, and
-    // the endpoints' threads are joined.
+    // VM shutdown, before any object is freed: every call and stream in
+    // flight is cancelled and its Done (onEnd) runs (with CANCELLED) before
+    // this returns, and the endpoints' threads are joined.
     static void shutdownAll();
 
     const std::string& address() const { return address_; }
@@ -59,6 +61,33 @@ public:
     bool callAsync(const char* method, const grpc::ByteBuffer& request,
                    std::chrono::microseconds deadline, Done done);
 
+    // A call answered by a stream of messages (Triton's ModelStreamInfer, for
+    // a decoupled model): one request is written, the write side closed, and
+    // the server's messages read until it ends the stream.  Both callbacks
+    // run on the endpoint's thread.
+    struct StreamCallbacks {
+        // Each message.  False: no more are wanted (the call is cancelled).
+        std::function<bool(grpc::ByteBuffer& message)> onMessage;
+        // Exactly once, when the call is over: OK when the server ended it,
+        // CANCELLED when cancelled, DEADLINE_EXCEEDED when `gap` passed with
+        // nothing heard.
+        std::function<void(const grpc::Status&)> onEnd;
+    };
+
+    class Stream {
+    public:
+        virtual ~Stream() = default;
+        // From any thread, any number of times: the call ends, onEnd seeing
+        // CANCELLED (unless it already ended).
+        virtual void cancel() = 0;
+    };
+
+    // Start a stream; `gap` is the longest wait for the next message, the
+    // first included.  Null, and no callback ever runs, once the endpoint is
+    // stopping.
+    std::shared_ptr<Stream> startStream(const char* method, const grpc::ByteBuffer& request,
+                                        std::chrono::microseconds gap, StreamCallbacks callbacks);
+
     // The channel is failing to connect: a call now would fail at once.
     bool unreachable() const;
 
@@ -69,7 +98,13 @@ private:
     void run();
     void stop();
 
+    // What a completion-queue tag points at: one asynchronous operation.
+    struct Op {
+        virtual ~Op() = default;
+        virtual void complete(bool ok) = 0;
+    };
     struct Call;
+    struct StreamCall;
 
     std::string address_;
     std::shared_ptr<grpc::Channel> channel_;
@@ -82,6 +117,11 @@ private:
     bool ready_ = false;            // the thread made the channel
     bool stopping_ = false;
     std::map<Call*, std::unique_ptr<Call>> inFlight_;
+    // Streams live until their last operation completes; then they move to
+    // released_, freed by the thread between completions.
+    std::map<StreamCall*, std::shared_ptr<StreamCall>> streams_;
+    std::vector<std::shared_ptr<StreamCall>> released_;
+    std::condition_variable streamsDrained_;
 };
 
 } // namespace roxal::nn

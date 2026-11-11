@@ -1,0 +1,57 @@
+# A signal nothing is wired to -- one a script makes and uses only through
+# `when` or .value, or the stream of a streaming call -- is not part of the
+# dataflow network: making or dropping one is not a change of it, and must
+# not disturb a clocked network that is running (each change of the network
+# restarts its tick schedule).
+import inspect
+
+func double(x):
+    var k = 0
+    while k < 500:      # long enough to be suspended mid-tick by a host that slices it
+        k = k + 1
+    return x * 2
+
+var c = clock(2)
+var d = double(c)
+var evaluations = 0
+when d changes:
+    evaluations = evaluations + 1
+c.run()
+
+# 1.7 s of signals coming and going: three ticks of the clock (a fourth, if
+# the first came at once), each evaluated once.
+var made = 0
+var t0 = Time(kind='steady')
+while Time(kind='steady').since(t0).total_seconds() < 1.7:
+    var free = signal(0, made)
+    made = made + 1
+    wait(ms=5)
+c.stop()
+wait(ms=100)
+
+print(made > 50)
+print(c.value >= 3 and c.value <= 4)
+print(evaluations >= 2)
+print(d.value == c.value * 2)
+
+# Introspection still shows such a signal, standing alone.
+var lone = signal(0, 7, 'lone')
+var net = lone.network()
+print(len(net.nodes))
+var names = []
+for s in net.signals:
+    names.append(s.name)
+print(names)
+for island in _df_islands():
+    if 'lone' in island['signals']:
+        print(island)
+
+# Wiring it up makes it part of the network, like any other.
+var wired = double(lone)
+wait(ms=100)
+print(wired.value)
+print(len(lone.network().nodes))
+lone.set(8)
+wait(ms=100)
+print(wired.value)
+print("done")

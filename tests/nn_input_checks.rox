@@ -26,7 +26,7 @@ print(rejects(addsub, {'a': a, 'c': b}, "has no input 'c'"))
 print(rejects(addsub, {'a': a}, "missing input 'b'"))
 print(rejects(addsub, a, "the model has 2 inputs"))
 print(rejects(addsub, [a], "predict list has 1 elements"))
-print(rejects(addsub, {'a': a, 'b': 5}, "value for 'b' is not a tensor"))
+print(rejects(addsub, {'a': a, 'b': 5}, "input 'b' is not a tensor"))
 
 # and well-formed calls still run, by name in any order or by position
 a[0, 0] = 10.0

@@ -1607,6 +1607,35 @@ Note that a function declared `-> list` (or with no declared return type) still
 produces a single signal whose value is a list. Both remain useful: see *buses*
 below.
 
+### Nodes whose result is a stream
+
+A lifted function whose result is a **signal** -- returned directly, or by a future that resolves to one, as a streaming call does (a gRPC server stream, `predict` on a streaming Triton model) -- does not put the signal on its output: the node **forwards the signal's values** until the signal stops running. The output carries plain values, never a signal of signals: the signal's newest value each time the node runs -- as each arrives on an event-driven network, at each tick on a clocked one (values in between are not seen there, as with any signal sampled at a tick).
+
+```php
+func answer(question):
+    return llm.predict({'text_input': question})   // a future, resolving to a signal of responses
+
+var reply = answer(questions)      // a node: its output carries each response
+```
+
+* **A new input waits for a call in flight.** While the node is forwarding a streaming call, a change of its inputs is held; once the stream ends the node evaluates again, on its latest inputs. (A camera feeding a language model does not cancel every answer it starts.)
+* **...or takes over, if you say so.** Set `on_input` on the node's output to `'restart'` and a new input cancels the call in flight and starts the next at once -- for a stream that never ends, or when only the latest input matters:
+
+  ```php
+  func follow(target):
+      return tracker.Follow(target=target)   // an endless server stream
+
+  var pos = follow(target)
+  pos.on_input = 'restart'            // each new target replaces the call ('finish' is the default)
+  ```
+
+  It is the node's setting, set through any of its outputs at any time, and works the same on a model's `predict` lifted directly (`reply = llm.predict(prompt)`). Each new input then makes a call, so an input that changes faster than the service answers leaves the output without values. While a call is still starting (before its first response) there is nothing to cancel yet: its stream is dropped as it arrives, and nothing of it shows.
+* **A plain signal is just followed.** A function returning a signal that is not a call -- one of the program's own -- stays a function of its inputs: when they change it runs again, and the node follows whatever signal it returns then (so `return a if sel == 0 else b` switches between the two). `on_input` makes no difference to it.
+* **A signal that isn't running** -- one the function makes, or another node's output -- is forwarded once, as it is.
+* **Several outputs:** a list of N signals feeds the N outputs one each; one signal whose values are lists is split across them, as a returned list is.
+* **The node owns a call's stream:** if the node goes away mid-stream, the call is cancelled.
+* As for any node, the first value initializes the output: a `when ... changes` handler sees the values after it.
+
 ### Behavioural and structural functions
 
 There are two ways to write a function that participates in the network, and
@@ -2007,7 +2036,7 @@ if responseSignal.running:
 wait(1s)
 ```
 
-The RPC returns a future that resolves to a signal. Each server message updates the signal's value, triggering `when ... changes` handlers. When the server closes the stream, the signal's `.running` property becomes `false`.
+The RPC returns a future that resolves to a signal. Each server message updates the signal's value, triggering `when ... changes` handlers (a message equal to the one before it sets the same value, which is not a change). When the server closes the stream, the signal's `.running` property becomes `false`. Stopping the signal yourself -- `responseSignal.stop()` -- cancels the call.
 
 **Client streaming** (client sends multiple requests):
 
@@ -2054,9 +2083,11 @@ wait(500ms)
 
 | Property/Method | Description |
 |-----------------|-------------|
-| `.running`      | `true` while the stream is active, `false` after stream ends |
-| `.stop()`       | Close the client side of the stream (for input signals) |
+| `.running`      | `true` while the stream is active, `false` after stream ends (any signal: whether a source signal is running) |
+| `.stop()`       | Close the client side of the stream (for input signals); cancel the call (for a server stream's signal) |
 | `.set(value)`   | Send a new message on the stream (for input signals) |
+
+A function returning a server-streaming call, lifted into a dataflow network, puts each message on its output rather than the signal; a new input waits for the stream to end, or with `on_input = 'restart'` on that output cancels it (see *Nodes whose result is a stream*).
 
 
 ## Advanced: DDS Integration
@@ -2267,8 +2298,9 @@ var output = model.predict(input)
 
 | Method | Description |
 |--------|-------------|
-| `Image(path, source=nil, channels=0)` | Create from file path or source tensor. `channels`: 0=auto, 1=gray, 3=RGB, 4=RGBA. |
+| `Image(path, source=nil, channels=0, bytes=nil)` | Create from file path, source tensor, or `bytes`: an encoded PNG or JPEG image in memory (a list of bytes, or a 1-D `uint8` tensor), its format told by its first bytes. `channels`: 0=auto, 1=gray, 3=RGB, 4=RGBA. A corrupt or truncated image raises. |
 | `write(path, quality=95)` | Save to PNG or JPEG (detected from extension). `quality` applies to JPEG. |
+| `encode(format='jpeg', quality=95)` | The image encoded in memory, `'jpeg'` or `'png'`: a list of bytes (e.g. for `base64_encode`, a socket, or `Image(bytes=...)`). Needs `uint8` pixels; JPEG takes 1 or 3 channels. |
 | `width()` | Image width in pixels. |
 | `height()` | Image height in pixels. |
 | `channels()` | Number of channels (1=gray, 3=RGB, 4=RGBA). |
@@ -2621,6 +2653,35 @@ The source is `triton://host[:port]/model[?version=N]` (the port defaults to 800
 * `Model(...)` contacts the server: an unreachable server raises `UnavailableError`, a model it does not have a `ProgramException`. `device` must be `'auto'` (the server decides), there is no warm-up, and outputs come back as CPU tensors.
 * **Which server.** `model.server_info()` is the server the model loaded from -- `{kind: 'triton', name: 'triton', version: '2.62.0', extensions: [...]}` -- and `ai.nn.server_info('host[:port]')` asks a server directly, before loading anything. Error messages name it too (`... at gpu-rack:8001 (triton 2.62.0): ...`). No version is required: the protocol Roxal uses is the same from Triton 23.01 on.
 
+#### Text and Bytes
+
+Triton's `BYTES` tensors (`TYPE_STRING` in a model's configuration) hold elements of any length -- text, JSON, an encoded image. Roxal has no tensor type for them: `inputs()`/`outputs()` show their dtype as `'bytes'`, and their values are strings and byte lists.
+
+* **In:** an element is a `string` (sent as its UTF-8), a list of bytes, or a 1-D `uint8` tensor; a list of elements is a batch. A list of bytes -- `[]` included -- is one element.
+* **Out:** each element is a string, and a bytes output is ONE string when the model declares it to hold exactly one element (`[1]`, `[]`), else a list of strings -- decided by the declaration, never by a particular reply. An element that is not valid UTF-8 fails the call; name such outputs in `Model(..., binary=['out'])` to get them as byte lists instead.
+* **Optional inputs.** A Triton model may declare inputs optional: leave them out of a `predict` dict. A single value binds the model's one required input; a list in input order gives every input, or just the required ones. (So a list given to a model with optional inputs is positional: pass a batch by name, `{'text': [...]}`.)
+
+```roxal
+var llm = ai.nn.Model("triton://gpu-rack/qwen3_vl", outputs=['text_output'])   // a vLLM-backend model
+var answer = llm.predict({'text_input': prompt, 'image': base64_encode(img.encode('jpeg'))})
+```
+
+#### Streaming Models
+
+A *decoupled* Triton model answers each request with a stream of responses -- Triton's vLLM backend does, one per piece of generated text. For such a model `predict` returns a future that resolves, with the first response, to a **signal**: each response sets it to what `predict` on an ordinary model would return, and it stops running (`.running` becomes false) after the last. Stopping it -- `reply.stop()` -- cancels the call.
+
+```roxal
+var reply = llm.predict({'text_input': prompt, 'stream': yes})   // yes: a bool tensor [1] holding 1
+wait(for=reply)                       // the first piece
+print(reply.value[0], end='')
+when reply changes as e:              // each later piece
+    print(e.value[0], end='')
+```
+
+The stream is a signal, and a signal changes only when its value does: a response equal to the one just before it -- the same piece of text twice in a row -- is not a change, and a `changes` handler does not see it.
+
+For a streaming model `timeout` is the longest wait for the next response, the first included (default 30 s: a language model's first words wait on the server's queue). In a dataflow network a lifted `predict` on such a model carries each response on its output, as any function returning a signal does; a new input waits for the reply in progress unless the output's `on_input` is `'restart'` (see *Nodes whose result is a stream*).
+
 ### Deploying a Model File to a Triton Server
 
 Where a model runs can be an option of the model rather than a different model: give `Model` the model's *file* and a `server`, and Roxal deploys it there and then uses it like any `triton://` model.
@@ -2653,9 +2714,9 @@ var det = ai.nn.Model("models/dfine_nano.onnx", outputs=['logits', 'pred_boxes']
 
 | Method | Description |
 |--------|-------------|
-| `Model(path, device='auto', warmup=true, outputs=nil, timeout=nil, server=nil, config=nil)` | Load an ONNX model, or a Triton-served one (`'triton://host[:port]/model'`). Device: `'auto'`, `'cpu'`, or `'cuda'` (Triton: `'auto'` only). Set `warmup=false` to skip initial warm-up inference. `outputs`: the output names `predict` returns, in that order. `timeout`: how long a Triton inference may take (default 1 s). `server`: deploy the model file to that Triton server and run it there; `config`: with `server`, a dict overriding Triton's model configuration. |
-| `predict(input)` | Run inference. Input: tensor, dict `{name: tensor}`, list of tensors, or a signal. Returns tensor (or list if multiple outputs). With a signal input, returns a derived signal, or one derived signal per output for a multi-output model (`var [a, b] = model.predict(sig)`). Declared `-> [tensor, ...]` with one entry per model output. |
-| `inputs()` | Return list of input descriptors: `[{name, shape, dtype}, ...]` |
+| `Model(path, device='auto', warmup=true, outputs=nil, timeout=nil, server=nil, config=nil, binary=nil)` | Load an ONNX model, or a Triton-served one (`'triton://host[:port]/model'`). Device: `'auto'`, `'cpu'`, or `'cuda'` (Triton: `'auto'` only). Set `warmup=false` to skip initial warm-up inference. `outputs`: the output names `predict` returns, in that order. `timeout`: how long a Triton inference may take (default 1 s; for a streaming model, between responses, default 30 s). `server`: deploy the model file to that Triton server and run it there; `config`: with `server`, a dict overriding Triton's model configuration. `binary`: bytes outputs to return as byte lists rather than strings. |
+| `predict(input)` | Run inference. Input: a tensor (or a string, for a text input), a dict `{name: value}`, a list in input order, or a signal. Returns the output (or a list if several): a tensor, or for a bytes output a string or a list. With a signal input, returns a derived signal, or one derived signal per output for a multi-output model (`var [a, b] = model.predict(sig)`). Declared with one return per model output: `tensor`, `string` or `list`. For a streaming (decoupled) model, a future resolving to a signal of the responses. |
+| `inputs()` | Return list of input descriptors: `[{name, shape, dtype, optional}, ...]` (dtype `'bytes'` for a text/bytes input) |
 | `outputs()` | Return list of output descriptors: `[{name, shape, dtype}, ...]` |
 | `device()` | Return execution device string (`'cpu'`, `'cuda'`, or `'triton'`). |
 | `server_info()` | The server a Triton model loaded from, as `ai.nn.server_info()` describes it; `nil` for a model run in this process. |
@@ -2920,6 +2981,8 @@ The functions in the sys module are always globally available (- as if `import s
 * `serialize(value, protocol='default')` - serialize `value` to a packed byte list. The stream carries a small header (magic byte + format version). The format is transient (like Python's `pickle`): it is meant for round-tripping within the same build, not long-term storage or cross-version exchange.
 * `deserialize(bytes, protocol='default')` - reconstruct a value from bytes produced by `serialize`. Requires the header and only accepts the current format version — a headerless or older-version stream is rejected with a clear error (it is not migrated).
 * `to_bytes(v, width=0, endian='little')` - reinterpret a scalar as a list of bytes. Source may be `bool` (1 byte), `byte` (1 byte), `int` (width 1/2/4/8 two's-complement; default 8), `real` (width 4 for IEEE float32 downcast, or 8 for IEEE double; default 8), or `string` (UTF-8 bytes; width must be 0). `endian` is `'little'` (default) or `'big'`.
+* `base64_encode(data, url_safe=false)` - `data` (a list of bytes, a string -- its UTF-8 bytes -- or a `uint8` tensor) as base64 text (RFC 4648, padded); `url_safe=true` uses `-` and `_` for `+` and `/`.
+* `base64_decode(text, url_safe=false)` - the bytes base64 `text` encodes, as a packed list of bytes (`from_bytes(b, dtype=string)` for text). Whitespace is skipped and padding optional; any other character outside the alphabet raises.
 * `from_bytes(bytes, dtype=real, endian='little', signed=true)` - reinterpret a list of bytes as the requested type. `dtype` is a type value (preferred — `int`, `real`, `bool`, `string`) or the equivalent string (`'int'`, `'real'`, `'bool'`, `'string'`). `int` accepts length 1/2/4/8; result is always Roxal `int`. `real` accepts length 4 (IEEE float32 upcast to double) or length 8 (IEEE double). `bool` reads 1 byte (nonzero → true). `string` UTF-8 decodes. `signed` only applies when `dtype=int` for widths < 8: `signed=true` (default) sign-extends the input; `signed=false` zero-extends — useful for unsigned hardware registers (e.g. a 16-bit register `0xFFFF` reads as `-1` with `signed=true`, `65535` with `signed=false`). `endian` accepts `'little'` / `'big'` (alias `'network'`). Round-trip: `from_bytes(to_bytes(v, width=w), dtype=...)` recovers `v` for valid widths.
 * `bits_to_bytes(bits, msb_first=true)` - pack a list of `bool` (or 0/1) bits into a list of byte. Result length is `ceil(len(bits)/8)` with the final byte zero-padded. `msb_first=true` (default) puts the first bit in each byte's MSB — matching the `byte([8 bits])` constructor convention. `msb_first=false` puts the first bit in the LSB.
 * `bytes_to_bits(bytes, msb_first=true)` - unpack a list of byte into a list of `bool` of length `8 * len(bytes)`. The `msb_first` flag matches `bits_to_bytes`.

@@ -1,0 +1,36 @@
+# on_input = 'restart' on a clocked network: the ticks bring the new input.
+# A 30-response call (1.5 s) is cut short by each tick, 500 ms apart.
+# countdown: text_input BYTES [1]; optional n, gap_ms INT32 [1]
+#            -> step INT32 [1], gap_ms before each
+import ai.nn
+
+var control = ai.nn.Model("triton://__TRITON_ADDR__/__control")
+func cancelledStreams() -> int:
+    var mode = tensor(1, dtype='int32')
+    mode[0] = 7
+    return int(control.predict(mode)[0])
+
+func int1(v :int) -> tensor:
+    var t = tensor(1, dtype='int32')
+    t[0] = v
+    return t
+
+var steps = ai.nn.Model("triton://__TRITON_ADDR__/countdown", outputs=['step'])
+
+func count(k):
+    return steps.predict({'text_input': "k", 'n': int1(30), 'gap_ms': int1(50)})
+
+cancelledStreams()      # (counted from here)
+var c = clock(2)
+var stepping = count(c)
+stepping.on_input = 'restart'
+var top = 0
+when stepping changes as e:
+    if e.value[0] > top:
+        top = e.value[0]
+c.run()
+wait(ms=1700)
+c.stop()
+print(top < 20)
+print(cancelledStreams() >= 2)
+print("done")

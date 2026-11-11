@@ -29,6 +29,7 @@ private:
     // Image methods (args[0] = receiver Image instance)
     Value image_init_builtin(ArgsView args);
     Value image_write_builtin(ArgsView args);
+    Value image_encode_builtin(ArgsView args);
     Value image_width_builtin(ArgsView args);
     Value image_height_builtin(ArgsView args);
     Value image_channels_builtin(ArgsView args);

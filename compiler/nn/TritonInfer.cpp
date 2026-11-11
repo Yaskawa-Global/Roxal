@@ -77,21 +77,15 @@ grpc::ByteBuffer roxal::nn::encodeInferRequest(const roxal::triton::ModelInferRe
     return grpc::ByteBuffer(slices.data(), slices.size());
 }
 
-bool roxal::nn::decodeInferResponse(grpc::ByteBuffer& reply, roxal::triton::ModelInferResponse& response,
-                                    std::vector<InferOutputBytes>& contents)
+namespace {
+
+// A ModelInferResponse's fields from `in`, up to its end (or the limit
+// pushed for a nested one): the raw outputs into `contents`, every other
+// field re-encoded for protobuf to parse into `response`.
+bool decodeInferFields(google::protobuf::io::CodedInputStream& in,
+                       roxal::triton::ModelInferResponse& response,
+                       std::vector<InferOutputBytes>& contents)
 {
-    response.Clear();
-    contents.clear();
-    if (reply.Length() == 0)
-        return true;    // every field at its default
-
-    grpc::ProtoBufferReader reader(&reply);
-    if (!reader.status().ok())
-        return false;
-    google::protobuf::io::CodedInputStream in(&reader);
-    in.SetTotalBytesLimit(INT_MAX);
-
-    // Every field but the outputs' bytes, re-encoded for protobuf to parse.
     std::string rest;
     while (const uint32_t tag = in.ReadTag()) {
         const uint32_t field = tag >> 3;
@@ -145,4 +139,80 @@ bool roxal::nn::decodeInferResponse(grpc::ByteBuffer& reply, roxal::triton::Mode
         }
     }
     return in.ConsumedEntireMessage() && response.ParseFromString(rest);
+}
+
+// Past one field of the wire type `wire` whose tag was just read.
+bool skipField(google::protobuf::io::CodedInputStream& in, uint32_t wire)
+{
+    switch (wire) {
+        case wireVarint: { uint64_t v; return in.ReadVarint64(&v); }
+        case wireFixed64: { uint64_t v; return in.ReadLittleEndian64(&v); }
+        case wireFixed32: { uint32_t v; return in.ReadLittleEndian32(&v); }
+        case wireLengthDelimited: {
+            uint32_t size = 0;
+            return in.ReadVarint32(&size) && size <= INT_MAX && in.Skip(static_cast<int>(size));
+        }
+        default:
+            return false;
+    }
+}
+
+} // namespace
+
+bool roxal::nn::decodeInferResponse(grpc::ByteBuffer& reply, roxal::triton::ModelInferResponse& response,
+                                    std::vector<InferOutputBytes>& contents)
+{
+    response.Clear();
+    contents.clear();
+    if (reply.Length() == 0)
+        return true;    // every field at its default
+
+    grpc::ProtoBufferReader reader(&reply);
+    if (!reader.status().ok())
+        return false;
+    google::protobuf::io::CodedInputStream in(&reader);
+    in.SetTotalBytesLimit(INT_MAX);
+    return decodeInferFields(in, response, contents);
+}
+
+bool roxal::nn::decodeStreamInferResponse(grpc::ByteBuffer& message, std::string& error,
+                                          roxal::triton::ModelInferResponse& response,
+                                          std::vector<InferOutputBytes>& contents)
+{
+    // ModelStreamInferResponse: error_message = 1, infer_response = 2.
+    constexpr uint32_t errorMessage = 1;
+    constexpr uint32_t inferResponse = 2;
+
+    error.clear();
+    response.Clear();
+    contents.clear();
+    if (message.Length() == 0)
+        return true;
+
+    grpc::ProtoBufferReader reader(&message);
+    if (!reader.status().ok())
+        return false;
+    google::protobuf::io::CodedInputStream in(&reader);
+    in.SetTotalBytesLimit(INT_MAX);
+    while (const uint32_t tag = in.ReadTag()) {
+        const uint32_t field = tag >> 3;
+        const uint32_t wire = tag & 7;
+        if (field == errorMessage && wire == wireLengthDelimited) {
+            uint32_t size = 0;
+            if (!in.ReadVarint32(&size) || size > INT_MAX || !in.ReadString(&error, static_cast<int>(size)))
+                return false;
+        } else if (field == inferResponse && wire == wireLengthDelimited) {
+            uint32_t size = 0;
+            if (!in.ReadVarint32(&size) || size > INT_MAX)
+                return false;
+            const auto limit = in.PushLimit(static_cast<int>(size));
+            const bool decoded = decodeInferFields(in, response, contents) && in.BytesUntilLimit() == 0;
+            in.PopLimit(limit);
+            if (!decoded)
+                return false;
+        } else if (!skipField(in, wire)) {
+            return false;
+        }
+    }
+    return in.ConsumedEntireMessage();
 }

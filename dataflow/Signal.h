@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -167,9 +168,37 @@ public:
     // Advance the clock by one tick on the next period boundary
     void tickOnce() { tickPending = true; }
 
-    // Start/stop running of source signals
-    void run() { running = true; }
-    void stop() { running = false; }
+    // Start/stop running of source signals.  stop() notifies the stop observers
+    // (subscribeStopped) on a running -> stopped transition only, on the thread
+    // that stops it.
+    void run() { running.store(true, std::memory_order_release); }
+    void stop()
+    {
+        if (running.exchange(false, std::memory_order_acq_rel))
+            m_stopNotifier.notify();
+    }
+
+    // Observe the signal being stopped (a script's sig.stop(), or a producer
+    // ending its stream).  Same subscribe/cancel contract as
+    // subscribeValueChanged (core/CallbackRegistry.h).
+    [[nodiscard]] roxal::Subscription subscribeStopped(std::function<void()> callback)
+    {
+        return m_stopNotifier.subscribe(std::move(callback));
+    }
+
+    // A call stream: the signal a streaming call (e.g. ai.nn predict on a
+    // decoupled Triton model, a gRPC server stream) delivers its responses on.
+    // Whoever receives the signal owns it: a dataflow node forwarding it stops
+    // it (which cancels the call) when the node goes away, or when new inputs
+    // restart the node (FuncNode::OnInput::Restart).  New inputs otherwise wait
+    // for it to end, which they don't for a plain signal.
+    //
+    // It is a signal like any other in what counts as a change: a response
+    // equal to the one before it sets the same value, and nothing changed.
+    // (Delivering each response as an occurrence, repeats included, is a job
+    // for events, not for a signal.)
+    void markCallStream() { m_callStream = true; }
+    bool isCallStream() const { return m_callStream; }
 
     // set initial value without advancing clock state (for evaluation)
     void evaluate(TimePoint t);
@@ -181,7 +210,7 @@ public:
 
     bool isSourceSignal() const { return isSource; }
     bool isClockSignal() const { return isClock; }
-    bool isRunning() const { return running; }
+    bool isRunning() const { return running.load(std::memory_order_acquire); }
 
     // Domain access.  Post-registration domain CHANGES must go through
     // DataflowEngine::setSignalDomain -- both m_domain and the derived
@@ -269,7 +298,11 @@ protected:
     bool isSource; // True if this is a source signal (e.g. constant at freq)
     bool isClock;  // True if this signal counts up at freq
 
-    bool running = false; // True if source signal should advance each tick
+    // True if source signal should advance each tick.  Atomic: a streaming
+    // call's producer stops its signal from a network thread.
+    std::atomic<bool> running { false };
+    bool m_callStream = false;              // see markCallStream()
+    roxal::CallbackRegistry<> m_stopNotifier;
 
     Domain m_domain = Domain::RT;
     bool m_inBackgroundIsland = false;  // derived at network-cache build

@@ -1,0 +1,12 @@
+prompt false
+scale true
+tag true
+prompt=hi scale=none tag=none
+prompt=hi scale=none tag=t
+prompt=hi scale=2.5 tag=none
+prompt=hi scale=2.5 tag=t
+prompt=hi scale=none tag=none
+true
+true
+solo
+done

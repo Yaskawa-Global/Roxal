@@ -1,0 +1,72 @@
+# A lifted function whose result is a signal: the node forwards the signal's
+# values onto its port -- it never publishes the signal itself -- until the
+# signal stops running.  The node stays a function of its inputs: when they
+# change it evaluates again, and forwards whatever that returns.  (Only a
+# streaming CALL is let finish first -- see grpc_stream_on_input,
+# triton_stream_restart.)  A signal that isn't running is forwarded once, as
+# a snapshot.
+
+var feed = signal(0, "f0")
+feed.run()
+
+func relay(t):
+    return feed
+
+var trig = signal(0, 1)
+var out = relay(trig)
+wait(ms=100)
+print(out.value is signal)
+print(out.value)
+feed.set("f1")
+wait(ms=100)
+print(out.value)
+feed.stop()             # over: the port keeps the last value
+wait(ms=100)
+feed.set("f2")          # no longer forwarded
+wait(ms=100)
+print(out.value)
+trig.set(2)             # evaluated again: feed isn't running, so a snapshot
+wait(ms=100)
+print(out.value)
+
+# New inputs can choose another signal: the node switches to it.
+var a = signal(0, "a0")
+var b = signal(0, "b0")
+a.run()
+b.run()
+
+func pick(sel):
+    if sel == 0:
+        return a
+    return b
+
+var sel = signal(0, 0)
+var picked = pick(sel)
+wait(ms=100)
+print(picked.value)
+a.set("a1")
+wait(ms=100)
+print(picked.value)
+sel.set(1)              # now b's values
+wait(ms=100)
+print(picked.value)
+a.set("a2")             # no longer forwarded
+b.set("b1")
+wait(ms=100)
+print(picked.value)
+sel.set(0)              # and back
+wait(ms=100)
+print(picked.value)
+
+# Not running: its value, once per evaluation.
+func snap(x):
+    return signal(0, x * 10)
+
+var s = signal(0, 1)
+var o2 = snap(s)
+wait(ms=100)
+print(o2.value)
+s.set(2)
+wait(ms=100)
+print(o2.value)
+print("done")

@@ -1,0 +1,76 @@
+# Qwen3-VL-2B -- a vision-language model -- served by NVIDIA Triton's stock
+# vLLM backend and deployed by this script: it describes an image, its answer
+# printed as it is generated.  Then it asks for a long story and stops it
+# part way, which cancels the generation on the server.
+#
+# Setup (once): examples/triton/README.md -- build the server image, download
+# the weights, start the server.
+#
+# Usage:
+#   roxal examples/triton/vlm_describe.rox [image.jpg|.png] [question] [host:port]
+
+import ai.nn
+import media
+import math
+
+var image_path = source_dir() + "/../test_cat_pic.jpg"
+var question = "Describe this image in one or two sentences."
+var server = "localhost:18001"
+if len(args) > 0:
+    image_path = args[0]
+if len(args) > 1:
+    question = args[1]
+if len(args) > 2:
+    server = args[2]
+
+# The model is a directory holding just model.json -- vLLM's engine
+# arguments; the vLLM backend completes its configuration itself.  The first
+# deployment loads the model on the server (a minute or more); later runs
+# find it loaded.  Only text_output is wanted: the backend's other outputs
+# (token counts) are UINT32, which ai.nn has no value for.
+var config = {'backend': 'vllm', 'instance_group': [{'kind': 'KIND_MODEL'}]}
+var vlm = ai.nn.Model(source_dir() + "/models/qwen3_vl", server=server, config=config, outputs=['text_output'], timeout=120s)
+
+# Images travel as base64 text of an encoded image (JPEG here), no bigger
+# than the model looks at.
+var img = media.Image(image_path, channels=3)
+if img.width() > 1024 or img.height() > 1024:
+    var scale = 1024.0 / math.max([img.width(), img.height()])
+    img.resize(int(img.width() * scale), int(img.height() * scale))
+var image = base64_encode(img.encode('jpeg', quality=90))
+
+# The vLLM backend takes the prompt as it is: Qwen's chat format, with the
+# image's place marked.
+func prompt(text :string) -> string:
+    return "<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>" + text + "<|im_end|>\n<|im_start|>assistant\n"
+
+func flag(on :bool) -> tensor:
+    var t = tensor(1, dtype='bool')
+    if on:
+        t[0] = 1
+    return t
+
+var sampling = to_json({'temperature': 0.7, 'top_p': 0.8, 'top_k': 20, 'max_tokens': 256}, indent=false)
+
+# Streamed: the future resolves with the first piece of the answer, to a
+# signal each later piece sets (text_output is declared [-1]: a list of one
+# string).  It stops running after the last.
+print("Q: " + question)
+var reply = vlm.predict({'text_input': prompt(question), 'image': image, 'stream': flag(true), 'exclude_input_in_output': flag(true), 'sampling_parameters': sampling})
+wait(for=reply)
+print("A: " + reply.value[0], end='', flush=true)
+when reply changes as e:
+    print(e.value[0], end='', flush=true)
+while reply.running:
+    wait(ms=50)
+print("")
+
+# Stopping the signal cancels the call: the server stops generating.
+var story = vlm.predict({'text_input': prompt("Write a long story about this image."), 'image': image, 'stream': flag(true), 'exclude_input_in_output': flag(true), 'sampling_parameters': sampling})
+wait(for=story)
+print("Story: " + story.value[0], end='', flush=true)
+when story changes as e:
+    print(e.value[0], end='', flush=true)
+wait(3s)
+story.stop()
+print(" [stopped]")
