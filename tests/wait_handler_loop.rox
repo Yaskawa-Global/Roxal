@@ -1,0 +1,22 @@
+# Repeated waits in a loop, a waiting handler started during each: no stack
+# slot may be left behind per iteration (the leak used to shift the loop
+# body's locals until an operator met a value of the wrong type).
+
+var s = signal(100, 0)
+
+when s changes as ev:
+    wait(1ms)
+
+func h() -> int:
+    var total = 0
+    for i in range(0..5):
+        wait(30ms)
+        var k = i * 10
+        total = total + k
+        s <- i + 1
+    return total
+
+s.run()
+s <- 1
+print(h())
+s.stop()

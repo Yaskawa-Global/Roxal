@@ -1,0 +1,1 @@
+cannot register a 'when' handler from inside a dataflow node body

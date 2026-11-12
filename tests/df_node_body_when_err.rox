@@ -1,0 +1,13 @@
+// A node body may not register an event handler: it would add one on every
+// evaluation, to whichever thread evaluates the node.
+var s = signal(0, 1.0)
+var other = signal(0, 5.0)
+
+func f(x :real) -> real:
+    when other changes:
+        print('handler')
+    return x * 2.0
+
+print('before')
+var y = f(s)
+print('not reached')

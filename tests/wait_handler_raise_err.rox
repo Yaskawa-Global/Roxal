@@ -1,0 +1,23 @@
+# An exception that leaves an event handler is uncaught.  The function the
+# handler interrupted -- suspended in wait(), inside a try -- did not call
+# the handler, so its except clause is no candidate: it must not run (and
+# used to, receiving nil in place of the exception).
+
+var s = signal(10, 0.0)
+
+when s changes as ev:
+    raise 'from handler'
+
+func h() -> int:
+    try:
+        wait(300ms)
+        print("wait completed")
+    except e:
+        print("h caught: {e}")
+    return 1
+
+s.run()
+s <- 1.0
+print("start")
+print(h())
+s.stop()

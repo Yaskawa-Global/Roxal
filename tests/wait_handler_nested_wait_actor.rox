@@ -1,0 +1,20 @@
+# As wait_handler_nested_wait, on an actor's thread: a handler the actor
+# registered waits while the actor's method is suspended in wait().
+
+type E event
+
+type Worker actor:
+    func run() -> int:
+        when E occurs:
+            wait(5ms)
+        wait(300ms)
+        var e :quantity = 100ms
+        var e2 :quantity = 7ms
+        print("actor e={e} e2={e2}")
+        return 1
+
+var w = Worker()
+var f = w.run()
+wait(100ms)
+emit E()
+print(wait(for=f))

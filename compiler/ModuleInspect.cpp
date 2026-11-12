@@ -1447,6 +1447,13 @@ Value ModuleInspect::inspect_compile_builtin(ArgsView args)
     if (!file)
         throw std::invalid_argument("inspect.compile expects a File mirror node");
 
+    // A compile is unbounded work (parsing, allocation, module cache file
+    // access, shared GC root registration): not something a real-time slice
+    // may do.  Refuse it there with an error the script can catch.
+    if (SimpleMarkSweepGC::inGCYieldSectionOnThisThread())
+        throw std::runtime_error("inspect.compile is not available in real-time (host-driven) "
+                                 "execution; compile from an actor, or before the run starts");
+
     AstPrinter printer;
     std::string source = printer.print(*file);
 

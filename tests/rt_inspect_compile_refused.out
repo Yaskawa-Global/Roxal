@@ -1,0 +1,2 @@
+inspect.compile is not available in real-time (host-driven) execution; compile from an actor, or before the run starts
+still running

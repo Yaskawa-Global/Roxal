@@ -121,6 +121,12 @@ DataflowEngine::~DataflowEngine()
     clear();
 }
 
+void DataflowEngine::refuseNetworkChangeInNodeBody(const std::string& what)
+{
+    if (roxal::VM::inDataflowBody())
+        throw std::runtime_error("cannot " + what + " from inside a dataflow node body");
+}
+
 void DataflowEngine::markNetworkModified()
 {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
@@ -146,18 +152,22 @@ bool DataflowEngine::inNetwork(const ptr<Signal>& signal) const
 void DataflowEngine::addSignal(ptr<Signal> signal)
 {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    signals.push_back(signal);
     // A source nothing is wired to yet, and not on the tick grid, changes
     // nothing the engine evaluates (see inNetwork).  Any other signal is
     // made to be part of the network -- a node's output is created just
     // before the node takes it as a port, possibly on a node already
     // registered -- and counts from the start.
-    if (!signal->isSourceSignal() || inNetwork(signal))
+    const bool partOfNetwork = !signal->isSourceSignal() || inNetwork(signal);
+    if (partOfNetwork)
+        refuseNetworkChangeInNodeBody("create signal '" + signal->name() + "'");
+    signals.push_back(signal);
+    if (partOfNetwork)
         m_networkModified = true;
 }
 
 void DataflowEngine::addFunc(ptr<FuncNode> func)
 {
+    refuseNetworkChangeInNodeBody("create dataflow node '" + func->name() + "'");
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     funcs[func->name()] = func;
     m_networkModified = true;
@@ -426,6 +436,8 @@ void DataflowEngine::copyInto(const ptr<Signal>& lhs, const ptr<Signal>& rhs)
 
     if (lhs == rhs)
         throw std::runtime_error("cannot wire '" + lhs->name() + "' to itself");
+
+    refuseNetworkChangeInNodeBody("wire '" + lhs->name() + "'");
 
     if (lhs->frequency() != rhs->frequency())
         throw std::runtime_error(roxal::format("both sides of '<-' must have the same frequency (%g Hz vs %g Hz)",

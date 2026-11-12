@@ -1,0 +1,26 @@
+// An event handler that runs while a node body on the same thread is waiting
+// is not part of the body: the body's restrictions (frozen module variables)
+// do not apply to it.
+type Tick event
+
+var count = 0
+
+when Tick occurs:
+    count = count + 1        // an ordinary handler on the main thread
+
+type Kicker actor:
+    proc kick():
+        wait(50ms)
+        emit Tick()
+
+var k = Kicker()
+var s = signal(0, 1.0)
+
+func slow(x :real) -> real:
+    wait(200ms)
+    return x * 2.0
+
+k.kick()
+var y = slow(s)              // the node's first evaluation runs here and waits
+wait(100ms)
+print("count={count} y={y.value}")

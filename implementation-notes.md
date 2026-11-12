@@ -827,7 +827,10 @@ future is ready (zero-wait `wait_for`). If not:
 5. On the next loop iteration, the future is ready and resolved in-place
 
 This allows the VM to process events, respect `execute(deadline)` deadlines, and
-yield control back to the caller during the wait.
+yield control back to the caller during the wait. An event handler that comes
+due meanwhile runs at once: the await is set aside with the rest of the
+awaiting activation's wait state while the handler's frame is on top (see
+"Wait state belongs to the top activation" under Continuations).
 
 ### Who wakes the waiters
 
@@ -1396,6 +1399,55 @@ The pieces that make that work:
   one path `.set()` uses too: it names the signal in its error, refuses a
   driven signal, and refuses a write from inside a node body
   (`VM::inDataflowBody`, set by `FuncNode`'s `DataflowBodyGuard`).
+
+**A node body may not change the network.** While a thread is evaluating a
+body (`VM::inDataflowBody`), `DataflowEngine::refuseNetworkChangeInNodeBody`
+throws from the places a script operation adds to or rewires the network:
+the `FuncNode` constructors (a lifted call, an operator on a signal),
+`addSignal` for a signal that is part of the network (clocked, derived, a
+node's output), `copyInto` (a wire), and `signal.run()` / `.stop()`. The
+engine is part-way through an island whose layout a rebuild replaces, and a
+body runs once per evaluation, so whatever it added was added again each
+time. The check is one thread-local read on paths that take the engine mutex
+anyway. It follows the thread, not the function: the same function called
+normally may do all of these. An event-driven source nothing is wired to is
+not part of the network (above), so a body can still make and return one --
+which is how a streaming call's node works. Removal is not checked: a
+temporary going out of scope removes its signal from any thread.
+
+Registering an event handler is refused the same way (`OpCode::EventOn`,
+`signal.on_changed`): a handler belongs to the thread that registers it, and
+a body runs on whichever thread evaluates the node, once per evaluation.
+
+**The flag follows the activation.** `inDataflowBody_` is a per-OS-thread
+flag set around the body's invoke, so anything that runs on that thread
+meanwhile inherits it. A function the body calls should; an event handler
+dispatched while the body waits should not -- it is the script's own handler
+(a node's first evaluation runs on the lifting thread, which has handlers),
+and it used to fail with "Cannot modify module variable ... from dataflow
+function". Handler dispatch therefore clears the flag for the handler's
+frame and puts it back when the frame returns or is unwound
+(`EventDispatchState::interruptedDataflowBody`, alongside the wait state it
+sets aside; the `processPendingEvents` path does the same around its
+`invokeClosure`). A body suspended at a deadline while such a handler is on
+top is resumed with the flag clear (`FuncNode::resumeExecution`, Case 2); the
+handler's return sets it. Test: `df_node_body_handler`.
+
+**A body that waits holds the evaluator.** Suspending in a body is allowed --
+`wait()`, awaiting a value the body goes on to use, a synchronous file read
+-- but every evaluator (the engine thread's ticks and event islands, a
+host's `tickFor`, a lift's first evaluation on a script thread) takes
+`m_evalMutex` for the evaluation and blocks on it. Measured: an event-driven
+node that calls `wait(500ms)` stalls a 20 Hz clocked island for the whole
+wait in all three run modes, a host's `tickFor` included. Only a body that
+*returns* a future releases the evaluator (the async-yield path): the same
+script with the wait moved into an actor call whose future the body returns
+shows no stall. A change-driven island should be free to take time; making
+that true means evaluating engine-thread bodies sliced, so a body that
+suspends gives the evaluator back as a yielded one does under `tickFor` --
+the single-evaluator rework `m_evalMutex` is already marked interim for.
+Under `tickFor` itself a clocked body that waits is sliced and resumed on
+later ticks, so there the wait costs the node lateness, not the tick.
 
 A signal is never const: `Value::constRef()` leaves a signal alone, so
 transitive const stops at it and every signal operation works through a
@@ -2401,10 +2453,66 @@ struct EventDispatchState {
     PendingEvent currentEvent;
     std::vector<HandlerRegistration> handlerSnapshot;
     size_t nextHandlerIndex;
-    bool prevThreadSleep;
-    TimePoint prevThreadSleepUntil;
+    size_t waitMark;   // where the interrupted activation's wait state was set aside
 };
 ```
+
+One event is dispatched at a time per thread: an event that arrives while a
+handler frame is on the stack (running, or itself waiting) stays queued until
+that dispatch is complete.
+
+#### Wait state belongs to the top activation
+
+A thread's wait state is five fields -- `threadSleep` / `threadSleepUntil`
+(asleep in `wait()`), `awaitedFuture`, `pendingWaitFor` (the `for=` target of a
+`wait()`, or the future a parked builtin such as a `fileio` call is waiting on)
+and `waitSuspension` (where a suspended native call's result goes, and what to
+pop when it arrives). The dispatch loop tests them before every instruction,
+so they are single fields on the `Thread`, not per frame; the rule that makes
+that sound is that **they always describe the activation on top of the frame
+stack**.
+
+Two things start an activation above one that may be waiting: an event
+handler's frame, and a re-entrant invoke from native code (`invokeClosure` /
+`invokeMethod` -- a host loop's callback, an engine evaluating a node body).
+Both set the whole state aside first (`Thread::setAsideWaitState()`, onto
+`Thread::savedWaitStates`, which the collector traces) and start from an empty
+one, and it comes back when the new activation's bottom frame goes:
+
+| Activation | Set aside | Restored |
+|---|---|---|
+| Event handler | `invokeNextEventHandler`, once the frame is certain to be pushed | `processEventDispatch` phase 1 when it returns; `unwindFrame` when an exception unwinds it |
+| Re-entrant invoke | `ParkedInvokeScope` (constructor) | `opReturn` / `unwindFrame` for the `unwindOnReturn` frame; the scope's destructor for the paths that pushed no frame |
+
+So a handler that calls `wait()`, raises and catches, or reads a file works on
+its own state, and a handler due while the thread awaits a future runs at once
+rather than when the future resolves. Before this, only the two sleep fields
+were saved around a handler; the rest was shared, and each of those three
+handler bodies corrupted the interrupted function -- its suspended `wait()`
+call was never popped (every later local read the neighbouring slot), or the
+handler's file read returned nil and the contents arrived as the result of the
+function's `wait()` (`tests/wait_handler_*.rox`, `tests/await_handler_runs.rox`).
+
+An invoke that returns *suspended* (yielded at its deadline, or
+debugger-paused) is still the top activation: its frames stay on the stack for
+a later `execute()` to finish, so its wait state stays live and the record
+stays set aside until the bottom frame finally returns
+(`ParkedInvokeScope`'s destructor leaves both alone when the activation's
+frames are still there).
+
+#### An exception does not leave a handler
+
+`unwindToExceptionHandler` treats an event handler's frame as a boundary: once
+the unwind passes one, the `except` clauses of the frames beneath are not
+candidates. Those frames are the code the handler interrupted -- it neither
+called the handler nor emitted the event -- and which of its `try` blocks
+happened to be open is an accident of timing. The exception is uncaught: the
+unwind continues to the frame a native entered (`reportUncaughtInInvocation`)
+or to the bottom of the thread (a runtime error; on an actor thread inside a
+call, forwarded through that call's future), as for any exception nothing
+catches (`tests/wait_handler_raise_err.rox`, `tests/event_handler_raise_err.rox`).
+`wait ... until` is not affected: its `ConditionalInterrupt` is raised in the
+waiting frame itself, with no handler frame involved.
 
 ### NativeContinuation
 
@@ -2507,8 +2615,8 @@ preserved. The caller can resume by calling `execute()` again.
 **A yield can split an instruction from its epilogue.** The deadline check and
 the RT GC yield run after an instruction but before the epilogue that finishes
 two hand-offs: an event handler's `Return` leaves its result on the stack for
-`processEventDispatch()` (which discards it, restores the sleep state of the
-`wait()` the handler interrupted, and dispatches the next handler), and a
+`processEventDispatch()` (which discards it, restores the wait state of the
+activation the handler interrupted, and dispatches the next handler), and a
 continuation callback's `Return` leaves its result for
 `processContinuationDispatch()`. So `execute()` finishes any hand-off flagged
 by `eventHandlerJustReturned` / `continuationCallbackReturned` at entry, before
@@ -2534,8 +2642,9 @@ unbounded execution blocks -- asleep in `wait()`, or awaiting a future -- a
 deadline-limited one yields instead. The blocking path, once woken, falls
 through to the epilogue's `processEventDispatch()`, which starts a due handler,
 a `wait ... until` interrupt or an `anyof()` relay; so the yielding path does
-that dispatch first (`dispatchEventsBeforeBlockedYield`). Asleep, it continues
-only if a dispatch actually began -- this path skips the per-instruction
+that dispatch first (`dispatchEventsBeforeBlockedYield`). Asleep or awaiting,
+it continues only if a dispatch actually began (the handler's frame is then on
+top, with a wait state of its own) -- this path skips the per-instruction
 deadline check, so looping on an event that is not yet due would overrun the
 slice. Without it a sliced program got none of its events until its wait ended:
 `until` ran its full time and an `anyof()` event arm lost to the slower future.
@@ -3897,11 +4006,32 @@ Pair module-held roots with an `onModuleUnloading()`
 override that clears the containers while the VM object graph is still
 alive — Values lingering into the module destructor decRef objects the
 shutdown sweep already freed. Roots may not be created or destroyed inside an
-RT yield section (debug assert). Current heavy users: ModuleDDS, ModuleGrpc
+RT yield section (debug assert): registration takes the registry mutex and
+inserts into a shared set. Current heavy users: ModuleDDS, ModuleGrpc
 (incl. ActiveStreamState and ProtoAdapter decl maps), the compute server's
-actor registry, the compiler's scope/import roots, `SerializationContext`
-(a GC root whose `retained` vector keeps deserialization back-references
-alive for the whole read).
+actor registry, the compiler's scope/import roots.
+
+**Scoped roots** (`GCRootBase::ScopedRegistration`) are for a root that lives
+for one native call: constructed and destroyed on the same thread, never
+handed to another. On an interpreter thread the root is listed on that
+`Thread` (`scopedRoots`) and traced with the thread's other roots in
+`visitThreadRoots`. A `Thread`'s roots are read only while its thread is
+parked or blocked, so this takes no lock and touches nothing shared, and a
+scoped root *may* be created inside an RT yield section. A thread with no
+interpreter `Thread` (a compute-server worker, a connection reader) falls back
+to the shared registry. `SerializationContext` is the user: its `retained`
+vector keeps deserialization back-references alive for the whole read, and a
+context is made per `serialize()` / `deserialize()` call, per remote actor
+spawn and call, and per module cache read or write. That is what lets a
+script serialize, and create or call a remote actor, from sliced execution.
+`writeValue` / `readValue` make a context only when the caller passed none
+(they used to construct and register one on every nested call).
+
+**What a real-time slice refuses.** `inspect.compile` raises inside an RT
+yield section: a compile is unbounded work and its compiler roots go in the
+shared registry. The error is catchable; an actor's thread is not in the
+section and can compile. Tests: `rt_serialize`, `rt_inspect_compile_refused`
+(`runtests.py` always runs its `driven_tests` under `--drive-us`).
 
 ### The collector/reclaimer thread (`ROXAL_GC_DEDICATED_THREAD`)
 

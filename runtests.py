@@ -183,6 +183,11 @@ tests = [
     'event1', 'event_when_stmt', 'event_emit_keyword', 'event_when_method', 'event_remove_method', 'event_ref', 'event_actor_ref', 'event_actor_ref2', 'event_actor_ref3', 'event_actor_ref4', 'event_instance_emit',
     'event_payload', 'event_implicit_constructor', 'event_type_when', 'event_target_filter',
     'event_in_sleep', 'event_in_sleep2', 'event_cascade', 'event_chain_depth',
+    'wait_handler_nested_wait', 'wait_handler_nested_wait_actor', 'wait_handler_native_exception', 'wait_handler_fileio',
+    'wait_handler_for_future', 'wait_handler_loop', 'wait_handler_raise_err', 'event_handler_raise_err', 'await_handler_runs',
+    'rt_serialize',
+    'df_node_body_network', 'df_node_body_lift_err', 'df_node_body_signal_err', 'df_node_body_wire_err',
+    'df_node_body_when_err', 'df_node_body_handler',
     'until_event', 'until_signal', 'signal_vector_dot',
     'if_suffix_basic', 'if_suffix_assignment', 'if_suffix_mutex_err',
     'nonstrict-assign', 'nonstrict-assign-err', 'strict-assign', 'strict-assign-err',
@@ -394,7 +399,7 @@ fileio_tests = [
     'fileio_sync', 'fileio_async_param', 'fileio_list_dir',
     'fileio_rename', 'fileio_copy', 'fileio_stat', 'fileio_write_file', 'fileio_tag',
     'fileio_remove', 'fileio_errors', 'native_raise_defaulted', 'workspace_fs',
-    'string_concat_roundtrip', 'actor_concat_stress'
+    'string_concat_roundtrip', 'actor_concat_stress', 'wait_handler_fileio'
 ]
 # The web module's services (it needs inspect and fileio too).
 web_tests = ['workspace_fs']
@@ -414,7 +419,7 @@ inspect_tests = [
     'inspect_network_lifecycle', 'inspect_network_provenance',
     'inspect_unparse', 'inspect_edit', 'inspect_fragments',
     'inspect_fragment_err', 'inspect_unparse_err', 'inspect_roundtrip_corpus',
-    'inspect_compile', 'inspect_compile_err', 'inspect_annot_roundtrip',
+    'inspect_compile', 'inspect_compile_err', 'rt_inspect_compile_refused', 'inspect_annot_roundtrip',
     'inspect_stmt_annot_roundtrip', 'inspect_debuginfo_annot', 'annot_private_nested',
     'inspect_render', 'inspect_debuginfo', 'inspect_debuginfo_params', 'debug_stop',
     'debug_exclude_guard',
@@ -648,7 +653,20 @@ drive_excluded_tests = {
     # yield section gc() degrades to request-and-return (implementation-notes,
     # "Triggering collections").
     'event_actor_ref4': 'gc() as a collection fence',
+    # inspect.compile is refused in real-time execution (rt_inspect_compile_refused
+    # covers the refusal itself).
+    'inspect_compile': 'inspect.compile is refused in a real-time slice',
+    'dfdoc_runs': 'inspect.compile is refused in a real-time slice',
+    'dfdoc_live': 'inspect.compile is refused in a real-time slice',
+    # The web store is a browser-side feature, not available to a driven script.
+    'workspace_fs': 'web store is not available to real-time execution',
 }
+
+# Tests that are ALWAYS run sliced by driveFor() (roxal --drive-us), whatever
+# the options: they cover what a script may and may not do in real-time
+# (host-driven) execution, which a default run would otherwise never exercise.
+driven_tests = {'rt_serialize', 'rt_inspect_compile_refused'}
+DRIVEN_TEST_SLICE_US = 300
 
 # Additionally excluded when the driver also ticks the dataflow engine
 # (--drive-tick-us): these count clock changes inside a fixed wall-clock
@@ -670,9 +688,13 @@ if args.drive_tick_us and not args.drive_us:
 if args.drive_us:
     if args.drive_us <= 0:
         raise SystemExit('--drive-us must be positive')
+    # The qt module is main-thread-only (Qt's UI thread) and refuses calls from
+    # any other; a driven script runs on the driver thread.  Using qt from a
+    # host-driven run is not a supported configuration.
     tests = [t for t in tests
              if not t.startswith(('repl_', 'typededucer_', 'check_', 'ctest_'))
              and t not in drive_excluded_tests
+             and t not in qt_tests
              and not (args.drive_tick_us and t in drive_tick_excluded_tests)]
 
 # Filter tests by pattern if --test is specified
@@ -1338,6 +1360,8 @@ try:
             if args.drive_tick_us:
                 drive += ['--drive-tick-us', str(args.drive_tick_us)]
             cmd = [cmd[0], *drive, *cmd[1:]]
+        elif test in driven_tests and cmd[0] == roxal:
+            cmd = [cmd[0], '--drive-us', str(DRIVEN_TEST_SLICE_US), *cmd[1:]]
 
         opt_expected = (" [expected]" if test in failing_tests else '')
 

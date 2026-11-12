@@ -1,0 +1,12 @@
+// A node body may not rewire the network.
+var s = signal(0, 1.0)
+var a = signal(10, 5.0)
+var b = signal(10, 6.0)
+
+func f(x :real) -> real:
+    a <- b
+    return x * 2.0
+
+print('before')
+var y = f(s)
+print('not reached')

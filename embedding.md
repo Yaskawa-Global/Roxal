@@ -242,6 +242,14 @@ process; in a driven program it fails that run, with the reason on the handle,
 and the next program runs normally. So does the failure of a dataflow node,
 native or Roxal, which fails the run the node belongs to.
 
+**What a driven program's main script may not call.** A slice is bounded
+work on your thread, so a builtin whose work has no bound is refused there
+with an error the script can catch: `inspect.compile` is one. The script's
+actors run on their own threads, outside the slice, and can call it. The web
+store and the `qt` module are not available to a driven script.
+`serialize()` / `deserialize()`, and creating and calling actors (remote ones
+included), work in a slice; creating a remote actor waits for its server.
+
 **A program's dataflow ends with it.** The engine outlives every run, and a host
 goes on ticking it between programs, but the signals a program created are in
 the scope of its module and are not evaluated once it has ended. A signal stored

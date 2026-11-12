@@ -189,6 +189,15 @@ public:
     // Mark the network as modified so caches will be rebuilt on next tick/evaluate
     void markNetworkModified();
 
+    // Throws if the calling thread is running a node body.  A body is a
+    // function of its inputs: it may not change the network it is being
+    // evaluated in.  The engine is part-way through an island whose layout a
+    // rebuild replaces, and a body runs once per evaluation, so whatever it
+    // added would be added again every time.  Called where a script operation
+    // adds to or rewires the network (one thread-local read on paths that
+    // take the engine mutex anyway).  `what` completes "cannot ...".
+    static void refuseNetworkChangeInNodeBody(const std::string& what);
+
     // Change a registered signal's execution domain.  Serialized under the
     // engine mutex (which every network-cache rebuild holds while reading
     // domains) and followed by a rebuild request -- the only safe way to

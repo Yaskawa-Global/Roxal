@@ -1,0 +1,10 @@
+// A clocked signal is part of the network; a node body may not make one.
+var s = signal(0, 1.0)
+
+func f(x :real) -> real:
+    var n = signal(10, 1.0)
+    return x * 2.0
+
+print('before')
+var y = f(s)
+print('not reached')

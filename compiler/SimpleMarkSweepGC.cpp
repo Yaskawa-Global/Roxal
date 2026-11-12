@@ -271,9 +271,21 @@ void visitThreadRoots(Thread& thread, ValueVisitor& visitor)
         visitStrongValue(visitor, session.lastReceiver);
     }
     visitStrongValue(visitor, thread.pendingConstructorInstance);
-    if (thread.waitSuspension.active) {
+    if (thread.waitSuspension.active()) {
         visitStrongValue(visitor, thread.waitSuspension.storedValue);
     }
+    // ...and the wait state set aside for the activations beneath the top one
+    for (const auto& saved : thread.savedWaitStates) {
+        visitStrongValue(visitor, saved.pendingWaitFor);
+        visitStrongValue(visitor, saved.awaitedFuture);
+        if (saved.suspension.active())
+            visitStrongValue(visitor, saved.suspension.storedValue);
+    }
+
+    // Roots scoped to a native call running on this thread (see
+    // GCRootBase::ScopedRegistration)
+    for (const GCRootBase* root : thread.scopedRoots)
+        root->traceRoot(visitor);
 
     // Trace native continuation stack (e.g., filter/map/reduce iteration, param conversions)
     for (const auto& cont : thread.nativeContinuationStack) {
@@ -1508,6 +1520,36 @@ GCRootBase::Registration::~Registration()
 {
     if (root_)
         root_->unregisterRoot();
+}
+
+GCRootBase::ScopedRegistration::ScopedRegistration(GCRootBase& root)
+    : root_(&root)
+{
+    if (Thread* t = VM::thread.get()) {
+        t->scopedRoots.push_back(&root);
+        owner_ = t;
+    } else {
+        root.registerRoot();
+    }
+}
+
+GCRootBase::ScopedRegistration::~ScopedRegistration()
+{
+    if (!owner_) {
+        root_->unregisterRoot();
+        return;
+    }
+    debug_assert_msg(VM::thread.get() == owner_,
+                     "scoped root destroyed on a thread other than the one that created it");
+    // Scopes nest, so the root is normally the last entry.
+    auto& roots = owner_->scopedRoots;
+    for (size_t i = roots.size(); i-- > 0; ) {
+        if (roots[i] == root_) {
+            roots.erase(roots.begin() + static_cast<std::ptrdiff_t>(i));
+            return;
+        }
+    }
+    debug_assert_msg(false, "scoped root missing from its thread's list");
 }
 
 GCRootBase::~GCRootBase()

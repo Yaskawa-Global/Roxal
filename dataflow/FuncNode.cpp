@@ -16,8 +16,10 @@ namespace {
 
 // RAII guard: this thread is running a node body (see VM::inDataflowBody)
 struct DataflowBodyGuard {
-    DataflowBodyGuard() { roxal::VM::setInDataflowBody(true); }
-    ~DataflowBodyGuard() { roxal::VM::setInDataflowBody(false); }
+    explicit DataflowBodyGuard(bool inBody = true)
+        : was(roxal::VM::inDataflowBody()) { roxal::VM::setInDataflowBody(inBody); }
+    ~DataflowBodyGuard() { roxal::VM::setInDataflowBody(was); }
+    bool was;
 };
 
 // An exception Value of the builtin UnavailableError type (or a subtype).
@@ -88,6 +90,7 @@ FuncNode::FuncNode(const std::string& name,
                    const std::vector<ptr<Signal>>& outputSignals)
   : m_name(name), m_operatorSignalsCalled(false), m_id(nextGraphId()), closure(closure_), constArgs(constArgs_), signalArgs(signalArgs_), m_overrideOutputSignals(outputSignals)
 {
+    DataflowEngine::refuseNetworkChangeInNodeBody("create dataflow node '" + name + "'");
     m_ownerDomain = creatingDomain();
     m_outputNames = {DataflowEngine::uniqueFuncName("result")};
     if (roxal::isClosure(closure) && asFunction(asClosure(closure)->function)->funcType.has_value()) {
@@ -159,6 +162,7 @@ FuncNode::FuncNode(const std::string& name,
   : m_name(name), m_operatorSignalsCalled(false), m_id(nextGraphId()), closure(Value::nilVal()),
     nativeFunc(nativeFunc_), constArgs(constArgs_), signalArgs(signalArgs_), m_overrideOutputSignals(outputSignals)
 {
+    DataflowEngine::refuseNetworkChangeInNodeBody("create dataflow node '" + name + "'");
     m_ownerDomain = creatingDomain();
     m_outputNames = outputNames_;
     if (m_outputNames.empty())
@@ -1077,7 +1081,11 @@ FuncExecResult FuncNode::resumeExecution(TimePoint deadline, std::optional<TimeP
     auto savedThread = VM::thread;
     VM::thread = m_funcYieldState.executionThread;
 
-    DataflowBodyGuard dfGuard;
+    // The body may have been suspended while an event handler ran above it
+    // (a handler dispatched during the body's wait): what resumes then is the
+    // handler, which is not body code.  Its return puts the flag back.
+    const auto& dispatch = VM::thread->eventDispatch;
+    DataflowBodyGuard dfGuard(!(dispatch.active && dispatch.interruptedDataflowBody));
     // Continue the suspended body on the thread it left.  execute() declines
     // on its own when a collection is pending and this thread must not delay
     // it, reporting Yielded, which resumption handles like any other.

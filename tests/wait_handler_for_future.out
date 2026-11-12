@@ -1,0 +1,6 @@
+handler waited
+h1 r=42 e=100ms
+1
+handler x=7
+h2 r=nil e=100ms
+2

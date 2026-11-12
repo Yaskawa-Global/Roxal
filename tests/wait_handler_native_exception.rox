@@ -1,0 +1,25 @@
+# A handler that catches an exception raised by a builtin, started while a
+# function is suspended in wait().  Raising used to abandon whichever wait was
+# suspended on the thread -- here the function's, not anything the handler
+# was doing -- leaving the function's wait call on its stack.
+
+var s = signal(10, 0.0)
+
+when s changes as ev:
+    try:
+        var q = from_json("[bad")
+        print("not reached")
+    except:
+        print("handler caught")
+
+func h() -> int:
+    wait(300ms)
+    var e :quantity = 100ms
+    var e2 :quantity = 7ms
+    print("h e={e} e2={e2}")
+    return 1
+
+s.run()
+s <- 1.0
+print(h())
+s.stop()

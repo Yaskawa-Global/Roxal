@@ -1,0 +1,41 @@
+# wait(for=future) on both sides of a handler started above a suspended wait:
+# each wait delivers its own result to its own caller.
+
+type A actor:
+    func after(ms :int, v :int) -> int:
+        wait(ms=ms)
+        return v
+
+var a = A()
+var s = signal(10, 0.0)
+var handlerWaitsFor = false
+
+when s changes as ev:
+    if handlerWaitsFor:
+        var x = wait(for=a.after(20, 7))
+        print("handler x={x}")
+    else:
+        wait(5ms)
+        print("handler waited")
+
+# the function waits for a future; the handler sleeps
+func h1() -> int:
+    var r = wait(for=a.after(300, 42))
+    var e :quantity = 100ms
+    print("h1 r={r} e={e}")
+    return 1
+
+# the function sleeps; the handler waits for a future
+func h2() -> int:
+    var r = wait(300ms)
+    var e :quantity = 100ms
+    print("h2 r={r} e={e}")
+    return 2
+
+s.run()
+s <- 1.0
+print(h1())
+handlerWaitsFor = true
+s <- 2.0
+print(h2())
+s.stop()

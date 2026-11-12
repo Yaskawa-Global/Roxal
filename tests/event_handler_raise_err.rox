@@ -1,0 +1,24 @@
+# An exception that leaves an event handler is uncaught wherever the thread
+# happened to be: here in the middle of a loop inside a try, whose except
+# clause used to catch it.
+
+var s = signal(100, 0)
+
+when s changes as ev:
+    raise 'from handler'
+
+func busy() -> int:
+    var total = 0
+    try:
+        for i in range(0..50000000):
+            total = total + 1
+    except e:
+        print("busy caught: {e}")
+        return -1
+    return total
+
+s.run()
+s <- 1
+print("start")
+print(busy() > 0)
+s.stop()

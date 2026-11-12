@@ -1,0 +1,12 @@
+// inspect.compile is refused in real-time (host-driven) execution, with an
+// error the script can catch.  runtests.py always runs this test sliced by
+// driveFor() (driven_tests).
+import inspect
+
+var tree = inspect.parse('print(1)\n')
+try:
+    var run = inspect.compile(tree)
+    print('compiled')
+except e:
+    print(e)
+print('still running')

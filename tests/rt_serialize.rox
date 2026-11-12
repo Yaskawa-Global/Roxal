@@ -1,0 +1,8 @@
+// serialize() / deserialize() from real-time (host-driven) execution.
+// runtests.py always runs this test sliced by driveFor() (driven_tests).
+var d = {"name": "arm", "joints": [1.5, 2.5, 3.5], "nested": {"ok": true}}
+var bytes = serialize(d)
+var back = deserialize(bytes)
+print(back["name"])
+print(back["joints"])
+print(back["nested"]["ok"])

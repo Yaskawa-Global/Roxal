@@ -1,0 +1,37 @@
+# A handler that comes due while its thread is awaiting a future runs then,
+# not once the future has resolved.  Here the awaited call cannot finish
+# until the handler has run: it polls a gate that only the handler opens (and
+# gives up after 2s, returning -1, so a held handler fails rather than hangs).
+
+type Go event
+
+type Gate actor:
+    private var opened = false
+    proc open():
+        opened = true
+    func is_open() -> bool:
+        return opened
+
+type Worker actor:
+    func slow(g :Gate) -> int:
+        wait(100ms)            # the caller is awaiting this call by now
+        emit Go()
+        for i in range(0..200):
+            var o :bool = g.is_open()
+            if o:
+                return 42
+            wait(10ms)
+        return -1
+
+var g = Gate()
+var w = Worker()
+
+when Go occurs:
+    g.open()
+
+func h() -> int:
+    var r :int = w.slow(g)     # a future: the call has only been started
+    var v = r + 1              # its value is needed: h awaits it here, and the
+    return v                   # handler must run meanwhile
+
+print(h())

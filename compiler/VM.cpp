@@ -1139,10 +1139,9 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                 return true;
             }
             auto& waitSusp = thread->waitSuspension;
-            if (waitSusp.active && !waitSusp.resultSlot) {
+            if (waitSusp.active() && !waitSusp.resultSlot) {
                 size_t calleePos = stackDepthBefore - callSpec.argCount - 1;
                 waitSusp.resultSlot = &*(thread->stack.begin() + calleePos);
-                waitSusp.stackBase = thread->stack.begin() + calleePos + 1;
                 waitSusp.frameDepth = thread->frames.size();
                 return true;
             }
@@ -1215,10 +1214,9 @@ bool VM::callNativeFn(NativeFn fn, ptr<type::Type> funcType,
                 return true;
             }
             auto& waitSusp = thread->waitSuspension;
-            if (waitSusp.active && !waitSusp.resultSlot) {
+            if (waitSusp.active() && !waitSusp.resultSlot) {
                 size_t calleePos = stackDepthBefore - callSpec.argCount - 1;
                 waitSusp.resultSlot = &*(thread->stack.begin() + calleePos);
-                waitSusp.stackBase = thread->stack.begin() + calleePos + 1;
                 waitSusp.frameDepth = thread->frames.size();
                 return true;
             }
@@ -5058,33 +5056,42 @@ bool VM::callValue(const Value& callee, const CallSpec& callSpec)
 }
 
 namespace {
-// RAII: clear the calling thread's "parked" (threadSleep) state for the duration of a
-// re-entrant invoke, then restore it. A native pump (an event loop, processPendingEvents,
+// RAII: set the calling thread's wait state aside for the duration of a re-entrant
+// invoke, then restore it. A native pump (an event loop, processPendingEvents,
 // _invoke_method, ...) typically calls back into Roxal while the thread is parked inside
-// run()/wait()/await. The dispatch loop refuses to run instructions while parked (it would
-// block on sleepCondVar instead of running the callback), so the callback must run with
-// threadSleep == false. This guard subsumes the manual save/clear/restore "dance" that
-// every parked-callback caller previously had to perform by hand. When the thread is NOT
-// parked (the common case) it is a no-op: prev is false, so clear and restore do nothing.
-// Held only as a stack local for the duration of one re-entrant invoke; `t` is the
-// thread we are currently executing on (VM::thread), so it cannot be freed within the
-// scope. A raw pointer (matching BoundCallGuard above) is deliberate: a strong ptr<>
-// would perturb Thread teardown ordering, and capturing the ORIGINAL thread is required
-// so we restore the parked state on the same Thread even if VM::thread is reassigned
+// run()/wait()/await. The callback is a separate activation (see
+// Thread::setAsideWaitState()): the dispatch loop refuses to run instructions while the
+// thread is asleep or awaiting, so it must start with none of that set -- and whatever it
+// waits on, awaits or raises itself must not reach the state of the activation it was
+// started above. The whole state moves, not just the sleep flag: a callback that called
+// wait() used to clear the parked activation's suspended-wait record along with its own.
+// The record itself is kept on the Thread (the collector traces it there); this holds only
+// the mark. Restoring to the mark also drops records a failed nested execute() left above
+// it.
+// An invoke that comes back SUSPENDED -- yielded at its deadline, or paused by the
+// debugger -- is still the top activation: its frames stay on the frame stack for a later
+// slice to finish, and so does its wait state (a body asleep in wait() has to still be
+// asleep when it is resumed). The record then stays set aside, and is restored when the
+// activation's bottom frame finally returns or is unwound (opReturn / unwindFrame); a
+// completed invoke was already restored there, which the destructor's own restore covers
+// only for the paths that never pushed a frame.
+// `t` is the thread we are currently executing on (VM::thread), so it cannot be freed
+// within the scope. A raw pointer (matching BoundCallGuard above) is deliberate: a strong
+// ptr<> would perturb Thread teardown ordering, and capturing the ORIGINAL thread is
+// required so we restore the state on the same Thread even if VM::thread is reassigned
 // during the nested execute().
 struct ParkedInvokeScope {
     Thread* t;
-    bool prevSleep;
-    TimePoint prevUntil;
+    size_t entryFrames;
+    size_t mark;
     explicit ParkedInvokeScope(Thread* th)
-        : t(th), prevSleep(th->threadSleep.load()), prevUntil(th->threadSleepUntil.load()) {
-        t->threadSleep.store(false);
-    }
+        : t(th), entryFrames(th->frames.size()), mark(th->setAsideWaitState(entryFrames)) {}
     ParkedInvokeScope(const ParkedInvokeScope&) = delete;
     ParkedInvokeScope& operator=(const ParkedInvokeScope&) = delete;
     ~ParkedInvokeScope() {
-        t->threadSleep.store(prevSleep);
-        t->threadSleepUntil.store(prevUntil);
+        if (t->frames.size() > entryFrames)
+            return;   // suspended: still the top activation
+        t->restoreWaitState(mark);
     }
 };
 }
@@ -6462,6 +6469,13 @@ Value VM::opReturn()
 
     thread->popFrame();
 
+    // The frame a native entered: the invoker's wait state, set aside for
+    // this activation, comes back as it ends (see ParkedInvokeScope).  An
+    // event handler's is restored by processEventDispatch, once its result
+    // has been taken off the stack.
+    if (returningFrame.unwindOnReturn)
+        thread->restoreWaitStateOwnedBy(thread->frames.size());
+
     // Unwind the returning frame's slots when a caller frame remains beneath
     // it, OR when the frame was pushed by a re-entrant entry point that owns
     // its slots (see CallFrame::unwindOnReturn).  Plain outermost frames keep
@@ -7383,7 +7397,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
     auto errorReturn = std::make_pair(ExecutionStatus::RuntimeError,Value::nilVal());
 
     auto finalizeWaitSuspension = [&]() {
-        if (!(thread->waitSuspension.active &&
+        if (!(thread->waitSuspension.active() &&
               thread->waitSuspension.resultSlot &&
               !thread->threadSleep &&
               thread->awaitedFuture.isNil() &&
@@ -7394,6 +7408,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
         auto& waitSusp = thread->waitSuspension;
         Value finalResult = Value::nilVal();
         switch (waitSusp.resultMode) {
+            case Thread::WaitSuspension::ResultMode::None:
             case Thread::WaitSuspension::ResultMode::Nil:
                 break;
             case Thread::WaitSuspension::ResultMode::StoredValue:
@@ -7403,7 +7418,8 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
         }
 
         *(waitSusp.resultSlot) = finalResult;
-        size_t itemsToPop = static_cast<size_t>(thread->stackTop - waitSusp.stackBase);
+        // the call's arguments: everything above its callee slot
+        size_t itemsToPop = static_cast<size_t>(&*thread->stackTop - (waitSusp.resultSlot + 1));
         popN(itemsToPop);
         waitSusp.clear();
     };
@@ -7440,7 +7456,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
              | (unsigned)thread->threadSleep.load()                    // suspension guard + epilogue park
              | (unsigned)thread->awaitedFuture.isNonNil()              // suspension guard + epilogue await
              | (unsigned)thread->pendingWaitFor.isNonNil()             // suspension guard + epilogue resolve
-             | (unsigned)thread->waitSuspension.active                 // suspension guard + epilogue finalize
+             | thread->waitSuspension.activeBits()                     // suspension guard + epilogue finalize
              | (unsigned)(thread->pendingSetterCount > 0)              // frame-boundary guard
              | (unsigned)!thread->pendingConversions.empty()           // frame-boundary guard
              | (unsigned)!thread->conversionInProgress.empty()         // frame-boundary guard
@@ -7626,7 +7642,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
             | (unsigned)thread->threadSleep.load()
             | (unsigned)thread->awaitedFuture.isNonNil()
             | (unsigned)thread->pendingWaitFor.isNonNil()
-            | (unsigned)thread->waitSuspension.active) [[unlikely]] {
+            | thread->waitSuspension.activeBits()) [[unlikely]] {
 
             if (isExitRequested())
                 return std::make_pair(ExecutionStatus::OK,Value::nilVal());
@@ -11010,6 +11026,14 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                     runtimeError("EVENT_ON expects event/signal and closure");
                     return errorReturn;
                 }
+                // A handler belongs to the thread that registers it.  A node
+                // body runs on whichever thread evaluates the node, once per
+                // evaluation: each run would add another handler, to a thread
+                // the script does not own.
+                if (inDataflowBody_) {
+                    runtimeError("cannot register a 'when' handler from inside a dataflow node body");
+                    return errorReturn;
+                }
 
                 ObjEventType* ev = nullptr;
                 if (isSignal(eventVal)) {
@@ -11736,15 +11760,20 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
             } else {
                 // If deadline-limited, yield instead of blocking -- after the
                 // dispatch the woken blocking path would do (an anyof() relay
-                // resolves the awaited future that way).
+                // resolves the awaited future that way).  A handler that
+                // started is not awaiting anything -- the await was set aside
+                // with the rest of this activation's wait state -- and runs
+                // now, as one started during a sleep does.
                 if (hasDeadline) {
                     if (!dispatchEventsBeforeBlockedYield())
                         return errorReturn;
-                    return yieldReturn;
+                    if (thread->awaitedFuture.isNonNil())
+                        return yieldReturn;
+                } else {
+                    // Woken by whatever resolves the future; the 1ms is the
+                    // fallback (and a host UI loop's pump interval).
+                    waitForFuture(thread, fut, TimeDuration::milliSecs(1));
                 }
-                // Woken by whatever resolves the future; the 1ms is the
-                // fallback (and a host UI loop's pump interval).
-                waitForFuture(thread, fut, TimeDuration::milliSecs(1));
             }
         }
 
@@ -11787,7 +11816,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                 if (s == FutureStatus::Pending) {
                     thread->awaitedFuture = waitTarget;
                 } else {
-                    if (thread->waitSuspension.active &&
+                    if (thread->waitSuspension.active() &&
                         thread->waitSuspension.resultMode ==
                             Thread::WaitSuspension::ResultMode::PendingWaitTarget) {
                         thread->waitSuspension.storedValue = waitTarget;
@@ -11809,11 +11838,13 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                 if (hasDeadline) {
                     if (!dispatchEventsBeforeBlockedYield())   // see above
                         return errorReturn;
-                    return yieldReturn;
+                    if (thread->awaitedFuture.isNonNil())
+                        return yieldReturn;
+                } else {
+                    // Woken by whatever resolves the future; the 1ms is the
+                    // fallback (and a host UI loop's pump interval).
+                    waitForFuture(thread, fut, TimeDuration::milliSecs(1));
                 }
-                // Woken by whatever resolves the future; the 1ms is the
-                // fallback (and a host UI loop's pump interval).
-                waitForFuture(thread, fut, TimeDuration::milliSecs(1));
             }
         }
 
@@ -11846,7 +11877,7 @@ std::pair<ExecutionStatus,Value> VM::execute(TimePoint deadline, size_t baseFram
                 return errorReturn;
         }
 
-        if (thread->waitSuspension.active)   // the lambda's own first gate, hoisted
+        if (thread->waitSuspension.active())   // the lambda's own first gate, hoisted
             finalizeWaitSuspension();
 
         // Refresh frame pointer after processing events/continuations, as
@@ -11938,11 +11969,9 @@ bool VM::processPendingEvents()
                     }
                 }
 
-                auto prevThreadSleep = thread->threadSleep.load();
-                auto prevThreadSleepUntil = thread->threadSleepUntil.load();
-
-                thread->threadSleep = false;
-
+                // (No wait state to juggle here: a user handler runs through
+                // invokeClosure, which sets the thread's wait state aside for
+                // the nested execution and restores it afterwards.)
                 if (handler.closure == conditionalInterruptClosure) {
                     bool raise = true;
                     auto sigIt = thread->eventToSignal.find(tev.eventType);
@@ -11967,6 +11996,8 @@ bool VM::processPendingEvents()
                         }
                     }
                     if (raise) {
+                        // The interrupted wait is over: its handler runs now
+                        thread->threadSleep = false;
                         Value excType = globals.load(toUnicodeString("ConditionalInterrupt")).value();
                         Value exc = Value::exceptionVal(Value::nilVal(), excType);
                         raiseException(exc);
@@ -11984,8 +12015,6 @@ bool VM::processPendingEvents()
                     }
                     if (handler.oneShot)
                         firedRelayClosures.push_back(handler.closure.asObj());
-                    thread->threadSleep = prevThreadSleep;
-                    thread->threadSleepUntil = prevThreadSleepUntil;
                 } else {
                     auto closureObj = asClosure(handler.closure);
                     // Skip handler if closure has been cleaned up (function is nil)
@@ -12007,14 +12036,15 @@ bool VM::processPendingEvents()
                         }
                         handlerArgs.push_back(strongInstance);
                     }
+                    // A handler is not part of a node body it interrupts
+                    // (see invokeNextEventHandler).
+                    const bool interruptedBody = inDataflowBody_;
+                    inDataflowBody_ = false;
                     auto result = invokeClosure(closureObj, handlerArgs);
-                    assert(!thread->threadSleep);
+                    inDataflowBody_ = interruptedBody;
 
                     if (result.first != ExecutionStatus::OK)
                         return false;
-
-                    thread->threadSleep = prevThreadSleep;
-                    thread->threadSleepUntil = prevThreadSleepUntil;
                 }
             }
             // Remove oneShot combinator-relay handlers that fired this cycle
@@ -12166,11 +12196,6 @@ bool VM::invokeNextEventHandler()
             continue;
         }
 
-        // Save sleep state before invoking handler
-        dispatch.prevThreadSleep = thread->threadSleep.load();
-        dispatch.prevThreadSleepUntil = thread->threadSleepUntil.load();
-        thread->threadSleep = false;
-
         // Push closure + args (same stack layout as invokeClosure / OpCode::Call)
         int arity = asFunction(closureObj->function)->arity;
         push(Value::objRef(closureObj));
@@ -12187,9 +12212,25 @@ bool VM::invokeNextEventHandler()
             push(strongInstance);
         }
 
+        // The handler is a separate activation from the one it interrupts:
+        // set the interrupted one's wait state aside until the handler
+        // returns (processEventDispatch, Phase 1) or is unwound
+        // (unwindFrame).  Done only once a frame is certain to be pushed -- a
+        // handler skipped above must leave the state alone, or a sleeping
+        // wait() would be cut short by an event nothing handled.
+        dispatch.waitMark = thread->setAsideWaitState(thread->frames.size());
+        // ...and it is not part of a node body it interrupts: the body's
+        // restrictions (frozen module variables, no signal writes, no network
+        // changes) are not the handler's.
+        dispatch.interruptedDataflowBody = inDataflowBody_;
+        inDataflowBody_ = false;
+
         CallSpec spec(arity > 0 ? 1 : 0);
-        if (!call(closureObj, spec))
+        if (!call(closureObj, spec)) {
+            thread->restoreWaitState(dispatch.waitMark);
+            inDataflowBody_ = dispatch.interruptedDataflowBody;
             return false;
+        }
 
         // Mark the new frame as an event handler so opReturn can flag it
         thread->frames.back().isEventHandler = true;
@@ -12215,9 +12256,9 @@ bool VM::processEventDispatch()
 
         assert(!thread->threadSleep);
 
-        // Restore sleep state that was saved before the handler was invoked
-        thread->threadSleep = dispatch.prevThreadSleep;
-        thread->threadSleepUntil = dispatch.prevThreadSleepUntil;
+        // The interrupted activation carries on waiting where it left off
+        thread->restoreWaitState(dispatch.waitMark);
+        inDataflowBody_ = dispatch.interruptedDataflowBody;
 
         // Try to invoke the next handler for the current event
         if (invokeNextEventHandler())
@@ -12232,7 +12273,7 @@ bool VM::processEventDispatch()
     // Do NOT start a new event dispatch while one is still in flight (a
     // handler frame is executing, or more handlers remain for the current
     // event).  The dispatch state is a single slot per thread —
-    // handlerSnapshot / nextHandlerIndex / prevThreadSleep(Until) — and
+    // handlerSnapshot / nextHandlerIndex / waitMark — and
     // this loop runs once per dispatched instruction, so without this
     // gate a second pending event starts a NESTED dispatch from inside
     // the first event's handler frame and clobbers all of it.  The
@@ -12571,9 +12612,8 @@ bool VM::finishDeferredNativeCall(const NativeFn& fn, Value* args, size_t argc,
     // receiver by construction, which the deferred-result machinery cannot
     // represent.
     auto& waitSusp = thread->waitSuspension;
-    if (waitSusp.active && !waitSusp.resultSlot && !isInitMethod) {
+    if (waitSusp.active() && !waitSusp.resultSlot && !isInitMethod) {
         waitSusp.resultSlot = &*(thread->stackTop - originalArgCount - 1);
-        waitSusp.stackBase = thread->stackTop - originalArgCount;
         waitSusp.frameDepth = thread->frames.size();
         return true;
     }
@@ -13073,6 +13113,13 @@ void VM::unwindFrame()
         thread->eventDispatch.active = false;
         thread->eventHandlerJustReturned = false;
     }
+    // The bottom frame of an activation started above a waiting one (an
+    // event handler, a re-entrant invoke): the wait state set aside for it
+    // comes back as it goes, exactly as when it returns.
+    if (f.isEventHandler || f.unwindOnReturn)
+        thread->restoreWaitStateOwnedBy(thread->frames.size() - 1);
+    if (f.isEventHandler)
+        inDataflowBody_ = thread->eventDispatch.interruptedDataflowBody;
     // A constructor's setter frame unwound by an exception: the construction
     // will not complete, so cancel its pending cleanup -- otherwise, once
     // the frame stack is back at the constructing frame's depth (where a
@@ -13173,12 +13220,13 @@ bool VM::unwindToExceptionHandler(Value& exc)
             thread && thread->isActorThread() && thread->currentActorCall.isNonNil();
         if (!willForward && thread && !thread->frames.empty()
             && stopCoordinator().stopOnFatal()) {
-            // Only frames of THIS execution can catch it: the scan stops at
-            // the frame a native entered (see the boundary in the loop below).
+            // Only frames of THIS activation can catch it: the scan stops at
+            // the frame a native entered, and at an event handler's frame
+            // (see the boundaries in the loop below).
             bool anyHandler = false;
             for (auto it = thread->frames.rbegin(); it != thread->frames.rend(); ++it) {
                 if (!it->exceptionHandlers.empty()) { anyHandler = true; break; }
-                if (it->unwindOnReturn) break;
+                if (it->unwindOnReturn || it->isEventHandler) break;
             }
             if (!anyHandler && fatalDeferrable()) {
                 // A thread driven in real-time slices cannot park: the
@@ -13200,6 +13248,15 @@ bool VM::unwindToExceptionHandler(Value& exc)
         }
     }
 
+    // An exception that leaves an event handler's frame is uncaught: the
+    // frames beneath are the code the handler interrupted, which neither
+    // called it nor emitted its event, so none of their `except` clauses is
+    // a candidate -- which one happened to be open when the event arrived is
+    // an accident of timing.  The unwind carries on as for any exception
+    // nothing catches, to whichever end comes first below: the frame a
+    // native entered, or the bottom of the thread.
+    bool leftEventHandler = false;
+
     while (true) {
         if (thread->frames.empty()) {
             // Stash the exception so the actor return path can forward it
@@ -13218,7 +13275,7 @@ bool VM::unwindToExceptionHandler(Value& exc)
             return false;
         }
         auto& cf = thread->frames.back();
-        if (!cf.exceptionHandlers.empty()) {
+        if (!leftEventHandler && !cf.exceptionHandlers.empty()) {
             auto h = cf.exceptionHandlers.back();
             cf.exceptionHandlers.pop_back();
             while (thread->frames.size() > h.frameDepth)
@@ -13249,6 +13306,8 @@ bool VM::unwindToExceptionHandler(Value& exc)
                                        + objExceptionToString(asException(exc)));
             return false;
         }
+        if (cf.isEventHandler)
+            leftEventHandler = true;
         unwindFrame();
     }
 }
@@ -13286,7 +13345,7 @@ void VM::raiseException(Value exc)
     // A suspended sys.wait() must be abandoned once control transfers via an
     // exception handler; its saved stack cleanup info is no longer valid after
     // the exception rewind.
-    if (thread && thread->waitSuspension.active) {
+    if (thread && thread->waitSuspension.active()) {
         thread->waitSuspension.clear();
         thread->pendingWaitFor = Value::nilVal();
         thread->awaitedFuture = Value::nilVal();
@@ -13322,6 +13381,9 @@ void VM::resetStack()
 
     thread->frames.clear();
     thread->frames.reserve(callFrameLimit);
+    // No frame left to be waiting on anything, or to resume a wait set aside
+    thread->resetWaitState();
+    thread->savedWaitStates.clear();
     thread->pendingSetterCount = 0;   // no frame left for a pending constructor
     thread->pendingConstructorInstance = Value::nilVal();
     thread->frameStart = false;
@@ -14386,9 +14448,7 @@ Value VM::awaitFutureInVM(Value future)
     // call's result slot. Both native result-delivery sites honor the
     // suspension (callNativeFn and the deferred-defaults continuation path).
     t->pendingWaitFor = future;
-    t->waitSuspension.active = true;
-    t->waitSuspension.resultMode = Thread::WaitSuspension::ResultMode::PendingWaitTarget;
-    t->waitSuspension.storedValue = Value::nilVal();
+    t->beginWaitSuspension(Thread::WaitSuspension::ResultMode::PendingWaitTarget);
     return Value::nilVal();
 }
 
@@ -15857,6 +15917,11 @@ Value VM::signal_run_builtin(ArgsView args)
     auto sig = objSignal->signal;
     if (!sig->isSourceSignal())
         throw std::runtime_error("signal.run not supported for non-source signal");
+    // Starting or stopping a source changes what the engine schedules; a node
+    // body is a function of its inputs (see refuseNetworkChangeInNodeBody).
+    if (inDataflowBody_)
+        throw std::runtime_error("cannot run signal '" + sig->name()
+                                 + "' from inside a dataflow node body");
 
     sig->run();
     return Value::nilVal();
@@ -15871,6 +15936,11 @@ Value VM::signal_stop_builtin(ArgsView args)
     auto sig = objSignal->signal;
     if (!sig->isSourceSignal())
         throw std::runtime_error("signal.stop not supported for non-source signal");
+    // Starting or stopping a source changes what the engine schedules; a node
+    // body is a function of its inputs (see refuseNetworkChangeInNodeBody).
+    if (inDataflowBody_)
+        throw std::runtime_error("cannot stop signal '" + sig->name()
+                                 + "' from inside a dataflow node body");
 
     sig->stop();
     return Value::nilVal();
@@ -15946,6 +16016,10 @@ Value VM::signal_on_changed_builtin(ArgsView args)
 {
     if (args.size() != 2 || !isSignal(args[0]) || !isClosure(args[1]))
         throw std::invalid_argument("signal.on_changed expects signal and closure argument");
+
+    // As for a 'when' statement (OpCode::EventOn)
+    if (inDataflowBody_)
+        throw std::runtime_error("cannot register a change handler from inside a dataflow node body");
 
     Value signalVal = args[0];
     Value closureVal = args[1];

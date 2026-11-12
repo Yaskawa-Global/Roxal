@@ -1,0 +1,22 @@
+# A handler that reads a file (a builtin that parks the thread on its I/O
+# future), started while a function is suspended in wait().  The read used to
+# be paired with the function's result slot: the handler got nil, and the
+# file's contents arrived as the result of the function's wait().
+import fileio
+
+var s = signal(10, 0.0)
+
+when s changes as ev:
+    var c = fileio.read_file('../tests/testfile.txt')
+    print("handler read: {len(c) > 0}")
+
+func h() -> int:
+    var r = wait(300ms)
+    var e :quantity = 100ms
+    print("h wait returned {r}, e={e}")
+    return 1
+
+s.run()
+s <- 1.0
+print(h())
+s.stop()

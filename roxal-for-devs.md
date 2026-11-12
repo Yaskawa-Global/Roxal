@@ -1459,6 +1459,36 @@ emit Clicked(x=50, y=60)  // only global handler fires (target is nil)
 - Handlers without a `where` clause receive all events, including those with no target
 - Events emitted without a `target=` argument have `target` set to `nil`
 
+### When handlers run
+
+A handler runs on the thread that declared it -- the main script's, or the actor's -- in between whatever else that thread is doing.  It does not have to wait for the thread to be idle: if the thread is paused in `wait()` or waiting for a future (the result of an actor call, a file read), the handler runs straight away, and the wait carries on afterwards as if nothing had happened.  A handler may itself `wait()`, call actors and read files.
+
+A thread runs one event's handlers at a time.  An event that arrives while a handler is still running (or waiting) is delivered once that handler has finished.
+
+```php
+type Tick event
+
+when Tick occurs:
+  wait(5ms)                 // fine: only this handler pauses
+  print('tick handled')
+
+func work():
+  wait(300ms)               // a Tick arriving now is handled during this wait...
+  print('work done')        // ...and work() still resumes 300ms after it began
+```
+
+An exception that a handler does not catch is an *uncaught* exception: it ends the program (or fails the actor's current call), just like one raised at the top of a script.  It is never delivered to the code the handler happened to interrupt -- that code did not call the handler, so its `try` blocks are not in play.  A handler that should survive a failure needs its own `try`:
+
+```php
+when Tick occurs:
+  try:
+    update_display()
+  except e:
+    print('display update failed: {e}')
+```
+
+(The one deliberate way for an event to interrupt a wait is `wait(...) until <event or signal>`, which the waiting code asks for itself.)
+
 ## Signals
 
 Signals in roxal represent values that can (spontaneously) change.  For example, for robotics, they might represent an external input.  Signals can be transformed, using functions (func) into new signals.  To create your own source signals you "call" the builtin `signal` type (e.g. `signal(freq, initial)`), while `clock(freq)` provides a signal that counts up automatically.  A signal's value can be any of the usual roxal value types, but most usefully bool, byte, int, real, vector or matrix.
@@ -1551,6 +1581,45 @@ See `examples/opencv-signals.rox` for the full camera → dataflow-transform →
 UI pipeline built this way. Note that dataflow function nodes execute on the
 engine's thread, where module variables are frozen — keep function nodes pure
 (inputs to output) and put stateful work in actors.
+
+**What a function may not do while it runs as a node.** The same function can
+be called normally anywhere, with no restriction. Run as a node, it may not set
+a module variable or a signal, and it may not change the network it is part of:
+
+- no call or operator on a signal (`f(other)`, `other + 1` — each makes a node);
+- no `signal(...)` with a frequency, and no delayed signal (`s[-1]`);
+- no wiring (`a <- b`), and no `run()` / `stop()`;
+- no `when` handler (it would be registered again on every evaluation).
+
+Each is an error that names what was attempted. Build the network outside the
+function and pass the signal in as a parameter; inside, a parameter is the
+plain value. A node can still make an event-driven signal (`signal(0, v)`) to
+return.
+
+**A node that waits holds up the other nodes.** Nodes are evaluated one at a
+time, so while one is inside `wait(...)`, or waiting for a result it goes on to
+use (an actor call, a file read), no other node runs — clocked ones included,
+and a controller's periodic tick with them. That is allowed, and fine for a
+short wait, but it is not the way to do slow work. To take time without holding
+anything up, **return the future**: a node whose result is a future publishes
+its output when the future resolves, and other nodes carry on meanwhile.
+
+```php
+type Worker actor:
+  func plan(goal :vector) -> list:
+    ...                       # slow: runs on the actor's own thread
+
+var w = Worker()
+
+func route(goal :vector) -> list:
+  return w.plan(goal)         # good: hands back the future, does not wait
+
+func routeLen(goal :vector) -> int:
+  return len(w.plan(goal))    # waits for the plan: every node waits with it
+```
+
+An event handler that runs while a node is waiting is ordinary code, not part
+of the node: none of the restrictions above apply to it.
 
 **Signals and list/dict payloads.** A `list` or `dict` stored into a signal is
 frozen on store, giving the same guarantee by a different mechanism: the
@@ -2914,7 +2983,9 @@ statements pruned, intact ones kept — for in-progress buffers),
 `parse_statement` / `parse_declaration`. `unparse(node)` renders canonical
 source (normalized formatting, comments re-emitted; `parse(unparse(t))` is
 structurally equal to `t`). `compile(file_tree, name)` returns a callable that
-runs the program's top level.
+runs the program's top level. `compile` is not available to the main script of
+a program a real-time host is driving (it raises an error you can catch); call
+it from an actor there.
 
 Live dataflow introspection is read-only and safe: `sig.network()` returns the
 connected subnetwork (`Network` → `DataflowNode` → `Port`) and `sig.info()`

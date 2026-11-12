@@ -1,0 +1,23 @@
+# A handler that itself waits, started while a function is suspended in
+# wait(): the function's wait must end as if nothing had run above it.  The
+# handler's wait() used to discard the function's suspended-wait record, so
+# the function resumed with its wait call still on the stack and every local
+# declared afterwards read the slot beside its own.
+
+var s = signal(10, 0.0)        # clocked: publishes on its ticks, every 100ms
+
+when s changes as ev:
+    wait(5ms)
+
+func h() -> int:
+    var before = 3
+    wait(300ms)
+    var e :quantity = 100ms
+    var e2 :quantity = 7ms
+    print("h before={before} e={e} e2={e2}")
+    return 1
+
+s.run()
+s <- 1.0                       # published at the next tick, while h waits
+print(h())
+s.stop()

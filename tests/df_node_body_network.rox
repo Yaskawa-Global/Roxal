@@ -1,0 +1,42 @@
+// A function that changes the dataflow network may be called normally; while
+// it runs as a node it may not (see df_node_body_*_err for the refusals that
+// end the program).
+var other = signal(0, 5.0)
+
+func build(x :real) -> real:
+    var z = other + x        // an operator on a signal makes a node
+    return x * 2.0
+
+print(build(3.0))            // plain call: allowed
+
+// run() / stop() from a node body are refused; the body can catch that
+var src = signal(10, 1.0)
+
+func starter(x :real) -> real:
+    try:
+        src.run()
+        print('ran')
+    except:
+        print('run refused')
+    try:
+        src.stop()
+        print('stopped')
+    except:
+        print('stop refused')
+    return x
+
+var s = signal(0, 1.0)
+var y = starter(s)
+print(y.value)
+print(src.running)
+
+// an event-driven signal nothing is wired to is not part of the network: a
+// body may make one
+func mk(x :real) -> real:
+    var n = signal(0, 10.0)
+    return x + n.value
+
+var m = mk(s)
+print(m.value)
+
+print(build(4.0))            // and the plain call still works afterwards

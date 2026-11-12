@@ -52,8 +52,31 @@ protected:
         GCRootBase* root_ { nullptr };
     };
 
+    // Registration for a root that lives for one native call: constructed and
+    // destroyed on the same thread, never handed to another (a
+    // SerializationContext).  On an interpreter thread the root is listed on
+    // that Thread (Thread::scopedRoots) and traced with the thread's other
+    // roots.  The collector reads a Thread's roots only while its thread is
+    // parked or blocked, so there is no lock and no shared-set insert, and the
+    // root may be created inside an RT yield section.  A thread with no
+    // interpreter Thread falls back to the shared registry.  Like
+    // Registration, it must be the root's LAST data member.
+    class ScopedRegistration {
+    public:
+        explicit ScopedRegistration(GCRootBase& root);
+        ~ScopedRegistration();
+
+        ScopedRegistration(const ScopedRegistration&) = delete;
+        ScopedRegistration& operator=(const ScopedRegistration&) = delete;
+
+    private:
+        GCRootBase* root_ { nullptr };
+        Thread* owner_ { nullptr };   // null: registered in the shared registry
+    };
+
 private:
     friend class Registration;
+    friend class ScopedRegistration;
     bool registerRoot();
     void unregisterRoot();
 

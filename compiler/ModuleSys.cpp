@@ -1993,9 +1993,7 @@ Value ModuleSys::wait_builtin(VM& vm, ArgsView args)
 
     // wait() suspends via the VM dispatcher rather than blocking in native code.
     auto suspendWait = [&](Thread::WaitSuspension::ResultMode mode, Value storedValue = Value::nilVal()) {
-        thread->waitSuspension.active = true;
-        thread->waitSuspension.resultMode = mode;
-        thread->waitSuspension.storedValue = storedValue;
+        thread->beginWaitSuspension(mode, storedValue);
     };
 
     if (hasDelay) {

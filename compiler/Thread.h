@@ -39,6 +39,11 @@ public:
         quit = false;
         result = ExecutionStatus::OK;
         frames.reserve(256);
+        // One record per activation started above a waiting one: an event
+        // handler, plus each re-entrant invoke nested above it.  Reserved so
+        // a real-time slice starting a handler does not allocate.
+        savedWaitStates.reserve(8);
+        scopedRoots.reserve(4);
         actorInstanceRaw.store(nullptr, std::memory_order_relaxed);
     }
     Thread(Thread&) = delete;
@@ -319,8 +324,13 @@ public:
         PendingEvent currentEvent;
         std::vector<HandlerRegistration> handlerSnapshot; // copy of handlers at dispatch start
         size_t nextHandlerIndex = 0;
-        bool prevThreadSleep { false };
-        TimePoint prevThreadSleepUntil;
+        // Where the interrupted activation's wait state was set aside while
+        // the handler frame runs (see Thread::setAsideWaitState()).
+        size_t waitMark { 0 };
+        // Whether the handler interrupted a dataflow node body (one that is
+        // waiting).  A handler is not body code: VM::inDataflowBody() is
+        // cleared while its frame runs and put back when it goes.
+        bool interruptedDataflowBody { false };
     };
     EventDispatchState eventDispatch;
     bool eventHandlerJustReturned { false };
@@ -589,29 +599,48 @@ public:
     // any requested sleep completes.
     Value pendingWaitFor { Value::nilVal() };
 
+    // A native call suspended in the dispatcher (wait(), a builtin parked on a
+    // future): its callee and arguments are still on the stack, and its result
+    // is delivered once the wait is over.
     struct WaitSuspension {
-        enum class ResultMode {
+        // What the call returns; None while no call is suspended.
+        enum class ResultMode : uint8_t {
+            None,
             Nil,
             StoredValue,
             PendingWaitTarget
         };
 
-        bool active { false };
-        ResultMode resultMode { ResultMode::Nil };
+        ResultMode resultMode { ResultMode::None };
         Value storedValue { Value::nilVal() };
+        // The call's callee slot: it receives the result, and the arguments
+        // above it are popped.  Set by the call site the native returns to.
         Value* resultSlot { nullptr };
-        ValueStack::iterator stackBase;
         size_t frameDepth { 0 };
 
+        bool active() const { return resultMode != ResultMode::None; }
+        // Non-zero while a call is suspended: for OR-ing into the dispatch
+        // loop's combined inter-instruction test (a plain byte load).
+        unsigned activeBits() const { return static_cast<unsigned>(resultMode); }
+
         void clear() {
-            active = false;
-            resultMode = ResultMode::Nil;
+            resultMode = ResultMode::None;
             storedValue = Value::nilVal();
             resultSlot = nullptr;
             frameDepth = 0;
         }
     };
     WaitSuspension waitSuspension;
+
+    // Start a suspension for the native call now running: wait() and every
+    // builtin that parks on a future in the dispatcher establish it the same
+    // way.  The call site that receives the native's return fills in the
+    // result slot.
+    void beginWaitSuspension(WaitSuspension::ResultMode mode, Value storedValue = Value::nilVal()) {
+        waitSuspension.clear();
+        waitSuspension.resultMode = mode;
+        waitSuspension.storedValue = storedValue;
+    }
 
     // Tracks the future this thread is waiting on inside execute().
     // When set, the dispatch loop gates on this (like threadSleep) and
@@ -691,6 +720,95 @@ public:
     };
     std::vector<StmtActionSession> stmtActionStack;
     static constexpr int kStmtActionIterCap = 1024;
+
+    // The wait state -- threadSleep / threadSleepUntil, awaitedFuture,
+    // pendingWaitFor and waitSuspension -- always describes the activation on
+    // TOP of the frame stack.  Code started above a suspended activation (an
+    // event handler's frame, a re-entrant invoke from a native) is a separate
+    // activation: the suspended one's state is set aside here for as long as
+    // it runs, so its own waits, awaits and exceptions cannot touch it, and
+    // it is not held up by a future the activation beneath is awaiting.
+    //
+    // The record comes back when the activation that displaced it ends --
+    // when its bottom frame returns or is unwound -- however long that takes:
+    // an invoke that yields at its deadline stays on the frame stack, still
+    // the top activation, and keeps its own wait state until a later slice
+    // finishes it.
+    //
+    // Kept on the Thread, not in a C++ local of whoever sets it aside: the
+    // record holds Values (a parked builtin's future lives nowhere else), and
+    // the collector traces them here.
+    struct SavedWaitState {
+        bool sleeping { false };
+        TimePoint sleepUntil;
+        Value awaitedFuture { Value::nilVal() };
+        Value pendingWaitFor { Value::nilVal() };
+        WaitSuspension suspension;
+        size_t ownerFrame { 0 };   // index of the displacing activation's bottom frame
+    };
+    std::vector<SavedWaitState> savedWaitStates;
+
+    // GC roots owned by native calls in progress on this thread
+    // (GCRootBase::ScopedRegistration).  Touched only by this thread; traced
+    // with the thread's other roots.
+    std::vector<const GCRootBase*> scopedRoots;
+
+    // Nothing waited on: the state a fresh activation starts with.
+    void resetWaitState() {
+        threadSleep.store(false);
+        awaitedFuture = Value::nilVal();
+        pendingWaitFor = Value::nilVal();
+        waitSuspension.clear();
+    }
+
+    // Set the current wait state aside, for an activation whose bottom frame
+    // will be frames[ownerFrame], and start from an empty one.  Returns the
+    // mark to hand back to restoreWaitState().
+    size_t setAsideWaitState(size_t ownerFrame) {
+        const size_t mark = savedWaitStates.size();
+        savedWaitStates.emplace_back();
+        auto& saved = savedWaitStates.back();
+        saved.ownerFrame = ownerFrame;
+        saved.sleeping = threadSleep.load();
+        saved.sleepUntil = threadSleepUntil.load();
+        saved.awaitedFuture = awaitedFuture;
+        saved.pendingWaitFor = pendingWaitFor;
+        saved.suspension = waitSuspension;
+        resetWaitState();
+        return mark;
+    }
+
+    // The activation that set the state aside at `mark` has ended: the one
+    // beneath it carries on waiting where it left off.  (A sleep keeps its
+    // deadline; a future that resolved meanwhile is seen as ready by the
+    // dispatch loop's next check.)  Records above the mark belong to
+    // activations that are gone, and go with it.  A mark that is itself gone
+    // was already restored, or went when the stack was reset: nothing to do.
+    void restoreWaitState(size_t mark) {
+        if (mark >= savedWaitStates.size())
+            return;
+        auto& saved = savedWaitStates[mark];
+        threadSleepUntil.store(saved.sleepUntil);
+        threadSleep.store(saved.sleeping);
+        awaitedFuture = saved.awaitedFuture;
+        pendingWaitFor = saved.pendingWaitFor;
+        waitSuspension = saved.suspension;
+        savedWaitStates.resize(mark);
+    }
+
+    // frames[frameIndex] -- the bottom frame of an event handler or of a
+    // re-entrant invoke -- has just returned or been unwound: restore what
+    // was set aside for it, if that is still pending.
+    void restoreWaitStateOwnedBy(size_t frameIndex) {
+        for (size_t i = savedWaitStates.size(); i-- > 0; ) {
+            if (savedWaitStates[i].ownerFrame == frameIndex) {
+                restoreWaitState(i);
+                return;
+            }
+            if (savedWaitStates[i].ownerFrame < frameIndex)
+                return;   // set aside for an activation beneath this frame
+        }
+    }
 
 private:
     ptr<std::thread> osthread;

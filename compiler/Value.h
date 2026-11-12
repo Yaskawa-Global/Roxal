@@ -128,7 +128,9 @@ inline bool isNilAcceptableTargetType(ValueType t) {
 // while is idToObj (raw pointers) plus in-flight C++ locals -- a collection
 // mid-read (module cache load, remote value decode) would sweep the
 // partially linked objects.  Every context self-registers via GCRootBase
-// and traces its registered objects for its whole lifetime.
+// (on the creating thread, see GCRootBase::ScopedRegistration) and traces its
+// registered objects for its whole lifetime.  A context must be destroyed on
+// the thread that created it.
 struct ModuleLinkTable;
 
 struct SerializationContext : public GCRootBase {
@@ -162,7 +164,9 @@ struct SerializationContext : public GCRootBase {
 
 private:
     // MUST remain last: unregister before retained/id maps are destroyed.
-    Registration registration_ { *this };
+    // Scoped: a context lives for one serialize/deserialize call on one
+    // thread, which keeps it usable from real-time (sliced) execution.
+    ScopedRegistration registration_ { *this };
 };
 
 struct CloneContext {

@@ -1,0 +1,14 @@
+// A call on a signal makes a node; a node body may not add to the network.
+var s = signal(0, 1.0)
+var other = signal(0, 5.0)
+
+func dbl(v :real) -> real:
+    return v * 2.0
+
+func f(x :real) -> real:
+    var z = dbl(other)
+    return x * 2.0
+
+print('before')
+var y = f(s)
+print('not reached')

@@ -3401,8 +3401,7 @@ std::ostream& roxal::operator<<(std::ostream& out, const Value& v)
 void roxal::writeValue(std::ostream& out, const Value& v, roxal::ptr<SerializationContext> ctx)
 {
     bool useCtx = ctx != nullptr;
-    ptr<SerializationContext> localCtx = make_ptr<SerializationContext>();
-    if(!ctx) ctx = localCtx;
+    if(!ctx) ctx = make_ptr<SerializationContext>();
 #ifdef ROXAL_COMPUTE_SERVER
     auto* netCtx = dynamic_cast<NetworkSerializationContext*>(ctx.get());
 #else
@@ -3579,8 +3578,7 @@ void roxal::writeValue(std::ostream& out, const Value& v, roxal::ptr<Serializati
 Value roxal::readValue(std::istream& in, roxal::ptr<SerializationContext> ctx)
 {
     bool useCtx = ctx != nullptr;
-    ptr<SerializationContext> localCtx = make_ptr<SerializationContext>();
-    if(!ctx) ctx = localCtx;
+    if(!ctx) ctx = make_ptr<SerializationContext>();
 #ifdef ROXAL_COMPUTE_SERVER
     auto* netCtx = dynamic_cast<NetworkSerializationContext*>(ctx.get());
 #else
